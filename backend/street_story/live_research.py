@@ -253,9 +253,12 @@ class LiveSemanticClient:
         host = factory(self.service, self.service.settings,
             operation_adapter_factory=lambda **_kwargs: OperationAdapter(), before_operation_send=guard)
         session_id = None
+        timeout = bounded_timeout(self.service, binding['story_id'],
+                                  self.service.settings.gemini_attempt_timeout_seconds, purpose)
+        receipt['operation_timeout_seconds'] = timeout
         persist()
         try:
-            async with asyncio.timeout(bounded_timeout(self.service, binding['story_id'], 35, purpose)):
+            async with asyncio.timeout(timeout):
                 initialized = await host.start(resource_id=binding['story_id'], actor=actor, model=self.model_id)
                 session_id = initialized['session_id']
                 guard()

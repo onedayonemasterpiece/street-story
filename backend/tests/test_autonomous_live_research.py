@@ -1,4 +1,5 @@
 import hashlib
+import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -13,6 +14,42 @@ from test_mvp_research import service
 
 SCHEMA = {'type': 'object', 'properties': {'facts': {'type': 'array', 'items': {'type': 'string'}}},
           'required': ['facts'], 'additionalProperties': False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('attempt_cap,wave_cap,completed',[(.2,.5,True),(.02,.5,False),(.2,.02,False)])
+async def test_live_completion_uses_existing_configured_attempt_and_original_wave_bounds(tmp_path,attempt_cap,wave_cap,completed):
+    svc,_,story=service(tmp_path)
+    svc.settings=replace(svc.settings,gemini_attempt_timeout_seconds=attempt_cap,research_timeout_seconds=wave_cap)
+    now=svc.store.now()
+    svc.store.now=lambda:now
+    ensure_budget(svc,story['id'],explicit=True)
+    provider,calls=client(svc,'pending')
+    factory=provider.host_factory
+    def delayed_factory(*args,**kwargs):
+        host=factory(*args,**kwargs)
+        original=host.input
+        async def delayed_input(**input_args):
+            await original(**input_args)
+            await asyncio.sleep(.05)
+            await host.adapter.execute_tool(host.session,{'name':RESULT_TOOL,'id':'original-delayed-result',
+                'args':{'facts':['Own original result']}})
+        host.input=delayed_input
+        return host
+    provider.host_factory=delayed_factory
+    owned=binding(svc,story)
+    if completed:
+        result=await provider._run('facts','Frozen own evidence',owned,SCHEMA)
+        assert result['result']=={'facts':['Own original result']}
+        assert 0 < result['receipt']['operation_timeout_seconds'] <= attempt_cap
+    else:
+        with pytest.raises(ResearchUnavailable) as caught:
+            await provider._run('facts','Frozen own evidence',owned,SCHEMA)
+        assert caught.value.receipt['phase']=='unknown'
+        assert 0 < caught.value.receipt['operation_timeout_seconds'] <= min(attempt_cap,wave_cap)
+        with pytest.raises(ResearchUnavailable,match='original_outcome_unknown'):
+            await provider._run('facts','Frozen own evidence',{**owned,'phase':'unknown'},SCHEMA)
+    assert [name for name,_ in calls]==['start','input','stop']
 
 
 def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=(), cleanup_events=()):

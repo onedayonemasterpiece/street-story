@@ -41,8 +41,11 @@ def response_schema(legacy_schema, contract):
         return legacy_schema
     schema = deepcopy(legacy_schema)
     row = schema['properties']['facts']['items']
-    row['properties'].update(deepcopy(FIELDS))
-    row['required'] = [*row['required'], *FIELDS]
+    # Present the evidence examination before the conclusion in the actual
+    # response contract, matching the instruction to enumerate before verdict.
+    order = ('own_evidence_values', 'own_value_conflicts', 'claims')
+    row['properties'] = {**{key: deepcopy(FIELDS[key]) for key in order}, **row['properties']}
+    row['required'] = [*order, *row['required']]
     return schema
 
 

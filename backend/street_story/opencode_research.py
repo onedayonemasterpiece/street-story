@@ -726,7 +726,8 @@ class OpenCodeResearch:
                 await self._abort(client, receipt, 'research_guard_failed')
             if receipt['phase'] == 'response_completed':
                 receipt['phase'] = 'failed'
-                receipt['provider_send_state'] = 'response_closed'
+                if exc.code in {'research_json_invalid', 'research_schema_invalid'}:
+                    receipt['provider_send_state'] = 'response_closed'
             exc.receipt = exc.receipt or receipt
             exc.receipt['error_code'] = exc.code
             exc.receipt['elapsed_ms'] = round((time.monotonic() - started) * 1000)
