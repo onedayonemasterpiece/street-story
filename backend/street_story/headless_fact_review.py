@@ -61,11 +61,17 @@ VERIFIER_PROMPT = (
     + review_packets.ATOMIC_CLAIM_CHECKS + ' '
     'supported requires the unchanged original single claim in claims, atomic=true, '
     'support_complete=true, qualifiers_preserved=true and no unresolved own_value_conflicts. '
-    'Any narrowing/decomposition requires repair_needed. Preserve subject, date, stage, subset, '
-    'For repair_needed you may supply repair_facts: 1–8 precise atomic replacements with a '
+    'Any narrowing/decomposition requires repair_needed. First enumerate independently '
+    'selectable propositions in claims; choose atomic and verdict only AFTER that enumeration. '
+    'For repair_needed supply repair_facts for the independently supportable replacements: '
+    '1–8 precise atomic replacements with a '
     'model claim_key and own evidence numbers. Preserve unresolved disagreement in the text; '
     'never choose a disputed value. Only propose what these actual own spans support. The host '
     'will preserve lineage and review replacements within the existing bounded budget. '
+    'If no safe replacement can be supported, use insufficient and explain the remaining '
+    'uncertainty. Do not leave a repair_needed decision without an actionable own-evidence '
+    'proposal when a safe decomposition or explicit unresolved disagreement is supported. '
+    'Preserve subject, date, stage, subset, '
     'uncertainty and planned/future/estimated versus completed/actual modality. Missing context '
     'is insufficient, not historical falsity. Mutable states need the source as-of date or '
     'own current evidence; retrieval/review time and undated currently are not present proof. '
@@ -88,7 +94,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v13-own-replacements:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v14-enumerate-before-verdict:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
