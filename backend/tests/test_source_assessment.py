@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from street_story.fact_page_boundary import isolate_rows
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_adapter import FACT_PAGE_SCHEMA
-from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, VALUE_CONTRACT, public_fact, response_schema, source_first_input
+from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, VALUE_CONTRACT, public_fact, reading_source, response_schema, source_first_input
 from test_headless_fact_pool import fixture, partial, result
 
 SCHEMA = response_schema(FACT_PAGE_SCHEMA, CONTRACT)
@@ -30,8 +30,46 @@ def test_source_first_input_preserves_exact_evidence_and_index_and_legacy_order(
     assert source_first_input(capsule) is capsule and list(capsule)[0] == 'context'
 
 
+@pytest.mark.parametrize('reverse',[False,True])
+def test_reading_source_preserves_full_text_and_every_overlapping_passage_reversibly(reverse):
+    body='Header\nFirst dated account.\nSecond account.\nReferences and authors.'
+    passages=[{'passage_id':8,'text':body[:35]},{'passage_id':91,'text':body[20:]}]
+    if reverse:
+        passages.reverse()
+    original={'source_version_id':'own','url':'https://example.org/own','title':'Own',
+        'reading_text':body,'passages':passages}
+    snapshot=copy.deepcopy(original)
+    projected=reading_source(original)
+    assert projected['text']==body
+    assert [{ 'passage_id':span['passage_id'],'text':projected['text'][span['start']:span['end']]}
+        for span in projected['passage_spans']]==passages
+    assert original==snapshot and 'passages' not in projected
+
+
+@pytest.mark.parametrize('body,passages',[
+    ('ABCDEF',[{'passage_id':0,'text':'ABC'},{'passage_id':1,'text':'EF'}]),
+    ('ABCABC',[{'passage_id':0,'text':'ABC'}]),
+    ('ABC',[{'passage_id':0,'text':'XYZ'}]),
+])
+def test_reading_source_cannot_add_unaddressed_text_or_invent_ambiguous_locators(body,passages):
+    original={'reading_text':body,'passages':passages,'source_version_id':'own'}
+    snapshot=copy.deepcopy(original)
+    assert reading_source(original)=={'passages':passages,'source_version_id':'own'}
+    assert original==snapshot
+
+
+@pytest.mark.parametrize('contract',[LEGACY_CONTRACT,VALUE_CONTRACT])
+def test_prior_contract_keeps_original_passage_wire_without_new_reading_projection(contract):
+    capsule={'semantic_contract':contract,'sources':[{'source_version_id':'own',
+        'reading_text':'ABC','passages':[{'passage_id':0,'text':'ABC'}]}]}
+    snapshot=copy.deepcopy(capsule)
+    assert source_first_input(capsule)['sources']==[{'source_version_id':'own','passages':[{'passage_id':0,'text':'ABC'}]}]
+    assert capsule==snapshot
+
+
 @pytest.mark.asyncio
-async def test_live_source_body_precedes_prior_claims_in_actual_operation_context(tmp_path):
+@pytest.mark.parametrize('projection',[False,True])
+async def test_live_source_body_precedes_prior_claims_in_actual_operation_context(tmp_path,projection):
     from test_autonomous_live_research import binding, client
     from test_mvp_research import service
     svc, _, story = service(tmp_path)
@@ -54,12 +92,19 @@ async def test_live_source_body_precedes_prior_claims_in_actual_operation_contex
         'known_fact_inventory': [{'fact_id': 'old', 'text': 'Prior compound claim.', 'eligibility': 'eligible'}],
         'semantic_contract': CONTRACT, 'jsonschema': SCHEMA,
         'sources': [{'source_version_id': 'own', 'passages': [{'passage_id': 2, 'text': PASSAGES[2]}]}]}
+    if projection:
+        capsule['sources'][0]['reading_text']=PASSAGES[2]
     original = copy.deepcopy(capsule)
     closed = await provider.extract_facts(capsule, {**binding(svc, story), 'semantic_contract': CONTRACT})
     prompt = initialized[0]['context']['frozen_research_operation']['prompt']
     serialized = prompt.split('Frozen source unit:\n', 1)[1]
     assert serialized.index('"sources"') < serialized.index('"known_fact_inventory"')
-    assert json.loads(serialized) == {key: value for key, value in original.items() if key != 'jsonschema'}
+    assert json.loads(serialized) == source_first_input({key: value for key, value in original.items() if key != 'jsonschema'})
+    from street_story.source_assessment import CHECKS
+    from street_story.review_packets import EXTRACTION_CHECKS
+    trusted=initialized[0]['configuration']['system_instruction']
+    assert trusted.count(CHECKS)==1 and CHECKS not in prompt
+    assert EXTRACTION_CHECKS not in prompt and EXTRACTION_CHECKS not in trusted
     assert capsule == original and closed['result'] == payload
     assert [name for name, _ in calls] == ['start', 'input', 'stop']
 

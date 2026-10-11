@@ -177,6 +177,7 @@ def fact_page_capsule(page, context):
     return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
             'semantic_contract': FACT_READING_CONTRACT,
             'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
+                         'reading_text': page.get('core_text'),
                          'title': page.get('source_title', ''), 'passages': [
                              {'passage_id': p['passage_id'], 'text': p['text']} for p in page['evidence_passages']]}]}
 

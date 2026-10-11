@@ -267,9 +267,22 @@ class GigaChatResearchClient:
         inventory = [{**{key: source.get(key) for key in ('source_version_id', 'url', 'title')},
                       'available_passage_ids': [p['passage_id'] for p in source.get('passages', [])]}
                      for source in sources.values()]
-        from .source_assessment import checks_for_contract, response_schema
+        from .source_assessment import CONTRACT, checks_for_contract, reading_source, response_schema, source_first_input
         checks = checks_for_contract(capsule.get('semantic_contract'))
         system = SYSTEM + (' ' + checks if checks else '')
+        if capsule.get('semantic_contract') == CONTRACT:
+            system = (checks + ' ' + SUFFICIENCY_CHECKS
+                + ' Read all authorized source passage IDs with get_evidence before findings. '
+                'Only get_evidence and get_known_facts exist. Additional prior inventory is a matching index. '
+                'Return the schema-bound JSON; fact.text must be Russian, with exact source_version_id, '
+                'own passage_ids, literal evidence_quotes and exact existing host IDs. '
+                'For text with passage_spans, unchanged passages are text[start:end] using zero-based '
+                'Unicode character offsets, end exclusive. Read the whole text including references. '
+                'source_matches_poi concerns the confirmed physical subject. Menus/challenges are invalid '
+                'source content; navigation/photo metadata is not building history. '
+                'continuation_needed concerns unread evidence, separately from research sufficiency. '
+                'No selection, draft edits, images, new URLs or publication.')
+            public_capsule = source_first_input(public_capsule)
         schema = response_schema(FINDINGS_SCHEMA, capsule.get('semantic_contract'))
         messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json({
             'query': query, 'sources': inventory, 'context': capsule.get('context', {}),
@@ -335,9 +348,11 @@ class GigaChatResearchClient:
                         receipts[-1].update(tool='get_evidence', source_version_id=args['source_version_id'], passage_ids=ids)
                         for passage in selected:
                             read_passages[(args['source_version_id'], passage['passage_id'])] = passage
+                        evidence = {'source_version_id': args['source_version_id'], 'url': source['url'], 'passages': selected}
+                        if capsule.get('semantic_contract') == CONTRACT:
+                            evidence = reading_source({**evidence, 'reading_text': source.get('reading_text')})
                         messages.extend([{key: message[key] for key in ('role', 'content', 'function_call', 'functions_state_id') if key in message},
-                                         {'role': 'function', 'name': 'get_evidence', 'content': _json({
-                                             'source_version_id': args['source_version_id'], 'url': source['url'], 'passages': selected})}])
+                                         {'role': 'function', 'name': 'get_evidence', 'content': _json(evidence)}])
                         continue
                     if read_passages and reason == 'length' and not final_turn and turn < max_tool_calls:
                         content = message.get('content')
