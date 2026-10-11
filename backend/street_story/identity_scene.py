@@ -340,6 +340,8 @@ def render_scene(story, candidates, *, include_detail=True, detail_candidate_ids
     canvas.save(out,format='PNG',optimize=True)
     data = out.getvalue()
     manifest['image_sha256'] = hashlib.sha256(data).hexdigest()
+    from .identity_spatial_features import supplied_relation_options
+    manifest['relation_options'] = supplied_relation_options(story, candidates, active_ids=detail_candidate_ids)
     return {'mime_type':'image/png','bytes':data,'manifest':manifest}
 
 
@@ -386,7 +388,8 @@ def lean_scene_manifest(manifest):
     bodies=[[row[index] for index in indexes] for row in bodies]
     return {**{key:manifest[key] for key in ('policy','camera','anchor','distance_origin','height_fields',
         'address_fields','default_attribute_provenance','north_up','scale_bar_m','meters_per_pixel',
-        'image_size','projection','view_extent_basis','image_sha256','policy_instruction','feature_reference_policy','coverage') if key in manifest},
+        'image_size','projection','view_extent_basis','image_sha256','policy_instruction','feature_reference_policy','coverage',
+        'relation_options') if key in manifest},
         **({'detail_view':{key:view[key] for key in ('name','panel_pixels','scale_bar_m','meters_per_pixel','extent_east_north_m',
                 'target_candidate_ids') if key in view},
             'detail_policy':'Right panel enlarges the anchor or explicitly nominated bodies; '

@@ -87,6 +87,13 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         'reason':'Neighbor has different bay/window-axis arrangement in SOURCE.'}]
     articles = receipt['articles']
     aids = [a['article_id'] for a in articles]
+    # Initial T may join already acquired bodies without waiting for HTTP.
+    # The body-to-text reader below is controlled, but cache readiness is real.
+    import base64
+    for article in articles:
+        body = article['text'].encode()
+        service.store.cache_put('public-article-acquisition-v1:' + hashlib.sha256(article['url'].encode()).hexdigest(),
+            {'body': base64.b64encode(body).decode(), 'sha256': hashlib.sha256(body).hexdigest()}, 600)
 
     async def catalogue(*args, **kwargs):
         return {'results': [{'article_id':a['article_id'], 'canonical_url':a['url']} for a in articles],

@@ -250,3 +250,75 @@ def measure_spatial_relations(story, candidates, candidate_ids, *, pose=None, fr
             'not GPS accuracy. Relative bearings define left/right only within the chosen front view; '
             'ray hits are conditional on the chosen axis/pose and received map coverage. '
             'Missing geometry never excludes an alternative; small OSM gaps do not verify physical passages.'}
+
+
+def supplied_relation_options(story, candidates, *, active_ids=()):
+    """A small catalogue of adjacent observed sides, never an identity ranking.
+
+    At most six bodies supply five adjacent map-bearing pairs. The longest
+    observed segment is a reproducible side option, not a claimed frontage.
+    All other bodies and primitives remain in the scene's ordinary inventory.
+    """
+    origin = _point(story)
+    if not origin:
+        return []
+    entries = _entries(story, candidates)
+    bodies, roads = [], []
+    for cid, entry in entries.items():
+        tags = {**(entry.get('tags') or {}), **(entry.get('map_object') or {}).get('tags', {})}
+        geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+        position = _point(entry.get('map_coordinates') or entry.get('center') or entry)
+        if not position:
+            continue
+        local = _local(position, origin)
+        if tags.get('building') not in {None, '', 'no'} or tags.get('building:part'):
+            sides = []
+            for ring_index, ring in enumerate(geometry.get('rings') or []):
+                points = [_point(p) for p in ring.get('points') or []]
+                if not points or any(p is None for p in points):
+                    continue
+                for segment_index, (a, b) in enumerate(zip(points, points[1:])):
+                    length = math.dist(_local(a, origin), _local(b, origin))
+                    if length > 0:
+                        sides.append((length, ring_index, segment_index))
+            if sides:
+                _, ring_index, segment_index = max(sides)
+                bodies.append({'candidate_id': cid, 'distance': math.hypot(*local), 'bearing': _bearing(local),
+                    'reference': {'candidate_id': cid, 'kind': 'segment', 'ring_index': ring_index,
+                        'segment_index': segment_index}})
+        elif tags.get('highway'):
+            for line_index, line in enumerate(geometry.get('lines') or []):
+                points = [_point(p) for p in line]
+                for segment_index, (a, b) in enumerate(zip(points, points[1:])):
+                    if a is None or b is None:
+                        continue
+                    a, b = _local(a, origin), _local(b, origin)
+                    if a == b:
+                        continue
+                    roads.append((_distance((0, 0), a, b), cid, line_index, segment_index,
+                        _bearing((b[0]-a[0], b[1]-a[1]))))
+    chosen = sorted(bodies, key=lambda b: (b['candidate_id'] not in active_ids, b['distance'], b['candidate_id']))[:6]
+    chosen.sort(key=lambda b: (b['bearing'], b['candidate_id']))
+    options = []
+    for first, second in zip(chosen, chosen[1:]):
+        refs = [first['reference'], second['reference']]
+        measured = measure_spatial_relations(story, candidates, [r['candidate_id'] for r in refs],
+            front_segments=[{'first': refs[0], 'second': refs[1]}])
+        if measured:
+            options.append({'id': 'R' + str(len(options)+1), 'kind': 'observed_side_pair',
+                'map_features': refs, 'map_clockwise_order': [first['candidate_id'], second['candidate_id']],
+                'boundary_gap': measured['boundary_gaps'][0], 'side_relation': measured['front_segments'][0],
+                'policy': 'Map-bearing order around the nominal anchor, not SOURCE left/right. '
+                    'Selected longest segments are side hypotheses, not identified frontages.'})
+    if chosen and roads:
+        _, cid, line_index, segment_index, bearing = min(roads)
+        axis = {'candidate_id': cid, 'kind': 'road_axis', 'line_index': line_index, 'segment_index': segment_index}
+        for direction in (bearing, (bearing + 180) % 360):
+            measured = measure_spatial_relations(story, candidates, [chosen[0]['candidate_id']],
+                pose={'heading_degrees': direction}, street_axis=axis)
+            if measured:
+                options.append({'id': 'R' + str(len(options)+1), 'kind': 'observed_axis_scenario',
+                    'map_features': [axis], 'axis': measured['street_axis_scenario'],
+                    'pose_scenario': measured['pose_scenario'],
+                    'policy': 'Along-road or opposite-road scenario, not measured shooting heading.'})
+    return options
