@@ -314,9 +314,11 @@ def block_directed_reference_inference(service, items):
     """
     from street_story.errors import PermanentProviderError
     from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    from street_story import identity_architectural_comparison
     restricted = {item['sha256'] for item in items
         if item.get('acceptance_mode') in {'geometry_without_reference', 'physical_identity_G_or_T'}}
     original_reply = LiveVisualComparisonMixin._visual_reply
+    original_article_references = identity_architectural_comparison.ready_article_references
     original_photo, original_batch = service._identify_photo, service._identify_photo_batch
     async def photo(story, *args, **kwargs):
         if story.get('photo_sha256') in restricted:
@@ -330,11 +332,17 @@ def block_directed_reference_inference(service, items):
         if identity.get('photo_sha256') in restricted:
             raise PermanentProviderError('directed_acceptance_external_reference_disabled')
         return original_reply(comparison_id, candidates, identity, remaining)
+    async def article_references(service, story, articles, **kwargs):
+        if story.get('photo_sha256') in restricted:
+            return [], []  # SOURCE+TEXT remains available; no external image fetch/send.
+        return await original_article_references(service, story, articles, **kwargs)
     service._identify_photo, service._identify_photo_batch = photo, batch
     LiveVisualComparisonMixin._visual_reply = staticmethod(reply)
+    identity_architectural_comparison.ready_article_references = article_references
     def restore():
         service._identify_photo, service._identify_photo_batch = original_photo, original_batch
         LiveVisualComparisonMixin._visual_reply = staticmethod(original_reply)
+        identity_architectural_comparison.ready_article_references = original_article_references
     return restore
 
 

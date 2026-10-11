@@ -116,8 +116,14 @@ def test_explicit_owner_approx_camera_is_input_but_truth_and_geometric_result_ar
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['geometry_without_reference', 'physical_identity_G_or_T'])
-async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source(mode):
+async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source(mode, monkeypatch):
     from street_story.errors import PermanentProviderError
+    from street_story import identity_architectural_comparison
+    calls = []
+    async def references(service, story, articles, **kwargs):
+        calls.append(story['photo_sha256'])
+        return [('actual reference', 'image/jpeg', b'original')], [{'label':'actual reference'}]
+    monkeypatch.setattr(identity_architectural_comparison, 'ready_article_references', references)
     class Service:
         async def _identify_photo(self, story, *args, **kwargs):
             return 'ordinary-reference-path'
@@ -133,9 +139,15 @@ async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected
             await service._identify_photo_batch({'photo_sha256': item()['sha256']}, '', [])
         assert await service._identify_photo({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-path'
         assert await service._identify_photo_batch({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-batch'
+        assert await identity_architectural_comparison.ready_article_references(
+            service, {'photo_sha256': item()['sha256']}, []) == ([], [])
+        assert (await identity_architectural_comparison.ready_article_references(
+            service, {'photo_sha256':'other'}, []))[0][0][0] == 'actual reference'
+        assert calls == ['other']
     finally:
         restore()
     assert await service._identify_photo({'photo_sha256': item()['sha256']}, '', []) == 'ordinary-reference-path'
+    assert identity_architectural_comparison.ready_article_references is references
 
 
 def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path, monkeypatch):
