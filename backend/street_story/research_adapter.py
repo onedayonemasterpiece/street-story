@@ -1062,12 +1062,17 @@ class ProductResearchAdapter:
                     elapsed = receipt.get('elapsed_ms')
                     closed_timeout = (phase == 'aborted' and receipt.get('abort_acknowledged') is True
                                       and receipt.get('error_code') == 'research_worker_timeout')
+                    closed_response_failure = (phase == 'failed'
+                        and receipt.get('provider_send_state') != 'not_sent'
+                        and (receipt.get('provider_send_state') == 'response_closed'
+                             or receipt.get('error_code') == 'research_schema_invalid'
+                             and 'raw_result' in receipt))
                     if elapsed is None and closed_timeout:
                         # A controller-acknowledged timeout may have no client
                         # stopwatch field. Durable boundary timestamps still
                         # measure the time this assignment occupied the route.
                         elapsed = (row['updated_at'] - row['created_at']) * 1000
-                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout)
+                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout or closed_response_failure)
                             and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
                             and math.isfinite(elapsed) and elapsed > 0):
                         durations.append(elapsed / 1000)

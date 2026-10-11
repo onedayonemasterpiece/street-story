@@ -129,6 +129,41 @@ def test_acknowledged_timeout_overrides_an_optimistic_cold_hint(tmp_path):
     assert adapter.order_fact_routes(pool, review=True)[0]['client'] is extra
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_closed_malformed_response_overrides_optimistic_qualification(tmp_path, legacy):
+    adapter, extra, story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    record(adapter, story, extra, 'failed', 58.694, role='facts_review_' + extra.model_id)
+    with adapter.service.store.tx() as db:
+        row = db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts').fetchone()
+        receipt = json.loads(row['receipt_json'])
+        receipt.update(error_code='research_schema_invalid', raw_result={'decisions': []})
+        if not legacy:
+            receipt['provider_send_state'] = 'response_closed'
+        db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                   (json.dumps(receipt), row['attempt_id']))
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is adapter.client
+
+
+@pytest.mark.parametrize('phase,state', [('failed', 'not_sent'), ('unknown', 'response_closed'),
+                                       ('submitted', 'response_closed')])
+def test_unclosed_or_unsent_failure_does_not_become_latency_sample(tmp_path, caplog, phase, state):
+    adapter, extra, story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    record(adapter, story, extra, phase, 58.694, role='facts_review_' + extra.model_id)
+    with adapter.service.store.tx() as db:
+        db.execute("UPDATE research_provider_attempts SET receipt_json=json_set(receipt_json,"
+                   "'$.provider_send_state',?,'$.error_code','research_schema_invalid','$.raw_result',json('{}'))",
+                   (state,))
+    # UNKNOWN still contributes outstanding load, but is never a closed sample.
+    with caplog.at_level('INFO'):
+        assert adapter.order_fact_routes(pool, review=True)[0]['client'] is extra
+    assert 'measured_samples=0' in caplog.text
+    assert 'latency_basis=qualification_receipt' in caplog.text
+    with adapter.service.store.connection() as db:
+        assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])['phase'] == phase
+
+
 @pytest.mark.parametrize('field,value', [('provider_id', 'other'), ('model_id', 'other'),
     ('endpoint', 'http://other'), ('directory', '/other'), ('operation', 'extract_facts'),
     ('phase', 'submitted'), ('elapsed_ms', True), ('elapsed_ms', 0), ('elapsed_ms', float('nan'))])
