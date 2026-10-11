@@ -80,7 +80,7 @@ async def test_recover_original_metadata_keeps_story_and_checks_upload_scope(tmp
     story = create_photo(service, photo(redacted=True))
     service.ensure_identity(story['id'])
     await service.run_once()
-    assert service.story(story['id'])['error']['code'] == 'identity_location_missing'
+    assert service.story(story['id'])['error']['code'] == 'identity_clarification_required'
     original_hash = hashlib.sha256(photo(redacted=True)).hexdigest()
     with pytest.raises(ConflictError) as wrong:
         service.recover_photo_location(story['id'], 'different-upload', photo())

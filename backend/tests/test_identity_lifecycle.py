@@ -245,8 +245,23 @@ async def test_identity_without_exif_coordinates_requires_review(tmp_path):
 
     result = service.story(story["id"])
     assert result["state"] == "needs_review"
-    assert result["error"]["code"] == "identity_location_missing"
+    assert result["error"]["code"] == "identity_clarification_required"
     assert result["facts"] == []
+    assert gemini.identity_calls == []
+    with service.store.connection() as db:
+        import json
+        research = json.loads(service._story_row(db, story["id"])["research_json"])
+        question = research["identity_clarification"]
+        assert question["photo_sha256"] == PHOTO_SHA
+        assert question["generation"] == question["control_revision"] == 0
+        assert question["question"] == result["error"]["message"]
+        assert research["automatic_research_outcome"]["outcome"] == "clarification_required"
+        budget = research["research_budget"]
+    service.ensure_identity(story["id"])
+    with service.store.connection() as db:
+        reopened = json.loads(service._story_row(db, story["id"])["research_json"])
+        assert reopened["research_budget"] == budget
+        assert reopened["identity_clarification"] == question
     assert gemini.identity_calls == []
 
 

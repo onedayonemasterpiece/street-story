@@ -1810,8 +1810,10 @@ async def _suggest(service, story, transcript, candidates):
                             delay = retry_at - now if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) else None
                             remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
                             if (phase == 'not_sent' and admission_attempt == 0 and not native_readback_only
-                                    and not unsent_google_route[0]
                                     and delay is not None and 0 < delay <= 60 and remaining > delay + 45):
+                                # A registered reserve proves compatibility, not
+                                # present capacity. Honour the bounded Native due
+                                # time before assigning this same joint2 elsewhere.
                                 # Wait outside an executor/lease for the SAME
                                 # authoritative unsent request. The second turn
                                 # is bounded by the remaining identity clock,

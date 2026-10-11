@@ -614,6 +614,10 @@ class IdentityLifecycleMixin:
                 latest.update({'visual_identity': identity, 'osm': osm, 'photo_camera_hints': binding})
                 latest['wikipedia_metadata_complete'] = story.get('_wikipedia_metadata_complete', True)
                 question = ((latest.get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload', {}).get('clarification_question')
+                if not valid and not (isinstance(question, str) and question.strip()):
+                    # Missing coordinates are an observed input limitation,
+                    # independent of semantic identity or provider availability.
+                    question = 'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.'
                 if not valid and isinstance(question, str) and question.strip():
                     latest['identity_clarification'] = {'question': question.strip()[:200],
                         'reason': 'geographic_context_missing', 'photo_sha256': story['photo_sha256'],
