@@ -119,6 +119,7 @@ class FactWire {
     @SerializedName("evidence_supported") var evidenceSupported: Boolean = false
     @SerializedName("review_status") var reviewStatus: String = "unreviewed"
     var eligibility: String = "unreviewed"
+    @SerializedName("eligibility_reason") var eligibilityReason: String? = null
     val eligibleForSelection: Boolean get() = evidenceSupported && eligibility == "eligible"
     var selected: Boolean = false
     var sources: ArrayList<SourceWire> = arrayListOf()

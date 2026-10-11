@@ -143,6 +143,7 @@ data class FactSnapshot(
     val selected: Boolean,
     val sourcesJson: String,
     val reviewStatus: String = if (evidenceSupported) "eligible" else "unreviewed",
+    val eligibilityReason: String? = null,
 )
 
 data class DestinationSnapshot(

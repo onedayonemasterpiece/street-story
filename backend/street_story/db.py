@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS fact_assertions(
   revision_digest TEXT NOT NULL DEFAULT '',
   accepted_revision_digest TEXT,
   accepted_basis_json TEXT,
+  eligibility_reason TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   PRIMARY KEY(story_id,assertion_id)
@@ -822,7 +823,7 @@ class Store:
                 if name not in evidence_columns:
                     db.execute(f"ALTER TABLE fact_evidence_spans ADD COLUMN {name} {sql_type}")
             assertion_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_assertions)")}
-            for name in ("accepted_revision_digest", "accepted_basis_json"):
+            for name in ("accepted_revision_digest", "accepted_basis_json", "eligibility_reason"):
                 if name not in assertion_columns:
                     db.execute(f"ALTER TABLE fact_assertions ADD COLUMN {name} TEXT")
             from .fact_ledger import (

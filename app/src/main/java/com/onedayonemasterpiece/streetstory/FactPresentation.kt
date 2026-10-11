@@ -8,9 +8,19 @@ internal object FactPresentation {
 
     fun statusLabel(fact: FactSnapshot): String = when {
         fact.evidenceSupported -> "Готов к выбору"
+        fact.eligibilityReason == "accepted_basis_invalid" -> "Опора изменилась · нужна проверка"
+        fact.eligibilityReason == "own_evidence_missing" -> "Нет собственной опоры в источнике"
+        fact.eligibilityReason == "assessment_withheld" -> "Проверка не подтвердила утверждение"
         fact.reviewStatus == "disputed" -> "Есть противоречие"
         fact.reviewStatus in setOf("withheld", "quarantined") -> "Недостаточная опора"
         else -> "Ожидает проверки"
+    }
+
+    fun researchActive(projection: ResearchProjectionSnapshot?, photoSha: String): Boolean {
+        val control = projection?.researchControls?.get("facts") ?: return false
+        return projection.photoSha256 == photoSha && projection.identityGeneration != null &&
+            control.photoSha256 == photoSha && control.identityGeneration == projection.identityGeneration &&
+            !control.stopped && projection.researchPending["facts"] == true
     }
 
     fun concise(raw: String): String {

@@ -870,27 +870,35 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
     for fact_id, assertion in assertions.items():
         current_status = str(assertion["review_status"] or "")
         if current_status == "quarantined":
+            reason = 'quarantined'
             review_status = "quarantined"
             eligibility = "withheld"
         elif assertion.get('accepted_basis_json') and not accepted_basis_valid(db, story_id, assertion):
+            reason = 'accepted_basis_invalid'
             review_status = "withheld"
             eligibility = "withheld"
         elif fact_id in pending_review and not accepted_basis_valid(db, story_id, assertion):
+            reason = 'assessment_pending'
             review_status = "unreviewed"
             eligibility = "unreviewed"
         elif current_status == "withheld":
+            reason = 'assessment_withheld' if fact_id in evidence_supported else 'own_evidence_missing'
             review_status = "withheld"
             eligibility = "withheld"
         elif fact_id not in evidence_supported:
+            reason = 'own_evidence_missing'
             review_status = "withheld"
             eligibility = "withheld"
         elif blocked[fact_id]:
+            reason = ','.join(sorted(blocked[fact_id]))
             review_status = "disputed"
             eligibility = "withheld"
         elif not accepted_basis_valid(db, story_id, assertion) and latest_scan_for(fact_id) is None:
+            reason = 'assessment_missing'
             review_status = "unreviewed"
             eligibility = "unreviewed"
         else:
+            reason = 'accepted_basis' if assertion.get('accepted_basis_json') else 'accepted_legacy_scan'
             review_status = "eligible"
             eligibility = "eligible"
             if not assertion.get('accepted_basis_json'):
@@ -905,9 +913,9 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
                         (story_id, fact_id))]
                     accept_fact_basis(db, story_id, fact_id, ids, operation={'legacy_scan_id': scan['id']}, now=now)
         db.execute(
-            "UPDATE fact_assertions SET review_status=?,eligibility=?,updated_at=? "
+            "UPDATE fact_assertions SET review_status=?,eligibility=?,eligibility_reason=?,updated_at=? "
             "WHERE story_id=? AND assertion_id=?",
-            (review_status, eligibility, now, story_id, fact_id),
+            (review_status, eligibility, reason, now, story_id, fact_id),
         )
 
     from .poi_memory import sync_poi_review_from_story

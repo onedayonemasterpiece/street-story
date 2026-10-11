@@ -374,6 +374,7 @@ class StreetStoryService:
                 "owner_selected": bool(assertion.get("owner_selected", fact["selected"])),
                 "review_status": str(assertion.get("review_status") or "unreviewed"),
                 "eligibility": str(assertion.get("eligibility") or "unreviewed"),
+                "eligibility_reason": assertion.get("eligibility_reason"),
                 "revision_digest": str(assertion.get("revision_digest") or ""),
                 "supporting_evidence_keys": sorted({digest(list(evidence)) for evidence in db.execute(
                     "SELECT e.source_url,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256 "

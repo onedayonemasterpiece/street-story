@@ -39,6 +39,25 @@ def create_story(store: Store, story_id: str = "story_ledger001") -> str:
     return story_id
 
 
+def test_eligibility_reason_survives_refresh_and_store_restart(tmp_path):
+    store = Store(tmp_path / 'reasons.sqlite3')
+    sid = create_story(store)
+    with store.tx() as db:
+        persist_fact_candidates(db, story_id=sid, poi_key=None,
+            facts=[{'text': 'Неподтверждённое утверждение.', 'claim_key': 'missing', 'sources': []}],
+            run_id='test', batch_id='test', model_name='test', prompt_version='test', now=store.now())
+        refresh_review_status(db, sid, store.now())
+        row = db.execute('SELECT * FROM fact_assertions WHERE story_id=?', (sid,)).fetchone()
+        assert row['eligibility'] == 'withheld' and row['eligibility_reason'] == 'own_evidence_missing'
+        fid = row['assertion_id']
+        db.execute("UPDATE fact_assertions SET review_status='quarantined' WHERE assertion_id=?", (fid,))
+        refresh_review_status(db, sid, store.now())
+    reopened = Store(store.path)
+    with reopened.connection() as db:
+        row = db.execute('SELECT * FROM fact_assertions WHERE assertion_id=?', (fid,)).fetchone()
+        assert row['eligibility_reason'] == 'quarantined' and row['eligibility'] == 'withheld'
+
+
 def source(url: str, *supports: str) -> dict:
     return {
         "type": "web",

@@ -29,6 +29,41 @@ import java.util.Base64
 class OwnerReviewUiInstrumentedTest {
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun pending_facts_and_status_reason_survive_store_reopen_without_live_session() {
+        val storyId = "durable-research-ui-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
+        )), "image/png", storyId)
+        StoryStore(context).use { store ->
+            store.createStory(imported)
+            store.replaceFacts(storyId, listOf(FactSnapshot("f", "Нужно проверить собственный источник", .5,
+                false, false, "[]", "withheld", "own_evidence_missing")))
+        }
+        val wire = StoryWire().apply {
+            photoSha256 = imported.sha256
+            identityGeneration = 2
+            researchPending = mapOf("facts" to true)
+            researchControls = mapOf("facts" to ResearchControlWire().apply {
+                photoSha256 = imported.sha256; identityGeneration = 2
+            })
+        }
+        ResearchProjectionStore(context).replace(storyId, wire)
+        context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+            .putString("active_story_id", storyId).commit()
+        StoryStore(context).use { store ->
+            assertEquals("own_evidence_missing", store.facts(storyId).single().eligibilityReason)
+        }
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
+                val texts = descendants(root).filterIsInstance<TextView>().map { it.text.toString() }
+                assertTrue(texts.contains("Факты · поиск продолжается"))
+                assertTrue(texts.contains("Нет собственной опоры в источнике"))
+                assertNotNull(findByDescription(root, "research-loader"))
+            }
+        }
+    }
+
     @Test
     fun realInternetFactsShowSourcesAndKeepOwnerSubsetAfterReopen() {
         // Replay the captured production projection, not a connected-backend test.

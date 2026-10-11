@@ -1586,7 +1586,13 @@ class MainActivity : Activity() {
         host.removeAllViews()
         val facts = store.facts(storyId)
         val liveState = live.snapshot()
-        val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId }
+        val projection = research.get(storyId)
+        val durableActive = FactPresentation.researchActive(projection, store.story(storyId)?.photoSha256.orEmpty())
+        val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId && it.active &&
+            projection?.researchControls?.get("facts")?.stopped != true }
+            ?: if (durableActive) LiveResearchProgress(true, "", "", projection?.sourceCount ?: 0,
+                facts.size, 0, emptyList()) else liveState.researchProgress?.takeIf { liveState.storyId == storyId }
+                    ?.copy(active = false)
         if (facts.isEmpty() && progress == null) {
             host.visibility = View.GONE
             return

@@ -30,6 +30,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         db.execSQL("CREATE INDEX idx_voice_sync ON voice_sessions(remote_state,capture_state,created_at)")
         db.execSQL("CREATE INDEX idx_outbox_sync ON outbox(state,created_at)")
         db.execSQL("CREATE INDEX idx_story_feed ON stories(created_at DESC)")
+        db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -38,6 +39,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
             db.execSQL("UPDATE facts SET review_status='eligible' WHERE evidence_supported=1")
             db.execSQL("ALTER TABLE stories ADD COLUMN processed_image_bytes_url TEXT")
         }
+        if (oldVersion < 3) db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
     }
 
     @Synchronized
@@ -426,6 +428,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
                     put("selected", if (selected) 1 else 0)
                     put("sources_json", fact.sourcesJson)
                     put("review_status", fact.reviewStatus)
+                    put("eligibility_reason", fact.eligibilityReason)
                 })
             }
             val selectedCount = facts(storyId).count { it.selected }
@@ -441,12 +444,12 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     @Synchronized
     fun facts(storyId: String): List<FactSnapshot> = readableDatabase.query(
-        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json", "review_status"),
+        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json", "review_status", "eligibility_reason"),
         "story_id=?", arrayOf(storyId), null, null, "rowid",
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
-                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5), cursor.getString(6)))
+                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5), cursor.getString(6), cursor.getString(7)))
             }
         }
     }
@@ -575,7 +578,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     companion object {
         private const val DB_NAME = "street-story.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         private val STORY_COLUMNS = arrayOf(
             "client_story_id", "server_story_id", "created_at", "photo_path", "photo_sha256", "photo_mime_type",
             "latitude", "longitude", "stage", "place_name", "summary", "draft_text", "processed_image_path",

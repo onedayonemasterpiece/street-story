@@ -273,6 +273,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     it.selected && it.eligibleForSelection,
                     gson.toJson(it.sources),
                     it.reviewStatus,
+                    it.eligibilityReason,
                 )
             },
         )
