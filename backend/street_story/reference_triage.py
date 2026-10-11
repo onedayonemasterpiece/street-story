@@ -139,7 +139,8 @@ def model_atlas_manifest(manifest):
             for ref in tile['references']]} for tile in manifest['tiles']]}
 
 
-async def triage_queue(adapter, session, state, story, source_bytes, identity, *, generation, control_revision):
+async def triage_queue(adapter, session, state, story, source_bytes, identity, *, generation, control_revision,
+                       ready_first=False):
     provider = getattr(getattr(adapter.service, 'providers', None), 'research', None)
     primary = getattr(provider, 'primary_vision', None)
     if (not callable(getattr(primary, '_verified_routes', None))
@@ -159,7 +160,7 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
     # whether its original images can pass an independent SOURCE/REF gate.
     deferred = state.get('reference_triage_deferred') or []
     fallback_reasons = {'triage_unavailable', 'triage_created', 'triage_unknown',
-        'triage_failed', 'triage_closed_invalid', 'triage_allowance_exhausted'}
+        'triage_failed', 'triage_closed_invalid', 'triage_allowance_exhausted', 'triage_image_unavailable'}
     state['queue'].extend({key: value for key, value in c.items() if key != 'triage_deferral'}
         for c in deferred if c.get('triage_deferral') in fallback_reasons)
     state['reference_triage_deferred'] = [c for c in deferred if c.get('triage_deferral') not in fallback_reasons]
@@ -180,6 +181,8 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
         # leave originals available to the independently admitted comparator.
     deferred_ids = {c.get('reference_id') for c in state.get('reference_triage_deferred') or []}
     defer_references(state, deferred_ids, 'previous_triage_deferral')
+    if ready_first and state.get('queue'):
+        return  # Reuse closed rankings; original comparison never waits for a new atlas.
     if state.get('queue') and (state['queue'][0].get('reference_triage') or {}).get('applicability') in APPLICABILITY:
         return  # Compare a ready original before spending another atlas allowance.
     # Process only newly encountered frames; repeat wakeups reuse persisted ratings.

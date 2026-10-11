@@ -477,36 +477,14 @@ class LiveVisualComparisonMixin:
             state = lease if (lease.get('generation') == generation and lease.get('photo_sha256') == story['photo_sha256']
                               and 'queue' in lease) else None
         if state is None:
-            initial_selection = None
-            providers = getattr(self.service, 'providers', None)
-            selector = getattr(getattr(providers, 'gemini', None), 'select_identity_sources', None)
-            observed = [{'url': c['url'], 'title': c.get('name', '')}
-                        for c in identity.get('candidates', [])
-                        if reference_eligible(c) and c.get('url') and c.get('reference_image_urls')
-                        and c.get('discovery') != 'web_article_media']
-            if observed and callable(selector):
-                from .reference_image_codec import normalize_reference
-                from .errors import PermanentProviderError, RetryableProviderError
-                from .gemini import GeminiUnavailable
-                image = await asyncio.to_thread(normalize_reference, source_bytes)
-                selection_query = 'Select initial reference pages useful for SOURCE; nearby article titles are hypotheses.'
-                try:
-                    selected = await selector(selection_query, observed, {**story, '_identity_selection_image': image})
-                except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
-                    fallback = getattr(getattr(providers, 'research', None), 'select_identity_sources', None)
-                    if not callable(fallback):
-                        raise
-                    selected = await fallback(selection_query, observed, story)
-                initial_selection = selected['source_selection']
-                allowed_urls = {x['url'] for x in selected['sources']} & {x['url'] for x in observed}
-                initial_selection = {**initial_selection, 'observed_sources': observed,
-                                     'selected_urls': sorted(allowed_urls)}
+            # Ready original pixels already have the bounded physical comparison
+            # ahead. An optional page selector adds no admission authority and
+            # must not consume that deadline before a pair can be dispatched.
             queue = []
             from .identity_candidate_policy import order_research_candidates
             for candidate in order_research_candidates(identity.get('candidates', []), identity.get('research_priority')):
                 if (reference_eligible(candidate) and candidate.get('reference_image_urls')
-                        and candidate.get('discovery') != 'web_article_media'
-                        and (initial_selection is None or candidate.get('url') in allowed_urls)):
+                        and candidate.get('discovery') != 'web_article_media'):
                     from .identity_references import original_reference
                     urls = list(dict.fromkeys(original_reference(url) or url for url in candidate['reference_image_urls']))
                     queue.extend(self._image_entries({**candidate, 'reference_image_urls': urls}))
@@ -517,11 +495,9 @@ class LiveVisualComparisonMixin:
                      'reviewed_reference_ids': list((research.get('identity_progress') or {}).get('reviewed_reference_ids') or [])
                          if (research.get('identity_progress') or {}).get('generation', generation) == generation else [],
                      'browser_budget': {'remaining': 2}, 'sources': {}, 'searches': {}, 'fetch_failures': []}
-            if initial_selection is not None:
-                state['initial_reference_selection'] = initial_selection
-                record_identity_event(self.service, story['id'], 'identity_initial_reference_sources_selected', {
-                    'generation': generation, 'discovered_count': len(observed),
-                    'selected_count': len(allowed_urls), 'reference_count': len(queue)})
+            record_identity_event(self.service, story['id'], 'identity_initial_references_ready', {
+                'generation': generation, 'reference_count': len(queue),
+                'selector_required': False, 'identity_established': False})
             session.state['visual_comparison'] = state
         state.update(lease_owner=session.id, lease_until=lease['lease_until'],
                      control_revision=expected['control_revision'])
@@ -532,6 +508,24 @@ class LiveVisualComparisonMixin:
             # Background comparisons may finish after the first Live tool call.
             state['reviewed_reference_ids'] = list(dict.fromkeys([*state['reviewed_reference_ids'],
                 *(progress.get('reviewed_reference_ids') or [])]))
+        # A legacy selector may have omitted an eligible page. Restore its
+        # originals into reserve without replaying reviewed or unresolved pairs.
+        addressed = set(state['reviewed_reference_ids'])
+        addressed.update(state.get('unavailable_reference_ids') or [])
+        addressed.update(state.get('skipped_reference_ids') or [])
+        descriptors = [*state['queue'], *(state.get('reference_triage_deferred') or []),
+                       *((state.get('pending') or state.get('pending_descriptor') or {}).get('candidates') or [])]
+        descriptors.extend(c for pair in state.get('parallel_pairs') or [] for c in pair.get('candidates') or [])
+        addressed.update(c.get('reference_id') for c in descriptors)
+        from .identity_references import original_reference
+        for candidate in identity.get('candidates', []):
+            if reference_eligible(candidate) and candidate.get('discovery') != 'web_article_media':
+                originals = list(dict.fromkeys(original_reference(url) or url
+                    for url in candidate.get('reference_image_urls') or []))
+                for entry in self._image_entries({**candidate, 'reference_image_urls': originals}):
+                    if entry['reference_id'] not in addressed:
+                        state['queue'].append(entry)
+                        addressed.add(entry['reference_id'])
         # Accept later native/API URLs even after the first discovery portion.
         urls = args.get('article_urls') or []
         if not isinstance(urls, list) or any(not isinstance(url, str) for url in urls):
@@ -567,9 +561,6 @@ class LiveVisualComparisonMixin:
             if not reference_eligible(candidate):
                 continue
             url = str(candidate.get('url') or '')
-            selection = state.get('initial_reference_selection')
-            if selection is not None and url not in selection['selected_urls']:
-                continue
             if candidate.get('reference_image_urls') and (urlsplit(url).hostname or '').endswith('.wikipedia.org'):
                 state['sources'].setdefault(url, {'source': {'url': url, 'candidate_id': candidate['candidate_id']},
                     'status': 'pending', 'attempts': 0})
@@ -681,6 +672,16 @@ class LiveVisualComparisonMixin:
         physical = [c for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
             and not str(c.get('candidate_id', '')).startswith('web:')]
         physical_ids = {value for c in physical for value in [c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])] if value}
+        active_ids = set((identity.get('research_priority') or {}).get('active_candidate_ids') or [])
+        def active_reference_priority(candidate):
+            subjects = {candidate.get('candidate_id'),
+                        (candidate.get('reference_reuse') or {}).get('subject_candidate_id')}
+            subjects.update(candidate.get('lookup_candidate_ids') or [])
+            url = str(candidate.get('url') or '').rstrip('/')
+            if url:
+                subjects.update(c.get('candidate_id') for c in physical if url in {
+                    str(c.get('url') or '').rstrip('/'), str(c.get('wikipedia_url') or '').rstrip('/')})
+            return 0 if subjects & active_ids else 1
         article_urls = {str(url).rstrip('/') for c in physical for url in [c.get('url'), c.get('wikipedia_url')]
             if url and (urlsplit(str(url)).hostname or '').endswith('.wikipedia.org')}
 
@@ -717,7 +718,7 @@ class LiveVisualComparisonMixin:
         if not unsettled:
             from .reference_triage import triage_queue
             await triage_queue(self, session, state, story, source_bytes, identity,
-                               generation=generation, control_revision=expected['control_revision'])
+                               generation=generation, control_revision=expected['control_revision'], ready_first=True)
         if state['queue'] and not unsettled:
             previous_head = state['queue'][0].get('reference_id')
             # Cover distinct source pages before repeatedly consuming one
@@ -733,7 +734,7 @@ class LiveVisualComparisonMixin:
                 # Direction is a soft tie-break within a local distance band.
                 # Missing heading contributes no preference or exclusion.
                 band = int(metres // 100) if metres != float('inf') else float('inf')
-                return (coverage[candidate.get('url')], band, reference_alignment(candidate),
+                return (active_reference_priority(candidate), coverage[candidate.get('url')], band, reference_alignment(candidate),
                         {'promising': 0, 'unclear': 1, 'unlikely': 2}.get(
                             (candidate.get('reference_triage') or {}).get('priority'), 1),
                         metres, 0 if candidate.get('reference_reuse') else 1)
@@ -945,7 +946,7 @@ class LiveVisualComparisonMixin:
         if state['queue'] and not unsettled:
             from .reference_triage import triage_queue
             await triage_queue(self, session, state, story, source_bytes, identity,
-                               generation=generation, control_revision=expected['control_revision'])
+                               generation=generation, control_revision=expected['control_revision'], ready_first=True)
         references, evidence, candidates = [], [], []
         from .identity_references import unsupported_reference_url
         reference_limit = min(4, max(1, int(getattr(session, 'visual_reference_limit', 1))))
@@ -959,9 +960,10 @@ class LiveVisualComparisonMixin:
                 # A later lane may address a newly acquired page outside the
                 # preceding nine-frame atlas. Check it before creating a pair.
                 await triage_queue(self, session, state, story, source_bytes, identity,
-                    generation=generation, control_revision=expected['control_revision'])
+                    generation=generation, control_revision=expected['control_revision'], ready_first=True)
                 if not state['queue']:
                     break
+            state['queue'].sort(key=active_reference_priority)
             candidate = state['queue'].pop(0)
             if not reference_eligible(candidate):
                 continue  # Context articles remain URL sources, never physical POI candidates.
