@@ -131,12 +131,24 @@ def test_declared_account_author_cannot_be_supported_as_building_participant(bas
 
 def test_model_explicit_role_is_not_reclassified_by_host_but_requires_own_quote():
     candidate=row()
-    candidate['source_roles']=[{'entity':'Автор','role':'проектировщик','basis':'explicit_role',
+    candidate['source_roles']=[{'entity':'Автор','role':'склады','basis':'explicit_role',
         'passage_ids':[2],'quotes':[PASSAGES[2]]}]
     candidate['participant_role_indices']=[0]
     assert isolate([candidate])['result']['facts']==[candidate]
     candidate['source_roles'][0]['quotes']=[PASSAGES[1]]
     assert isolate([candidate]) is None
+
+
+def test_invented_role_label_cannot_replace_missing_literal_source_relation():
+    bad=row('Архитектором назван автор.',2,'designer')
+    bad['source_roles']=[{'entity':'Автор','role':'архитектор','basis':'explicit_role',
+        'passage_ids':[2],'quotes':[PASSAGES[2]]}]
+    bad['participant_role_indices']=[0]
+    isolated=isolate([bad,row()])
+    assert isolated['row_isolation']['rejected_indices']==[0]
+    assert isolated['row_isolation']['errors'][0][0]['validator']=='own_role_literal_basis'
+    assert isolated['result']['facts']==[row()]
+    assert isolated['raw_result']['facts'][0]==bad
 
 
 @pytest.mark.parametrize('defect', ['multiple_properties','different_value_property','foreign_role_index'])
@@ -160,6 +172,15 @@ def test_closed_v3_value_contract_does_not_require_new_relation_declarations():
     assert not Draft202012Validator(SCHEMA['properties']['facts']['items']).is_valid(old)
     assert isolate_rows({'facts':[old], 'source_matches_poi':True,'source_content_valid':True,
         'continuation_needed':False},schema,passage_ids=set(PASSAGES),passages=PASSAGES)['result']['facts']==[old]
+
+
+def test_declared_property_labels_ignore_case_and_whitespace_without_inventing_aliases():
+    candidate=row()
+    candidate['own_evidence_values'][0]['property']=' USE  '
+    assert isolate([candidate])['result']['facts']==[candidate]
+    assert candidate['own_evidence_values'][0]['property']==' USE  '
+    candidate['own_evidence_values'][0]['property']='occupancy'
+    assert isolate([candidate]) is None
 
 
 def test_old_closed_reading_schema_is_preserved_without_new_fields():

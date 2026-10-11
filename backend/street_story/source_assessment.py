@@ -55,7 +55,10 @@ RELATION_FIELDS = {
         'according-to/by phrase does not explicitly identify an architect or other building participant.',
         'items': {'type': 'object', 'properties': {
             'entity': {'type': 'string', 'minLength': 1, 'maxLength': 200},
-            'role': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+            'role': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description':
+                'For explicit_role, copy the verbatim role phrase from the own quote, '
+                'in its original language/inflection. An invented normalized role label '
+                'cannot establish an explicit source relation.'},
             'basis': {'enum': ['explicit_role', 'attributed_account', 'bibliographic_credit', 'unresolved']},
             'passage_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'items': {'type': 'integer'}},
             'quotes': {'type': 'array', 'minItems': 1, 'maxItems': 8,
@@ -86,6 +89,8 @@ CHECKS = (
     'it does not by itself establish a designer. A matching name credited for a book is evidence '
     'of authorship, not architecture. Without an explicit participant role, omit that role claim '
     'or keep it nonpositive; do not disguise it by copying the ambiguous wording. '
+    'For explicit_role copy the role phrase verbatim from the own quoted source. If no own quote '
+    'contains that role phrase, the asserted participant role lacks an explicit literal basis. '
     'NEXT factor text into propositions with one subject/property/value each. Counts of buildings, '
     'storeys and entrances are three properties. Eviction and a later ruined condition are separate. '
     'Emit separate fact rows for these propositions in this SAME operation, even when an old claim '
@@ -136,14 +141,21 @@ def row_errors(row, passages=None):
     own = set(row['passage_ids'])
     if 'propositions' in row:
         propositions = row['propositions']
+        # Property names are model-declared labels, not semantic host classes.
+        # Ignore casing/whitespace only; never infer aliases between properties.
+        def label(value):
+            return ' '.join(value.split()).casefold()
         if row['verdict'] == 'supported' and (len(propositions) != 1
                 or propositions[0]['text'] != row['text']
-                or any(value['property'] != propositions[0]['property'] for value in row['own_evidence_values'])):
+                or any(label(value['property']) != label(propositions[0]['property']) for value in row['own_evidence_values'])):
             return [{'path': ['propositions'], 'validator': 'declared_assessment_inconsistent'}]
         roles = row['source_roles']
         for index in row['participant_role_indices']:
             if index >= len(roles) or (row['verdict'] == 'supported' and roles[index]['basis'] != 'explicit_role'):
                 return [{'path': ['participant_role_indices'], 'validator': 'declared_role_inconsistent'}]
+            if row['verdict'] == 'supported' and not any(
+                    label(roles[index]['role']) in label(quote) for quote in roles[index]['quotes']):
+                return [{'path': ['source_roles'], 'validator': 'own_role_literal_basis'}]
     for value in [*row['own_evidence_values'], *row.get('source_roles', [])]:
         if any(pid not in own for pid in value['passage_ids']):
             return [{'path': ['own_evidence_values'], 'validator': 'own_passage_membership'}]
