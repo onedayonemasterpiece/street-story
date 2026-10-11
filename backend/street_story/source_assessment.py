@@ -5,6 +5,7 @@ LEGACY_CONTRACT = 'source-reading-assessment-v2'
 VALUE_CONTRACT = 'source-reading-assessment-v3'
 CONTRACT = 'source-reading-assessment-v4'
 CONTRACTS = {LEGACY_CONTRACT, VALUE_CONTRACT, CONTRACT}
+DISPATCH_CONTRACT = VALUE_CONTRACT
 FIELDS = {
     'claims': {'type': 'array', 'minItems': 1, 'maxItems': 8,
         'description': 'All independently selectable propositions, not copies of a compound sentence. '
@@ -100,12 +101,22 @@ CHECKS = (
     '4. Only then match the normalized claim to the prior index. That index is neither evidence '
     'nor a list to approve. Reuse an exact existing_fact_id only for the unchanged supported claim; '
     'changed or split text needs existing_fact_id="". Preserve actual conflict links. '
-    'Keep independent good facts when another claim is unresolved. No second reviewer is required.\n'
+    'For an existing compound, disputed or unsupported claim, return its unchanged text and ID '
+    'with an explicit nonpositive assessment; mere omission does not retire it. Positive split '
+    'replacements use new IDs. Keep independent good facts when another claim is unresolved. '
+    'No second reviewer is required.\n'
 )
 
 
 def checks_for_contract(contract):
-    return CHECKS if contract == CONTRACT else VALUE_CHECKS if contract == VALUE_CONTRACT else ''
+    if contract == CONTRACT:
+        return CHECKS
+    if contract == VALUE_CONTRACT:
+        return (CHECKS + ' In v3 use claims to enumerate every independently selectable assertion '
+            'and own_evidence_values to enumerate every competing value with own passage IDs/quotes. '
+            'supported requires exactly one claim equal to text and no own_value_conflicts. '
+            'Do not add separate role/proposition mirrors or undeclared fields.')
+    return ''
 
 
 def reading_source(source):
@@ -150,11 +161,8 @@ def source_first_input(capsule):
     keys = ('sources', 'semantic_contract', 'context', 'known_fact_inventory')
     ordered = {**{key: capsule[key] for key in keys if key in capsule},
             **{key: value for key, value in capsule.items() if key not in keys}}
-    if capsule.get('semantic_contract') == CONTRACT and 'sources' in capsule:
+    if 'sources' in capsule:
         ordered['sources'] = [reading_source(source) for source in capsule['sources']]
-    elif 'sources' in capsule:
-        ordered['sources'] = [{key: value for key, value in source.items() if key != 'reading_text'}
-            for source in capsule['sources']]
     return ordered
 
 

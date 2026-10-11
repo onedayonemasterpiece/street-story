@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from street_story.fact_page_boundary import isolate_rows
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_adapter import FACT_PAGE_SCHEMA
-from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, VALUE_CONTRACT, public_fact, reading_source, response_schema, source_first_input
+from street_story.source_assessment import CONTRACT, DISPATCH_CONTRACT, LEGACY_CONTRACT, VALUE_CONTRACT, public_fact, reading_source, response_schema, source_first_input
 from test_headless_fact_pool import fixture, partial, result
 
 SCHEMA = response_schema(FACT_PAGE_SCHEMA, CONTRACT)
@@ -58,13 +58,29 @@ def test_reading_source_cannot_add_unaddressed_text_or_invent_ambiguous_locators
     assert original==snapshot
 
 
-@pytest.mark.parametrize('contract',[LEGACY_CONTRACT,VALUE_CONTRACT])
+@pytest.mark.parametrize('contract',[LEGACY_CONTRACT])
 def test_prior_contract_keeps_original_passage_wire_without_new_reading_projection(contract):
     capsule={'semantic_contract':contract,'sources':[{'source_version_id':'own',
         'reading_text':'ABC','passages':[{'passage_id':0,'text':'ABC'}]}]}
     snapshot=copy.deepcopy(capsule)
     assert source_first_input(capsule)['sources']==[{'source_version_id':'own','passages':[{'passage_id':0,'text':'ABC'}]}]
     assert capsule==snapshot
+
+
+def test_new_flat_reading_contract_retains_own_values_and_exact_evidence_locators():
+    schema=response_schema(FACT_PAGE_SCHEMA,DISPATCH_CONTRACT)
+    row=schema['properties']['facts']['items']
+    assert DISPATCH_CONTRACT==VALUE_CONTRACT
+    assert {'claims','own_evidence_values','own_value_conflicts'}<=set(row['required'])
+    assert not {'source_roles','propositions','participant_role_indices'} & set(row['properties'])
+    capsule={'semantic_contract':DISPATCH_CONTRACT,'sources':[{'source_version_id':'own',
+        'reading_text':'ABC','passages':[{'passage_id':0,'text':'ABC'}]}]}
+    original=copy.deepcopy(capsule)
+    source=source_first_input(capsule)['sources'][0]
+    assert source['text']=='ABC' and source['passage_spans']==[{'passage_id':0,'start':0,'end':3}]
+    assert capsule==original
+    # A frozen v4 result still has its exact private relation declarations.
+    assert {'source_roles','propositions','participant_role_indices'}<=set(SCHEMA['properties']['facts']['items']['required'])
 
 
 @pytest.mark.asyncio

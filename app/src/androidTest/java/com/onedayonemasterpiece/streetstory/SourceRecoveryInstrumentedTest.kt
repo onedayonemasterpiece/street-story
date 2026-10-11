@@ -19,6 +19,84 @@ import java.util.concurrent.CopyOnWriteArrayList
 class SourceRecoveryInstrumentedTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
+    @Test fun unchangedSyncReadsOnceWhileMutationKeepsAuthoritativeReadback() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val feed = FeedProjectionStore(context)
+        val research = ResearchProjectionStore(context)
+        val imported = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = imported.clientStoryId
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        var mutated = false
+        val wire = StoryWire().apply {
+            this.id = "server-$id"
+            clientStoryId = id
+            photoSha256 = imported.sha256
+            state = StoryStage.REVIEW
+            sourceAvailable = true
+            revision = 17
+            draftText = "Сохранённый черновик"
+            visualIdentity = VisualIdentityWire().apply { status = "match"; candidateId = "fixture-poi" }
+            facts = arrayListOf(FactWire().apply {
+                factId = "fixture-supported"
+                text = "Собственный подтверждённый факт"
+                confidence = .9
+                evidenceSupported = true
+                eligibility = "eligible"
+                selected = true
+            })
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    if (request.method == "POST" && request.path.orEmpty().endsWith("/facts")) {
+                        mutated = true
+                        wire.revision = 18
+                        wire.facts.single().selected = false
+                        wire.summary = "Mutation response"
+                    } else if (request.method == "GET" && mutated) {
+                        wire.revision = 19
+                        wire.summary = "Authoritative readback"
+                    }
+                    return MockResponse().setHeader("Content-Type", "application/json").setBody(Gson().toJson(wire))
+                }
+            }
+            start()
+        }
+        try {
+            store.createStory(imported)
+            store.setServerIdentity(id, wire.id)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only") { PhotoAssets.open(context, it) }
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            assertFalse(worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
+            assertEquals(1, calls.size)
+            assertEquals("GET", calls.single().method)
+            assertTrue(store.facts(id).single().selected)
+            assertEquals("Сохранённый черновик", store.story(id)?.draftText)
+            val operation = store.enqueueOperation(id, "facts", "select-$id", "{\"selected_fact_ids\":[]}")
+            assertFalse(worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
+            assertEquals(3, calls.count { it.method == "GET" })
+            val mutation = calls.single { it.method == "POST" }
+            assertEquals(operation.requestKey, mutation.getHeader("Idempotency-Key"))
+            assertEquals("Authoritative readback", store.story(id)?.summary)
+            assertFalse(store.facts(id).single().selected)
+            assertTrue(store.pendingOperations(id).isEmpty())
+            assertEquals("Сохранённый черновик", store.story(id)?.draftText)
+        } finally {
+            feed.close()
+            store.deleteStory(id)
+            research.clear(id)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            PhotoAssets.releaseTemporary(imported.path)
+            server.shutdown()
+            config.backendUrl = priorBackend
+        }
+    }
+
     @Test fun revokedProviderUsesRamOnlyUntilExpiryAndThenReportsRecoverableSourceAccess() {
         val revoked = "content://com.onedayonemasterpiece.streetstory.test.photo-intake/revoked"
         PhotoAssets.retainSelectedUri(revoked, PhotoGpsFixture.bytes())

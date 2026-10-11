@@ -882,9 +882,9 @@ class OpenCodeResearch:
             editorial += SUFFICIENCY_CHECKS + ' '
             from .source_assessment import checks_for_contract
             editorial += checks_for_contract(binding.get('semantic_contract')) + ' '
-            from .source_assessment import CONTRACT as ASSESSMENT_CONTRACT
-            if binding.get('semantic_contract') == ASSESSMENT_CONTRACT:
-                editorial = (checks_for_contract(ASSESSMENT_CONTRACT) + ' ' + SUFFICIENCY_CHECKS
+            from .source_assessment import CONTRACT as ASSESSMENT_CONTRACT, VALUE_CONTRACT
+            if binding.get('semantic_contract') in {ASSESSMENT_CONTRACT, VALUE_CONTRACT}:
+                editorial = (checks_for_contract(binding['semantic_contract']) + ' ' + SUFFICIENCY_CHECKS
                     + ' Write fact.text in Russian, preserve exact own passage IDs and existing host IDs. '
                     'For text with passage_spans, unchanged passages are text[start:end] with zero-based '
                     'Unicode character offsets, end exclusive. Read the whole text including references. '

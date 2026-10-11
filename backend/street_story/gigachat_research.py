@@ -267,10 +267,10 @@ class GigaChatResearchClient:
         inventory = [{**{key: source.get(key) for key in ('source_version_id', 'url', 'title')},
                       'available_passage_ids': [p['passage_id'] for p in source.get('passages', [])]}
                      for source in sources.values()]
-        from .source_assessment import CONTRACT, checks_for_contract, reading_source, response_schema, source_first_input
+        from .source_assessment import CONTRACT, VALUE_CONTRACT, checks_for_contract, reading_source, response_schema, source_first_input
         checks = checks_for_contract(capsule.get('semantic_contract'))
         system = SYSTEM + (' ' + checks if checks else '')
-        if capsule.get('semantic_contract') == CONTRACT:
+        if capsule.get('semantic_contract') in {CONTRACT, VALUE_CONTRACT}:
             system = (checks + ' ' + SUFFICIENCY_CHECKS
                 + ' Read all authorized source passage IDs with get_evidence before findings. '
                 'Only get_evidence and get_known_facts exist. Additional prior inventory is a matching index. '

@@ -19,7 +19,7 @@ from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
 from .service import ConflictError, canonical
 from .config import reveal
-from .source_assessment import CONTRACT as FACT_READING_CONTRACT, response_schema as assessment_schema
+from .source_assessment import DISPATCH_CONTRACT as FACT_READING_CONTRACT, response_schema as assessment_schema
 
 LOG = logging.getLogger(__name__)
 
