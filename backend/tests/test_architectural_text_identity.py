@@ -15,10 +15,11 @@ URL = 'https://archive.example/physical-building'
 TEXT = 'The facade has a central bay with three vertical window axes and a semicircular cornice. The entrance is on the left.'
 
 
-def with_received_physical_links(decision, contents):
+def with_received_physical_links(decision, contents, *, address_map_counterpoints=False):
     """Fixture model links the literal records in the actual issued T packet."""
     inventory = None
     passages = []
+    counterpoints = {}
     for line in contents[-1].splitlines():
         try:
             packet = json.loads(line)
@@ -27,6 +28,7 @@ def with_received_physical_links(decision, contents):
         if not isinstance(packet, dict):
             continue
         context = packet.get('acquired_architectural_text') or packet
+        counterpoints.update(context.get('received_map_counterpoints_not_identity') or {})
         passages.extend(context.get('literal_source_passages') or [])
         found = (packet if packet.get('contract') == 'llm-first-literal-evidence-v1' else
             packet.get('publisher_and_OSM_literal_records_NOT_prejoined') or
@@ -35,6 +37,12 @@ def with_received_physical_links(decision, contents):
             inventory = found
     assert inventory, 'The actual issued model packet must include literal evidence.'
     answer = copy.deepcopy(decision)
+    if address_map_counterpoints:
+        addressed = {row['candidate_id'] for row in answer['material_alternatives']}
+        answer['material_alternatives'].extend(
+            {'candidate_id': cid,
+             'reason': 'Fixture model distinguishes this other received MAP body from the SOURCE bay and cornice.'}
+            for cid in counterpoints.get(answer['candidate_id'], []) if cid not in addressed)
     if passages:
         for relation in answer['correspondences']:
             relation['source_span_ref'] = next(span['span_ref'] for article in passages

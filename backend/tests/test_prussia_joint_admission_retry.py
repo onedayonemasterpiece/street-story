@@ -72,7 +72,8 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         if len(requests) == 2 or repeated:
             raise error  # Proven admission denial: no SDK send.
         sdk_sends.append('useful-text')
-        return SimpleNamespace(text=json.dumps(with_received_physical_links(text_decision, contents)),
+        return SimpleNamespace(text=json.dumps(with_received_physical_links(
+            text_decision, contents, address_map_counterpoints=True)),
             response_id='useful-text-closed')
 
     async def wait(delay):
