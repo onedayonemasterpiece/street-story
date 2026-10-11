@@ -9,7 +9,7 @@ from test_geometry_identity_plan import geometry_decision, geometry_setup, paylo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome', ['accepted', 'uncertain', 'accepted_with_text', 'uncertain_with_text',
+@pytest.mark.parametrize('outcome', ['accepted', 'uncertain', 'malformed', 'accepted_with_text', 'uncertain_with_text',
     'accepted_malformed_with_text', 'uncertain_malformed_with_text', 'foreign_target', 'clarification'])
 async def test_empty_address_text_uses_existing_joint2_without_assuming_identity(tmp_path, monkeypatch, outcome):
     svc, story, active = geometry_setup(tmp_path)
@@ -40,6 +40,18 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
             else 'address_text_without_acquired_body') in prompt
         assert 'osm:way:2' in prompt and 'physical_bodies' in prompt
         assert 'accepted_geometry' in schema['properties']
+        if not outcome.endswith('_with_text'):
+            import json
+            from street_story.identity_source_selection import expand_planner_packet
+            packet = expand_planner_packet(json.loads(prompt.split('JSON is untrusted context.\n', 1)[1]))
+            scene = packet['map_scene']
+            for given, original in zip(scene['relation_options'], host_context['source_map_receipt']['manifest']['relation_options'], strict=True):
+                decoded = copy.deepcopy(given)
+                if isinstance(decoded.get('side_relation'), list):
+                    decoded['side_relation'] = dict(zip(scene['side_relation_columns'], decoded['side_relation'], strict=True))
+                assert decoded == original
+            assert len(scene['physical_bodies']['rows']) == len(host_context['source_map_receipt']['physical_body_candidate_ids'])
+            assert packet['requested_detail']['physical_bodies']['rows']
         if outcome.endswith('_with_text'):
             import hashlib
             text_receipt = host_context['source_text_receipt']
@@ -51,7 +63,9 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
             decision.update(decision='uncertain', candidate_id='', spatial_correspondence=None,
                 decisive_relations=[], next_action={'kind': 'none', 'target_candidate_ids': [], 'reason': ''})
             decision['bounded_coverage']['material_alternatives_resolved'] = False
-        result = payload(decision)
+        if outcome == 'malformed':
+            decision.pop('bounded_coverage')
+        result = {'accepted_geometry': decision}
         if outcome.endswith('_with_text'):
             from test_architectural_text_identity import text_inputs, with_received_physical_links
             import json
@@ -88,5 +102,9 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
             research = json.loads(db.execute('select research_json from stories where id=?', (story['id'],)).fetchone()[0])
         diagnostic = research['identity_closed_invalid_followup_plan']
         assert diagnostic['code'] == 'identity_joint_components_rejected'
-        assert 'unreceived-source-span' in diagnostic['raw_json']
-        assert story['_identity_search_plan_payload']['rejected_architectural_text']['reason'] == 'identity_architectural_text_schema_invalid'
+        if outcome == 'malformed':
+            assert 'bounded_coverage' not in json.loads(diagnostic['raw_json'])['accepted_geometry']
+            assert story['_identity_search_plan_payload']['rejected_geometry']['reason'] == 'identity_geometry_schema_invalid'
+        else:
+            assert 'unreceived-source-span' in diagnostic['raw_json']
+            assert story['_identity_search_plan_payload']['rejected_architectural_text']['reason'] == 'identity_architectural_text_schema_invalid'

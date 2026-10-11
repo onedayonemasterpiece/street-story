@@ -66,7 +66,7 @@ async def test_source_map_input_preserves_new_resolution_and_original_addressed_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('joint_geometry', [False, True])
+@pytest.mark.parametrize('joint_geometry', [False, True, 'without_text'])
 async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contract_update(tmp_path, monkeypatch, joint_geometry):
     from dataclasses import replace
     from street_story import identity_architectural_comparison, identity_architectural_context
@@ -84,6 +84,8 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
         return {'results': [{'article_id': articles[0]['article_id'], 'canonical_url': articles[0]['url']}],
             'physical_prefetch_plan': {'prefetch_article_ids': [articles[0]['article_id']]}, 'status': 'completed'}
     async def acquire(*args, **kwargs):
+        if joint_geometry == 'without_text':
+            return [], {'status': 'completed_empty'}
         return articles, {'status': 'completed'}
     monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
     monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
@@ -125,13 +127,16 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
         calls.append('read_original')
         original = saved['frozen_source_map']['host_context']
         assert schema == original['schema']
-        linked = with_received_physical_links(decision,
-            [json.dumps({'publisher_and_OSM_literal_records_NOT_prejoined':
-                original['source_text_receipt']['physical_link_inventory']})])
-        if joint_geometry:
-            invalid_geometry = geometry_decision()
-            invalid_geometry.pop('bounded_coverage')
-            linked = {'accepted_geometry': invalid_geometry, 'accepted_architectural_text': linked}
+        if joint_geometry == 'without_text':
+            linked = {'accepted_geometry': geometry_decision()}
+        else:
+            linked = with_received_physical_links(decision,
+                [json.dumps({'publisher_and_OSM_literal_records_NOT_prejoined':
+                    original['source_text_receipt']['physical_link_inventory']})])
+            if joint_geometry:
+                invalid_geometry = geometry_decision()
+                invalid_geometry.pop('bounded_coverage')
+                linked = {'accepted_geometry': invalid_geometry, 'accepted_architectural_text': linked}
         return {'result': linked, 'receipt': {'phase': 'completed', 'turn_id': 'original-T'},
             'host_context': original}
     async def forbidden(*args, **kwargs):
@@ -149,11 +154,13 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     # original followup observer when the worker resumes that addressed unit.
     await identity_discovery.suggest(svc, story, '', active)
     assert calls == ['send_original', 'read_original']
-    proof = story['_identity_geometry_result']['architectural_text_proof']
-    assert proof['source_text_receipt'] == saved['frozen_source_map']['host_context']['source_text_receipt']
+    proof_key, receipt_key = (('geometry_proof', 'source_map_receipt') if joint_geometry == 'without_text'
+        else ('architectural_text_proof', 'source_text_receipt'))
+    proof = story['_identity_geometry_result'][proof_key]
+    assert proof[receipt_key] == saved['frozen_source_map']['host_context'][receipt_key]
     assert joint_followup_marker(svc, story)['prepared_request'] == original_request
     assert svc._identity_snapshot(story['id'])[1]['research_budget']['work_units'] == original_units
-    if joint_geometry:
+    if joint_geometry is True:
         rejected = story['_identity_search_plan_payload']['rejected_geometry']
         assert rejected['reason'] == 'identity_geometry_schema_invalid'
         assert 'bounded_coverage' not in rejected['decision']
