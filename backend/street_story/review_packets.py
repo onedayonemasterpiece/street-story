@@ -141,6 +141,17 @@ CREATE TABLE IF NOT EXISTS live_review_assessments(
  cursor INTEGER NOT NULL, payload_json TEXT NOT NULL,
  PRIMARY KEY(packet_ref,cursor)
 );
+CREATE TABLE IF NOT EXISTS live_pending_review_links(
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE, run_id TEXT NOT NULL,
+ left_id TEXT NOT NULL, right_id TEXT NOT NULL, left_revision TEXT NOT NULL, right_revision TEXT NOT NULL,
+ packet_ref TEXT NOT NULL, decision_json TEXT NOT NULL,
+ PRIMARY KEY(story_id,run_id,left_id,right_id,packet_ref)
+);
+CREATE TABLE IF NOT EXISTS live_pending_review_resolutions(
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE, run_id TEXT NOT NULL,
+ left_id TEXT NOT NULL, right_id TEXT NOT NULL, packet_ref TEXT NOT NULL, resolved_by TEXT NOT NULL,
+ PRIMARY KEY(story_id,run_id,left_id,right_id,packet_ref)
+);
 """
 
 
@@ -166,9 +177,17 @@ def pending_candidates(db, story_id, run_id):
     ids.extend(row[0] for row in db.execute('SELECT r.child_id FROM live_fact_repairs r '
         'JOIN live_review_packets p ON p.packet_ref=r.packet_ref WHERE r.story_id=? AND p.run_id=? '
         'ORDER BY r.rowid', (story_id, run_id)))
-    return [fid for fid in dict.fromkeys(ids) if db.execute(
+    pending = [fid for fid in dict.fromkeys(ids) if db.execute(
         "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
         (story_id, fid)).fetchone()]
+    current = bundle(db, story_id)
+    for row in db.execute('SELECT l.* FROM live_pending_review_links l WHERE l.story_id=? AND l.run_id=? '
+        'AND NOT EXISTS(SELECT 1 FROM live_pending_review_resolutions r WHERE r.story_id=l.story_id '
+        'AND r.run_id=l.run_id AND r.left_id=l.left_id AND r.right_id=l.right_id AND r.packet_ref=l.packet_ref)',
+        (story_id, run_id)):
+        if current.get(row['left_id']) == row['left_revision'] and current.get(row['right_id']) == row['right_revision']:
+            pending.extend([row['left_id'], row['right_id']])
+    return list(dict.fromkeys(pending))
 
 
 def candidate_review_fence(db, story):

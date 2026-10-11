@@ -160,6 +160,7 @@ def qualify_controlled_review(harness):
 
 class ControlledReview(HeadlessFactReview):
     MAX_PACKET_FACTS = 3  # Deliberately force siblings to exercise stale/unknown fences.
+    MAX_PARALLEL_GROUPS = 1  # Retain the original single-slot interleaving controls.
     active = 0
     peak = 0
     calls = 0

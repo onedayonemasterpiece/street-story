@@ -75,6 +75,11 @@ VERIFIER_PROMPT = (
     'wording is not conflict. equivalent_to uses a received distinct fact number or null; '
     'equivalent_to_existing/conflicts_with_existing use only received IDs. conflicts joins two '
     'distinct packet numbers. Set relations_complete only after checking the entire packet. '
+    'pending_relation_context contains other candidate texts for relation checks, never supporting '
+    'evidence or accepted truth. If a duplicate/conflict/other material dependency needs joint own '
+    'evidence, return insufficient with related_pending_ids from that context. Do not declare '
+    'supported while such a relation remains unresolved. Independent assertions use only their '
+    'own spans; relations_complete also covers this pending context. '
     'Assess coverage_goal in this SAME response using eligible_facts plus newly supported '
     'atomic substantive claims. If useful material satisfies the goal, set research_sufficient=true '
     'and research_sufficient_basis to exact packet candidate_indices and eligible known_fact_ids. '
@@ -89,6 +94,7 @@ VERIFIER_CONTRACT_ID = 'closed-packet-json-v13-own-replacements:' + hashlib.sha2
 
 class HeadlessFactReview:
     MAX_PACKET_FACTS = 12  # Existing semantic tool contract, bounded again by actual input size.
+    MAX_PARALLEL_GROUPS = 2
     def __init__(self, harness):
         self.harness, self.service = harness, harness.service
 
@@ -411,7 +417,6 @@ class HeadlessFactReview:
         with self.service.store.connection() as db:
             story = self.service._story_row(db, job['story_id'])
             current = review_packets.bundle(db, job['story_id'])
-            fence = review_packets.candidate_review_fence(db, story)
             for row in db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? "
                                   "AND stage LIKE 'headless_fact_review:%'", (job['id'],)):
                 saved = json.loads(row['value_json'])
@@ -427,8 +432,8 @@ class HeadlessFactReview:
                     # proves that repeating this exact closed question is futile;
                     # a repaired claim, owner context, ledger or verifier contract
                     # produces a different unit and remains eligible for review.
-                    recipe = [VERIFIER_CONTRACT_ID, packet['run_id'], frozen, fence,
-                              review_packets.canonical_review_fence(db, story, frozen, include_projection=True)]
+                    from .headless_review_groups import unit_recipe
+                    recipe = unit_recipe(db, story, packet['run_id'], frozen, VERIFIER_CONTRACT_ID)
                     unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
                     if row['stage'] == 'headless_fact_review:' + unit:
                         exhausted.update(frozen)
@@ -449,14 +454,18 @@ class HeadlessFactReview:
         if fact_ids is not None:
             return await self._run_one(job, run_id, control_revision, fact_ids=fact_ids)
         committed = 0
-        for _ in range(4):
-            count = await self._run_one(job, run_id, control_revision)
+        launched = 0
+        while launched < 4:
+            batch = {}
+            count = await self._run_one(job, run_id, control_revision,
+                prepared_limit=min(self.MAX_PARALLEL_GROUPS, 4-launched), batch_report=batch)
+            launched += batch.get('prepared', 0)
             committed += count
-            if not count or stop_when is not None and stop_when():
+            if not batch.get('prepared') or not count or stop_when is not None and stop_when():
                 break
         return committed
 
-    def _prepare_review(self, job, run_id, control_revision):
+    def _prepare_review(self, job, run_id, control_revision, prepared_limit=1):
         self._recover_closed_reviews(job)
         original_reviews = self._original_reviews(job, control_revision)
         with self.service.store.connection() as db:
@@ -474,28 +483,34 @@ class HeadlessFactReview:
             return []
         prepared = list(original_reviews[:1])
         new_prepared = 0
+        from .headless_review_groups import groups
+        with self.service.store.connection() as db:
+            components = groups(db, job['story_id'], run_id, pending, blocked)
         routes = self._qualified_routes() or self._qualified_routes(available=False)
         def packet_fits(packet, *, single=False):
             public_schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
             schema = headless_review_quotes.response_schema(packet, public_schema)
             return self._packet_fits(routes, VERIFIER_PROMPT + canonical(headless_review_quotes.model_packet(packet)),
                                      single=single, schema=schema)
-        start = 0
-        while start < len(pending) and new_prepared < 1:
+        while components and new_prepared < prepared_limit:
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
                 model='unknown', actor=None, closed=False,
                 state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'})
-            candidate_ids = pending[start:start+self.MAX_PACKET_FACTS]
+            candidate_ids = components.pop(0)[:self.MAX_PACKET_FACTS]
+            while components and len(candidate_ids) + len(components[0]) <= self.MAX_PACKET_FACTS:
+                candidate_ids.extend(components.pop(0))
+            with self.service.store.connection() as db:
+                reconsider = any(db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                    (job['story_id'], fid)).fetchone()[0] != 'unreviewed' for fid in candidate_ids)
             # Pack related candidates together so their duplicate/conflict
             # decisions see the same frozen ledger and one accepted claim does
             # not stale three unnecessarily small sibling operations. Never
             # truncate own passages to fit; reduce the number of whole facts.
             while candidate_ids:
-                packet, unit, saved = self._prepare_packet(job, run_id, session, candidate_ids)
+                packet, unit, saved = self._prepare_packet(job, run_id, session, candidate_ids, reconsider=reconsider)
                 if packet is None or packet_fits(packet) or len(candidate_ids) == 1:
                     break
                 candidate_ids = candidate_ids[:max(1, len(candidate_ids)//2)]
-            start += len(candidate_ids)
             if packet is None:
                 continue
             if not packet_fits(packet, single=True):
@@ -506,7 +521,7 @@ class HeadlessFactReview:
             new_prepared += 1
         return prepared
 
-    async def _run_one(self, job, run_id, control_revision, *, fact_ids=None):
+    async def _run_one(self, job, run_id, control_revision, *, fact_ids=None, prepared_limit=1, batch_report=None):
         snapshot = self.harness._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return 0
@@ -531,7 +546,7 @@ class HeadlessFactReview:
             with self.service.store.tx() as db:
                 self.service._hydrate_poi_memory(db, self.service._story_row(db, job['story_id']))
             if fact_ids is None:
-                prepared = self._prepare_review(job, run_id, control_revision)
+                prepared = self._prepare_review(job, run_id, control_revision, prepared_limit)
             else:
                 if (not isinstance(fact_ids, list) or not 1 <= len(fact_ids) <= 12
                         or any(not isinstance(fid, str) for fid in fact_ids) or len(set(fact_ids)) != len(fact_ids)):
@@ -548,6 +563,8 @@ class HeadlessFactReview:
                 packet, unit, saved = self._prepare_packet(job, run_id, session, fact_ids, reconsider=True)
                 prepared = [(session, packet, unit, saved)] if packet is not None else []
         # Network inference never holds the shared POI commit lock.
+        if batch_report is not None:
+            batch_report['prepared'] = len(prepared)
         async def review(item, ordinal):
             _session, packet, unit, saved = item
             return item, await self._infer(packet, job, unit, saved, ordinal)
@@ -568,10 +585,14 @@ class HeadlessFactReview:
                         self._close_unqualified_result(job, unit, outcome)
                         continue
                     try:
+                        from .headless_review_groups import record_links
+                        record_links(self, job, run_id, packet, args)
                         resolved_args = headless_review_quotes.resolve_rows(packet, args)
                         value = await self.harness.adapter.execute_tool(session, {
                             'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
                         if value.get('eligible_count') is not None:
+                            from .headless_review_groups import close_links
+                            close_links(self, job, run_id, packet)
                             committed += 1
                             with self.service.store.connection() as db:
                                 original = json.loads(db.execute('SELECT payload_json FROM live_review_packets '
@@ -603,8 +624,9 @@ class HeadlessFactReview:
             story, _ = self.harness.adapter._research_run_guard(db, session, run_id)
             current = review_packets.bundle(db, job['story_id'])
             candidate_bundle = {fid: current[fid] for fid in candidate_ids if fid in current}
-            recipe = [VERIFIER_CONTRACT_ID, run_id, candidate_bundle, review_packets.candidate_review_fence(db, story),
-                      review_packets.canonical_review_fence(db, story, candidate_bundle, include_projection=True)]
+            from .headless_review_groups import context, unit_recipe
+            pending_context = context(db, job['story_id'], run_id, candidate_ids)
+            recipe = unit_recipe(db, story, run_id, candidate_bundle, VERIFIER_CONTRACT_ID)
         unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
         saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
         if (saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale', 'exhausted'}
@@ -636,6 +658,7 @@ class HeadlessFactReview:
                     goal = db.execute('SELECT goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0]
                 inventory = self.harness.adapter._get_facts(job['story_id'], {'eligibility': 'eligible', 'limit': 50})
                 packet.update(verifier_presentation='one_assertion_all_own_slices_v1', coverage_goal=goal,
+                    pending_relation_context=pending_context,
                     eligible_facts=[{'fact_id': f['fact_id'], 'text': f['text']} for f in inventory['facts']],
                     eligible_inventory_complete=not inventory['has_more'])
         except ConflictError:

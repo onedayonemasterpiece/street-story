@@ -50,6 +50,10 @@ def response_schema(packet, public_schema):
     if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
         from .headless_review_repairs import REPLACEMENTS_SCHEMA
         decisions['repair_facts'] = deepcopy(REPLACEMENTS_SCHEMA)
+        peers = [row['fact_id'] for row in packet.get('pending_relation_context', [])]
+        if peers:
+            decisions['related_pending_ids'] = {'type': 'array', 'maxItems': 12,
+                'items': {'type': 'string', 'enum': peers}}
         decisions['own_evidence_values'] = {'type': 'array', 'maxItems': 32, 'items': {
             'type': 'object', 'properties': {'property': {'type': 'string'}, 'value': {'type': 'string'},
                 'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
@@ -90,6 +94,10 @@ def public_result(packet, args):
     value.pop('research_sufficient', None)
     value.pop('research_sufficient_basis', None)
     for decision in value.get('decisions', []):
+        if decision.get('related_pending_ids') and decision.get('verdict') == 'supported':
+            raise ConflictError('live_review_related_group_required',
+                'A declared pending relation needs joint own-evidence review before support.')
+        decision.pop('related_pending_ids', None)
         decision.pop('repair_facts', None)
         if decision.get('own_value_conflicts') and decision.get('verdict') == 'supported':
             raise ConflictError('live_fact_review_evidence_invalid',
