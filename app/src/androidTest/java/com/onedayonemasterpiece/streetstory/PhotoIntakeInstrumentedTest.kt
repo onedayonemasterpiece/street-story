@@ -192,7 +192,20 @@ class PhotoIntakeInstrumentedTest {
                 }
                 // Package visibility can hide DocumentsUI from resolveActivity,
                 // even though startActivity opens it. Observe the actual UI.
-                val pickerUi = device.wait(Until.findObject(By.pkg(Pattern.compile(".*\\.documentsui")).depth(0)), 15000)
+                val pickerSelector = By.pkg(Pattern.compile(".*\\.documentsui")).depth(0)
+                var pickerUi = device.wait(Until.findObject(pickerSelector), 15000)
+                // Actual retained failures show an opened DocumentsUI hidden
+                // by the emulator's Pixel Launcher ANR. Preserve that failure
+                // before closing ONLY this named system launcher dialog. Never
+                // dismiss a Street Story failure or relaunch the picker.
+                if (pickerUi == null && device.findObject(By.res("android", "alertTitle")
+                        .text("Pixel Launcher isn't responding")) != null) {
+                    device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-launcher-anr.xml"))
+                    device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-launcher-anr.png"))
+                    android.util.Log.w("StreetStoryPlatformE2E", "Observed Pixel Launcher ANR; retained UI before closing launcher")
+                    requireNotNull(device.findObject(By.res("android", "aerr_close"))).click()
+                    pickerUi = device.wait(Until.findObject(pickerSelector), 5000)
+                }
                 if (pickerUi == null) {
                     device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
                     device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
