@@ -158,16 +158,17 @@ async def test_multiple_searches_preserve_all_discoveries_without_artificial_cal
 
 
 @pytest.mark.asyncio
-async def test_hanging_transport_has_bounded_abort_and_unknown_ack_is_retained(tmp_path):
+async def test_hanging_read_has_bounded_wait_and_original_unknown_is_retained(tmp_path):
     h, backend, adapter = setup(tmp_path, limits=ResearchLimits(timeout_seconds=.02, poll_seconds=.001),
                                 abort_timeout_seconds=.01)
     backend.hang_messages = backend.hang_abort = True
     with pytest.raises(ResearchUnavailable) as failure:
         await asyncio.wait_for(adapter.search_articles('Facade', {'request_id': 'r'}), timeout=.5)
-    assert failure.value.receipt['abort_acknowledged'] is False
-    assert failure.value.receipt['phase'] == 'abort_outcome_unknown'
+    assert failure.value.receipt['phase'] == 'unknown'
+    assert failure.value.receipt['provider_send_state'] == 'original_pending'
     assert len(h.sends) == 1
-    assert sum('/abort' in path for _method, path, *_rest in backend.calls) == 1
+    assert sum('/abort' in path for _method, path, *_rest in backend.calls) == 0
+    assert h.finalized[-1][1] == 'unknown'
 
 
 @pytest.mark.asyncio

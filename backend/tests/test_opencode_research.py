@@ -3,6 +3,7 @@ from street_story.reference_image_codec import normalize_reference
 from direct_visual_fixture import opencode_args
 
 import base64
+import asyncio
 import copy
 import io
 import json
@@ -279,15 +280,93 @@ async def test_missing_admission_or_durable_checkpoint_cannot_dispatch():
 
 
 @pytest.mark.asyncio
-async def test_timeout_aborts_and_preserves_correlation():
+async def test_timeout_retains_original_operation_and_preserves_correlation():
     h = Harness()
     h.timeout = True
     with pytest.raises(ResearchUnavailable, match='research_timeout') as failure:
         await h.adapter(limits=ResearchLimits(timeout_seconds=.005, poll_seconds=.001)).search_articles('photo', {'request_id': 'r'})
     assert failure.value.receipt['session_id'] == 'sesBounded'
-    assert failure.value.receipt['abort_acknowledged'] is True
+    assert failure.value.receipt['phase'] == 'unknown'
+    assert failure.value.receipt['provider_send_state'] == 'original_pending'
     assert h.checkpoints[-1][0]['request_id'] == 'r'
-    assert sum(path.endswith('/abort') for _method, path, _payload in h.requests) == 1
+    assert sum(path.endswith('/abort') for _method, path, _payload in h.requests) == 0
+    assert h.finalized[-1][1] == 'unknown'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('branch', ['search', 'facts', 'G', 'T', 'REF'])
+async def test_all_branches_read_same_operation_after_wait_slice_without_new_admission(branch):
+    h = Harness()
+    h.timeout = True
+    adapter = h.adapter(limits=ResearchLimits(timeout_seconds=.01, poll_seconds=.001))
+    initial = {'request_id': 'original-' + branch, 'photo_sha256': 'same-source'}
+
+    async def invoke(binding):
+        if branch == 'search':
+            return await adapter.search_articles('Unchanged purpose', binding)
+        if branch == 'facts':
+            return await adapter.extract_facts({'jsonschema': {'type': 'object'},
+                'sources': [{'passages': [{'passage_id': 0, 'text': 'Own retained text.'}]}]}, binding)
+        return await adapter.compare_image(*opencode_args(sheet(), binding, {'type': 'object'},
+            {'comparison_id': branch, 'references': [{'candidate_id': 'unseen-body'}]}))
+
+    with pytest.raises(ResearchUnavailable) as pending:
+        await invoke(initial)
+    receipt = pending.value.receipt
+    assert receipt['phase'] == 'unknown'
+    assert not any(path.endswith('/abort') for _, path, _ in h.requests)
+    assert h.finalized == [({'assistants': [], 'image_tokens': 'unknown', 'actual_total_tokens': None}, 'unknown')]
+    h.timeout = False
+    resumed = await invoke({**initial, **{key: receipt[key] for key in
+        ('session_id', 'message_id', 'phase', 'frozen_prompt', 'frozen_schema',
+         'image_transport', 'image_preparation') if key in receipt}})
+    assert resumed['receipt']['phase'] == 'completed'
+    assert resumed['receipt']['readback_only'] is True
+    assert resumed['receipt']['session_id'] == receipt['session_id']
+    assert resumed['receipt']['message_id'] == receipt['message_id']
+    assert resumed['receipt']['frozen_prompt'] == receipt['frozen_prompt']
+    assert len(h.sends) == len(h.admissions) == len(h.finalized) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_scope_stop_still_aborts_original_pending_operation():
+    from street_story.service import ConflictError
+    h = Harness()
+    h.timeout = True
+    stopped = False
+    def scope_guard(binding):
+        if stopped:
+            raise ConflictError('research_scope_superseded', 'Owner Stop')
+    adapter = h.adapter(scope_guard=scope_guard,
+        limits=ResearchLimits(timeout_seconds=.01, poll_seconds=.001))
+    with pytest.raises(ResearchUnavailable) as pending:
+        await adapter.search_articles('Own SOURCE', {'request_id': 'original'})
+    receipt = pending.value.receipt
+    stopped = True
+    with pytest.raises(ConflictError):
+        await adapter.search_articles('Own SOURCE', {'request_id': 'original', **{key: receipt[key]
+            for key in ('session_id', 'message_id', 'phase', 'frozen_prompt', 'frozen_schema')}})
+    assert h.checkpoints[-1][1]['phase'] == 'aborted'
+    assert h.checkpoints[-1][1]['abort_reason'] == 'scope_superseded'
+    assert len(h.sends) == len(h.admissions) == 1
+    assert sum(path.endswith('/abort') for _, path, _ in h.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_backend_worker_shutdown_keeps_submitted_operation_without_abort():
+    h = Harness()
+    h.timeout = True
+    task = asyncio.create_task(h.adapter().search_articles('Own SOURCE', {'request_id': 'shutdown'}))
+    while not h.sends:
+        await asyncio.sleep(.001)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert h.checkpoints[-1][1]['phase'] == 'unknown'
+    assert h.checkpoints[-1][1]['pending_reason'] == 'worker_cancelled'
+    assert len(h.sends) == 1
+    assert not any(path.endswith('/abort') for _, path, _ in h.requests)
+    assert h.finalized[-1][1] == 'unknown'
 
 
 @pytest.mark.asyncio
@@ -403,12 +482,13 @@ async def test_unknown_prompt_outcome_without_message_does_not_resubmit():
 
 
 @pytest.mark.asyncio
-async def test_lost_prompt_response_is_aborted_reconciled_never_blindly_retried():
+async def test_lost_prompt_response_is_retained_reconciled_never_blindly_retried():
     h = Harness()
     h.prompt_timeout = True
     with pytest.raises(ResearchUnavailable, match='research_transport_unavailable') as failure:
         await h.adapter().search_articles('photo', {'request_id': 'r'})
-    assert failure.value.receipt['abort_acknowledged'] is True
+    assert failure.value.receipt['phase'] == 'unknown'
+    assert failure.value.receipt['retry_safe'] is False
     h.prompt_timeout = False
     receipt = failure.value.receipt
     result = await h.adapter().search_articles('photo', {'request_id': 'r', 'session_id': receipt['session_id'],

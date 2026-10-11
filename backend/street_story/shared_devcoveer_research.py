@@ -96,7 +96,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ValueError('research_fact_extractor_not_approved')
         return SharedDevCoveerResearch(self.directory, model_id=model_id, provider_id='opencode',
             admission=self.admission, checkpoint=self.checkpoint, backend=self.shared_backend,
-            abort_timeout_seconds=self.abort_timeout_seconds, require_guard=self.require_guard)
+            abort_timeout_seconds=self.abort_timeout_seconds, require_guard=self.require_guard,
+            scope_guard=self.scope_guard)
 
     @property
     def profile_fingerprint(self):

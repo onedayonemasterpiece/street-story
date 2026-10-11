@@ -229,7 +229,8 @@ class OpenCodeResearch:
     def __init__(self, endpoint: str, *, model_id: str, provider_id: str = 'opencode',
                  admission: Callable | None = None, checkpoint: Callable | None = None,
                  client: httpx.AsyncClient | None = None, limits: ResearchLimits | None = None,
-                 agent_names: dict[str, str] | None = None, public_image_loader=None):
+                 agent_names: dict[str, str] | None = None, public_image_loader=None,
+                 scope_guard: Callable | None = None):
         parsed = urlsplit(endpoint)
         if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', '::1'}
                 or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/')):
@@ -242,6 +243,7 @@ class OpenCodeResearch:
         self.admission, self.checkpoint = admission, checkpoint
         self.client = client
         self.public_image_loader = public_image_loader or self._load_public_image
+        self.scope_guard = scope_guard
         self.limits = limits or ResearchLimits()
         self.agents = agent_names or {role: 'street-story-' + role for role in ('search', 'vision', 'facts')}
 
@@ -351,6 +353,22 @@ class OpenCodeResearch:
         if self.checkpoint:
             await self.checkpoint(binding, dict(receipt))
 
+    async def _retain_pending(self, receipt, reason):
+        """End a bounded observation, keeping the original provider operation."""
+        if receipt.get('phase') in {'completed', 'failed', 'response_completed', 'aborted'}:
+            return
+        if receipt.get('phase') in {'prompt_intent', 'submitted', 'unknown'}:
+            receipt.update(phase='unknown', provider_send_state='original_pending', retry_safe=False,
+                           pending_reason=reason)
+        elif receipt.get('phase') == 'created':
+            receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True)
+        # Unknown session creation is still unaddressable: do not turn it into
+        # a fresh-send permission or invent an acknowledged provider outcome.
+        await self._checkpoint(receipt['binding'], receipt)
+        LOG.info('street_story_research_pending attempt_id=%s role=%s session_id=%s message_id=%s reason=%s phase=%s',
+                 receipt['binding'].get('attempt_id'), receipt.get('role'), receipt.get('session_id'),
+                 receipt.get('message_id'), reason, receipt.get('phase'))
+
     async def observe_original(self, role, binding, schema):
         """Read one addressed operation through its original transport, never send."""
         if (role not in {'search', 'facts', 'vision'} or not binding.get('session_id')
@@ -387,13 +405,15 @@ class OpenCodeResearch:
                                   and isinstance(t.get('cache'), dict) and all(type(t['cache'].get(k)) is int for k in ('read','write')) for t in totals):
                     actual = sum(t['input']+t['output']+t['reasoning']+t['cache']['read']+t['cache']['write'] for t in totals)
                 await lease.finalize({'assistants': assistants, 'image_tokens': 'unknown', 'actual_total_tokens': actual},
-                                     'completed' if receipt['phase'] in {'completed','failed','response_completed'} else receipt['phase'])
+                                     'completed' if receipt['phase'] in {'completed','failed','response_completed'} else
+                                     'aborted' if receipt['phase'] == 'aborted' else 'unknown')
 
     async def plan_identity_search(self, prompt, binding, schema):
         """Tool-free planning uses its existing 64K bound on addressed input."""
         return await self._run('facts', prompt, binding, schema, max_input_chars=65536)
 
     async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
+        from .service import ConflictError
         if not self.admission:
             raise ResearchUnavailable('research_admission_required')
         if not self.checkpoint:
@@ -578,6 +598,12 @@ class OpenCodeResearch:
                     await self._checkpoint(binding, receipt)
                 deadline = started + self.limits.timeout_seconds
                 while True:
+                    if self.scope_guard is not None:
+                        try:
+                            self.scope_guard(binding)
+                        except ConflictError:
+                            await self._abort(client, receipt, 'scope_superseded')
+                            raise
                     messages = await self._request(client, 'GET', f'/session/{sid}/message', params={'limit': 100})
                     related = [message for message in messages if message.get('info', {}).get('parentID') == message_id]
                     forbidden = [part for message in related for part in message.get('parts', [])
@@ -733,12 +759,19 @@ class OpenCodeResearch:
                             await self._checkpoint(binding, receipt)
                             return {'result': result, 'sources': sources, 'receipt': receipt}
                     if time.monotonic() >= deadline:
-                        await self._abort(client, receipt, 'deadline')
+                        await self._retain_pending(receipt, 'read_slice_elapsed')
                         raise ResearchUnavailable('research_timeout', receipt)
                     await asyncio.sleep(min(self.limits.poll_seconds, max(0, deadline - time.monotonic())))
         except asyncio.CancelledError:
             if receipt.get('session_id'):
-                await asyncio.shield(self._abort(client, receipt, 'cancelled'))
+                stopped = False
+                if self.scope_guard is not None:
+                    try:
+                        self.scope_guard(binding)
+                    except ConflictError:
+                        stopped = True
+                await asyncio.shield(self._abort(client, receipt, 'scope_superseded') if stopped else
+                                     self._retain_pending(receipt, 'worker_cancelled'))
             raise
         except ResearchUnavailable as exc:
             if receipt.get('session_id') and receipt.get('phase') in {'prompt_intent', 'submitted'}:
@@ -755,7 +788,7 @@ class OpenCodeResearch:
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             receipt['transport_error'] = type(exc).__name__
             if receipt.get('session_id') and receipt.get('phase') in {'prompt_intent', 'submitted'}:
-                await self._abort(client, receipt, 'transport_error')
+                await self._retain_pending(receipt, 'transport_read_failed')
             receipt['elapsed_ms'] = round((time.monotonic() - started) * 1000)
             await self._checkpoint(binding, receipt)
             raise ResearchUnavailable('research_transport_unavailable', receipt) from exc

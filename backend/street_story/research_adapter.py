@@ -201,11 +201,12 @@ class ProductResearchAdapter:
             if client is not None:
                 self.client = OpenCodeResearch(service.settings.research_endpoint,
                     model_id=service.settings.research_model, admission=self.fenced_admission(admission),
-                    checkpoint=self.checkpoint, client=client)
+                    checkpoint=self.checkpoint, client=client, scope_guard=self.transport_scope_guard)
             elif service.settings.research_directory:
                 from .shared_devcoveer_research import SharedDevCoveerResearch
                 self.client = SharedDevCoveerResearch(str(service.settings.research_directory),
-                    model_id=service.settings.research_model, admission=self.fenced_admission(admission), checkpoint=self.checkpoint)
+                    model_id=service.settings.research_model, admission=self.fenced_admission(admission),
+                    checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
         from .headless_vision import HeadlessVisionProvider
         self.primary_vision = HeadlessVisionProvider(service)
         self.native_vision = None
@@ -332,6 +333,12 @@ class ProductResearchAdapter:
             if binding.get('job_id') and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
                                                        (binding['job_id'], binding.get('job_attempt'))).fetchone():
                 raise ConflictError('research_worker_superseded', 'Этот запуск исследования больше не владеет задачей.')
+
+    def transport_scope_guard(self, binding):
+        # A queued readback belongs to the original SOURCE/control operation,
+        # even though its old worker has yielded. run() separately fences the
+        # current job before and after invocation; that job's turnover is not Stop.
+        self.guard_binding({**binding, 'job_id': None})
 
     def fenced_admission(self, admission):
         adapter = self
