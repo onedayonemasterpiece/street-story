@@ -597,7 +597,10 @@ def geometry_decision_schema(candidate_ids, *, structured=False):
         'ring_index': {'type': 'integer', 'minimum': 0},
         'line_index': {'type': 'integer', 'minimum': 0},
         'segment_index': {'type': 'integer', 'minimum': 0},
-        'key': {'type': 'string', 'maxLength': 60}},
+        'key': {'type': 'string', 'maxLength': 60,
+            'description': 'For attribute: exact received OSM tag key, or the own mapped-entry address '
+                'field city/street/house_number. A field=value reference must copy its literal received '
+                'value exactly; an inferred address or another building/complex address is not evidence.'}},
         'required': ['candidate_id', 'kind'], 'additionalProperties': False}
     relation = {'type': 'object', 'properties': {
         'source_observation': text, 'map_features': {'type': 'array', 'maxItems': 6, 'items': feature},

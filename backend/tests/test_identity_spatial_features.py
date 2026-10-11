@@ -106,6 +106,49 @@ def test_feature_aliases_resolve_actual_contour_segments_tags_and_entries_withou
     assert source==original
 
 
+@pytest.mark.parametrize('field,tag,value', [
+    ('house_number', 'addr:housenumber', '73B'),
+    ('street', 'addr:street', 'Unseen Lane'),
+    ('city', 'addr:city', 'Unseen City'),
+])
+@pytest.mark.parametrize('serialized', [False, True])
+def test_issued_normalized_own_address_resolves_without_rewriting_reference(field, tag, value, serialized):
+    from street_story.identity_map_context import map_entry_context
+    entry = map_entry_context(building(909, 10, 10))
+    entry['map_address'] = {field: value, 'provenance': 'osm.tags', 'scope': 'mapped_entry_only',
+        'source_url': entry['map_object']['source_url']}
+    source = story([], _identity_observed_candidates=[entry])
+    original = copy.deepcopy(source)
+    reference = {'candidate_id': entry['candidate_id'], 'kind': 'attribute',
+        'key': field+'='+value if serialized else tag}
+    frozen = copy.deepcopy(reference)
+    result = geometry_feature(source, [], reference)
+    assert result['key'] == tag and result['value'] == value
+    assert result['provenance'] == 'osm.tags'
+    assert reference == frozen and source == original
+
+
+@pytest.mark.parametrize('defect', ['wrong_value', 'foreign_source', 'inferred', 'complex_scope', 'conflicting_tag'])
+def test_address_reference_cannot_fabricate_value_or_transfer_another_scope(defect):
+    from street_story.identity_map_context import map_entry_context
+    entry = map_entry_context(building(909, 10, 10))
+    entry['map_address'] = {'house_number': '73B', 'provenance': 'osm.tags', 'scope': 'mapped_entry_only',
+        'source_url': entry['map_object']['source_url']}
+    key = 'house_number=73B'
+    if defect == 'wrong_value':
+        key = 'house_number=73C'
+    elif defect == 'foreign_source':
+        entry['map_address']['source_url'] = 'https://www.openstreetmap.org/way/910'
+    elif defect == 'inferred':
+        entry['map_address']['provenance'] = 'reverse_geocode'
+    elif defect == 'complex_scope':
+        entry['map_address']['scope'] = 'historical_complex'
+    else:
+        entry['map_object']['tags']['addr:housenumber'] = '73C'
+    assert geometry_feature(story([], _identity_observed_candidates=[entry]), [],
+        {'candidate_id': entry['candidate_id'], 'kind': 'attribute', 'key': key}) is None
+
+
 @pytest.mark.parametrize('reference',[
     {'candidate_id':'osm:way:missing','kind':'footprint'},
     {'candidate_id':[],'kind':'footprint'},

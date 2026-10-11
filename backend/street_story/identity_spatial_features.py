@@ -37,7 +37,8 @@ def geometry_feature(story, candidates, reference):
 
     Contour indices refer to map_geometry.rings and the transmitted contour_roles.
     A segment uses consecutive observed vertices; closure is never fabricated.
-    Attribute references require an actual literal OSM tag, not missing values.
+    Attribute references require an actual literal OSM tag or its own normalized
+    mapped-entry address, not missing/inferred values.
     """
     if not isinstance(reference, dict):
         return None
@@ -54,10 +55,30 @@ def geometry_feature(story, candidates, reference):
         'source_url': (entry.get('map_object') or {}).get('source_url') or entry.get('source_url')}
     if kind == 'attribute':
         key = reference.get('key') or reference.get('tag_key')
-        if not isinstance(key, str) or key not in tags or tags[key] is None or tags[key] == '':
+        if not isinstance(key, str):
             return None
-        return {**result, 'key': key, 'value': tags[key], 'provenance':
-            (entry.get('map_object') or {}).get('provenance') or 'osm.tags'}
+        if key in tags and tags[key] is not None and tags[key] != '':
+            # Preserve the established exact-tag representation/digest.
+            return {**result, 'key': key, 'value': tags[key], 'provenance':
+                (entry.get('map_object') or {}).get('provenance') or 'osm.tags'}
+        field, separator, literal = key.partition('=')
+        address_tags = {'city': 'addr:city', 'street': 'addr:street', 'house_number': 'addr:housenumber'}
+        tag = address_tags.get(field, field)
+        address_field = next((name for name, value in address_tags.items() if value == tag), None)
+        values = [tags[tag]] if tags.get(tag) is not None and tags.get(tag) != '' else []
+        address = entry.get('map_address') or {}
+        own_url = (entry.get('map_object') or {}).get('source_url') or entry.get('source_url')
+        own_address = (address.get('provenance') == 'osm.tags'
+            and address.get('scope') == 'mapped_entry_only'
+            and (not own_url or address.get('source_url') == own_url))
+        if own_address and address_field and address.get(address_field) is not None and address.get(address_field) != '':
+            values.append(address[address_field])
+        if (not values or len({str(value) for value in values}) != 1
+                or separator and str(values[0]) != literal):
+            return None
+        # Resolve an exact received field/value alias without altering the raw
+        # model reference or inferring its physical/semantic correspondence.
+        return {**result, 'key': tag, 'value': values[0], 'provenance': 'osm.tags'}
     if kind == 'point':
         if requested_kind == 'entry' and (not cid.startswith('osm:node:') or not (
                 tags.get('entrance') not in {None,'','no'} or tags.get('addr:housenumber') or
