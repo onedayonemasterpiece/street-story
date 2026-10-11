@@ -111,6 +111,70 @@ def binding(svc, story):
 
 
 @pytest.mark.asyncio
+async def test_saved_live_result_delivered_while_original_cleanup_and_permit_remain_pending(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, calls = client(svc, 'valid')
+    factory = provider.host_factory
+    release = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    finalized = []
+    def held_factory(*args, **kwargs):
+        host = factory(*args, **kwargs)
+        original = host.stop_all
+        async def held_stop():
+            cleanup_started.set()
+            await release.wait()
+            await original()
+            finalized.append('original_permit_released')
+        host.stop_all = held_stop
+        return host
+    provider.host_factory = held_factory
+    operation = asyncio.create_task(provider._run('facts', 'Own SOURCE', binding(svc, story), SCHEMA))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(operation), .1)
+        await asyncio.wait_for(cleanup_started.wait(), .1)
+        assert result['result'] == {'facts': ['Evidence-backed result']}
+        assert result['receipt']['phase'] == 'completed'
+        assert finalized == [] and result['receipt']['resource_finalization'] == 'pending'
+        with svc.store.connection() as db:
+            saved = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id='live-original'").fetchone()[0])
+        assert saved['phase'] == 'completed' and saved['result'] == result['result']
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(.01)
+        assert not closing.done() and finalized == []
+        release.set()
+        await closing
+        assert finalized == ['original_permit_released']
+        assert result['receipt']['resource_finalization'] == 'completed'
+        assert result['receipt']['cleanup_elapsed_ms'] >= 0
+        assert [name for name, _ in calls] == ['start', 'input', 'stop']
+    finally:
+        release.set()
+        await asyncio.gather(operation, return_exceptions=True)
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_exception_cannot_revoke_saved_live_result_or_confirm_release(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, _ = client(svc, 'valid')
+    factory = provider.host_factory
+    def failing_factory(*args, **kwargs):
+        host = factory(*args, **kwargs)
+        async def failing_stop():
+            raise OSError('test-only failed cleanup')
+        host.stop_all = failing_stop
+        return host
+    provider.host_factory = failing_factory
+    result = await provider._run('facts', 'Own SOURCE', binding(svc, story), SCHEMA)
+    await provider.close()
+    assert result['result'] == {'facts': ['Evidence-backed result']}
+    assert result['receipt']['phase'] == 'completed'
+    assert result['receipt']['resource_finalization'] == 'unconfirmed'
+    assert result['receipt']['cleanup_error_code'] == 'OSError'
+
+
+@pytest.mark.asyncio
 async def test_completed_live_result_survives_resource_release_error_without_resend(tmp_path):
     svc, _, story = service(tmp_path)
     provider, calls = client(svc, 'valid', cleanup_events=[

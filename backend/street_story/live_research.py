@@ -68,9 +68,17 @@ class LiveSemanticClient:
     def __init__(self, adapter, *, host_factory=None):
         self.adapter, self.service = adapter, adapter.service
         self.host_factory = host_factory
+        self._cleanup_tasks = set()
 
     async def close(self):
-        pass  # Every bounded operation closes its own host in finally.
+        # The original hosts still own their permits. Runtime shutdown drains
+        # them before closing the resource client, without cancelling release.
+        while self._cleanup_tasks:
+            pending = tuple(self._cleanup_tasks)
+            await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+            # gather of already settled tasks may complete synchronously,
+            # before their done callbacks run; do not starve those callbacks.
+            self._cleanup_tasks.difference_update(pending)
 
     async def extract_facts(self, capsule, binding):
         schema = capsule['jsonschema']
@@ -314,6 +322,39 @@ class LiveSemanticClient:
                 done.cancel()
             elif not done.cancelled():
                 done.exception()  # Observe setup-time errors before the text wait.
-            await host.stop_all()
             receipt['elapsed_ms'] = round((time.monotonic()-started)*1000)
-            persist()
+            if receipt['phase'] == 'completed' and receipt.get('result') is not None:
+                receipt['resource_finalization'] = 'pending'
+                persist()
+                async def finalize_original_host():
+                    cleanup_started = time.monotonic()
+                    try:
+                        await host.stop_all()
+                        if not receipt.get('cleanup_error_code'):
+                            receipt['resource_finalization'] = 'completed'
+                    except BaseException as cleanup_error:
+                        receipt['resource_finalization'] = 'unconfirmed'
+                        receipt['cleanup_error_code'] = str(getattr(cleanup_error, 'code',
+                            type(cleanup_error).__name__))[:100]
+                        LOG.warning('street_story_live_fact_operation story_id=%s operation_id=%s '
+                                    'stage=cleanup result_phase=completed code=%s',
+                                    binding['story_id'], binding['attempt_id'], receipt['cleanup_error_code'])
+                        if isinstance(cleanup_error, asyncio.CancelledError):
+                            raise
+                    finally:
+                        receipt['cleanup_elapsed_ms'] = round((time.monotonic()-cleanup_started)*1000)
+                        persist()
+                cleanup = asyncio.create_task(finalize_original_host())
+                self._cleanup_tasks.add(cleanup)
+                def settled(task):
+                    self._cleanup_tasks.discard(task)
+                    if not task.cancelled() and (error := task.exception()) is not None:
+                        LOG.warning('street_story_live_fact_operation story_id=%s operation_id=%s '
+                                    'stage=cleanup_persistence error_type=%s',
+                                    binding['story_id'], binding['attempt_id'], type(error).__name__)
+                cleanup.add_done_callback(settled)
+                # Start cleanup immediately; do not wait for its network I/O.
+                await asyncio.sleep(0)
+            else:
+                await host.stop_all()
+                persist()
