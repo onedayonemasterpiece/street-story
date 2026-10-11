@@ -20,7 +20,7 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
 from .identity_proof import accepted_identity, physical_scope
-from .research_budget import PAGE_UNITS, response_units, bounded_inventory, require_remaining, remaining_seconds
+from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
@@ -2455,62 +2455,24 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def _normalized_place_name(value: Any) -> str:
         return re.sub(r"\\s+", " ", str(value or "").strip()).casefold()
 
-    async def _resolve_place_state(self, session, owner_hint: str) -> dict[str, Any]:
+    async def _resolve_place_state(self, session, owner_hint: str, *, command_id=None) -> dict[str, Any]:
         story_id = session.resource_id
-        with self.service.store.connection() as db:
-            row = dict(self.service._story_row(db, story_id))
         if owner_hint.strip():
-            from .research_control import research_stopped
-            from .research_budget import ensure_budget
-            with self.service.store.tx() as db:
-                fresh = self.service._story_row(db, story_id)
-                prior = json.loads(fresh['research_json'] or '{}')
-                generation = int(prior.get('identity_generation') or 0)
-                prior['identity_owner_hint'] = {'text': owner_hint[:500],
-                    'provenance': 'owner_live_text_or_voice', 'independently_verified': False}
-                question = prior.get('identity_clarification') or {}
-                epoch = int(((prior.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
-                question_current = (question.get('photo_sha256') == fresh['photo_sha256']
-                    and question.get('generation') == generation and question.get('control_revision') == epoch)
-                legacy_question = not question and epoch == 0 and fresh['latitude'] is None and fresh['longitude'] is None
-                answering = ((prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required'
-                    and not question.get('answered') and (question_current or legacy_question)
-                    and not research_stopped(prior, 'identity', photo_sha256=fresh['photo_sha256'], identity_generation=generation))
-                if answering:
-                    prior['identity_clarification'] = {**question, 'answered': True, 'photo_sha256': fresh['photo_sha256'],
-                        'generation': generation, 'control_revision': epoch}
-                    prior.pop('automatic_research_outcome', None)
-                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
-                if answering and remaining_seconds(self.service, story_id, 'identity', db=db) <= 0:
-                    ensure_budget(self.service, story_id, db=db, explicit=True)
-            require_remaining(self.service, story_id, "identity")
-        if (row.get("latitude") is None or row.get("longitude") is None) and owner_hint.strip():
-            # Only the author's explicit address, never infer a geocode query
-            # from a clipped VAD fragment or substitute current device position.
-            resolver = getattr(self.service, "_resolve_place_query", None)
-            resolved = await resolver(owner_hint.strip()) if callable(resolver) else None
-            if resolved:
-                require_remaining(self.service, story_id, "identity")
-                with self.service.store.tx() as db:
-                    fresh = self.service._story_row(db, story_id)
-                    prior = json.loads(fresh["research_json"] or "{}")
-                    prior["identity_generation"] = int(prior.get("identity_generation") or 0) + 1
-                    # A city reply continues this wave, retaining its original clock/work.
-                    if prior.get("research_budget"):
-                        prior["research_budget"]["identity_generation"] = prior["identity_generation"]
-                    prior["identity_owner_hint"] = {"text": owner_hint[:500], "provenance": "owner_live_text_or_voice", "independently_verified": False}
-                    prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
-                    db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
-                               (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
-        if owner_hint.strip():
-            require_remaining(self.service, story_id, "identity")
-        story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint), owner_hint=owner_hint)
-        identity = story.get("visual_identity") or {}
+            snapshot, _ = self.service._identity_snapshot(story_id)
+            key = command_id or 'owner-hint:' + digest([story_id, snapshot['photo_sha256'], owner_hint])
+            story = self.service.accept_identity_hint(story_id, key, owner_hint,
+                self._recent_transcript(session, owner_hint))
+        else:
+            story = self.service.ensure_identity(story_id)
+        # Durable acceptance returns before geocoding/inference. Reopen and
+        # client close observe this same job through the existing watcher/API.
+        self._watch_identity_ready(session)
         with self.service.store.connection() as db:
-            saved = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
-        pages = [{"title": str(page.get("title") or ""), "url": str(page.get("url") or "")}
-                 for page in (saved.get("wikipedia") or [])[:12] if isinstance(page, dict)]
-        return {"visual_identity": identity, "wikipedia": pages, "story": story}
+            saved = json.loads(self.service._story_row(db, story_id)['research_json'] or '{}')
+        pages = [{'title': str(page.get('title') or ''), 'url': str(page.get('url') or '')}
+                 for page in (saved.get('wikipedia') or [])[:12] if isinstance(page, dict)]
+        return {'visual_identity': story.get('visual_identity') or {}, 'wikipedia': pages, 'story': story,
+                'identity_job_owned': True}
 
     async def _reject_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         candidate_id = _bounded_text(args.get("candidate_id"), 300, required=True)
@@ -2525,7 +2487,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     async def _resolve_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         owner_hint = _bounded_text(args.get("owner_hint"), 500)
-        result = await self._resolve_place_state(session, owner_hint)
+        result = await self._resolve_place_state(session, owner_hint, command_id=command_id)
         with self.service.store.tx() as db:
             self._store_command(db, session.resource_id, command_id, "resolve_place", args, result)
         return result

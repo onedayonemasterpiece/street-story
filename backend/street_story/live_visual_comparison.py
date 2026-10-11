@@ -1029,6 +1029,11 @@ class LiveVisualComparisonMixin:
             raise RetryableProviderError('source_photo_ram_unavailable', retry_at=self.service.store.now()+30)
         comparison_id = 'comparison_' + uuid.uuid4().hex
         reply = self._visual_reply(comparison_id, candidates, identity, len(state['queue']))
+        owner_hint = research.get('identity_owner_hint') or {}
+        if (owner_hint.get('photo_sha256') == story['photo_sha256']
+                and owner_hint.get('generation') == generation
+                and owner_hint.get('control_revision') == expected['control_revision']):
+            reply['owner_hint_not_identity_evidence'] = {**owner_hint}
         from .camera_hints import model_camera_hints, read_camera_hints
         binding = research.get('photo_camera_hints') or {}
         hints = (binding.get('metadata') if binding.get('photo_sha256') == story['photo_sha256']

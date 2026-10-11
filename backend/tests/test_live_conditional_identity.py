@@ -81,13 +81,19 @@ async def test_city_reply_uses_plaintext_and_keeps_original_wave(tmp_path):
     async def geocode(text):
         seen.append(('geocode', text))
         return {'lat': 55, 'lon': 21}
-    async def resolve(story_id, transcript, *, owner_hint):
+    async def resolve(story_id, transcript, *, owner_hint, **kwargs):
         seen.append(('resolve', owner_hint))
         return svc.story(story_id)
     svc._resolve_place_query = geocode
     svc.resolve_identity = resolve
     adapter.input(session, {'text': 'Это в Советске'})
     await adapter._resolve_place_state(session, 'Это в Советске')
+    assert seen == []  # Durable ACK precedes geocoding and inference.
+    with svc.store.connection() as db:
+        owned = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='identity' "
+            "AND semantic_key LIKE 'identity-hint:%'", (session.resource_id,)).fetchone())
+    owned['attempts'] = 1
+    await svc._run_identity(owned)
     after = ensure_budget(svc, session.resource_id)
     assert after['identity_generation'] == 1
     assert {k: v for k, v in after.items() if k != 'identity_generation'} == {k: v for k, v in original.items() if k != 'identity_generation'}
@@ -318,3 +324,64 @@ def test_live_geometry_acceptance_is_computed_before_compaction_with_current_fen
     assert 'geometry_proof' not in context['visual_identity']
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
     assert initialized['configuration']['application_search_function'] == ('search_web' if stale is None else 'find_place_articles')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('terminal', ['complete', 'stop_during_geocode'])
+async def test_accepted_late_hint_survives_client_close_and_new_worker_with_fences(tmp_path, terminal):
+    from street_story.research_control import stop_research
+    svc, adapter, session, _ = fixtures.make_service(tmp_path)
+    sid = session.resource_id
+    original = ensure_budget(svc, sid)
+    expired = {**original, 'identity_deadline_at': svc.store.now() - 1}
+    with svc.store.tx() as db:
+        row = svc._story_row(db, sid)
+        research = json.loads(row['research_json'] or '{}')
+        research.update(research_budget=expired, automatic_research_outcome={'outcome': 'clarification_required'},
+            identity_clarification={'photo_sha256': row['photo_sha256'], 'generation': 0,
+                'control_revision': 0, 'question': 'Какой город?', 'reason': 'geographic_context_missing'})
+        db.execute('UPDATE stories SET latitude=NULL,longitude=NULL,research_json=? WHERE id=?', (json.dumps(research), sid))
+        db.execute("UPDATE jobs SET state='done' WHERE story_id=?", (sid,))
+    calls = []
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Live ACK must not run the worker')
+    svc._resolve_place_query = svc.resolve_identity = forbidden
+    await adapter._resolve_place(session, 'durable-hint-command', {'owner_hint': 'Это Советск, название с фото'})
+    svc.accept_identity_hint(sid, 'durable-hint-command', 'Это Советск, название с фото')
+    svc.ensure_identity(sid)  # Foreground reopen observes the accepted owner.
+    session.closed = True
+    with svc.store.connection() as db:
+        saved = json.loads(svc._story_row(db, sid)['research_json'])
+        assert db.execute("SELECT count(*) FROM jobs WHERE story_id=? AND kind='identity' AND state='ready'", (sid,)).fetchone()[0] == 1
+        assert saved['research_attempt_history'][0]['research_budget'] == expired
+        assert saved['research_attempt_history'][0]['automatic_research_outcome']['outcome'] == 'clarification_required'
+    restarted = type(svc)(svc.settings, svc.providers)
+    assert restarted.store.path == svc.store.path
+    restarted.recover_jobs()
+    restarted_story, restarted_research = restarted._identity_snapshot(sid)
+    assert restarted_research['identity_generation'] == 1
+    assert not restarted_research.get('automatic_research_outcome')
+    async def geocode(text):
+        calls.append(('geocode', text))
+        if terminal == 'stop_during_geocode':
+            stop_research(restarted, sid, purpose='identity')
+        return {'lat': 55, 'lon': 21}
+    async def resolve(story_id, transcript, **kwargs):
+        calls.append(('resolve', kwargs))
+        assert kwargs['expected_generation'] == 1 and kwargs['job_id'] and kwargs['job_attempt'] == 1
+        assert kwargs['owner_hint'] == 'Это Советск, название с фото'
+        assert kwargs['owner_hint'] in transcript
+        return restarted.story(story_id)
+    restarted._resolve_place_query, restarted.resolve_identity = geocode, resolve
+    assert await restarted.run_once(claim_kind='identity', claim_story_id=sid)
+    with restarted.store.connection() as db:
+        row = restarted._story_row(db, sid)
+        current = json.loads(row['research_json'])
+        if terminal == 'complete':
+            assert row['latitude'] == 55 and row['longitude'] == 21
+            assert len(calls) == 2
+        else:
+            assert row['latitude'] is None and row['longitude'] is None
+            assert len(calls) == 1 and current['research_controls']['identity']['stopped']
+        assert current['identity_owner_hint']['provenance'] == 'owner_live_text_or_voice'
+        assert current['identity_owner_hint']['independently_verified'] is False

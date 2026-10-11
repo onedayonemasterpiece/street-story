@@ -272,3 +272,36 @@ def test_owner_new_fact_request_renews_terminal_wave_and_idempotent_replay_does_
     monkeypatch.setattr(svc.store, 'now', lambda: now + 20)
     svc.mutate_facts(sid, 'new-owner-goal', request)
     assert ensure_budget(svc, sid) == renewed
+
+
+def test_separately_accepted_waiting_owner_wave_runs_after_exhaustion_once(tmp_path, monkeypatch):
+    svc, _, story = service(tmp_path)
+    sid = story['id']
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, sid)['research_json'])
+        research['visual_identity'] = {'status': 'match', 'candidate_id': 'physical-building'}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), sid))
+    svc.mutate_facts(sid, 'first-accepted', {'action': 'research', 'goal': 'Construction history'})
+    initial = ensure_budget(svc, sid)
+    svc.mutate_facts(sid, 'second-accepted', {'action': 'research', 'goal': 'Later restoration'})
+    with svc.store.connection() as db:
+        waiting = json.loads(svc._story_row(db, sid)['research_json'])['pending_fact_request']
+        assert db.execute("SELECT resource_id FROM idempotency WHERE key='second-accepted' AND action='research'").fetchone()[0] == sid
+    now = initial['deadline_at'] + 10
+    monkeypatch.setattr(svc.store, 'now', lambda: now)
+    with svc.store.tx() as db:
+        finish_attempt(svc, db, sid, outcome='deadline_exceeded', reason='research_deadline_exceeded')
+        db.execute("UPDATE jobs SET state='done' WHERE story_id=? AND kind='research'", (sid,))
+        assert svc._schedule_joined_fact_request(db, sid)
+        assert not svc._schedule_joined_fact_request(db, sid)
+    renewed = ensure_budget(svc, sid)
+    assert renewed['started_at'] == now
+    with svc.store.connection() as db:
+        current = json.loads(svc._story_row(db, sid)['research_json'])
+        jobs = db.execute("SELECT payload_json FROM jobs WHERE story_id=? AND kind='research' AND state='ready'", (sid,)).fetchall()
+    assert len(jobs) == 1 and json.loads(jobs[0][0])['input_revision'] == waiting['input_revision']
+    assert json.loads(jobs[0][0])['accepted_owner_request']['key'] == 'second-accepted'
+    assert current['research_attempt_history'][-1]['automatic_research_outcome']['outcome'] == 'deadline_exceeded'
+    assert current['research_attempt_history'][-1]['research_budget']['started_at'] == initial['started_at']
+    svc.mutate_facts(sid, 'second-accepted', {'action': 'research', 'goal': 'Later restoration'})
+    assert ensure_budget(svc, sid) == renewed

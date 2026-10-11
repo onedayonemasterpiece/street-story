@@ -64,6 +64,18 @@ def _envelope(service, row, research, *, start=None):
             'last_progress_at': started}
 
 
+def archive_attempt(research, now):
+    """Keep prior scope, clocks and outcomes before an authorized new wave."""
+    record = {key: research.get(key) for key in (
+        'research_budget', 'automatic_research_outcome', 'identity_attempt_outcome') if research.get(key)}
+    if not record:
+        return
+    history = research.setdefault('research_attempt_history', [])
+    if history and {key: value for key, value in history[-1].items() if key != 'archived_at'} == record:
+        return
+    history.append(json.loads(json.dumps({**record, 'archived_at': now})))
+
+
 def ensure_budget(service, story_id, *, db=None, explicit=False):
     with service.store.tx() if db is None else nullcontext(db) as conn:
         row = service._story_row(conn, story_id)
@@ -74,6 +86,7 @@ def ensure_budget(service, story_id, *, db=None, explicit=False):
         if explicit or not budget or scope_changed:
             # Legacy waves inherit upload time. Only a new owner scope or an
             # explicit owner retry authorizes another envelope.
+            archive_attempt(research, service.store.now())
             budget = _envelope(service, row, research,
                 start=service.store.now() if explicit or scope_changed else None)
             research['research_budget'] = budget

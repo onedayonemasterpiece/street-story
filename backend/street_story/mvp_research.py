@@ -185,6 +185,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "identity_generation": revision_basis["identity_generation"],
                 "photo_sha256": story["photo_sha256"],
                 "owner_research_wave": True,
+                "accepted_owner_request": {"key": key, "request_digest": req_digest,
+                    "control_revision": int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)},
             }
             if not ordered_ids:
                 request_payload["live_transcript"] = request_goal or "Найди пригодные новые факты о подтверждённом объекте."
@@ -237,8 +239,17 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         """
         story = self._story_row(db, story_id)
         research = json.loads(story["research_json"] or "{}")
-        if research.get('automatic_research_outcome'):
-            return False  # Retain joined intent; only a later explicit wave renews a closed envelope.
+        intent = research.get('pending_fact_request') or {}
+        admitted = intent.get('accepted_owner_request') or {}
+        accepted = bool(intent.get('owner_research_wave') and admitted and db.execute(
+            "SELECT 1 FROM idempotency WHERE key=? AND action='research' AND request_digest=? "
+            "AND resource_type='story' AND resource_id=?",
+            (admitted.get('key'), admitted.get('request_digest'), story_id)).fetchone())
+        if research.get('automatic_research_outcome') and not accepted:
+            if intent.get('owner_research_wave'):
+                intent.update(status='confirmation_required', reason='accepted_owner_request_missing')
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
+            return False
         pending = research.pop("pending_fact_request", None)
         if not isinstance(pending, dict):
             return False
@@ -246,7 +257,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         current_generation = int(research.get("identity_generation") or 0)
         valid = (int(pending.get("identity_generation") or 0) == current_generation
                  and pending.get("photo_sha256") == story["photo_sha256"]
-                 and not research.get("fact_research_cancelled"))
+                 and not research.get("fact_research_cancelled")
+                 and (not admitted or admitted.get('control_revision') == int(
+                     ((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)))
         if valid:
             if queued:
                 research["pending_fact_request"] = queued[0]
