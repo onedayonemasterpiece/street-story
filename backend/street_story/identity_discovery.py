@@ -1670,6 +1670,7 @@ async def _suggest(service, story, transcript, candidates):
                 source_text_receipt['required_map_counterpoints'] = compact_t['required_map_counterpoints']
                 source_text_receipt['source_span_refs'] = compact_t['source_span_refs']
                 source_text_receipt['text_delivery'] = compact_t['text_delivery']
+                source_text_receipt['comparison_scope'] = compact_t['comparison_scope']
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
                 if address_detail and detail_request:
                     # Keep the existing compact acquired-text packet. Only the
@@ -1703,6 +1704,11 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_prepared', {
                     'prompt_utf8_bytes': len(followup_prompt.encode()), 'article_count': len(compact_t['article_ids']),
                     'candidate_count': len(compact_t['candidate_ids']),
+                    'nominated_candidate_ids': compact_t['candidate_ids'],
+                    'comparison_candidate_ids': compact_t['comparison_scope']['comparison_candidate_ids'],
+                    'context_only_expansions': compact_t['comparison_scope']['context_only_expansions'],
+                    'host_unexamined_reserve_count': len(compact_t['comparison_scope']['host_reserve_candidate_ids']),
+                    'host_reserve_sha256': compact_t['comparison_scope']['host_reserve_sha256'],
                     'citation_transport': 'source_span_ref', 'source_span_count': len(compact_t['source_span_refs']),
                     'output_mode': 'json_with_host_validation',
                     'schema_sha256': hashlib.sha256(json.dumps(followup_contract, sort_keys=True,
@@ -1800,6 +1806,12 @@ async def _suggest(service, story, transcript, candidates):
                 'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                 'map_image_sha256': (scene or {}).get('manifest', {}).get('image_sha256'),
                 'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
+            if compact_t and compact_t.get('received_candidate_ids') is not None:
+                # Host-only pointer membership for addressed reserve requests.
+                # Freeze it with the same request so UNKNOWN never rebinds to a new catalog.
+                prepared_request['received_candidate_ids'] = compact_t['received_candidate_ids']
+                from .identity_source_selection import freeze_identity_response_context
+                prepared_request['response_id_context'] = freeze_identity_response_context(resolution_packet)
             prepared_request['sha256'] = hashlib.sha256(canonical(prepared_request).encode()).hexdigest()
             if native_readback_only:
                 # Observe the original addressed payload, never re-issue a
@@ -1811,7 +1823,8 @@ async def _suggest(service, story, transcript, candidates):
                 # Decoding follows the original frozen contract even when an
                 # upgraded address-detail path would now issue joint G/T.
                 frozen_fields = issued_followup_schema.get('properties', {})
-                compact_t = ({**(compact_t or {}), 'schema': issued_followup_schema}
+                compact_t = ({**(compact_t or {}), 'schema': issued_followup_schema,
+                    'received_candidate_ids': prepared_request.get('received_candidate_ids')}
                     if 'decision' in frozen_fields or 'accepted_geometry' in frozen_fields
                         and set(frozen_fields) <= {'accepted_geometry', 'accepted_architectural_text'} else None)
             retry_claim = False
@@ -2113,7 +2126,8 @@ async def _suggest(service, story, transcript, candidates):
                 answer = None
                 try:
                     from .identity_source_selection import resolve_identity_response_ids
-                    answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''), resolution_packet)
+                    answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''),
+                        prepared_request.get('response_id_context') or resolution_packet)
                     if resolution:
                         response_id_resolutions.append({**resolution, 'joint_stage': 'followup',
                             'provider_id': followup_provider, 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
@@ -2131,7 +2145,8 @@ async def _suggest(service, story, transcript, candidates):
                             value = answer.get(name)
                             try:
                                 if name == 'accepted_architectural_text':
-                                    value = normalize_architectural_decision(value, contract)
+                                    value = normalize_architectural_decision(value, contract,
+                                        received_candidate_ids=compact_t.get('received_candidate_ids'))
                                 elif not Draft202012Validator(contract).is_valid(value):
                                     raise ValueError('source_map_component_invalid')
                             except ValueError:
@@ -2162,7 +2177,8 @@ async def _suggest(service, story, transcript, candidates):
                             if name in payload:
                                 payload[name] = [row for row in payload[name] if row['article_id'] not in unbound]
                     else:
-                        payload = combine_architectural_decision(payload, answer, decision_schema)
+                        payload = combine_architectural_decision(payload, answer, decision_schema,
+                            received_candidate_ids=compact_t.get('received_candidate_ids'))
                 except (ValueError, TypeError) as exc:
                     from .identity_plan_diagnostics import retain_closed_invalid
                     retain_closed_invalid(service, story, answer, compact_t['schema'],

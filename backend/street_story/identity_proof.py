@@ -358,9 +358,33 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             return None
         if link_proof.get('supported') is not True:
             return None
+    alternative_limit = max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8
+    comparison_scope = receipt.get('comparison_scope')
+    if comparison_scope is not None:
+        from .identity_architectural_comparison import architectural_comparison_scope, received_map_counterpoints
+        from .identity_architectural_evidence import _physical
+        try:
+            expected_scope = architectural_comparison_scope(inventory['candidate_ids'],
+                [key for key, value in catalog.items() if _physical(value)],
+                received_map_counterpoints(story, list(catalog.values()), receipt),
+                (receipt.get('manifest') or {}).get('relation_options') or [])
+            # Unrelated additions to the retained reserve do not invalidate
+            # accepted evidence. The exact issued comparison pointers do.
+            for key in ('nominated_candidate_ids', 'comparison_candidate_ids',
+                        'context_only_expansions', 'observed_map_relations'):
+                if comparison_scope[key] != expected_scope[key]:
+                    return None
+            if decision.get('candidate_id') not in comparison_scope['nominated_candidate_ids']:
+                return None
+            if not {row.get('candidate_id') for row in decision.get('material_alternatives', [])} <= set(
+                    comparison_scope['comparison_candidate_ids']):
+                return None
+            alternative_limit = max(8, len(comparison_scope['comparison_candidate_ids']))
+        except (KeyError, TypeError, ValueError):
+            return None
     if not isinstance(decision, dict) or not Draft202012Validator(
             architectural_text_decision_schema(list(catalog), list(table),
-                material_alternative_limit=max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8,
+                material_alternative_limit=alternative_limit,
                 physical_link_inventory=inventory,
                 structural=structural or isinstance(decision, dict) and any('feature_kind' in item
                     for item in decision.get('correspondences') or [] if isinstance(item, dict)))).is_valid(decision):

@@ -80,6 +80,8 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         assert receipt['articles'][0]['text'] in contents[-1]
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        text_decision['material_alternatives'].append({'candidate_id': '@3',
+            'reason': 'The issued side-pair counterpoint has the reversed bay order in this fixture.'})
         inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
         text_decision['physical_link_evidence'] = [{
             'article_id': receipt['articles'][0]['article_id'], 'candidate_id': '@1',
@@ -105,14 +107,18 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
     assert len(calls) == 2 and len(acquired) == 1
     packet = json.loads(calls[-1][-1].rsplit('\n', 1)[-1])
     labels = {item['candidate_id']: item['map_label'] for item in packet['physical_candidates']}
-    assert labels == {'osm:way:2': 1, 'osm:way:3': 2}
+    assert labels == {'osm:way:2': 1, 'osm:way:3': 2, 'osm:way:4': 3}
     reserve = packet['physical_reserve']
-    remaining_labels = {row[0]: row[1] for row in reserve['rows']}
-    assert remaining_labels['osm:way:4'] is not None
+    assert 'rows' not in reserve and reserve['count'] == 0
+    scope = packet['candidate_scope']
+    assert scope['positive_candidate_ids'] == ['osm:way:2', 'osm:way:3']
+    expansion = scope['context_only_expansions']
+    assert len(expansion) == 1 and expansion[0]['candidate_id'] == 'osm:way:4'
+    assert expansion[0]['relation_ids'] and expansion[0]['identity_established'] is False
     manifest = history['search_plan']['payload']['source_map_receipt']['manifest']['objects']
     ci, li = manifest['columns'].index('candidate_id'), manifest['columns'].index('label')
-    assert remaining_labels['osm:way:4'] == next(row[li] for row in manifest['rows'] if row[ci] == 'osm:way:4')
-    assert 'osm:way:9' not in remaining_labels  # Road is context, never a physical candidate.
+    assert labels['osm:way:4'] == next(row[li] for row in manifest['rows'] if row[ci] == 'osm:way:4')
+    assert 'osm:way:9' not in labels  # Road is context, never a physical candidate.
     assert packet['map_image_sha256']
     proof = story['_identity_geometry_result']['architectural_text_proof']
     assert proof['candidate_id'] == 'osm:way:2'

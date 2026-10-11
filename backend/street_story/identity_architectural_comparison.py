@@ -449,6 +449,65 @@ def require_material_alternative_coverage(schema, ids, prior_ids, map_counterpoi
         } for chosen in ids if set(prior_ids + map_counterpoints.get(chosen, [])) - {chosen}]
 
 
+def architectural_comparison_scope(nominated_ids, physical_ids, map_counterpoints, relation_options):
+    """Project received pointers; do not infer identity, rank or truncate bodies.
+
+    Only direct issued side-pair counterparts of the nominated set are added.
+    The remainder stays in the owner's existing catalog, unexamined. A graph
+    traversal here would silently reconstruct the full catalog again.
+    """
+    nominated = list(dict.fromkeys(nominated_ids))
+    physical = set(physical_ids)
+    if not nominated or not set(nominated) <= physical:
+        raise ValueError('comparison_scope_unobserved_nomination')
+    base = set(nominated)
+    expansions = []
+    for cid in sorted(set().union(*(set(map_counterpoints.get(cid, [])) for cid in nominated)) - base):
+        if cid not in physical:
+            raise ValueError('comparison_scope_unobserved_counterpoint')
+        compared_with = sorted(other for other in nominated if cid in map_counterpoints.get(other, []))
+        relations = [option for option in relation_options
+            if option.get('kind') == 'observed_side_pair'
+            and cid in {ref.get('candidate_id') for ref in option.get('map_features', [])}
+            and set(compared_with).intersection(ref.get('candidate_id') for ref in option.get('map_features', []))]
+        if not relations:
+            raise ValueError('comparison_scope_counterpoint_provenance_missing')
+        expansions.append({'candidate_id': cid, 'reason': 'issued_observed_side_pair',
+            'compared_with_candidate_ids': compared_with,
+            'relation_ids': [option.get('id') or hashlib.sha256(json.dumps(option,
+                sort_keys=True, separators=(',', ':')).encode()).hexdigest() for option in relations],
+            'identity_established': False})
+    issued = [*nominated, *(row['candidate_id'] for row in expansions)]
+    issued_set = set(issued)
+    reserve = sorted(physical - issued_set)
+    relations = [copy.deepcopy(option) for option in relation_options
+        if (refs := {ref.get('candidate_id') for ref in option.get('map_features', [])})
+        and refs <= issued_set and refs.intersection(base)]
+    return {'nominated_candidate_ids': nominated, 'comparison_candidate_ids': issued,
+        'context_only_expansions': expansions, 'observed_map_relations': relations,
+        'host_reserve_candidate_ids': reserve,
+        'host_reserve_sha256': hashlib.sha256(json.dumps(reserve, separators=(',', ':')).encode()).hexdigest()}
+
+
+def scoped_research_priority_schema(comparison_ids, received_count):
+    """Keep normal work addressed; reserve requests are checked against host IDs.
+
+    An exact received MAP @label is resolved by the existing pointer resolver
+    before host validation. No full catalog is encoded in a model-facing enum.
+    """
+    from .identity_candidate_policy import research_priority_schema
+    ordinary = research_priority_schema(comparison_ids)
+    ordinary['properties']['next_step']['enum'].remove('expand_reserve')
+    request = copy.deepcopy(ordinary)
+    request['properties']['next_step'] = {'const': 'expand_reserve'}
+    request['properties']['next_question']['minLength'] = 1
+    pointer = {'type': 'string', 'maxLength': 100,
+        'description': 'An exact received physical OSM ID or @N from MAP label N; never invent an ID.'}
+    request['properties']['candidate_ids'].update(items=pointer, minItems=1, maxItems=received_count)
+    request['properties']['contradictions']['items']['properties']['candidate_id'] = pointer
+    return {'anyOf': [ordinary, request]}
+
+
 def prepare_architectural_comparison(story, candidates, source_text_receipt, *, complete_source=False):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
@@ -504,6 +563,17 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
             for cid in ids):
         raise ValueError('physical_candidate_scope_incomplete_or_too_large')
 
+    from .identity_architectural_evidence import _physical
+    physical_catalog = {cid: candidate for cid, candidate in catalog.items() if _physical(candidate)}
+    all_map_counterpoints = received_map_counterpoints(story, observed, receipt)
+    comparison_scope = architectural_comparison_scope(ids, physical_catalog,
+        all_map_counterpoints, (receipt.get('manifest') or {}).get('relation_options') or [])
+    comparison_ids = comparison_scope['comparison_candidate_ids']
+    comparison_scope['nomination_sources'] = {cid: {
+        'retained_initial_hypothesis': cid in ((prior or {}).get('candidate_ids') or []),
+        'acquired_article_ids': [article['article_id'] for article in articles
+            if cid in (article.get('lookup_candidate_ids') or [])]} for cid in ids}
+
     # Only existing, verified footprint/entrance membership is surfaced.
     address_context = observed_address_context(story, observed)
     label_table = (receipt.get('manifest') or {}).get('objects') or {}
@@ -512,7 +582,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         for row in label_table.get('rows') or []}
         if 'candidate_id' in label_columns and 'label' in label_columns else {})
     physical = []
-    for cid in ids:
+    for cid in comparison_ids:
         candidate = catalog[cid]
         tags = (candidate.get('map_object') or {}).get('tags') or {}
         entries = _subject_addresses(address_context, candidate)
@@ -534,9 +604,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
 
     # Preserve the publisher's own contemporary address spellings and the
     # exact closed-way membership without inventing a physical scope.
-    from .identity_architectural_evidence import literal_evidence_inventory, _physical
+    from .identity_architectural_evidence import literal_evidence_inventory
     inventory = literal_evidence_inventory(story, observed, articles, candidate_ids=ids)
-    physical_catalog = {cid: candidate for cid, candidate in catalog.items() if _physical(candidate)}
 
     initial = {}
     if prior:
@@ -565,8 +634,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
     # un-nominated body to its postal address. Reuse exact observed primitives;
     # no extra inference, nomination, camera pose or identity is introduced.
     from .identity_spatial_features import geometry_feature
-    map_relations = copy.deepcopy((receipt.get('manifest') or {}).get('relation_options') or [])
-    map_counterpoints = received_map_counterpoints(story, observed, receipt)
+    map_relations = comparison_scope['observed_map_relations']
+    map_counterpoints = {cid: all_map_counterpoints.get(cid, []) for cid in ids if all_map_counterpoints.get(cid)}
     relation_features = {}
     for option in map_relations:
         for reference in option.get('map_features') or []:
@@ -586,36 +655,41 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'observed_map_relations': map_relations,
         'received_map_counterpoints_not_identity': map_counterpoints,
         'relation_feature_geometry': list(relation_features.values()),
+        'candidate_scope': {
+            'nominated_candidate_ids': ids,
+            'positive_candidate_ids': ids,
+            'comparison_candidate_ids': comparison_ids,
+            'context_only_expansions': comparison_scope['context_only_expansions'],
+            'nomination_sources': comparison_scope['nomination_sources'],
+            'status': 'research_hypotheses_not_rejections_or_identity'},
         'physical_reserve': {
-            'columns': ['candidate_id', 'map_label', 'observed_name', 'literal_address'],
-            'rows': [[cid, labels.get(cid),
-                ((candidate.get('map_object') or {}).get('tags') or {}).get('name'),
-                candidate.get('map_address') or None]
-                for cid, candidate in physical_catalog.items() if cid not in ids],
-            'policy': 'Other received physical bodies remain unexamined, not rejected. '
-                'research_priority may select them or expand_reserve for the next existing TEXT/REF action. '
-                'No article for a body means unknown, never a negative visual match.'},
+            'count': len(comparison_scope['host_reserve_candidate_ids']),
+            'sha256': comparison_scope['host_reserve_sha256'],
+            'state': 'host_retained_unexamined_not_rejected',
+            'policy': 'No reserve catalog is included in this request. To investigate an exact '
+                'other received MAP body, use research_priority with next_step=expand_reserve, '
+                'its exact OSM ID or @MAP label, and a specific reason and next_question. '
+                'The host validates observed membership; this request cannot establish identity.'},
         'publisher_and_OSM_literal_records_NOT_prejoined': inventory,
         'previous_model_hypotheses_not_evidence': initial,
         'initial_geometry_rejection_not_identity': copy.deepcopy(receipt.get('initial_geometry_rejection') or {}),
-        'coverage_limit': 'Nominated bodies have detailed records; all other received physical bodies remain in physical_reserve and MAP. Coverage may be incomplete.',
+        'coverage_limit': 'Only nominated bodies and explicitly addressed side-pair counterpoints are issued. Other received bodies remain unexamined on the host; the full MAP remains visual context, not a new comparison checklist.',
         'source_image': 'Original SOURCE image is a separate model input; observed details must come from its pixels.'}
     hint = story.get('_identity_owner_hint') or {}
     if hint:
         packet['owner_hint_not_identity_evidence'] = copy.deepcopy(hint)
     schema = architectural_text_decision_schema(ids, article_ids,
-        material_alternative_limit=max(8, len(ids)), structural=True,
+        material_alternative_limit=max(8, len(comparison_ids)), structural=True,
         physical_link_inventory=inventory, source_span_refs=source_span_refs)
     # A compact comparison can confirm only its issued article/body bindings,
     # but its next investigation may nominate any received physical reserve.
-    from .identity_candidate_policy import research_priority_schema
-    schema['properties']['research_priority'] = research_priority_schema(list(physical_catalog))
+    schema['properties']['research_priority'] = scoped_research_priority_schema(comparison_ids, len(physical_catalog))
     alternatives = schema['properties']['material_alternatives']
     # The base contract reuses its candidate-ID schema in positive bindings.
     # Give alternatives their own pointer schema: widening this shared dict
     # would also permit confirming a body absent from the issued text scope.
     alternatives['items']['properties']['candidate_id'] = {
-        'type': 'string', 'enum': list(physical_catalog)}
+        'type': 'string', 'enum': comparison_ids}
     # Mirror the common proof validator's pointer rule in the issued contract.
     # A singleton hypothesis cannot be an alternative to itself. This says
     # nothing about unreceived bodies or whether the hypothesis is correct.
@@ -625,7 +699,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'including a reason when it is not a material alternative. Otherwise use uncertain.')
     required_prior_ids = [cid for cid in initial.get('candidate_ids', []) if cid in ids]
     require_material_alternative_coverage(schema, ids, required_prior_ids, map_counterpoints)
-    if len(physical_catalog) == 1:
+    if len(comparison_ids) == 1:
         schema['properties']['material_alternatives']['maxItems'] = 0
     instruction = (
         'Compare the actual SOURCE pixels with the acquired article text and MAP. '
@@ -672,9 +746,11 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'and unresolved links cannot support acceptance. Preserve the independently supported '
         'body and distinguish these contextual articles rather than marking every association positive. '
         'A complex or neighboring corpus can share an address or description. '
-        'Confront material physical alternatives from both physical_candidates and physical_reserve, '
-        'using MAP and SOURCE. Lack of an article is unknown, not rejection. Report only material '
-        'alternatives within the supplied response bound; the complete reserve is not a checklist. '
+        'Confront the issued physical_candidates using MAP and SOURCE. Context-only counterpoints '
+        'cannot be positively bound in this call, but may be promoted through research_priority. '
+        'Do not reconstruct or compare the full host reserve. Lack of an article is unknown, '
+        'not rejection. For an additional exact MAP body, request expand_reserve with its @label '
+        'or received OSM ID and an evidence-specific reason; do not claim an unseen comparison. '
         'If unresolved bodies cannot be addressed in this answer, use uncertain and research_priority. A singleton nomination '
         'is not evidence of uniqueness; another side of the street or an unexamined footprint may remain. '
         'For acceptance address every previously nominated OTHER candidate, explaining why it differs '
@@ -699,13 +775,17 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
             'characters': sum(len(span['source_quote']) for span in source_span_refs.values()),
             'portion_count': sum(len(row['displayed_portions']) for row in source_passages)},
         'physical_link_inventory': inventory,
-        'required_map_counterpoints': map_counterpoints,
+        # Preserve the original host proof contract; all neighbors of a positive
+        # nominated body are issued, while context-only nodes cannot be accepted.
+        'required_map_counterpoints': all_map_counterpoints,
+        'comparison_scope': comparison_scope,
+        'received_candidate_ids': list(physical_catalog),
         'source_span_refs': source_span_refs,
         'article_ids': article_ids, 'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}
 
 
-def combine_architectural_decision(original_plan, answer, schema):
+def combine_architectural_decision(original_plan, answer, schema, *, received_candidate_ids=None):
     """Preserve the model's already closed research plan; only attach its T reply.
 
     The caller must send SOURCE, freeze/read back the response and run the
@@ -714,7 +794,7 @@ def combine_architectural_decision(original_plan, answer, schema):
     """
     if not isinstance(original_plan, dict) or not isinstance(answer, dict):
         raise ValueError('closed_original_plan_and_model_answer_required')
-    normalized = normalize_architectural_decision(answer, schema)
+    normalized = normalize_architectural_decision(answer, schema, received_candidate_ids=received_candidate_ids)
     result = copy.deepcopy(original_plan)
     result['accepted_architectural_text'] = normalized
     if normalized.get('decision') == 'accepted_architectural_text':
@@ -725,7 +805,7 @@ def combine_architectural_decision(original_plan, answer, schema):
     return result
 
 
-def normalize_architectural_decision(answer, schema):
+def normalize_architectural_decision(answer, schema, *, received_candidate_ids=None):
     """Normalize only one harmless JSON-schema echo; never repair semantics.
 
     A real visual provider returned a complete T verdict plus type=object
@@ -743,7 +823,45 @@ def normalize_architectural_decision(answer, schema):
         normalized.pop('type')
     if not Draft202012Validator(schema).is_valid(normalized):
         raise ValueError('architectural_comparison_model_response_invalid')
+    priority = normalized.get('research_priority') or {}
+    if priority.get('next_step') == 'expand_reserve' and 'anyOf' in fields.get('research_priority', {}):
+        requested = [*priority['candidate_ids'], *(row['candidate_id'] for row in priority['contradictions'])]
+        if received_candidate_ids is None or not set(requested) <= set(received_candidate_ids):
+            raise ValueError('architectural_reserve_request_unobserved')
+        if normalized.get('decision') != 'uncertain':
+            raise ValueError('architectural_reserve_request_cannot_accept_identity')
     return normalized
+
+
+def retained_text_portion_role(service, story, receipt):
+    """Find the addressed original portion before a changed prompt can fork it.
+
+    This is only an exact receipt lookup, not a new semantic operation. A new
+    schema/version must observe an existing UNKNOWN turn, never send a second
+    turn for the same body/cursor and identity revision.
+    """
+    connection = getattr(getattr(service, 'store', None), 'connection', None)
+    if not callable(connection):
+        return None
+    def portions(value):
+        return sorted((row.get('article_id'), row.get('source_sha256'),
+            row.get('text_sha256'), row.get('text_cursor', 0)) for row in value.get('articles') or [])
+    with connection() as db:
+        rows = db.execute("SELECT role,receipt_json FROM research_provider_attempts "
+            "WHERE story_id=? AND role LIKE 'vision_native_text_portion:%' "
+            "ORDER BY created_at DESC,rowid DESC", (story['id'],)).fetchall()
+    for row in rows:
+        saved = json.loads(row['receipt_json'] or '{}')
+        binding = saved.get('binding') or {}
+        original = ((saved.get('frozen_source_map') or {}).get('host_context') or {}).get('source_text_receipt') or {}
+        if (saved.get('phase') not in {'created', 'failed', 'aborted'}
+                and binding.get('generation') == story.get('_identity_generation', 0)
+                and binding.get('control_revision', 0) == story.get('_identity_research_control_revision', 0)
+                and binding.get('source_map_photo_sha256') == story['photo_sha256']
+                and original.get('original_source_sha256') == receipt.get('original_source_sha256')
+                and portions(original) == portions(receipt)):
+            return row['role']
+    return None
 
 
 async def continue_requested_text(service, story, candidates, payload, history):
@@ -806,18 +924,38 @@ async def continue_requested_text(service, story, candidates, payload, history):
             receipt.pop('manifest', None)
             receipt.pop('map_image_sha256', None)
         prepared = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
-        receipt.update(physical_link_inventory=prepared['physical_link_inventory'], source_span_refs=prepared['source_span_refs'])
+        receipt.update(physical_link_inventory=prepared['physical_link_inventory'], source_span_refs=prepared['source_span_refs'],
+            comparison_scope=prepared['comparison_scope'])
         receipt['text_delivery'] = prepared['text_delivery']
+        from .identity_source_selection import freeze_identity_response_context
+        receipt['architectural_comparison_contract'] = {
+            'schema': copy.deepcopy(prepared['schema']),
+            'received_candidate_ids': list(prepared['received_candidate_ids']),
+            'response_id_context': freeze_identity_response_context(
+                {'map_scene': {'objects': (receipt.get('manifest') or {}).get('objects') or {}}})}
         unit = hashlib.sha256(prepared['prompt'].encode()).hexdigest()
         researcher = getattr(getattr(service, 'providers', None), 'research', None)
         operation = getattr(researcher, 'plan_source_map', None)
         if not callable(operation):
             raise RetryableProviderError('identity_text_portion_route_unavailable')
-        reserve_work(service, story['id'], 'planner_calls', ['text-portion:' + unit])
+        retained_role = retained_text_portion_role(service, story, receipt)
+        if retained_role is None:
+            reserve_work(service, story['id'], 'planner_calls', ['text-portion:' + unit])
         response = await operation(story, prepared['prompt'], prepared['schema'], images,
-            {'source_text_receipt': receipt, 'source_map_receipt': receipt}, role='vision_native_text_portion:' + unit[:24])
+            {'source_text_receipt': receipt, 'source_map_receipt': receipt},
+            role=retained_role or 'vision_native_text_portion:' + unit[:24])
         receipt = response['host_context']['source_text_receipt']
-        payload = combine_architectural_decision(payload, response['result'], prepared['schema'])
+        from .identity_source_selection import resolve_identity_response_ids
+        frozen_contract = receipt.get('architectural_comparison_contract') or {}
+        native_frozen = (response.get('receipt') or {}).get('frozen_source_map') or {}
+        original_schema = frozen_contract.get('schema') or native_frozen.get('host_contract')
+        if original_schema is None:
+            raise PermanentProviderError('identity_text_portion_original_contract_missing')
+        answer, _resolution = resolve_identity_response_ids(response['result'],
+            frozen_contract.get('response_id_context') or
+            {'map_scene': {'objects': (receipt.get('manifest') or {}).get('objects') or {}}})
+        payload = combine_architectural_decision(payload, answer, original_schema,
+            received_candidate_ids=frozen_contract.get('received_candidate_ids'))
         payload['source_text_receipt'] = receipt
         proof = freeze_architectural_text_proof(story, payload['accepted_architectural_text'], receipt, candidates)
         if proof:

@@ -288,7 +288,7 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     transmitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])
     hypotheses = transmitted['previous_model_hypotheses_not_evidence']['geometry_hypotheses_not_evidence']
     assert hypotheses['status'] == 'unconfirmed' and 'decision' not in hypotheses
-    assert 'Coverage may be incomplete' in transmitted['coverage_limit']
+    assert 'remain unexamined' in transmitted['coverage_limit']
     assert 'accepted_architectural_text' in packet['schema']['properties']['decision']['enum']
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
@@ -313,13 +313,18 @@ def test_compact_t_keeps_measured_neighbor_relations_without_nominating_neighbor
     receipt['conditional_initial_decision']['candidate_ids'] = [candidates[0]['candidate_id']]
     options = supplied_relation_options(source, candidates, active_ids=[candidates[0]['candidate_id']])
     assert options
+    # Issue an exact addressed pair for this fixture, rather than expecting
+    # every unrelated map relation to re-expand the compact comparison.
+    options.append({'id': 'R-addressed', 'kind': 'observed_side_pair', 'map_features': [
+        {'candidate_id': candidates[0]['candidate_id'], 'kind': 'segment', 'ring_index': 0, 'segment_index': 0},
+        {'candidate_id': 'osm:way:88', 'kind': 'segment', 'ring_index': 0, 'segment_index': 0}]})
     receipt.setdefault('manifest', {})['relation_options'] = options
     original = copy.deepcopy(receipt)
     prepared = prepare_architectural_comparison(source, candidates, receipt)
     packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
-    assert packet['observed_map_relations'] == options
+    assert all(option in options for option in packet['observed_map_relations'])
     assert prepared['candidate_ids'] == [candidates[0]['candidate_id']]
-    assert any(row[0] == 'osm:way:88' for row in packet['physical_reserve']['rows'])
+    assert any(row['candidate_id'] == 'osm:way:88' for row in packet['candidate_scope']['context_only_expansions'])
     for item in packet['relation_feature_geometry']:
         assert item['observed_geometry'] == geometry_feature(source, candidates, item['reference'])
     assert any(item['reference']['candidate_id'] == 'osm:way:88' and item['observed_geometry']
@@ -362,7 +367,8 @@ def test_compact_t_missing_neighbor_primitive_stays_unknown_without_fabrication(
     receipt.setdefault('manifest', {})['relation_options'] = [{'id':'R1','map_features':[reference]}]
     prepared = prepare_architectural_comparison(source, candidates, receipt)
     packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
-    assert packet['relation_feature_geometry'] == [{'reference':reference,'observed_geometry':None}]
+    assert packet['relation_feature_geometry'] == []
+    assert receipt['manifest']['relation_options'][0]['map_features'] == [reference]
     assert 'osm:way:not-received' not in prepared['candidate_ids']
 
 
@@ -498,9 +504,9 @@ def test_reserve_pointers_do_not_expand_positive_bindings_or_force_reserve_enume
     assert properties['candidate_id']['enum'] == [*prepared['candidate_ids'], '']
     assert properties['article_bindings']['items']['properties']['candidate_id']['enum'] == properties['candidate_id']['enum']
     alternatives = properties['material_alternatives']
-    assert 'osm:way:299' in alternatives['items']['properties']['candidate_id']['enum']
+    assert 'osm:way:299' not in alternatives['items']['properties']['candidate_id']['enum']
     assert alternatives['maxItems'] == 8
-    assert len(json.loads(prepared['prompt'].rsplit('\n', 1)[-1])['physical_reserve']['rows']) == 200
+    assert json.loads(prepared['prompt'].rsplit('\n', 1)[-1])['physical_reserve']['count'] == 200
 
 
 def test_t_never_makes_up_missing_source_or_discards_material_candidates():
@@ -890,7 +896,8 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
         {'candidate_id': 'osm:way:88', 'reason': 'Earlier nominated neighboring wing differs.'},
         {'candidate_id': 'osm:way:89', 'reason': 'Another received body is material despite no acquired article.'}]
     validator = Draft202012Validator(packet['schema'])
-    assert not list(validator.iter_errors(decision))
+    # Unissued reserve bodies must be requested, not silently compared.
+    assert list(validator.iter_errors(decision))
     decision['material_alternatives'][1]['candidate_id'] = 'osm:way:999'
     assert list(validator.iter_errors(decision))
 
