@@ -186,6 +186,25 @@ def test_private_json_schema_is_preserved_in_shared_live_wire(tmp_path):
     assert measured['input_utf8_bytes'] == len(json.dumps(setup).encode()) + len(json.dumps(trigger).encode())
 
 
+def test_source_assessment_obligations_precede_untrusted_live_context(tmp_path):
+    from live_interaction.provider import setup_config
+    from street_story.research_adapter import FACT_PAGE_SCHEMA
+    from street_story.source_assessment import CHECKS, CONTRACT, LEGACY_CONTRACT, response_schema
+    svc, _, _ = service(tmp_path)
+    provider, _ = client(svc, 'valid')
+    prompt = 'Known prior compound claim labelled eligible; exact own SOURCE follows.'
+    for contract in (CONTRACT, LEGACY_CONTRACT):
+        schema = response_schema(FACT_PAGE_SCHEMA, contract)
+        context, configuration, trigger, measured = provider._prepared_input('facts', prompt, schema)
+        setup = setup_config(provider.model_id, context, configuration=configuration, search=False)
+        system = setup['setup']['systemInstruction']['parts'][0]['text']
+        trusted, untrusted = system.split(configuration['context_instruction'], 1)
+        assert (CHECKS in trusted) is (contract == CONTRACT)
+        assert prompt not in trusted and prompt in untrusted
+        assert setup['setup']['tools'][0]['functionDeclarations'][0]['parametersJsonSchema'] == schema
+        assert measured['input_utf8_bytes'] == len(json.dumps(setup).encode()) + len(json.dumps(trigger).encode())
+
+
 @pytest.mark.asyncio
 async def test_setup_close_retains_reason_and_definitive_unsent_state(tmp_path):
     svc, _, story = service(tmp_path)

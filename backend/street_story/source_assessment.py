@@ -6,11 +6,16 @@ CONTRACT = 'source-reading-assessment-v3'
 CONTRACTS = {LEGACY_CONTRACT, CONTRACT}
 FIELDS = {
     'claims': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+        'description': 'All independently selectable propositions, not copies of a compound sentence. '
+            'Separate dimensions, namesakes and construction events even for the same subject.',
         'items': {'type': 'string', 'minLength': 1, 'maxLength': 1200}},
     'own_evidence_values': {'type': 'array', 'minItems': 1, 'maxItems': 16, 'items': {
         'type': 'object', 'properties': {
-            'property': {'type': 'string', 'minLength': 1, 'maxLength': 100},
-            'value': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+            'property': {'type': 'string', 'minLength': 1, 'maxLength': 100,
+                'description': 'One property, such as diameter or height; never a combined category such as sizes.'},
+            'value': {'type': 'string', 'minLength': 1, 'maxLength': 500,
+                'description': 'One own value of this property. Enumerate competing values separately, '
+                    'including a differing infobox value, without inventing stages to reconcile them.'},
             'passage_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'items': {'type': 'integer'}},
             'quotes': {'type': 'array', 'minItems': 1, 'maxItems': 8,
                 'items': {'type': 'string', 'minLength': 1, 'maxLength': 900}}},
