@@ -403,6 +403,20 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
 
 
+def test_t_packet_preserves_literal_owner_hint_without_treating_it_as_evidence():
+    story, candidates, _, receipt = _comparison_fixture()
+    hint = {'text': 'Это корпус у реки, а не главный корпус учреждения',
+        'provenance': 'owner_live_text_or_voice', 'scope': 'search_context_only',
+        'independently_verified': False, 'generation': 1, 'control_revision': 0}
+    story['_identity_owner_hint'] = hint
+    prepared = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
+    packet = json.loads(prepared['prompt'].split('\n', 1)[1])
+    assert packet['owner_hint_not_identity_evidence'] == hint
+    assert all('owner_live_text_or_voice' not in json.dumps(span)
+        for article in packet['literal_source_passages'] for span in article['passages'])
+    assert 'physical_identity_accepted' not in packet['owner_hint_not_identity_evidence']
+
+
 def test_reserve_pointers_do_not_expand_positive_bindings_or_force_reserve_enumeration():
     story, candidates, _decision, receipt = _comparison_fixture()
     candidates.extend({'candidate_id': f'osm:way:{i}', 'map_object': {'tags': {'building': 'yes'}}}
@@ -807,3 +821,33 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
     assert not list(validator.iter_errors(decision))
     decision['material_alternatives'][1]['candidate_id'] = 'osm:way:999'
     assert list(validator.iter_errors(decision))
+
+
+def test_tail_only_text_reaches_t_inside_real_two_planner_slots(tmp_path):
+    from dataclasses import replace
+    from street_story.research_budget import reserve_work, ResearchWorkExhausted
+    from street_story.service import digest
+    from test_visual_search_continuation import prepared
+    from test_architectural_text_identity import TEXT, with_received_physical_links
+    svc, _, uploaded, _ = prepared(tmp_path)
+    svc.settings = replace(svc.settings, identity_max_planner_calls=2)
+    story, candidates, decision, receipt = text_inputs(photo=uploaded['photo_sha256'], generation=0)
+    story['id'] = uploaded['id']
+    receipt['articles'][0]['lookup_candidate_ids'] = [candidates[0]['candidate_id']]
+    body = ('Unrelated context. '.ljust(420) * 40) + TEXT
+    receipt['articles'][0].update(text=body, text_sha256=hashlib.sha256(body.encode()).hexdigest())
+    reserve_work(svc, story['id'], 'planner_calls', ['initial-SOURCE-MAP'])
+    packet = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
+    reserve_work(svc, story['id'], 'planner_calls', [digest([story['photo_sha256'], packet['prompt'], packet['schema']])])
+    emitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])['literal_source_passages'][0]
+    assert ''.join(span['literal_text'] for span in emitted['passages']) == body
+    assert emitted['all_passages_displayed'] and emitted['next_cursor'] is None
+    assert max(part['end'] - part['start'] for part in emitted['displayed_portions']) <= 12000
+    assert packet['text_delivery']['portion_count'] == 2
+    receipt.update(physical_link_inventory=packet['physical_link_inventory'], source_span_refs=packet['source_span_refs'])
+    answer = with_received_physical_links(decision, [packet['prompt']])
+    assert freeze_architectural_text_proof(story, answer, receipt, candidates)
+    with pytest.raises(ResearchWorkExhausted):
+        reserve_work(svc, story['id'], 'planner_calls', ['unplanned-third-comparison'])
+    _, research = svc._identity_snapshot(story['id'])
+    assert len(research['research_budget']['work_units']['planner_calls']) == 2

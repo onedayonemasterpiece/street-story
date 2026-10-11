@@ -142,7 +142,7 @@ def _source_span_options(checked, *, max_spans_per_article=14):
     return results, refs
 
 
-def joint_source_spans(articles, *, max_total_chars=12_000):
+def joint_source_spans(articles, *, max_total_chars=12_000, complete=False):
     """Bounded literal portions with exact full-body hashes and reachable reserve."""
     passages, refs = [], {}
     portion = max(420, max_total_chars // max(1, len(articles)))
@@ -152,7 +152,7 @@ def joint_source_spans(articles, *, max_total_chars=12_000):
         if type(cursor) is not int or not 0 <= cursor < len(text):
             raise ValueError('architectural_text_cursor_invalid')
         selected = []
-        stop = min(len(text), cursor + portion)
+        stop = len(text) if complete else min(len(text), cursor + portion)
         for start in range(cursor, stop, 420):
             end = min(start + 420, stop)
             ref = f'p{len(refs):04d}'
@@ -160,6 +160,8 @@ def joint_source_spans(articles, *, max_total_chars=12_000):
                 'source_quote': text[start:end], 'source_text_sha256': article['text_sha256']}
             selected.append({'span_ref': ref, 'literal_text': text[start:end]})
         passages.append({'article_id': article['article_id'], 'passages': selected,
+            'displayed_portions': [{'start': start, 'end': min(start + portion, stop)}
+                for start in range(cursor, stop, portion)],
             'displayed_range': {'start': cursor, 'end': stop}, 'full_text_characters': len(text),
             'full_text_sha256': article['text_sha256'], 'next_cursor': stop if stop < len(text) else None,
             'all_passages_displayed': cursor == 0 and stop == len(text)})

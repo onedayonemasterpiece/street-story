@@ -723,3 +723,31 @@ async def test_admission_counts_actual_schema_instructions_labels_and_unicode_se
         for part in turn['input'] if part['type'] == 'image')
     assert metadata['unexposed_provider_context'] == 'unknown'
     await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('scope', ['text_without_map', 'geometry_without_map', 'claimed_missing_map'])
+async def test_source_only_native_t_transport_requires_text_and_never_claims_missing_map(tmp_path, scope):
+    from street_story.errors import PermanentProviderError
+    provider, client, source, story, _, _, sends, _ = setup(tmp_path)
+    receipt = {'model_source_sha256': hashlib.sha256(source).hexdigest()}
+    host = {'source_map_receipt': receipt}
+    if scope != 'geometry_without_map':
+        host['source_text_receipt'] = {'articles': [{'article_id': 'received', 'text': 'Own retained text.'}]}
+    if scope == 'claimed_missing_map':
+        receipt['map_image_sha256'] = 'a' * 64
+    images = [('SOURCE', 'image/jpeg', source)]
+    if scope == 'text_without_map':
+        result = await provider.compare_source_map(story, VERDICT_SCHEMA, 'Compare SOURCE with retained TEXT',
+                                                  images, {'attempt_id': 'independent-T'}, host)
+        assert result['host_context'] == host
+        assert sum(method == 'turn/start' for method, _ in client.calls) == len(sends) == 1
+        supplied = next(params for method, params in client.calls if method == 'turn/start')['input']
+        assert [part['text'] for part in supplied if part['type'] == 'text'][1:] == ['SOURCE']
+        assert [base64.b64decode(part['url'].split(',', 1)[1]) for part in supplied if part['type'] == 'image'] == [source]
+    else:
+        with pytest.raises(PermanentProviderError, match='native_source_map_image_binding_invalid'):
+            await provider.compare_source_map(story, VERDICT_SCHEMA, 'SOURCE input', images,
+                                              {'attempt_id': 'invalid-missing-map'}, host)
+        assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
+    await provider.close()

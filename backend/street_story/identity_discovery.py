@@ -426,14 +426,11 @@ async def _suggest(service, story, transcript, candidates):
         # already linked descriptions to the first joint decision, so T need
         # not await a failed spatial inference. Excess alternatives remain in
         # the catalogue for model selection; never take arbitrary first rows.
-        try:
-            regional_catalogue = await asyncio.wait_for(asyncio.shield(catalogue_task), 12.0)
-        except Exception as exc:
-            # A stalled optional reader cannot prevent independent SOURCE/MAP
-            # work. The owned task is drained by the existing outer lifecycle.
-            regional_catalogue = {}
-            record_identity_event(service, story['id'], 'identity_early_catalogue_unavailable',
-                {'error_type': type(exc).__name__, 'independent_joint_continues': True})
+        # Only already-ready metadata joins this frozen input. The owned HTTP
+        # task continues during inference; it never precedes ready SOURCE/MAP.
+        if not regional_catalogue:
+            record_identity_event(service, story['id'], 'identity_early_catalogue_pending',
+                {'independent_joint_continues': True})
         prefetched_ids = (regional_catalogue.get('physical_prefetch_plan') or {}).get('prefetch_article_ids') or []
         catalogue_article_ids = {row['article_id'] for row in regional_catalogue.get('results') or []}
         if (not prefetched_ids and 0 < len(catalogue_article_ids) <= 8
@@ -444,6 +441,11 @@ async def _suggest(service, story, transcript, candidates):
             # pre-proving its physical binding or silently taking first rows.
             prefetched_ids = list(dict.fromkeys(row['article_id'] for row in regional_catalogue['results']))
         early_page_capacity = min(8, max(0, int(service.settings.identity_max_pages) - 3))
+        # Keep ready text; unread cards remain reachable through the catalogue.
+        from .prussia39 import cached_get_available
+        cached_ids = {row['article_id'] for row in regional_catalogue.get('results') or []
+            if row.get('canonical_url') and cached_get_available(service.store, row['canonical_url'])}
+        prefetched_ids = [aid for aid in prefetched_ids if aid in cached_ids]
         if prefetched_ids and early_page_capacity:
             from .identity_architectural_context import acquire_architectural_pool_text
             early_text_articles, early_text_lookup = await acquire_architectural_pool_text(
@@ -1517,9 +1519,11 @@ async def _suggest(service, story, transcript, candidates):
                 # Labels and detailed bodies belong to the very MAP sent in
                 # this operation. An image without its ID table is unusable.
                 source_text_receipt = {**joint_source_map_receipt(), **source_text_receipt}
-                compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
+                compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt,
+                                                            complete_source=True)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']
                 source_text_receipt['source_span_refs'] = compact_t['source_span_refs']
+                source_text_receipt['text_delivery'] = compact_t['text_delivery']
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)

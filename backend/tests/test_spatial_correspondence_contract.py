@@ -84,7 +84,10 @@ def test_current_architectural_proof_uses_individual_structure_not_three_style_o
 
 @pytest.mark.asyncio
 async def test_ready_source_map_does_not_wait_for_cold_catalogue_and_owned_read_is_drained(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from pydantic import SecretStr
     service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_api_key=SecretStr('offline-fixture'))
     started, drained = asyncio.Event(), asyncio.Event()
 
     async def cold(*args, **kwargs):
@@ -102,7 +105,9 @@ async def test_ready_source_map_does_not_wait_for_cold_catalogue_and_owned_read_
     monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', cold)
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     # Watchdog for the impossible catalogue barrier, not a CPU speed assertion.
-    await asyncio.wait_for(identity_discovery.suggest(service, story, '', active), 60)
+    # Trigger the real optional-catalogue branch; the previous no-key fixture
+    # skipped its twelve-second wait and could not detect the barrier.
+    await asyncio.wait_for(identity_discovery.suggest(service, story, '', active), 4)
     assert drained.is_set() and '_identity_regional_catalogue_task' not in story
     assert story['_identity_search_plan_payload']['geometry_proof']
 
