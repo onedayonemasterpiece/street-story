@@ -435,6 +435,20 @@ def received_map_counterpoints(story, candidates, receipt):
     return {cid: sorted(others) for cid, others in sorted(pairs.items())}
 
 
+def require_material_alternative_coverage(schema, ids, prior_ids, map_counterpoints):
+    """Issue the same exact-pointer coverage rule for compact and joint T."""
+    if prior_ids or map_counterpoints:
+        schema['allOf'] = [{
+            'if': {'properties': {'decision': {'const': 'accepted_architectural_text'},
+                                  'candidate_id': {'const': chosen}},
+                   'required': ['decision', 'candidate_id']},
+            'then': {'properties': {'material_alternatives': {'allOf': [
+                {'contains': {'properties': {'candidate_id': {'const': other}},
+                              'required': ['candidate_id']}}
+                for other in sorted(set(prior_ids + map_counterpoints.get(chosen, [])) - {chosen})]}}}
+        } for chosen in ids if set(prior_ids + map_counterpoints.get(chosen, [])) - {chosen}]
+
+
 def prepare_architectural_comparison(story, candidates, source_text_receipt, *, complete_source=False):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
@@ -610,16 +624,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'For an accepted decision, address EVERY earlier nominated candidate except the chosen one, '
         'including a reason when it is not a material alternative. Otherwise use uncertain.')
     required_prior_ids = [cid for cid in initial.get('candidate_ids', []) if cid in ids]
-    if required_prior_ids or map_counterpoints:
-        schema['allOf'] = [{
-            'if': {'properties': {'decision': {'const': 'accepted_architectural_text'},
-                                  'candidate_id': {'const': chosen}},
-                   'required': ['decision', 'candidate_id']},
-            'then': {'properties': {'material_alternatives': {'allOf': [
-                {'contains': {'properties': {'candidate_id': {'const': other}},
-                              'required': ['candidate_id']}}
-                for other in sorted(set(required_prior_ids + map_counterpoints.get(chosen, [])) - {chosen})]}}}
-        } for chosen in ids if set(required_prior_ids + map_counterpoints.get(chosen, [])) - {chosen}]
+    require_material_alternative_coverage(schema, ids, required_prior_ids, map_counterpoints)
     if len(physical_catalog) == 1:
         schema['properties']['material_alternatives']['maxItems'] = 0
     instruction = (

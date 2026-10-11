@@ -800,11 +800,11 @@ async def _suggest(service, story, transcript, candidates):
             if marker.get('phase') == 'response_closed' and marker.get('response_sha256') == raw_sha256:
                 return {'joint_stage': stage, 'operation_binding': marker['binding']}
         return {}
-    def joint_source_map_receipt():
+    def joint_source_map_receipt(*, current_scene=False):
         from .identity_geometry_contract import CONTRACT
         if original_followup_context:
             return original_followup_context['source_map_receipt']
-        if native_source_map_receipt is not None and not joint_followup_used:
+        if native_source_map_receipt is not None and not joint_followup_used and not current_scene:
             return native_source_map_receipt
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -833,12 +833,12 @@ async def _suggest(service, story, transcript, candidates):
         return freeze_architectural_text_proof(story, decision, receipt, [*observed, *candidates])
     def accept(payload, *, original_schema_readback=False, original_schema=None,
             raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False,
-            check_received_pointers=False):
+            check_received_pointers=False, component_rejections=None):
         from .identity_plan_diagnostics import retain_closed_invalid, validation_details
         validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
         errors, errors_truncated = validation_details(validation_schema, payload)
-        rejected_text = None
-        rejected_geometry_schema = None
+        rejected_text = (component_rejections or {}).get('accepted_architectural_text')
+        rejected_geometry_schema = (component_rejections or {}).get('accepted_geometry')
         independent_text_queries = False
         if ((errors or check_received_pointers) and isinstance(payload, dict)
                 and not original_schema_readback
@@ -1206,6 +1206,7 @@ async def _suggest(service, story, transcript, candidates):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
         story['_identity_search_plan_route'] = initial_route
+        component_rejections = {}
         decode_error = False
         def decode_joint(response):
             nonlocal decode_error
@@ -1449,14 +1450,14 @@ async def _suggest(service, story, transcript, candidates):
         targets = action.get('target_candidate_ids')
         clarification = payload.get('clarification_question') if isinstance(payload, dict) else None
         # The initial overview deliberately defers individual contours. If the
-        # model requests address text for its nominated bodies and no body was
-        # acquired, do not discard those available primitives or the existing
-        # joint2 slot. Empty retrieval is neither confirmation nor exclusion.
-        address_without_text = (action.get('kind') == 'address_text'
-            and geometry.get('decision') == 'uncertain' and not text_articles and bool(lookup)
+        # model requests address text for its nominated bodies, do not discard
+        # those available primitives or the existing joint2 slot when retrieval
+        # is empty or belongs to a different subject.
+        address_detail = (action.get('kind') == 'address_text'
+            and geometry.get('decision') == 'uncertain' and bool(lookup)
             and not (isinstance(clarification, str) and clarification.strip()))
         if (initial_geometry is None and initial_text is None and scene
-                and (action.get('kind') == 'map_detail' or address_without_text)
+                and (action.get('kind') == 'map_detail' or address_detail)
                 and isinstance(action.get('reason'), str) and action['reason'].strip()
                 and isinstance(targets, list) and 1 <= len(targets) <= 3
                 and all(isinstance(cid, str) for cid in targets)
@@ -1477,8 +1478,9 @@ async def _suggest(service, story, transcript, candidates):
                     'physical_bodies': {**physical_context, 'rows': [row for row in physical_context['rows']
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
-                if address_without_text:
-                    detail_request.update(trigger='address_text_without_acquired_body',
+                if address_detail:
+                    detail_request.update(trigger=('address_text_with_deferred_geometry' if text_articles
+                        else 'address_text_without_acquired_body'),
                         initial_requested_action=copy.deepcopy(action), address_text_lookup=copy.deepcopy(lookup))
         if issues or new_text_acquired or detail_request:
             native_followup = (initial_route == 'native_source_map'
@@ -1496,11 +1498,12 @@ async def _suggest(service, story, transcript, candidates):
             followup_config = config
             followup_contract = response_contract
             if detail_request:
-                expansion_reason = ('\nThe initial model requested address text for these nominated bodies, '
-                    'but the recorded lookup acquired no body. This is missing retrieval, not a negative '
-                    'identity verdict. Supply the previously deferred received MAP primitives in the '
-                    'same existing joint2; no address/plate alone establishes the whole physical body. '
-                    if address_without_text else '\nExplicit requested MAP expansion; ')
+                expansion_reason = ('\nThe initial model requested address text for these nominated bodies '
+                    'while their detailed MAP primitives were deferred. The recorded lookup is retrieval '
+                    'context, never identity. Supply those received primitives in the same existing joint2. '
+                    'G and T can decide independently: unrelated/missing text does not invalidate '
+                    'sufficient SOURCE/MAP geometry. No address/plate alone establishes the whole body. '
+                    if address_detail else '\nExplicit requested MAP expansion; ')
                 followup_prompt += (expansion_reason + 'the second image and its new hash below '
                     'replace the initial MAP image for this operation. The full overview/neutral labels remain unchanged; '
                     'the nominated detail is a display area, not identity acceptance or GPS accuracy. '
@@ -1533,7 +1536,8 @@ async def _suggest(service, story, transcript, candidates):
                 source_passages, source_span_refs = joint_source_spans(text_articles)
                 physical_link_inventory = literal_evidence_inventory(story, [*observed, *candidates], text_articles)
                 conditional_prior = _conditional_text_prior(payload, observed_ids)
-                source_text_receipt = {'source_photo_sha256': story.get('photo_sha256'),
+                source_text_receipt = {**joint_source_map_receipt(current_scene=bool(detail_request)),
+                    'source_photo_sha256': story.get('photo_sha256'),
                     'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                     'source_preparation': source_preparation,
                     'source_image_input': True, 'articles': text_articles, 'lookup': lookup,
@@ -1548,6 +1552,15 @@ async def _suggest(service, story, transcript, candidates):
                     material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8,
                     structural=True, physical_link_inventory=physical_link_inventory,
                     source_span_refs=source_span_refs)
+                if address_detail and detail_request:
+                    from .identity_architectural_comparison import (received_map_counterpoints,
+                        require_material_alternative_coverage)
+                    counterpoints = received_map_counterpoints(story, [*observed, *candidates], source_text_receipt)
+                    source_text_receipt['required_map_counterpoints'] = counterpoints
+                    require_material_alternative_coverage(schema['properties']['accepted_architectural_text'],
+                        observed_ids, (conditional_prior or {}).get('candidate_ids') or [], counterpoints)
+                    followup_prompt += ('\nReceived MAP counterpoints, not identity; accepted T must address '
+                        'the chosen body’s paired alternatives:\n' + json.dumps(counterpoints, ensure_ascii=False))
                 followup_contract = identity_transport_schema(schema, map_label_references=bool(scene))
                 if scene:
                     followup_contract['properties']['accepted_geometry']['required'].append('candidate_label')
@@ -1603,7 +1616,7 @@ async def _suggest(service, story, transcript, candidates):
                 from .identity_architectural_comparison import prepare_architectural_comparison
                 # Labels and detailed bodies belong to the very MAP sent in
                 # this operation. An image without its ID table is unusable.
-                source_text_receipt = {**joint_source_map_receipt(), **source_text_receipt}
+                source_text_receipt = {**joint_source_map_receipt(current_scene=bool(detail_request)), **source_text_receipt}
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt,
                                                             complete_source=True)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']
@@ -1611,6 +1624,23 @@ async def _suggest(service, story, transcript, candidates):
                 source_text_receipt['source_span_refs'] = compact_t['source_span_refs']
                 source_text_receipt['text_delivery'] = compact_t['text_delivery']
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
+                if address_detail and detail_request:
+                    # Keep the existing compact acquired-text packet. Only the
+                    # two decision components join it, not another full planner
+                    # catalogue/schema. Both reuse their existing proof writers.
+                    followup_contract = {'type': 'object', 'properties': {
+                        'accepted_geometry': copy.deepcopy(schema['properties']['accepted_geometry']),
+                        'accepted_architectural_text': compact_t['schema']},
+                        'required': ['accepted_geometry', 'accepted_architectural_text'], 'additionalProperties': False}
+                    compact_t = {**compact_t, 'schema': followup_contract}
+                    followup_prompt += ('\nDecide G and T independently in this same decision. Return '
+                        'accepted_geometry and accepted_architectural_text using the issued contracts. '
+                        'The requested address lookup and initial nomination are hypotheses; '
+                        'unrelated/absent article support does not invalidate sufficient geometry. '
+                        'A number/address alone cannot establish the whole body. Use actual '
+                        'received primitives, visible SOURCE relations and explicit uncertainty. '
+                        'Do not invent a camera heading or measured facade relation.\n'
+                        + json.dumps(detail_request, ensure_ascii=False, separators=(',', ':')))
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
                 # The complete proof contract contains host-only JSON Schema
@@ -1619,8 +1649,9 @@ async def _suggest(service, story, transcript, candidates):
                 # transport as joint1; keep the full issued contract in the
                 # instruction, frozen request and host response validation.
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
-                    system_instruction='Return only the SOURCE/architectural-text decision object. '
-                        'Use the attached actual image and acquired article text, never a prior identity claim.\n'
+                    system_instruction=('Return only the SOURCE/MAP G and architectural-text T decision object. '
+                        if address_detail and detail_request else 'Return only the SOURCE/architectural-text decision object. ')
+                        + 'Use the attached actual image and acquired article text, never a prior identity claim.\n'
                         + json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')))
                 record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_prepared', {
                     'prompt_utf8_bytes': len(followup_prompt.encode()), 'article_count': len(compact_t['article_ids']),
@@ -1629,7 +1660,7 @@ async def _suggest(service, story, transcript, candidates):
                     'output_mode': 'json_with_host_validation',
                     'schema_sha256': hashlib.sha256(json.dumps(followup_contract, sort_keys=True,
                         separators=(',', ':')).encode()).hexdigest()})
-            elif text_articles:
+            elif text_articles and not (address_detail and detail_request):
                 # Early articles may have no physical nomination, especially
                 # after a closed malformed response. Compact T requires one;
                 # preserve the existing full SOURCE/MAP repair and its articles
@@ -1638,7 +1669,7 @@ async def _suggest(service, story, transcript, candidates):
                     'reason': 'no_received_physical_nomination', 'article_count': len(text_articles),
                     'existing_joint_followup_preserved': True, 'identity_accepted': False})
             article_reference_images = []
-            if compact_t and not native_readback_only:
+            if (compact_t or address_detail and detail_request and text_articles) and not native_readback_only:
                 from .identity_architectural_comparison import ready_article_references
                 article_reference_images, article_reference_receipt = await ready_article_references(
                     service, story, text_articles)
@@ -1719,8 +1750,12 @@ async def _suggest(service, story, transcript, candidates):
                 followup_prompt = prepared_request['prompt']
                 issued_followup_schema = prepared_request['schema']
                 joint_followup_binding = prepared_request['binding']
-                if compact_t:
-                    compact_t = {**compact_t, 'schema': issued_followup_schema}
+                # Decoding follows the original frozen contract even when an
+                # upgraded address-detail path would now issue joint G/T.
+                frozen_fields = issued_followup_schema.get('properties', {})
+                compact_t = ({**(compact_t or {}), 'schema': issued_followup_schema}
+                    if 'decision' in frozen_fields or set(frozen_fields) == {
+                        'accepted_geometry', 'accepted_architectural_text'} else None)
             retry_claim = False
             def check_prepared_request():
                 if native_readback_only:
@@ -1917,6 +1952,10 @@ async def _suggest(service, story, transcript, candidates):
                             if 'decision' in issued_followup_schema.get('properties', {}):
                                 compact_t = {**(compact_t or {}), 'schema': issued_followup_schema}
                                 schema['properties']['accepted_architectural_text'] = issued_followup_schema
+                            elif set(issued_followup_schema.get('properties', {})) == {
+                                    'accepted_geometry', 'accepted_architectural_text'}:
+                                compact_t = {**(compact_t or {}), 'schema': issued_followup_schema}
+                                schema['properties'].update(copy.deepcopy(issued_followup_schema['properties']))
                             else:
                                 compact_t = None
                                 schema.clear()
@@ -2020,7 +2059,52 @@ async def _suggest(service, story, transcript, candidates):
                     if resolution:
                         response_id_resolutions.append({**resolution, 'joint_stage': 'followup',
                             'provider_id': followup_provider, 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
-                    payload = combine_architectural_decision(payload, answer, compact_t['schema'])
+                    decision_schema = compact_t['schema']
+                    joint_components = set(decision_schema.get('properties', {})) == {
+                        'accepted_geometry', 'accepted_architectural_text'}
+                    if joint_components:
+                        from jsonschema import Draft202012Validator
+                        if not isinstance(answer, dict) or set(answer) - set(decision_schema['properties']):
+                            raise ValueError('source_map_text_components_invalid')
+                        from .identity_architectural_comparison import normalize_architectural_decision
+                        from .identity_plan_diagnostics import retain_closed_invalid
+                        payload = copy.deepcopy(payload)
+                        for name, contract in decision_schema['properties'].items():
+                            value = answer.get(name)
+                            try:
+                                if name == 'accepted_architectural_text':
+                                    value = normalize_architectural_decision(value, contract)
+                                elif not Draft202012Validator(contract).is_valid(value):
+                                    raise ValueError('source_map_component_invalid')
+                            except ValueError:
+                                payload.pop(name, None)
+                                component_rejections[name] = {'reason': (
+                                    'identity_architectural_text_schema_invalid' if name == 'accepted_architectural_text'
+                                    else 'identity_geometry_schema_invalid'), 'decision': value}
+                            else:
+                                payload[name] = value
+                        if component_rejections:
+                            retain_closed_invalid(service, story, answer, decision_schema,
+                                code='identity_joint_components_rejected', route=followup_provider,
+                                raw_json=response.text, provider_response_id=getattr(response, 'response_id', None),
+                                joint_stage='followup', operation_binding=joint_followup_binding)
+                            record_identity_event(service, story['id'], 'identity_plan_components_preserved', {
+                                'rejected_fields': list(component_rejections),
+                                'preserved_fields': [name for name in decision_schema['properties']
+                                    if name not in component_rejections], 'joint_stage': 'followup'})
+                        text_answer = payload.get('accepted_architectural_text') or {}
+                        if text_answer.get('decision') == 'accepted_architectural_text':
+                            payload['first_wave_hypotheses'] = []
+                        # A current explicit negative article binding supersedes
+                        # only the initial unconfirmed association, not any fact
+                        # or accepted basis. Keep its original response retained.
+                        unbound = {row['article_id'] for row in text_answer.get('article_bindings', [])
+                            if row['physical_binding_resolved'] is False}
+                        if 'subject_article_bindings' in payload:
+                            payload['subject_article_bindings'] = [row for row in
+                                payload['subject_article_bindings'] if row['article_id'] not in unbound]
+                    else:
+                        payload = combine_architectural_decision(payload, answer, decision_schema)
                 except (ValueError, TypeError) as exc:
                     from .identity_plan_diagnostics import retain_closed_invalid
                     retain_closed_invalid(service, story, answer, compact_t['schema'],
@@ -2030,7 +2114,7 @@ async def _suggest(service, story, transcript, candidates):
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_comparison_invalid')
                     raise PermanentProviderError('identity_architectural_comparison_invalid') from exc
-                if (payload['accepted_architectural_text']['decision'] == 'uncertain' and initial_validation_error
+                if ((payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain' and initial_validation_error
                         and not (physical_research_priority(story, payload, [*observed, *candidates],
                             joint_source_map_receipt()) or {}).get('active_candidate_ids')):
                     from .identity_plan_diagnostics import retain_closed_invalid
@@ -2072,7 +2156,8 @@ async def _suggest(service, story, transcript, candidates):
             else:
                 payload = decode_joint(response)
         return accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
-            raw_json_available=isinstance(response.text, str), provider_response_id=getattr(response, 'response_id', None))
+            raw_json_available=isinstance(response.text, str), provider_response_id=getattr(response, 'response_id', None),
+            component_rejections=component_rejections)
     async def fallback(cause):
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
         original_available = callable(original_readback) and original_readback(story)
