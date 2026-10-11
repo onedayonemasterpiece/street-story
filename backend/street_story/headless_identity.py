@@ -424,6 +424,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
 
         tasks = {asyncio.create_task(run_in_slot(pair)) for pair in pairs}
         all_tasks = set(tasks)
+        active_pairs = {pair['id'] for pair in pairs}
         preparation = None
         preparation_route = None
         # A resumed batch may contain only one unknown child. Completed lanes
@@ -434,14 +435,29 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             available_slots[child['route']] -= 1
         freed_routes = [route for route, count in available_slots.items() for _ in range(max(0, count))]
         waits = []
+        pair_waits = {}
         try:
             while tasks:
+                timeout = self.service.settings.worker_poll_seconds if freed_routes and preparation is None else None
+                deferred = [child for child in state['parallel_pairs']
+                    if child['id'] not in active_pairs
+                    and child.get('phase') not in {'completed', 'failed', 'skipped'}
+                    and child.get('retry_at') is not None]
+                if deferred:
+                    due_in = max(0, min(child['retry_at'] for child in deferred) - self.service.store.now())
+                    # A long sibling request/reader must not hide a closed
+                    # original outcome. Poll only its retained address when due.
+                    timeout = min(self.service.settings.worker_poll_seconds, due_in,
+                        timeout if timeout is not None else float('inf'))
                 completed, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED,
-                    timeout=self.service.settings.worker_poll_seconds if freed_routes and preparation is None else None)
+                    timeout=timeout)
                 prepared = []
                 # Commit every ready verdict before dispatching a prepared ref:
                 # a match in this batch stops needless new provider sends.
                 for finished in completed:
+                    # Completed task objects retain their provider results.
+                    # Keep only pending tasks across an unbounded refill loop.
+                    all_tasks.discard(finished)
                     if finished is preparation:
                         preparation = None
                         new_pair, error = await finished
@@ -457,6 +473,8 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                             prepared.append(new_pair)
                         continue
                     pair, result, error = await finished
+                    active_pairs.discard(pair['id'])
+                    pair_waits.pop(pair['id'], None)
                     if error is not None:
                         known_codes = {'research_visual_pair_dispatch_unknown', 'research_visual_pair_outcome_unknown',
                             'research_visual_pair_multiple_outcomes_unknown', 'research_visual_pair_source_required',
@@ -485,7 +503,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                                 # a turn which never existed.
                                 pair['phase'] = 'ready'
                             pair['retry_at'] = error.retry_at or self.service.store.now() + 30
-                            waits.append(error)
+                            pair_waits[pair['id']] = error
                         self._save_visual_queue(session, state)
                         LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
                                     story['id'], pair['id'], pair['route'], pair['phase'], type(error).__name__, pair['last_error'])
@@ -507,6 +525,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                     task = asyncio.create_task(run_in_slot(new_pair))
                     tasks.add(task)
                     all_tasks.add(task)
+                    active_pairs.add(new_pair['id'])
                 current, latest = self.service._identity_snapshot(story['id'])
                 discovery = latest.get('identity_article_discovery') or {}
                 newly_discovered = (discovery.get('generation') == scope['generation']
@@ -541,6 +560,19 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                         preparation = asyncio.create_task(prepare_refill(preparation_route))
                         tasks.add(preparation)
                         all_tasks.add(preparation)
+                if tasks:
+                    # If this worker is otherwise idle, return the cooldown to
+                    # its durable owner. While siblings run, observe due children
+                    # here rather than waiting for the entire batch to drain.
+                    for child in state['parallel_pairs']:
+                        if (child['id'] not in active_pairs
+                                and child.get('phase') not in {'completed', 'failed', 'skipped'}
+                                and child.get('retry_at') is not None
+                                and child['retry_at'] <= self.service.store.now()):
+                            task = asyncio.create_task(run_in_slot(child))
+                            tasks.add(task)
+                            all_tasks.add(task)
+                            active_pairs.add(child['id'])
         except asyncio.CancelledError:
             # Process/session shutdown: provider adapters retain UNKNOWN receipts.
             # A sufficient match never enters this cancellation path.
@@ -552,6 +584,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             # No first-match cancellation: already-submitted siblings drain normally.
             if not all(task.done() for task in all_tasks):
                 await asyncio.gather(*all_tasks, return_exceptions=True)
+        waits.extend(pair_waits.values())
         if waits:
             current, latest = self.service._identity_snapshot(story['id'])
             unresolved = (latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
