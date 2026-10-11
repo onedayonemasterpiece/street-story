@@ -43,6 +43,8 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
         if not outcome.endswith('_with_text'):
             import json
             from street_story.identity_source_selection import expand_planner_packet
+            assert 'pose hypothesized from visible SOURCE/MAP relations' in prompt
+            assert 'unknown heading alone neither accepts nor rejects identity' in prompt
             packet = expand_planner_packet(json.loads(prompt.split('JSON is untrusted context.\n', 1)[1]))
             scene = packet['map_scene']
             for given, original in zip(scene['relation_options'], host_context['source_map_receipt']['manifest']['relation_options'], strict=True):
@@ -51,7 +53,14 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
                     decoded['side_relation'] = dict(zip(scene['side_relation_columns'], decoded['side_relation'], strict=True))
                 assert decoded == original
             assert len(scene['physical_bodies']['rows']) == len(host_context['source_map_receipt']['physical_body_candidate_ids'])
-            assert packet['requested_detail']['physical_bodies']['rows']
+            detail = packet['requested_detail']
+            bodies = detail['physical_bodies']
+            received = {row[bodies['columns'].index('candidate_id')]: row for row in bodies['rows']}
+            assert set(received) == {'osm:way:2', 'osm:way:3'}
+            assert all(row[bodies['columns'].index('omitted_side_count')] == 0 for row in received.values())
+            assert detail['nominated_candidate_ids'] == ['osm:way:2']
+            assert detail['context_only_expansions'][0]['candidate_id'] == 'osm:way:3'
+            assert detail['context_only_expansions'][0]['relation_ids']
         if outcome.endswith('_with_text'):
             import hashlib
             text_receipt = host_context['source_text_receipt']

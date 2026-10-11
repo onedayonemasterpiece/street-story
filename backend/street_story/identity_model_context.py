@@ -40,7 +40,8 @@ def _outline_angular_scale(bearing_interval, diagonal_degrees):
     return round(span / diagonal_degrees, 3)
 
 
-def physical_decision_context(story, candidates, manifest, *, include_plan_morphology=True, overview_only=False):
+def physical_decision_context(story, candidates, manifest, *, include_plan_morphology=True, overview_only=False,
+                              detail_candidate_ids=()):
     """One literal row per received body; entrance addresses stay beside it.
 
     This is presentation of the received pool, never a nearest shortlist or a
@@ -66,7 +67,7 @@ def physical_decision_context(story, candidates, manifest, *, include_plan_morph
         if view.get('name') in {'anchor_detail', 'nominated_detail'}), None)
     window = (detail or manifest.get('coverage') or {}).get('extent_east_north_m') or (
         manifest.get('coverage') or {}).get('view_extent_east_north_m')
-    expanded_ids = set((detail or {}).get('target_candidate_ids') or [])
+    expanded_ids = set((detail or {}).get('target_candidate_ids') or []) | set(detail_candidate_ids)
     reference_diagonal = _exif_angular_reference(story, manifest)
     for entry in entries:
         cid = entry['candidate_id']

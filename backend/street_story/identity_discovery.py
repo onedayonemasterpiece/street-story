@@ -259,8 +259,14 @@ def _compact_geometry_followup(schema, manifest, physical_context, detail_reques
         'detail remain below. Nomination/lookup are hypotheses; empty text retrieval is neutral. '
         'Address, name, proximity or one rectangle alone is not identity. Distinguish the main physical '
         'volume from adjoining bodies; allow crop, yaw and obscuration. Missing heading/height stays '
-        'unknown. Use actual discriminating SOURCE/MAP relations and real primitive pointers: '
-        'general_relations or conditional measured scenarios, without invented pose or measurements. '
+        'unmeasured. A pose hypothesized from visible SOURCE/MAP relations may be tested as an explicit '
+        'conditional scenario, never presented as supplied EXIF or measured camera direction. Test '
+        'material alternatives and pose sensitivity; unknown heading alone neither accepts nor rejects identity. '
+        'The requested_detail.physical_bodies now exposes all observed sides of the nominated bodies '
+        'and their directly issued side-pair counterpoints. Initial statements that these contours '
+        'were deferred describe the earlier input, not missing data in this detailed packet. '
+        'Use actual discriminating SOURCE/MAP relations and real primitive pointers: '
+        'general_relations or explicit conditional scenarios, without inventing observed measurements. '
         'Unseen contours do not require separate member identity for one mapped object. If scope or '
         'material alternatives remain unresolved, return uncertain and one useful next_action for '
         'existing text/REF. Do not require REF after sufficient G. Side-relation arrays use '
@@ -1517,13 +1523,22 @@ async def _suggest(service, story, transcript, candidates):
                 geometry_prior_ids = prior['candidate_ids'] if prior else []
                 scene = expanded
                 scene_manifest = compact_scene_manifest(scene['manifest'])
-                physical_context = physical_decision_context(story, candidates, scene['manifest'])
+                from .identity_architectural_comparison import (
+                    architectural_comparison_scope, received_map_counterpoints)
+                counterpoints = received_map_counterpoints(story, candidates, {'manifest': scene_manifest})
+                detail_scope = architectural_comparison_scope(action['target_candidate_ids'],
+                    [row[1] for row in physical_context['rows']], counterpoints,
+                    scene_manifest.get('relation_options') or [])
+                physical_context = physical_decision_context(story, candidates, scene['manifest'],
+                    detail_candidate_ids=detail_scope['comparison_candidate_ids'])
                 resolution_packet = {**packet, 'map_scene': scene_manifest}
                 detail_request = {'initial_map_sha256': previous_map_sha,
                     'current_map_sha256': scene['manifest']['image_sha256'],
                     'detail_view': scene_manifest.get('detail_view'),
                     'physical_bodies': {**physical_context, 'rows': [row for row in physical_context['rows']
-                        if row[1] in action['target_candidate_ids']]},
+                        if row[1] in detail_scope['comparison_candidate_ids']]},
+                    'nominated_candidate_ids': detail_scope['nominated_candidate_ids'],
+                    'context_only_expansions': detail_scope['context_only_expansions'],
                     'conditional_initial_decision': prior}
                 if address_detail:
                     detail_request.update(trigger=(action['kind'] + '_with_deferred_geometry' if text_articles
