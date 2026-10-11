@@ -46,6 +46,56 @@ async def wait_match(svc, sid):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('count', [6, 17])
+async def test_retained_unknown_backlog_keeps_every_address_with_bounded_observation(tmp_path, count):
+    import copy
+    from street_story.headless_identity import HeadlessIdentity
+    svc, story, _ = prepare(tmp_path)
+    worker = HeadlessIdentity(svc)
+    session = SimpleNamespace(id='headless:unknown-backlog', resource_id=story['id'],
+        state={}, closed=False, model='fixture', visual_reference_limit=1)
+    await worker._compare_place_images(session, {})
+    state = session.state['visual_comparison']
+    template = worker._freeze_parallel_pairs(session, state['pending'], ('google',))[0]
+    pairs = []
+    for index in range(count):
+        pair = copy.deepcopy(template)
+        pair.update(id=f'original:{index}', phase='submitted', retry_at=0)
+        pair['reply']['comparison_id'] = pair['id']
+        pairs.append(pair)
+    state['parallel_pairs'] = pairs
+    state['queue'] = []
+    worker._save_visual_queue(session, state)
+    active = peak = 0
+    observed = []
+    async def observe(route, snapshot, item, schema, context):
+        nonlocal active, peak
+        assert item['_visual_pair_resume_only']
+        address = json.loads(context)['comparison_id']
+        observed.append(address)
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(.01)
+            raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=svc.store.now()+300)
+        finally:
+            active -= 1
+    def receipts(item, context):
+        return {'original': {'phase': 'unknown', 'provider_send_state': 'possibly_sent',
+            'turn_id': json.loads(context)['comparison_id']}}
+    provider = SimpleNamespace(parallel_visual_routes=lambda: ('google',)*4,
+        visual_pair_route=observe, visual_pair_receipts=receipts)
+    snapshot, _ = svc._identity_snapshot(story['id'])
+    scope = {'generation': 0, 'photo_sha256': snapshot['photo_sha256'], 'control_revision': 0}
+    with pytest.raises(RetryableProviderError, match='research_visual_pair_outcome_unknown'):
+        await worker._run_parallel_pairs({'id':'backlog-job','attempts':20}, provider, snapshot, session, scope)
+    assert set(observed) == {p['id'] for p in pairs} and len(observed) == count
+    assert peak == 4 and all(p['phase'] == 'submitted' for p in pairs)
+    _, research = svc._identity_snapshot(story['id'])
+    assert 'automatic_research_outcome' not in research
+
+
+@pytest.mark.asyncio
 async def test_independent_pairs_overlap_and_early_match_atomically_retains_submitted_peer(tmp_path):
     svc, story, photo = prepare(tmp_path)
     release = asyncio.Event()

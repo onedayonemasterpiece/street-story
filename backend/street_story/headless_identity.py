@@ -322,8 +322,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
     async def _run_parallel_pairs(self, job, provider, story, session, scope):
         state = session.state['visual_comparison']
         pairs = [item for item in state['parallel_pairs'] if item.get('phase') not in {'completed', 'failed', 'skipped'}]
-        if len(pairs) > 4:
-            raise PermanentProviderError('research_visual_parallel_pair_limit')
+        # Retained UNKNOWN/readback addresses can outlive several dispatch
+        # batches. Their count is not a task budget. Bound simultaneous work,
+        # preserving every original address rather than failing the SOURCE.
+        dispatch_slots = asyncio.Semaphore(4)
 
         async def run_pair(pair):
             current, latest = self.service._identity_snapshot(story['id'])
@@ -416,7 +418,11 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 session.state.pop('visual_refill_preparing', None)
                 session.visual_reference_limit = limit
 
-        tasks = {asyncio.create_task(run_pair(pair)) for pair in pairs}
+        async def run_in_slot(pair):
+            async with dispatch_slots:
+                return await run_pair(pair)
+
+        tasks = {asyncio.create_task(run_in_slot(pair)) for pair in pairs}
         all_tasks = set(tasks)
         preparation = None
         preparation_route = None
@@ -498,7 +504,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                              story['id'], pair['id'], pair['route'], session.model)
                     freed_routes.append(pair['route'])
                 for new_pair in prepared:
-                    task = asyncio.create_task(run_pair(new_pair))
+                    task = asyncio.create_task(run_in_slot(new_pair))
                     tasks.add(task)
                     all_tasks.add(task)
                 current, latest = self.service._identity_snapshot(story['id'])
