@@ -522,6 +522,19 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
     query = (receipt.get('lookup') or {}).get('query_scope')
     from .identity_architectural_pool import joint_source_spans
     source_passages, source_span_refs = joint_source_spans(articles, complete=complete_source)
+    # The original G/MAP receipt already measured these side/axis options.
+    # Compact T must keep those distinguishing neighbors, not reduce an
+    # un-nominated body to its postal address. Reuse exact observed primitives;
+    # no extra inference, nomination, camera pose or identity is introduced.
+    from .identity_spatial_features import geometry_feature
+    map_relations = copy.deepcopy((receipt.get('manifest') or {}).get('relation_options') or [])
+    relation_features = {}
+    for option in map_relations:
+        for reference in option.get('map_features') or []:
+            key = json.dumps(reference, sort_keys=True, separators=(',', ':'))
+            relation_features.setdefault(key, {
+                'reference': copy.deepcopy(reference),
+                'observed_geometry': geometry_feature(story, observed, reference)})
     packet = {
         'contract': 'source-architectural-comparison-input-v1',
         'original_photo_sha256': receipt.get('original_source_sha256'),
@@ -531,6 +544,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'literal_source_passages': source_passages,
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
+        'observed_map_relations': map_relations,
+        'relation_feature_geometry': list(relation_features.values()),
         'physical_reserve': {
             'columns': ['candidate_id', 'map_label', 'observed_name', 'literal_address'],
             'rows': [[cid, labels.get(cid),
@@ -599,6 +614,12 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'complex does not identify one of several separately mapped neighboring bodies; shared '
         'address/history cannot resolve that choice. Judge this from the actual geometry and images. '
         'Do not infer what SOURCE shows from a prior nomination, article address or title. '
+        'Write source_observation from the actual SOURCE pixels, never copy an article quote '
+        'or claim that a historical event is visible. For a spatial ambiguity inspect the '
+        'already measured observed_map_relations and their exact relation_feature_geometry, '
+        'including an un-nominated neighbor. These are MAP side/axis hypotheses, not SOURCE '
+        'frontages or a measured camera pose. A different postal address does not establish '
+        'that SOURCE depicts the nominated body rather than that neighbor. '
         'Use useful G hypotheses to narrow comparison, but a failed G is not a veto of T. '
         'An actually readable name or inscription is a strong search and identification clue; '
         'distinguish a sign naming this body from a tenant, advertisement or background sign. '

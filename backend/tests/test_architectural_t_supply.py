@@ -296,6 +296,38 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
 
+def test_compact_t_keeps_measured_neighbor_relations_without_nominating_neighbor():
+    from test_identity_spatial_features import building, story as spatial_story
+    from street_story.identity_spatial_features import geometry_feature, supplied_relation_options
+    source, candidates, _, receipt = _comparison_fixture()
+    source.update(spatial_story([building(7, 10, 20), building(88, 50, 25), building(99, 1000, 40)]))
+    receipt['conditional_initial_decision']['candidate_ids'] = [candidates[0]['candidate_id']]
+    options = supplied_relation_options(source, candidates, active_ids=[candidates[0]['candidate_id']])
+    assert options
+    receipt.setdefault('manifest', {})['relation_options'] = options
+    original = copy.deepcopy(receipt)
+    prepared = prepare_architectural_comparison(source, candidates, receipt)
+    packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
+    assert packet['observed_map_relations'] == options
+    assert prepared['candidate_ids'] == [candidates[0]['candidate_id']]
+    assert any(row[0] == 'osm:way:88' for row in packet['physical_reserve']['rows'])
+    for item in packet['relation_feature_geometry']:
+        assert item['observed_geometry'] == geometry_feature(source, candidates, item['reference'])
+    assert any(item['reference']['candidate_id'] == 'osm:way:88' and item['observed_geometry']
+        for item in packet['relation_feature_geometry'])
+    assert receipt == original
+
+
+def test_compact_t_missing_neighbor_primitive_stays_unknown_without_fabrication():
+    source, candidates, _, receipt = _comparison_fixture()
+    reference = {'candidate_id':'osm:way:not-received','kind':'segment','ring_index':0,'segment_index':0}
+    receipt.setdefault('manifest', {})['relation_options'] = [{'id':'R1','map_features':[reference]}]
+    prepared = prepare_architectural_comparison(source, candidates, receipt)
+    packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
+    assert packet['relation_feature_geometry'] == [{'reference':reference,'observed_geometry':None}]
+    assert 'osm:way:not-received' not in prepared['candidate_ids']
+
+
 def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     story, candidates, decision, receipt = _comparison_fixture()
     decision['scope'] = 'Article describes a complex covering house 6 and neighboring 6A.'
