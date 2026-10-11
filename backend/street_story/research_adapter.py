@@ -272,10 +272,14 @@ class ProductResearchAdapter:
         if getattr(self, 'control', None) is None:
             return
         from ai_resource_control.workload import WorkloadLease
+        authority = self._accounting_authority(self.control)
+        now = self.service.store.now()
         with self.service.store.connection() as db:
             rows = list(db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
                 "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
-                "ORDER BY updated_at LIMIT ?", (limit,)))
+                "AND COALESCE(json_extract(receipt_json,'$.accounting_finalization.retry_at'),0)<=? "
+                "AND json_extract(receipt_json,'$.accounting_finalization.authority_sha256')=? "
+                "ORDER BY updated_at,attempt_id LIMIT ?", (now, authority, limit)))
         for row in rows:
             record = json.loads(row['receipt_json'])['accounting_finalization']
             if record.get('retry_at', 0) > self.service.store.now():

@@ -179,6 +179,10 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
     _s, _c, answer, receipt = text_inputs(candidate_id='osm:way:2')
     answer.update(decision='uncertain', physical_link_evidence=[],
         research_priority=guidance([next_body]))
+    if next_body == 'osm:way:4':
+        # This received body is still host-only; the model must address it
+        # explicitly rather than claiming it was in the issued comparison.
+        answer['research_priority']['next_step'] = 'expand_reserve'
     calls, reads = [], []
     articles = [*receipt['articles']]
     if lookup_failure:
@@ -212,7 +216,9 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert all(a['text'] in contents[-1] for a in articles)
         packet = next(json.loads(line) for line in contents[-1].splitlines()
                       if line.startswith('{') and 'literal_source_passages' in line)
-        assert any(row[0] == 'osm:way:4' for row in packet['physical_reserve']['rows'])
+        assert packet['physical_reserve']['count'] == 1
+        assert 'rows' not in packet['physical_reserve']
+        assert packet['candidate_scope']['comparison_candidate_ids'] == ['osm:way:2', 'osm:way:3']
         for relation in answer['correspondences']:
             own = next(row['passages'] for row in packet['literal_source_passages']
                 if row['article_id'] == relation['article_id'])

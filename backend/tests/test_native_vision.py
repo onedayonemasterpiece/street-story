@@ -174,6 +174,18 @@ async def test_completed_native_result_survives_accounting_and_reconciles_exact_
         receipt['accounting_finalization'] = record
         db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
                    (canonical(receipt), binding['attempt_id']))
+        # Older future-due and foreign-authority records must not consume the
+        # bounded recovery slots before this eligible original finalization.
+        for suffix, changes in (
+                ('future', {'retry_at': service.store.now() + 3600}),
+                ('foreign', {'authority_sha256': 'another-authority'})):
+            blocked = copy.deepcopy(receipt)
+            blocked['accounting_finalization'].update(changes)
+            db.execute('INSERT INTO research_provider_attempts '
+                       '(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) '
+                       'VALUES(?,?,?,?,?,?,?)',
+                       ('blocked-' + suffix, 'blocked-' + suffix, sid, 'vision_native',
+                        canonical(blocked), 0, 0))
     await reopened.recover_accounting()
     await reopened.recover_accounting()
     restored, saved = reopened._accounting_record(binding)

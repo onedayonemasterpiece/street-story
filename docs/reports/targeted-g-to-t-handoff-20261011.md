@@ -23,3 +23,13 @@ One authenticated capabilities-only RPC returned HTTP200, valid contract/ok, in3
 Evidence remains in `/home/dev/artifacts/street-story/20261011T082451Z-product-recovery-finish-20261011/`: `targeted-gt-saved-input-python312.json`, the three `targeted-gt-*.log` files, `capabilities-only-authorized-20261011.json`, and `control-diagnostics-python312.log`. One-use pytest data/dependencies are temporary and removed after checks; no new clone or venv was created. The source-only final handoff diff is retained for provenance.
 
 The full original product acceptance remains open: independent correct-body/own-fact verification, final stable-runtime15, applicable warm/assisted/lifecycle and editorial obligations. Production deployment and the old owner-cancelled job remain untouched.
+
+## Night continuation after c31ef08
+
+The owner resumed the full product task under c6a26aa and authorized reading mutable night guidance. The five-minute watchdog smoke separately observed revision1 and acknowledged its nonce; it does not establish overnight autonomy or product acceptance.
+
+On exact c31ef08, Android CI38171953890 succeeded. Backend CI38171954126 had2983 passed/55 skipped and6 failures in the same parametrized priority fixture: it still read reserve rows removed from the ordinary T packet. The corrected fixture asserts count/digest-only reserve and the issued comparison IDs; requesting an unissued received body requires explicit expand_reserve. All18 priority tests pass on Python3.12, without weakening positive identity or foreign-pointer guards.
+
+The single real cold108 canary closed the HTTP client, then reopened at605.193 seconds. SOURCE remained available, identity uncertain, eligible0, and the durable visual job unfinished. Native G/T closed; completed REF comparisons did not establish an exact body. Product receipts observe33 sends as a lower bound,2 UNKNOWN and unknown aggregate monetary cost. The experiment ended its backend after the return; this is neither owner Stop nor natural terminal/accuracy failure. No second inference run was started. Raw evidence is retained in cold-c31ef08-108-targeted/.
+
+Independent accounting repair addresses D33: select due records for the current authority before applying the bounded recovery limit. Two original-lease/lost-response controls fail before this change when older future-due and foreign-authority entries fill the slots; after the fix,56 focused tests pass. Original lease payload, UNKNOWN state, quota and single-send protections remain. Logs: night-accounting-starvation-before.log, night-accounting-recovery-python312.log. This repair is not claimed as the semantic cause or solution of unresolved108.
