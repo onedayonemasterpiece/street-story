@@ -792,6 +792,8 @@ class OpenCodeResearch:
         if not isinstance(jsonschema, dict):
             raise ResearchUnavailable('research_fact_schema_required')
         content = {key: value for key, value in capsule.items() if key not in {'binding', 'jsonschema'}}
+        from .source_assessment import source_first_input
+        content = source_first_input(content)
         # Already addressed operations keep their exact extraction instruction.
         # Version the durable binding for new sends so their own later readback
         # uses the same policy rather than silently changing the frozen input.

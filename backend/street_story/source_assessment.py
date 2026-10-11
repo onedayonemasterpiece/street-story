@@ -30,7 +30,9 @@ CHECKS = (
     'when the source itself establishes consistent scope. Do not invent foundation/completion '
     'distinctions. Unresolved competing values require possible_conflict or insufficient. '
     'Then enumerate independently selectable propositions in claims BEFORE choosing verdict/atomic. '
-    'Each dimension, person, role or distinct event is separate. supported requires exactly one '
+    'Each dimension, person, role or distinct event is separate. Building count, levels and entrance '
+    'count are independently selectable properties, not one structural fact. A historical event '
+    'and a subsequent condition are separate claims. supported requires exactly one '
     'claim equal to text and no own_value_conflicts. Normalize separate new facts in this SAME pass. '
     'Known inventory is prior assertions for comparison, never substitute evidence or a semantic '
     'oracle: reassess each reused claim against all own values. A changed/narrowed claim must use '
@@ -38,7 +40,21 @@ CHECKS = (
     'Resolve sentence subjects and pronoun antecedents locally: after a source switches buildings, '
     'its following architects/management statements cannot silently return to the page-title building. '
     'If the antecedent remains ambiguous, withhold that claim. '
+    'An account attributed to an author does not establish that author as the architect or designer. '
+    'Preserve attribution as attribution, not a role inferred from a prior claim. An undated '
+    'currently/now statement or an explicitly outdated source does not establish present-day use '
+    'or condition. Retrieval time is not publication/event time; preserve the dated historical '
+    'statement or withhold the unsupported current assertion. '
 )
+
+
+def source_first_input(capsule):
+    """Order the unchanged evidence before the old matching index on the wire."""
+    if capsule.get('semantic_contract') != CONTRACT:
+        return capsule
+    keys = ('sources', 'semantic_contract', 'context', 'known_fact_inventory')
+    return {**{key: capsule[key] for key in keys if key in capsule},
+            **{key: value for key, value in capsule.items() if key not in keys}}
 
 
 def response_schema(legacy_schema, contract):

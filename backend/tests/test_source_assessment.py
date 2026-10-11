@@ -9,12 +9,59 @@ from jsonschema import Draft202012Validator
 from street_story.fact_page_boundary import isolate_rows
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_adapter import FACT_PAGE_SCHEMA
-from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, public_fact, response_schema
+from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, public_fact, response_schema, source_first_input
 from test_headless_fact_pool import fixture, partial, result
 
 SCHEMA = response_schema(FACT_PAGE_SCHEMA, CONTRACT)
 PASSAGES = {0: 'Дата постройки 1853 год. Башня была построена в 1859 году.',
             1: 'Диаметр 34 метра. Высота 12 метров.', 2: 'В 1944 году внутри были размещены склады.'}
+
+
+def test_source_first_input_preserves_exact_evidence_and_index_and_legacy_order():
+    capsule = {'context': {'known_inventory_complete': False, 'known_inventory_next_offset': 1},
+        'known_fact_inventory': [{'fact_id': 'old', 'text': 'A prior assertion.', 'eligibility': 'eligible'}],
+        'semantic_contract': CONTRACT,
+        'sources': [{'source_version_id': 'own', 'passages': [{'passage_id': 0, 'text': PASSAGES[0]}]}]}
+    original = copy.deepcopy(capsule)
+    actual = source_first_input(capsule)
+    assert json.loads(json.dumps(actual)) == original == capsule
+    assert list(actual)[0] == 'sources'
+    capsule['semantic_contract'] = LEGACY_CONTRACT
+    assert source_first_input(capsule) is capsule and list(capsule)[0] == 'context'
+
+
+@pytest.mark.asyncio
+async def test_live_source_body_precedes_prior_claims_in_actual_operation_context(tmp_path):
+    from test_autonomous_live_research import binding, client
+    from test_mvp_research import service
+    svc, _, story = service(tmp_path)
+    payload = {'facts': [row()], 'source_matches_poi': True,
+        'source_content_valid': True, 'continuation_needed': False}
+    provider, calls = client(svc, 'valid', tool_args=payload)
+    initialized = []
+    factory = provider.host_factory
+    def capture(*args, **kwargs):
+        host = factory(*args, **kwargs)
+        original_start = host.start
+        async def start(**start_args):
+            result = await original_start(**start_args)
+            initialized.append(host.initialized)
+            return result
+        host.start = start
+        return host
+    provider.host_factory = capture
+    capsule = {'context': {'coverage_goal': 'Read own facts.'},
+        'known_fact_inventory': [{'fact_id': 'old', 'text': 'Prior compound claim.', 'eligibility': 'eligible'}],
+        'semantic_contract': CONTRACT, 'jsonschema': SCHEMA,
+        'sources': [{'source_version_id': 'own', 'passages': [{'passage_id': 2, 'text': PASSAGES[2]}]}]}
+    original = copy.deepcopy(capsule)
+    closed = await provider.extract_facts(capsule, {**binding(svc, story), 'semantic_contract': CONTRACT})
+    prompt = initialized[0]['context']['frozen_research_operation']['prompt']
+    serialized = prompt.split('Frozen source unit:\n', 1)[1]
+    assert serialized.index('"sources"') < serialized.index('"known_fact_inventory"')
+    assert json.loads(serialized) == {key: value for key, value in original.items() if key != 'jsonschema'}
+    assert capsule == original and closed['result'] == payload
+    assert [name for name, _ in calls] == ['start', 'input', 'stop']
 
 
 def row(text='В 1944 году внутри были размещены склады.', pid=2, key='warehouse'):
