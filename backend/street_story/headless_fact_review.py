@@ -62,6 +62,10 @@ VERIFIER_PROMPT = (
     'supported requires the unchanged original single claim in claims, atomic=true, '
     'support_complete=true, qualifiers_preserved=true and no unresolved own_value_conflicts. '
     'Any narrowing/decomposition requires repair_needed. Preserve subject, date, stage, subset, '
+    'For repair_needed you may supply repair_facts: 1–8 precise atomic replacements with a '
+    'model claim_key and own evidence numbers. Preserve unresolved disagreement in the text; '
+    'never choose a disputed value. Only propose what these actual own spans support. The host '
+    'will preserve lineage and review replacements within the existing bounded budget. '
     'uncertainty and planned/future/estimated versus completed/actual modality. Missing context '
     'is insufficient, not historical falsity. Mutable states need the source as-of date or '
     'own current evidence; retrieval/review time and undated currently are not present proof. '
@@ -79,7 +83,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v12-grouped-own-values:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v13-own-replacements:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
@@ -202,6 +206,8 @@ class HeadlessFactReview:
             return None
         story = {**snapshot[0], '_fact_pool_unit_id': unit,
                  '_fact_pool_input_sha256': hashlib.sha256(canonical([verifier_contract, packet]).encode()).hexdigest()}
+        if not observing:
+            story['_fact_semantic_contract'] = 'own-evidence-review-rows-v1'
         public_schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
         schema = (saved.get('verifier_schema', public_schema) if observing
                   else headless_review_quotes.response_schema(packet, public_schema))
@@ -255,7 +261,8 @@ class HeadlessFactReview:
                 if not self._result_route_qualified(result):
                     self._close_unqualified_result(job, unit, result)
                     return None
-                if (not Draft202012Validator(schema).is_valid(args)
+                from .fact_page_boundary import review_rows_valid
+                if (not (Draft202012Validator(schema).is_valid(args) or not observing and review_rows_valid(args, schema))
                         or args.get('packet_ref') != packet['packet_ref']):
                     closed_routes.add(role)
                     self._put(job, unit, {**frozen, 'phase': 'closed_error', 'invalid_args': args,
@@ -390,7 +397,9 @@ class HeadlessFactReview:
                 self._close_unqualified_result(job, unit, result)
                 continue
             schema = saved.get('verifier_schema', public_schema)
-            if not Draft202012Validator(schema).is_valid(args) or args.get('packet_ref') != saved.get('packet_ref'):
+            from .fact_page_boundary import review_rows_valid
+            row_contract = (prior.get('binding') or {}).get('semantic_contract') == 'own-evidence-review-rows-v1'
+            if not (Draft202012Validator(schema).is_valid(args) or row_contract and review_rows_valid(args, schema)) or args.get('packet_ref') != saved.get('packet_ref'):
                 continue
             self._put(job, unit, result)
             LOG.info('street_story_background_fact_review_recovered story_id=%s unit_id=%s original_result=true',
@@ -505,6 +514,20 @@ class HeadlessFactReview:
         async with lock:
             if self.harness._snapshot(job, run_id, control_revision) is None:
                 return 0
+            from .headless_review_repairs import resume
+            with self.service.store.connection() as db:
+                closed = [json.loads(row[0]) for row in db.execute('SELECT value_json FROM research_checkpoints '
+                    "WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],))]
+            for outcome in closed:
+                if outcome.get('phase') != 'committed' or outcome.get('run_id') != run_id or not any(
+                        isinstance(d, dict) and d.get('repair_facts') for d in (outcome.get('args') or {}).get('decisions', [])):
+                    continue
+                session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
+                    model=outcome.get('model_id') or 'unknown', actor=None, closed=False,
+                    state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend',
+                           'research_run_id': run_id})
+                if self._result_route_qualified(outcome):
+                    await resume(self, session, job, outcome['unit_id'], outcome)
             with self.service.store.tx() as db:
                 self.service._hydrate_poi_memory(db, self.service._story_row(db, job['story_id']))
             if fact_ids is None:
@@ -545,8 +568,7 @@ class HeadlessFactReview:
                         self._close_unqualified_result(job, unit, outcome)
                         continue
                     try:
-                        resolved_args = headless_review_quotes.resolve_quotes(packet, args)
-                        resolved_args = headless_review_quotes.public_result(packet, resolved_args)
+                        resolved_args = headless_review_quotes.resolve_rows(packet, args)
                         value = await self.harness.adapter.execute_tool(session, {
                             'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
                         if value.get('eligible_count') is not None:
@@ -555,8 +577,13 @@ class HeadlessFactReview:
                                 original = json.loads(db.execute('SELECT payload_json FROM live_review_packets '
                                     'WHERE packet_ref=?', (packet['packet_ref'],)).fetchone()[0])
                             basis = headless_review_quotes.sufficient_basis(packet, args, original['items'])
-                            self._put(job, unit, {**outcome, 'phase': 'committed', 'packet_ref': packet['packet_ref'],
-                                'research_sufficient': args.get('research_sufficient'), 'sufficiency_basis': basis})
+                            committed_outcome = {**outcome, 'phase': 'committed', 'packet_ref': packet['packet_ref'],
+                                'unit_id': unit, 'run_id': run_id, 'args': args, 'frozen_packet': packet,
+                                'research_sufficient': args.get('research_sufficient'), 'sufficiency_basis': basis}
+                            self._put(job, unit, committed_outcome)
+                            session.state['research_run_id'] = run_id
+                            if self.harness._snapshot(job, run_id, control_revision) is not None:
+                                await resume(self, session, job, unit, committed_outcome)
                             LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
                                      job['story_id'], run_id, unit, value['eligible_count'])
                     except ConflictError as exc:

@@ -171,7 +171,18 @@ class LiveSemanticClient:
                 raw_args = call.get('args')
                 args = normalize_result(raw_args, schema)
                 receipt['raw_result'] = raw_args
+                if binding.get('semantic_contract') == 'source-reading-assessment-v2':
+                    from .fact_page_boundary import isolate_rows
+                    isolated = isolate_rows(args, schema)
+                    if isolated is not None and isolated['row_isolation']['rejected_indices']:
+                        args = isolated['result']
+                        receipt['row_isolation'] = isolated['row_isolation']
                 errors = list(islice(Draft202012Validator(schema).iter_errors(args), VALIDATION_ERRORS + 1))
+                if errors and binding.get('semantic_contract') == 'own-evidence-review-rows-v1':
+                    from .fact_page_boundary import review_rows_valid
+                    if review_rows_valid(args, schema):
+                        receipt['row_validation_pending'] = True
+                        errors = []  # The unchanged rows still require scoped product validation.
                 if call.get('name') != RESULT_TOOL or errors:
                     details = [_validation_error(error) for error in errors[:VALIDATION_ERRORS]]
                     call_id = call.get('id') if isinstance(call.get('id'), str) else None

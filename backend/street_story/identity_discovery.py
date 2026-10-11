@@ -1255,8 +1255,9 @@ async def _suggest(service, story, transcript, candidates):
         elif schema_errors and initial_validation_error is not None:
             issues['schema_validation'] = {'errors': schema_errors, 'truncated': schema_errors_truncated}
         from .identity_proof import freeze_geometry_proof
+        geometry_rejection_details = []
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
-            joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
+            joint_source_map_receipt(), [*observed, *candidates], rejection=geometry_rejection_details) if isinstance(payload, dict) else None)
         initial_text = closed_text_proof(payload) if isinstance(payload, dict) and initial_validation_error is None else None
         if initial_geometry is not None and initial_validation_error is None:
             # Independent G already passed strict admission. An inapplicable T
@@ -1286,7 +1287,10 @@ async def _suggest(service, story, transcript, candidates):
                 and geometry_claim.get('decision') in {'accepted_geometry', 'uncertain'}):
             geometry_rejection = {'code': ('identity_geometry_proof_invalid'
                 if geometry_claim['decision'] == 'accepted_geometry' else 'identity_geometry_uncertain'),
-                'previous_claim_is_not_confirmation': True}
+                'previous_claim_is_not_confirmation': True,
+                'validation': geometry_rejection_details,
+                'original_operation': {'joint_stage': 'initial', 'binding': initial_binding,
+                    'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()}}
             correspondence = geometry_claim.get('spatial_correspondence')
             correspondence = correspondence if isinstance(correspondence, dict) else {}
             if geometry_claim['decision'] == 'accepted_geometry' and correspondence.get('pattern_kind') == 'frontage_sequence':
@@ -1302,9 +1306,29 @@ async def _suggest(service, story, transcript, candidates):
                         'are visible and the pose/alternatives are supported. Otherwise keep uncertain '
                         'or independently compare acquired architecture text; never just rename the pattern.')
             from .identity_plan_diagnostics import retain_physical_hypothesis
+            marker = joint_operation_marker(service, story, stage='initial') or {}
+            if initial_route == 'native_source_map' and callable(native_reader):
+                original_receipt = native_reader(story) or {}
+                original_input = {'storage': 'research_provider_attempts', 'story_id': story['id'],
+                    'role': 'vision_native_spatial', 'binding': original_receipt.get('binding'),
+                    'turn_id': original_receipt.get('turn_id'), 'field': 'receipt_json.frozen_source_map'}
+            else:
+                import base64
+                original_input = {'storage': 'identity_physical_hypothesis', 'image_parts': [
+                    {'label': label, 'mime_type': mime, 'sha256': hashlib.sha256(data).hexdigest(),
+                     'bytes_base64': base64.b64encode(data).decode('ascii')}
+                    for label, mime, data in [('SOURCE', source_mime, source_bytes),
+                                             ('MAP', scene['mime_type'], scene['bytes'])]]}
+                if marker.get('closed_plan'):
+                    original_input['packet_pointer'] = 'research_json.identity_joint_initial.closed_plan'
+                    original_input['binding'] = marker.get('binding')
+                else:
+                    original_input.update(prompt=prompt, schema=initial_schema,
+                        configuration=config.model_dump(mode='json', exclude_none=True))
             retain_physical_hypothesis(service, story, payload, joint_source_map_receipt(),
                 [*observed, *candidates], reason=geometry_rejection,
-                raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None))
+                raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None),
+                original_input=original_input)
             if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
             if (geometry_claim['decision'] == 'accepted_geometry'

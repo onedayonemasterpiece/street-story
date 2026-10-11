@@ -328,6 +328,15 @@ async def test_joint_geometry_rejects_missing_or_wrong_map_label_binding(tmp_pat
     with pytest.raises(PermanentProviderError, match='identity_geometry_proof_invalid'):
         await identity_discovery.prepare_search_plan(service, story, '', active)
     assert '_identity_geometry_result' not in story
+    retained = service._identity_snapshot(story['id'])[1]['identity_physical_hypothesis']
+    import base64
+    import hashlib
+    original_input = retained['original_input']
+    assert original_input['schema'] and original_input['prompt'] and original_input['configuration']
+    assert {part['label'] for part in original_input['image_parts']} == {'SOURCE', 'MAP'}
+    for part in original_input['image_parts']:
+        assert hashlib.sha256(base64.b64decode(part['bytes_base64'])).hexdigest() == part['sha256']
+    assert retained['reason']['validation'] and not retained['identity_accepted']
 
 
 @pytest.mark.asyncio
@@ -575,11 +584,18 @@ async def test_general_geometry_uses_received_relations_without_numerical_pose(t
         'source_photo_sha256': story['photo_sha256'], 'original_source_sha256': digest, 'model_source_sha256': digest,
         'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene['manifest'],
         'physical_body_candidate_ids': ['osm:way:2', 'osm:way:3'], 'material_alternative_candidate_ids': ['osm:way:3']}
-    proof = freeze_geometry_proof(story, decision, receipt, active)
+    rejection = []
+    proof = freeze_geometry_proof(story, decision, receipt, active, rejection=rejection)
     if foreign:
         assert proof is None
+        assert rejection == [{'code': 'geometry_relation_subject_unreceived', 'relation_index': 0}]
     else:
+        assert rejection == []
         assert proof['spatial_correspondence']['kind'] == 'general_relations'
         assert 'pose' not in proof['decision']['spatial_correspondence']
+        wrong_source = {**receipt, 'source_photo_sha256': 'other-photo'}
+        assert freeze_geometry_proof(story, decision, wrong_source, active, rejection=rejection) is None
+        assert rejection[-1]['failed_fields'] == ['source_photo_binding']
         receipt['geometry_contract'] = 'source-map-spatial-correspondence-v2'
-        assert freeze_geometry_proof(story, decision, receipt, active) is None
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_spatial_correspondence_unresolved'

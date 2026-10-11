@@ -1094,6 +1094,14 @@ class HeadlessFacts:
             extracted = await provider.extract_fact_page(page, dict(story), dict(context))
             if not isinstance(extracted, dict):
                 raise MalformedProviderResponse('research_fact_page_contract_invalid')
+            if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') == 'source-reading-assessment-v2':
+                from .fact_page_boundary import isolate_result
+                from .research_adapter import FACT_PAGE_SCHEMA
+                isolated = isolate_result(extracted, FACT_PAGE_SCHEMA,
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']})
+                if isolated is None:
+                    raise MalformedProviderResponse('research_fact_page_claim_invalid')
+                extracted = isolated
             result = extracted.get('result')
             if (not isinstance(result, dict) or not isinstance(result.get('facts'), list)
                     or any(type(result.get(flag)) is not bool for flag in
@@ -1153,6 +1161,14 @@ class HeadlessFacts:
                 raise ConflictError('live_research_save_stale', 'Owner inputs or the extraction lease changed; saved result is deferred.')
         # Only candidate additions can rebase the frozen recipe while owner inputs remain identical.
         session.state['research_chunk_receipts'][page['chunk_id']]['expected_story_revision'] = int(story['revision'])
+        if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') == 'source-reading-assessment-v2':
+            from .fact_page_boundary import isolate_result
+            from .research_adapter import FACT_PAGE_SCHEMA
+            isolated = isolate_result(extracted, FACT_PAGE_SCHEMA,
+                passage_ids={p['passage_id'] for p in page['evidence_passages']})
+            if isolated is None:
+                raise MalformedProviderResponse('research_fact_page_claim_invalid')
+            extracted = isolated
         result = extracted['result']
         claims = result['facts'] if result['source_matches_poi'] and result['source_content_valid'] else []
         if any(not isinstance(fact, dict) for fact in claims):
@@ -1175,16 +1191,28 @@ class HeadlessFacts:
         # their new claims; a single reviewed claim never represents that set.
         basis = result.get('research_sufficient_basis')
         indices = basis.get('candidate_indices', []) if isinstance(basis, dict) else list(range(len(claims)))
+        isolated_indices = (extracted.get('row_isolation') or {}).get('accepted_indices')
+        if isinstance(basis, dict) and isolated_indices is not None and isinstance(indices, list):
+            indices = [isolated_indices.index(index) if type(index) is int and index in isolated_indices else -1
+                       for index in indices]
         known_ids = basis.get('known_fact_ids', []) if isinstance(basis, dict) else []
         saved_facts = committed.get('facts') or []
         known = unit.get('sufficiency_known_facts') or {}
         valid = (len(saved_facts) == len(claims) and isinstance(indices, list) and isinstance(known_ids, list)
+                 and (isinstance(basis, dict) or not (extracted.get('row_isolation') or {}).get('rejected_indices'))
                  and all(type(index) is int and 0 <= index < len(saved_facts) for index in indices)
                  and all(isinstance(fid, str) and fid in known for fid in known_ids))
         bound_basis = ([(saved_facts[index]['fact_id'], saved_facts[index]['text']) for index in indices]
                        + [(fid, known[fid]) for fid in known_ids]) if valid else []
         self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'],
-                         sufficiency_basis=bound_basis)
+                         sufficiency_basis=bound_basis, row_isolation=extracted.get('row_isolation'))
+        if (extracted.get('row_isolation') or {}).get('rejected_indices') and self._snapshot(job, run_id, control_revision):
+            from .research_runs import mark_chunk
+            with self.service.store.tx() as db:
+                if self._snapshot(job, run_id, control_revision):
+                    mark_chunk(db, run_id=run_id, chunk_id=page['chunk_id'], status='failed',
+                        error_code='malformed_fact_rows', observation_count=len(saved_facts),
+                        model_name=session.model, prompt_version='source-reading-assessment-v2', now=self.service.store.now())
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],

@@ -632,7 +632,19 @@ class OpenCodeResearch:
                             from .research_result_normalization import normalize_result
                             receipt['raw_result'] = result
                             result = normalize_result(result, schema)
-                            if not Draft202012Validator(schema).is_valid(result):
+                            if binding.get('semantic_contract') == 'source-reading-assessment-v2':
+                                from .fact_page_boundary import isolate_rows
+                                isolated = isolate_rows(result, schema)
+                                if isolated is not None and isolated['row_isolation']['rejected_indices']:
+                                    result = isolated['result']
+                                    receipt['row_isolation'] = isolated['row_isolation']
+                            from .fact_page_boundary import review_rows_valid
+                            valid_result = Draft202012Validator(schema).is_valid(result)
+                            if (not valid_result and binding.get('semantic_contract') == 'own-evidence-review-rows-v1'
+                                    and review_rows_valid(result, schema)):
+                                valid_result = True
+                                receipt['row_validation_pending'] = True
+                            if not valid_result:
                                 if role != 'search':
                                     raise ResearchUnavailable('research_schema_invalid', receipt)
                                 receipt['summary_json_valid'] = False

@@ -121,6 +121,11 @@ CREATE TABLE IF NOT EXISTS live_review_attempts(
  policy_version TEXT NOT NULL, supersedes_ref TEXT,
  affected_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
 );
+CREATE TABLE IF NOT EXISTS live_review_row_rejections(
+ packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref) ON DELETE CASCADE,
+ request_sha256 TEXT NOT NULL, payload_json TEXT NOT NULL,
+ PRIMARY KEY(packet_ref,request_sha256)
+);
 CREATE TABLE IF NOT EXISTS live_review_contexts(
  context_ref TEXT PRIMARY KEY, packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref) ON DELETE CASCADE,
  source_version_id TEXT NOT NULL, span_start INTEGER NOT NULL, span_end INTEGER NOT NULL,
@@ -158,6 +163,9 @@ def pending_candidates(db, story_id, run_id):
         saved = json.loads(row['payload_json'] or '{}')
         if saved.get('extractor_candidates'):
             ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
+    ids.extend(row[0] for row in db.execute('SELECT r.child_id FROM live_fact_repairs r '
+        'JOIN live_review_packets p ON p.packet_ref=r.packet_ref WHERE r.story_id=? AND p.run_id=? '
+        'ORDER BY r.rowid', (story_id, run_id)))
     return [fid for fid in dict.fromkeys(ids) if db.execute(
         "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
         (story_id, fid)).fetchone()]
@@ -296,6 +304,10 @@ def read(adapter, session, args):
                 if saved.get('extractor_candidates'):
                     existing_hints.extend(str(fid) for fid in saved.get('extractor_existing_fact_ids', []) if fid)
                     candidate_ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
+            if candidate_ids or args.get('_candidate_ids') is not None:
+                candidate_ids.extend(row[0] for row in db.execute('SELECT r.child_id FROM live_fact_repairs r '
+                    'JOIN live_review_packets p ON p.packet_ref=r.packet_ref WHERE r.story_id=? AND p.run_id=? '
+                    'ORDER BY r.rowid', (session.resource_id, run_id)))
             candidate_mode = requested_scope is not None or bool(candidate_ids) and not supersedes
             if candidate_mode:
                 if requested_scope is not None:
@@ -462,6 +474,74 @@ def fact_cursor(payload, number):
                for item in payload['items'][:number] for ev in item['evidence'])
 
 
+
+
+def validate_decision(decision, payload, ref):
+    if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
+        raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
+    if decision.get('_row_error'):
+        raise ConflictError('live_fact_review_evidence_invalid', 'The original own-quote/check row failed validation.')
+    verdict = decision.get('verdict')
+    if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch', 'insufficient', 'repair_needed'}:
+        raise ConflictError('live_review_decisions_invalid', 'Return supported/not_supported/contradicted/role_mismatch for EVERY fact, including the canonical one. Equivalence alone is not support; use optional equivalent_to only for duplicates.')
+    if decision.get('equivalent_to') is not None:
+        other = decision['equivalent_to']
+        if type(other) is not int or not 0 <= other < len(payload['items']):
+            raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
+    if payload.get('candidate_scope') is not None:
+        # Optional relation fields may use an empty string to mean no
+        # existing claim. This carries no relation or support verdict;
+        # every nonempty ID still must resolve in this frozen packet.
+        if decision.get('equivalent_to_existing') == '':
+            decision = dict(decision)
+            decision.pop('equivalent_to_existing')
+        nearby_ids = {claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])}
+        duplicate = decision.get('equivalent_to_existing')
+        conflicts_existing = decision.get('conflicts_with_existing', [])
+        if (duplicate is not None and duplicate not in nearby_ids) or not isinstance(conflicts_existing, list) or any(fid not in nearby_ids for fid in conflicts_existing):
+            raise ConflictError('live_review_decisions_invalid', 'Use only nearby_existing_claims IDs for candidate relations.')
+        if verdict == 'supported' and (any(decision.get(flag) is not True for flag in ('atomic', 'support_complete', 'qualifiers_preserved')) or not decision.get('claims') or not decision.get('basis_quotes')):
+            raise ConflictError('live_review_decisions_invalid', 'Positive candidate review requires explicit checks, one claim and own basis quotes.')
+    refs = decision.get('evidence')
+    evs = payload['items'][decision['fact']]['evidence']
+    if not isinstance(refs, list) or (verdict == 'supported' and not refs) or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
+        raise ConflictError('live_fact_review_evidence_invalid', 'Use evidence numbers scoped to this assertion.')
+    decision = dict(decision)
+    claims = decision.get('claims')
+    if claims is not None:
+        if not isinstance(claims, list) or not 1 <= len(claims) <= 8 or any(not isinstance(c, str) or not 1 <= len(c) <= 500 for c in claims):
+            raise ConflictError('live_review_decisions_invalid',
+                f"Fact {decision['fact']}: claims must be a nonempty list of candidate propositions for EVERY verdict, including insufficient. It does not assert they are supported.")
+        if verdict == 'supported' and len(claims) != 1:
+            raise ConflictError('live_review_decisions_invalid', 'Your decomposition has multiple claims. Split the candidate before positive review.')
+    quotes = decision.get('basis_quotes')
+    if quotes is not None:
+        if isinstance(quotes, list) and isinstance(refs, list):
+            own_passages = [evs[e]['text'] for e in refs]
+            normalized_quotes = [literal_basis_quote(q, own_passages) for q in quotes]
+            if normalized_quotes != quotes:
+                LOG.info('street_story_review_quote_presentation_normalized packet_ref=%s fact=%s',
+                         ref, decision['fact'])
+                quotes = normalized_quotes
+                decision['basis_quotes'] = quotes
+        # Presentation whitespace may vary; original snapshots/spans remain literal.
+        if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
+            next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
+            raise ConflictError('live_fact_review_evidence_invalid',
+                'next_tool=get_review_packet; next_args=' + canonical(next_args) +
+                f". Fact {decision['fact']}: reread own evidence and copy a short literal quote. "
+                'Do not repeat finalize with the invalid quote or borrow another fact.')
+        if verdict == 'supported' and not quotes:
+            raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
+    if 'reason' in decision and (not isinstance(decision['reason'], str) or len(decision['reason']) > 500):
+        raise ConflictError('live_review_decisions_invalid', 'Use a brief evidence-grounded reason.')
+    if verdict == 'supported' and any(decision.get(k) is False for k in ('atomic', 'support_complete', 'qualifiers_preserved')):
+        raise ConflictError('live_review_decisions_invalid', 'supported conflicts with your explicit semantic checks. Repair the candidate or withhold it.')
+    if decision.get('equivalent_to') in (None, decision['fact']):
+        decision.pop('equivalent_to', None)  # Absence/self-addressing adds no relation or support.
+    return decision
+
+
 def prepare(adapter, session, args):
     ref = str(args.get('packet_ref') or '')
     with adapter.service.store.tx() as db:
@@ -474,67 +554,39 @@ def prepare(adapter, session, args):
         incoming = args.get('decisions')
         if not isinstance(incoming, list) or len(incoming) > 240:
             raise ConflictError('live_review_decisions_invalid', 'Return at most 240 explicit decisions per operation.')
-        for decision in incoming:
-            if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
-                raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
-            verdict = decision.get('verdict')
-            if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch', 'insufficient', 'repair_needed'}:
-                raise ConflictError('live_review_decisions_invalid', 'Return supported/not_supported/contradicted/role_mismatch for EVERY fact, including the canonical one. Equivalence alone is not support; use optional equivalent_to only for duplicates.')
-            if decision.get('equivalent_to') is not None:
-                other = decision['equivalent_to']
-                if type(other) is not int or not 0 <= other < len(payload['items']):
-                    raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
-            if payload.get('candidate_scope') is not None:
-                # Optional relation fields may use an empty string to mean no
-                # existing claim. This carries no relation or support verdict;
-                # every nonempty ID still must resolve in this frozen packet.
-                if decision.get('equivalent_to_existing') == '':
-                    decision = dict(decision)
-                    decision.pop('equivalent_to_existing')
-                nearby_ids = {claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])}
-                duplicate = decision.get('equivalent_to_existing')
-                conflicts_existing = decision.get('conflicts_with_existing', [])
-                if (duplicate is not None and duplicate not in nearby_ids) or not isinstance(conflicts_existing, list) or any(fid not in nearby_ids for fid in conflicts_existing):
-                    raise ConflictError('live_review_decisions_invalid', 'Use only nearby_existing_claims IDs for candidate relations.')
-                if verdict == 'supported' and (any(decision.get(flag) is not True for flag in ('atomic', 'support_complete', 'qualifiers_preserved')) or not decision.get('claims') or not decision.get('basis_quotes')):
-                    raise ConflictError('live_review_decisions_invalid', 'Positive candidate review requires explicit checks, one claim and own basis quotes.')
-            refs = decision.get('evidence')
-            evs = payload['items'][decision['fact']]['evidence']
-            if not isinstance(refs, list) or (verdict == 'supported' and not refs) or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
-                raise ConflictError('live_fact_review_evidence_invalid', 'Use evidence numbers scoped to this assertion.')
-            decision = dict(decision)
-            claims = decision.get('claims')
-            if claims is not None:
-                if not isinstance(claims, list) or not 1 <= len(claims) <= 8 or any(not isinstance(c, str) or not 1 <= len(c) <= 500 for c in claims):
-                    raise ConflictError('live_review_decisions_invalid',
-                        f"Fact {decision['fact']}: claims must be a nonempty list of candidate propositions for EVERY verdict, including insufficient. It does not assert they are supported.")
-                if verdict == 'supported' and len(claims) != 1:
-                    raise ConflictError('live_review_decisions_invalid', 'Your decomposition has multiple claims. Split the candidate before positive review.')
-            quotes = decision.get('basis_quotes')
-            if quotes is not None:
-                if isinstance(quotes, list) and isinstance(refs, list):
-                    own_passages = [evs[e]['text'] for e in refs]
-                    normalized_quotes = [literal_basis_quote(q, own_passages) for q in quotes]
-                    if normalized_quotes != quotes:
-                        LOG.info('street_story_review_quote_presentation_normalized packet_ref=%s fact=%s',
-                                 ref, decision['fact'])
-                        quotes = normalized_quotes
-                        decision['basis_quotes'] = quotes
-                # Presentation whitespace may vary; original snapshots/spans remain literal.
-                if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
-                    next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
-                    raise ConflictError('live_fact_review_evidence_invalid',
-                        'next_tool=get_review_packet; next_args=' + canonical(next_args) +
-                        f". Fact {decision['fact']}: reread own evidence and copy a short literal quote. "
-                        'Do not repeat finalize with the invalid quote or borrow another fact.')
-                if verdict == 'supported' and not quotes:
-                    raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
-            if 'reason' in decision and (not isinstance(decision['reason'], str) or len(decision['reason']) > 500):
-                raise ConflictError('live_review_decisions_invalid', 'Use a brief evidence-grounded reason.')
-            if verdict == 'supported' and any(decision.get(k) is False for k in ('atomic', 'support_complete', 'qualifiers_preserved')):
-                raise ConflictError('live_review_decisions_invalid', 'supported conflicts with your explicit semantic checks. Repair the candidate or withhold it.')
-            if decision.get('equivalent_to') in (None, decision['fact']):
-                decision.pop('equivalent_to', None)  # Absence/self-addressing adds no relation or support.
+        from .fact_page_boundary import partition_rows
+        relations = args.get('conflicts') or []
+        if not isinstance(relations, list) or any(not isinstance(r, dict) or
+                type(r.get('left')) is not int or type(r.get('right')) is not int or
+                r['left'] == r['right'] or not 0 <= r['left'] < len(payload['items']) or
+                not 0 <= r['right'] < len(payload['items']) for r in relations):
+            raise ConflictError('live_fact_review_conflicts_invalid', 'Use distinct own packet fact numbers.')
+        def dependencies(decision):
+            if not isinstance(decision, dict):
+                return set()
+            links = set()
+            for field in ('fact', 'equivalent_to'):
+                value = decision.get(field)
+                if value is not None:
+                    if type(value) is not int:
+                        return None
+                    links.add(('fact', value))
+            for index, relation in enumerate(relations):
+                if decision.get('fact') in (relation['left'], relation['right']):
+                    links.add(('conflict', index))
+            existing = decision.get('conflicts_with_existing', [])
+            if not isinstance(existing, list) or any(not isinstance(v, str) for v in existing):
+                return None
+            links.update(('existing', v) for v in existing)
+            duplicate = decision.get('equivalent_to_existing')
+            if duplicate:
+                if not isinstance(duplicate, str):
+                    return None
+                links.add(('existing', duplicate))
+            return links
+        accepted, isolation = partition_rows(incoming,
+            lambda decision: validate_decision(decision, payload, ref), dependencies)
+        for decision in accepted:
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
                 raise ConflictError('live_review_decision_replay_mismatch',
@@ -543,7 +595,24 @@ def prepare(adapter, session, args):
                     'relations_complete. To change meaning, repair or start a superseding packet.')
             decisions[key] = decision
         db.execute('UPDATE live_review_packets SET decisions_json=? WHERE packet_ref=?', (canonical(decisions), ref))
-        if len(decisions) < len(payload['items']) or args.get('relations_complete') is not True:
+        isolated = bool(isolation['rejected_indices'])
+        if isolated:
+            db.execute('INSERT OR IGNORE INTO live_review_row_rejections VALUES(?,?,?)',
+                (ref, hashlib.sha256(canonical(args).encode()).hexdigest(),
+                 canonical({'raw_request': args, 'row_isolation': isolation})))
+        selected = sorted({decision['fact'] for decision in accepted}) if isolated else list(range(len(payload['items'])))
+        if isolated:
+            # A declared edge remains binding even when its other decision was
+            # omitted. Neither that edge nor a missing canonical is discarded.
+            while True:
+                blocked = {f for f in selected if decisions[str(f)].get('equivalent_to', f) not in selected}
+                blocked.update(f for relation in relations for f in selected
+                    if f in (relation['left'], relation['right']) and
+                    not {relation['left'], relation['right']}.issubset(selected))
+                if not blocked:
+                    break
+                selected = [f for f in selected if f not in blocked]
+        if not selected or (not isolated and len(decisions) < len(payload['items'])) or args.get('relations_complete') is not True:
             remaining = [n for n in range(len(payload['items'])) if str(n) not in decisions]
             staged = {'packet_ref': ref, 'review_saved': True, 'complete': False,
                       'remaining_facts': len(remaining), 'cross_packet_review_required': True}
@@ -563,7 +632,8 @@ def prepare(adapter, session, args):
                 raise ConflictError('live_fact_review_conflicts_invalid', 'Use distinct local fact numbers from this packet.')
             conflicts.append({**relation, 'left_fact_id': payload['items'][left]['id'], 'right_fact_id': payload['items'][right]['id']})
         reviewed, rejected = [], []
-        for f, item in enumerate(payload['items']):
+        for f in selected:
+            item = payload['items'][f]
             d = decisions[str(f)]
             reviewed.append({'fact_id': item['id'], 'revision_digest': payload['bundle'][item['id']], 'supporting_evidence_ids': [item['evidence'][e]['id'] for e in d['evidence']]})
             canonical_fact = d.get('equivalent_to', f)
@@ -573,7 +643,13 @@ def prepare(adapter, session, args):
             if d['verdict'] != 'supported' or canonical_fact != f or d.get('equivalent_to_existing') or d.get('conflicts_with_existing'):
                 rejected.append(item['id'])
         expanded = {**args, '_packet_request': args, 'run_id': row['run_id'], 'reviewed_assertions': reviewed, 'conflicts': conflicts}
-        expanded['_candidate_scope'] = payload.get('candidate_scope')
-        if payload.get('candidate_scope') is not None:
+        if isolated:
+            expanded['_candidate_scope'] = [payload['items'][f]['id'] for f in selected]
+            expanded['_row_isolation'] = isolation
+            expanded['conflicts'] = [relation for relation in conflicts
+                if relation['left'] in selected and relation['right'] in selected]
+        else:
+            expanded['_candidate_scope'] = payload.get('candidate_scope')
+        if payload.get('candidate_scope') is not None or isolated:
             expanded['coverage_complete'] = False
         return None, expanded, rejected

@@ -1,5 +1,6 @@
 """Scheduling uses real completion/timeout receipts, never new quota probes."""
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,26 @@ def test_outstanding_work_releases_next_unit_to_other_route(tmp_path):
     for _ in range(2):
         record(adapter, story, adapter.client, 'submitted', 0)
     assert adapter.order_fact_routes(routes(adapter), 0)[0]['client'] is extra
+
+
+@pytest.mark.parametrize('measured', [False, True])
+def test_live_price_preference_yields_to_its_actual_outstanding_work(tmp_path, measured):
+    adapter, extra, story, _ = setup(tmp_path)
+    live_client = SimpleNamespace(provider_id='google-live', model_id='live', directory=None)
+    live = {'role': 'facts_live', 'provider_id': live_client.provider_id,
+        'model_id': live_client.model_id, 'client': live_client}
+    pool = [live, routes(adapter)[1]]
+    assert adapter.order_fact_routes(pool, 1)[0] is live
+    if measured:
+        record(adapter, story, live_client, 'completed', 10, role='facts_live')
+        record(adapter, story, extra, 'completed', 15)
+    record(adapter, story, live_client, 'unknown', 0, role='facts_live')
+    before = adapter.service.store.now()
+    assert adapter.order_fact_routes(pool)[0]['client'] is extra
+    with adapter.service.store.connection() as db:
+        receipt = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE role='facts_live' ORDER BY rowid DESC LIMIT 1").fetchone()[0])
+    assert receipt['phase'] == 'unknown'  # Scheduling a NEW unit never reroutes the old send.
+    assert adapter.service.store.now() >= before
 
 
 def test_not_sent_and_other_configuration_are_not_latency_measurements(tmp_path):

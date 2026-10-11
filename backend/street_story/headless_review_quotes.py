@@ -48,6 +48,8 @@ def response_schema(packet, public_schema):
                                  'evidence; empty only for unsupported decisions. Labels establish '
                                  'literal addressing, not semantic support.')
     if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
+        from .headless_review_repairs import REPLACEMENTS_SCHEMA
+        decisions['repair_facts'] = deepcopy(REPLACEMENTS_SCHEMA)
         decisions['own_evidence_values'] = {'type': 'array', 'maxItems': 32, 'items': {
             'type': 'object', 'properties': {'property': {'type': 'string'}, 'value': {'type': 'string'},
                 'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
@@ -88,11 +90,32 @@ def public_result(packet, args):
     value.pop('research_sufficient', None)
     value.pop('research_sufficient_basis', None)
     for decision in value.get('decisions', []):
+        decision.pop('repair_facts', None)
         if decision.get('own_value_conflicts') and decision.get('verdict') == 'supported':
             raise ConflictError('live_fact_review_evidence_invalid',
                                 'The model declared unresolved own-value conflicts; supported is inconsistent.')
         decision.pop('own_evidence_values', None)
         decision.pop('own_value_conflicts', None)
+    return value
+
+
+def resolve_rows(packet, args):
+    """Keep a bad own-quote/check row addressable for product partitioning."""
+    # Validate the immutable catalog even when the answer omitted all rows.
+    resolve_quotes(packet, {**args, 'decisions': []})
+    value = deepcopy(args)
+    decisions = value.get('decisions')
+    if not isinstance(decisions, list):
+        return value
+    for index, decision in enumerate(decisions):
+        if not isinstance(decision, dict):
+            continue  # The product row validator rejects it.
+        try:
+            resolved = resolve_quotes(packet, {**args, 'decisions': [decision]})
+            resolved = public_result(packet, resolved)
+            decisions[index] = resolved['decisions'][0]
+        except ConflictError as exc:
+            decisions[index] = {**decision, '_row_error': exc.code}
     return value
 
 

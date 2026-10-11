@@ -231,7 +231,7 @@ def reusable_closed_initial_plan(marker, binding):
 
 
 def retain_physical_hypothesis(service, story, payload, source_map_receipt, candidates, *, reason,
-        raw_json, provider_response_id=None):
+        raw_json, provider_response_id=None, original_input=None):
     """A closed nomination survives rejection without granting any identity authority."""
     import copy
     from .identity_discovery import _conditional_text_prior
@@ -252,6 +252,7 @@ def retain_physical_hypothesis(service, story, payload, source_map_receipt, cand
         'closed_payload': copy.deepcopy(payload), 'raw_json': raw_json,
         'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest(),
         'provider_response_id': provider_response_id,
+        'original_input': copy.deepcopy(original_input),
         'source_map_receipt': copy.deepcopy(source_map_receipt),
         'physical_candidates': [copy.deepcopy(catalog[cid]) for cid in prior['candidate_ids']],
         'address_memberships': {cid: _subject_addresses(address_context, catalog[cid])

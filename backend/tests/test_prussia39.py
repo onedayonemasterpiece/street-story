@@ -110,6 +110,34 @@ async def test_partial_inventory_requires_explicit_observed_pagination(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('content,status', [
+    ('<p>По Вашему запросу ничего не найдено</p>', 'completed_empty'),
+    ('<p>Сервис временно недоступен</p>', 'parse_failed'),
+    ('<p>По Вашему запросу ничего не найдено</p><table><tr><td>'
+     '<a href="index.php?sid=12">Дом</a></td></tr></table>', 'parse_failed'),
+])
+async def test_observed_address_empty_without_count_requires_explicit_results_marker(tmp_path, content, status):
+    # DOM shape retained in actual raw response SHA 262e8dd9395d610a:
+    # a results heading and explicit empty message in the same publisher cell.
+    body = html('<table><tr><td style="margin:5px;padding:5px;">'
+                '<p>Результаты поиска "Адрес: тестовый".</p>' + content + '</td></tr></table>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
+        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Тестовый')
+    assert value['status'] == status
+    if status == 'completed_empty':
+        assert value['total_count'] == 0 and value['inventory_complete'] and value['results'] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_message_outside_publisher_results_does_not_replace_missing_count(tmp_path):
+    body = html('<div>По Вашему запросу ничего не найдено</div>'
+                '<table><tr><td><p>Результаты поиска</p>Неизвестный ответ</td></tr></table>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
+        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Тестовый')
+    assert value['status'] == 'parse_failed' and value['error_code'] == 'address_total_missing'
+
+
+@pytest.mark.asyncio
 async def test_qualified_publisher_card_dom_preserves_literal_complex_address(tmp_path):
     body = html('<td><p>Результаты поиска (всего совпадений: 1)</p><table><tr>'
                 '<td style="margin:3px;text-align:justify;"><b>Дом с башней</b>'

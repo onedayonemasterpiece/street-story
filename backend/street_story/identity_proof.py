@@ -31,7 +31,7 @@ def _scope(story):
         'control_revision': int(story.get('_identity_research_control_revision', control.get('revision') or 0))}
 
 
-def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
+def freeze_geometry_proof(story, decision, source_map_receipt, candidates, *, rejection=None):
     """Accept a semantic verdict only when its supplied evidence really exists."""
     from jsonschema import Draft202012Validator
     from .identity_candidate_policy import candidate_identity_eligible
@@ -41,6 +41,10 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
     from .identity_spatial_features import geometry_feature
     from .identity_geometry_contract import CONTRACT, LEGACY_CONTRACT, measured_correspondence
     from .identity_subject_binding import article_candidate
+    def reject(code, **details):
+        if rejection is not None:
+            rejection.append({'code': code, **details})
+        return None
     entries = scene_entries(story, candidates)
     catalog = {entry['candidate_id']: entry for entry in entries}
     receipt = source_map_receipt or {}
@@ -48,7 +52,7 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
     if not isinstance(decision, dict) or not Draft202012Validator(
             geometry_decision_schema(list(catalog), structured=structured or
                 isinstance(decision, dict) and 'spatial_correspondence' in decision)).is_valid(decision):
-        return None
+        return reject('geometry_decision_schema_invalid')
     cid = decision.get('candidate_id')
     observed = story.get('_identity_observed_candidates') or []
     candidate = next((item for item in [*observed, *candidates]
@@ -65,45 +69,60 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
             or story.get('_identity_original_source_sha256') is not None
                 and story['_identity_original_source_sha256'] != receipt.get('original_source_sha256')
             or not _hash(receipt.get('map_image_sha256'))):
-        return None
+        failed = []
+        for field, valid in {
+            'accepted_decision': decision['decision'] == 'accepted_geometry',
+            'no_pending_action': decision.get('next_action', {}).get('kind', 'none') == 'none',
+            'eligible_physical_candidate': bool(candidate and candidate_identity_eligible(candidate) and not article_candidate(candidate)),
+            'joint_image_input': receipt.get('joint_image_input') is True,
+            'source_photo_binding': receipt.get('source_photo_sha256') == scope['photo_sha256'],
+            'original_source_hash': _hash(receipt.get('original_source_sha256')) and
+                (story.get('_identity_original_source_sha256') is None or
+                 story['_identity_original_source_sha256'] == receipt.get('original_source_sha256')),
+            'model_source_hash': _hash(receipt.get('model_source_sha256')),
+            'map_image_hash': _hash(receipt.get('map_image_sha256')),
+        }.items():
+            if not valid:
+                failed.append(field)
+        return reject('geometry_scope_or_transport_invalid', failed_fields=failed)
     manifest = receipt.get('manifest') or {}
     table = manifest.get('objects') or {}
     columns = table.get('columns') or []
     received = {dict(zip(columns, row)).get('candidate_id') for row in table.get('rows') or []}
     if cid not in received or manifest.get('image_sha256') != receipt['map_image_sha256']:
-        return None
+        return reject('geometry_map_subject_unbound')
     labels = {dict(zip(columns, row)).get('label'): dict(zip(columns, row)).get('candidate_id')
         for row in table.get('rows') or []}
     if (receipt.get('map_identity_labels_required') is True or 'candidate_label' in decision) and (
             labels.get(decision.get('candidate_label')) != cid):
-        return None
+        return reject('geometry_map_label_mismatch')
     coverage = decision['bounded_coverage']
     if (coverage['material_alternatives_resolved'] is not True
             or not decision['scope'].strip() or not coverage['scope'].strip()
             or any(not value.strip() for value in decision['camera_pose'].values())
             or not decision['decisive_relations']):
-        return None
+        return reject('geometry_coverage_or_pose_incomplete')
     features = []
     selected_feature = False
-    for relation in decision['decisive_relations']:
+    for index, relation in enumerate(decision['decisive_relations']):
         if (not relation['source_observation'].strip() or not relation['correspondence'].strip()
                 or not relation['map_features']):
-            return None
+            return reject('geometry_relation_incomplete', relation_index=index)
         for reference in relation['map_features']:
             if reference['candidate_id'] not in received:
-                return None
+                return reject('geometry_relation_subject_unreceived', relation_index=index)
             feature = geometry_feature(story, candidates, reference)
             if not feature:
-                return None
+                return reject('geometry_primitive_unresolved', relation_index=index, reference=reference)
             selected_feature |= reference['candidate_id'] == cid
             features.append({'reference': reference, 'observed_feature': feature})
     if not selected_feature or any(not item['reason'].strip() or item['candidate_id'] == cid
             or item['candidate_id'] not in received
             for item in decision['rejected_alternatives']):
-        return None
+        return reject('geometry_selected_body_or_alternative_unbound')
     measurement = measured_correspondence(story, candidates, decision, receipt) if structured else None
     if structured and measurement is None:
-        return None
+        return reject('geometry_spatial_correspondence_unresolved', pattern_kind=(decision.get('spatial_correspondence') or {}).get('pattern_kind'))
     proof = {'validated': True, 'policy': POLICY, 'candidate_id': cid, **scope,
         'source_photo_sha256': scope['photo_sha256'], 'map_image_sha256': receipt['map_image_sha256'],
         'original_source_sha256': receipt['original_source_sha256'],

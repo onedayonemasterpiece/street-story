@@ -1,4 +1,5 @@
 import base64
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -88,6 +89,15 @@ async def test_saved_collection_frames_are_excluded_before_new_send_but_pending_
     state = session.state['visual_comparison']
     ready_physical = state['queue']
     state['queue'] = [next(adapter._image_entries(bad))]
+    # The first operation has only the article image available. Eligible
+    # originals are now restored from the durable inventory when present.
+    with svc.store.tx() as db:
+        saved = json.loads(svc._story_row(db, story['id'])['research_json'])
+        without_images = json.loads(json.dumps(saved))
+        for candidate in without_images['visual_identity']['candidates']:
+            candidate['reference_image_urls'] = []
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                   (json.dumps(without_images), story['id']))
     sent = []
     async def images(batch, limit, *, story_id, evidence):
         candidate = batch[0]
@@ -107,6 +117,8 @@ async def test_saved_collection_frames_are_excluded_before_new_send_but_pending_
     assert repeated['comparison_id'] == first['comparison_id']
     assert sent == []  # Observe the addressed operation, never replace its unknown outcome.
     state['pending'] = None  # The product receipt has closed in this second half.
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(saved), story['id']))
     state['queue'] = [next(adapter._image_entries(bad)), *ready_physical]
     reply = await adapter._compare_place_images(session, {})
     assert reply['references'][0]['candidate_id'] == 'wiki:0'

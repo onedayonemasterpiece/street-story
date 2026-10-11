@@ -172,10 +172,17 @@ def parse_address(soup, page_url):
     container = marker.find_parent(['td', 'section', 'article', 'div']) or soup.body
     if container is None:
         raise ValueError('address_results_section_missing')
-    total_match = re.search(r'всего совпадений\s*:\s*(\d+)', container.get_text(' ', strip=True), re.I)
+    result_text = container.get_text(' ', strip=True)
+    total_match = re.search(r'всего совпадений\s*:\s*(\d+)', result_text, re.I)
     if total_match is None:
-        raise ValueError('address_total_missing')
-    total = int(total_match.group(1))
+        # Observed publisher empty-results format has no numeric count.
+        # Keep missing/failed pages distinct; contradictory card rows below
+        # still fail the zero-count consistency check.
+        if not re.search(r'По Вашему запросу ничего не найдено', result_text, re.I):
+            raise ValueError('address_total_missing')
+        total = 0
+    else:
+        total = int(total_match.group(1))
     results, seen, pages = [], set(), []
     after_marker = False
     for node in container.descendants:

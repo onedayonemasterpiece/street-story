@@ -3719,8 +3719,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 addressed = {p["evidence_ref"]: p["text"] for p in passages}
                 numbered = {p["passage_id"]: p["text"] for p in passages}
                 current_passage_ids = session.state.get('research_page_passage_ids', {}).get(chunk_id, set(numbered))
-                quoted_facts = []
-                for raw in raw_facts:
+                def bind_page_fact(raw):
                     if not isinstance(raw, dict):
                         raise ConflictError("live_research_fact_invalid", "Each fact must be an object.")
                     quotes = raw.get("evidence_quotes")
@@ -3758,8 +3757,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         supports.append(support)
                         evidence_map[evidence_ref] = (source_ref, support)
                     source_map.setdefault(source_ref, {"url": url, "source_ref": source_ref, "type": "web", "supports": []})["supports"].extend(supports)
-                    quoted_facts.append({**raw, "source_refs": [source_ref], "evidence_refs": refs})
-                raw_facts = quoted_facts
+                    return {**raw, "source_refs": [source_ref], "evidence_refs": refs}
+                from .fact_page_boundary import partition_rows, fact_dependencies
+                original_rows = raw_facts
+                raw_facts, page_isolation = partition_rows(raw_facts, bind_page_fact, fact_dependencies)
 
             known_facts = [
                 {
@@ -3793,8 +3794,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if item["selected"] and item["evidence_supported"]
         }
 
-        normalized_candidates: list[dict[str, Any]] = []
-        for item in raw_facts:
+        def normalize_candidate(item):
             if not isinstance(item, dict):
                 raise ConflictError(
                     "live_research_fact_invalid",
@@ -3896,8 +3896,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     fact_text,
                 )
             )
-            normalized_candidates.append(
-                {
+            if args.get('batch_reviewed') is True and session.state.get('live_first_research'):
+                if (item.get('verdict') not in {'supported', 'insufficient', 'contradicted', 'possible_conflict'}
+                        or any(type(item.get(flag)) is not bool for flag in ('atomic', 'support_complete', 'qualifiers_preserved'))
+                        or not isinstance(item.get('review_reason'), str) or not 1 <= len(item['review_reason']) <= 500):
+                    raise ConflictError('live_research_review_invalid', 'Each finding needs its original scoped semantic assessment.')
+                from .fact_page_boundary import fact_dependencies
+                if fact_dependencies(item) is None or any(fid not in known_by_id for fid in item.get('conflicts_with_existing', [])):
+                    raise ConflictError('live_research_review_invalid', 'Conflicts must address own known claims.')
+            return {
                     "fact_id": provisional_fact_id,
                     "existing_fact_id": (
                         explicit_existing
@@ -3920,8 +3927,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         }
                         for source_ref in refs
                     ],
-                }
-            )
+            }
+
+        from .fact_page_boundary import partition_rows, fact_dependencies
+        normalized_candidates, candidate_isolation = partition_rows(raw_facts, normalize_candidate, fact_dependencies)
+        row_isolation = {'page': page_isolation if chunk_row is not None else None, 'candidate': candidate_isolation}
+        isolated_rows = bool(candidate_isolation['rejected_indices'] or
+            (chunk_row is not None and page_isolation['rejected_indices']))
 
         save_audit: dict[str, Any] = {
             "raw_candidate_count": len(raw_facts),
@@ -4265,15 +4277,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     accepted_fact_count=len(normalized), continuation_needed=continuation_needed,
                     continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    payload={"facts": normalized, "extractor_candidates": extractor_candidates, "extractor_existing_fact_ids": extractor_existing_hints, "no_claims": not normalized, "official_source_urls": [],
+                    payload={"facts": normalized, "raw_rows": original_rows if chunk_row is not None and isolated_rows else None,
+                             "row_isolation": row_isolation if isolated_rows else None, "extractor_candidates": extractor_candidates, "extractor_existing_fact_ids": extractor_existing_hints, "no_claims": not normalized, "official_source_urls": [],
                              "source_content_valid": args.get('source_content_valid') is not False,
                              "next_passage_cursor": session.state.get('research_pending_page', {}).get(chunk_id, 0) if continuation_needed else 0,
                              "read_passage_ids": sorted(session.state.get('research_passages_seen', {}).get(chunk_id, set()))})
                 mark_chunk(db, run_id=run_id, chunk_id=chunk_id,
-                    status="deferred" if continuation_needed else "extracted" if normalized else "no_claims",
+                    status="failed" if isolated_rows else "deferred" if continuation_needed else "extracted" if normalized else "no_claims",
                     observation_count=len(chunk_checkpoint(db, run_id, chunk_id)["facts"]),
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    error_code='not_article_text' if args.get('source_content_valid') is False else None)
+                    error_code='malformed_fact_rows' if isolated_rows else 'not_article_text' if args.get('source_content_valid') is False else None)
                 db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE run_id=? AND chunk_id=? AND lease_owner=? AND lease_fence=?',
                            (run_id,chunk_id,session.id,lease_fence))
                 if args.get('source_content_valid') is False:
@@ -4405,6 +4418,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "payload_saved": True,
                 "facts": normalized,
                 "selected_fact_ids": selected_ids,
+                "row_isolation": row_isolation if isolated_rows else None,
                 "save_research_audit": save_audit,
                 "fact_reconciliation": reconciliation_meta,
                 "story": self.service._story_repr(
@@ -4824,6 +4838,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "reviewed_assertion_count": len(current_bundle),
                 "conflict_ids": conflict_ids,
                 "eligible_count": eligible_count,
+                "row_isolation": args.get('_row_isolation'),
                 "withheld_count": withheld_count,
                 "unreviewed_count": unreviewed_count,
                 "research_manifest": manifest,

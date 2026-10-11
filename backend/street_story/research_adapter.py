@@ -1037,9 +1037,6 @@ class ProductResearchAdapter:
         """
         if not routes:
             return routes
-        live = [route for route in routes if route['role'] == 'facts_live']
-        if live:
-            return live + self.order_fact_routes([route for route in routes if route['role'] != 'facts_live'], ordinal, review=review)
         offset = ordinal % len(routes)
         rotated = routes[offset:] + routes[:offset]
         now = self.service.store.now()
@@ -1089,10 +1086,12 @@ class ProductResearchAdapter:
                         expected = elapsed / 1000
                 observations.append((route, expected, outstanding, len(durations)))
         measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
-        if not measured:
-            return rotated
-        neutral = median(measured)
-        ranked = sorted(observations, key=lambda item: (neutral if item[1] is None else item[1]) * (item[2] + 1))
+        # An unmeasured route gets the observed neutral duration. With no
+        # timings, compare outstanding units only; no latency is invented.
+        neutral = median(measured) if measured else 1
+        ranked = sorted(observations, key=lambda item: (
+            (neutral if item[1] is None else item[1]) * (item[2] + 1),
+            item[0]['role'] != 'facts_live'))
         basis = ('dispatch_receipts' if ranked[0][3] else
                  'qualification_receipt' if ranked[0][1] is not None else 'unmeasured')
         LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s latency_basis=%s',
@@ -1204,7 +1203,12 @@ class ProductResearchAdapter:
                 continue  # A known closed unit is not paid for again unchanged.
             try:
                 result = await self._extract_fact_route(route, capsule, page, owned, context)
-                if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(result.get('result')):
+                from .fact_page_boundary import isolate_result
+                isolated = isolate_result(result, FACT_PAGE_SCHEMA,
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']})
+                if isolated is not None:
+                    result = isolated
+                if isolated is None or not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(result.get('result')):
                     receipt = {**result['receipt'], 'phase': 'failed', 'provider_send_state': 'response_closed',
                                'retry_safe': True, 'error_type': 'MalformedProviderResponse'}
                     await self.checkpoint(receipt['binding'], receipt)
@@ -1292,18 +1296,30 @@ class ProductResearchAdapter:
             finally:
                 self._active_binding.reset(token)
             payload=dict(result['payload'])
+            raw_payload = copy.deepcopy(payload)
             facts=[]
             for fact in payload['facts']:
+                if not isinstance(fact, dict):
+                    facts.append(fact)
+                    continue
                 facts.append({**{k:v for k,v in fact.items() if k not in {'source_version_id','evidence_quotes','selected'}},
                     'source_refs':[page['source_ref']],
-                    'verdict':{'unsupported':'contradicted','uncertain':'insufficient'}.get(fact['verdict'],fact['verdict'])})
+                    'verdict':{'unsupported':'contradicted','uncertain':'insufficient'}.get(fact.get('verdict'),fact.get('verdict'))})
             payload['facts']=facts
             receipt.update(receipts=result['receipts'],result=payload,actual_model=result.get('actual_model'),cost='unknown')
-            if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(payload):
+            receipt['raw_result'] = raw_payload
+            from .fact_page_boundary import isolate_result
+            isolated = isolate_result({'result': payload, 'receipt': receipt}, FACT_PAGE_SCHEMA,
+                passage_ids={p['passage_id'] for p in page['evidence_passages']})
+            if isolated is None or not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(isolated['result']):
                 raise MalformedProviderResponse('gigachat:fact_page_schema_invalid')
+            payload = isolated['result']
+            receipt['result'] = payload
+            if isolated.get('row_isolation'):
+                receipt['row_isolation'] = isolated['row_isolation']
             receipt.update(phase='completed',provider_send_state='response_closed')
             await self.checkpoint(binding,receipt)
-            return {'result':payload,'receipt':receipt}
+            return {**isolated, 'result':payload,'receipt':receipt}
         except Exception as exc:
             not_sent = receipt['phase']=='created'
             known_closed = not_sent or isinstance(exc,MalformedProviderResponse) or getattr(exc,'status',None) is not None or getattr(exc,'resource_failure',False)
