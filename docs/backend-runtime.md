@@ -222,6 +222,11 @@ original upload time, work journal and provider operation identities survive.
 Historical closed outcomes and cancelled jobs remain closed. A real owner reply
 can reopen its clarification in the same story without changing the SOURCE.
 
+The owner-confirmed Native reserve remains 3% across all reported quota windows.
+New Native work waits below that reserve; an older cached grant below 3% must
+be refreshed. This account reserve is independent of background-task lifetime
+and does not restore cumulative work or elapsed research ceilings.
+
 Each HTTP/provider request still has its own timeout. A request timeout or
 provider admission wait leaves the task durable and retryable. UNKNOWN receipts
 keep the original addressed operation and prohibit duplicate sends. Provider
