@@ -1447,7 +1447,16 @@ async def _suggest(service, story, transcript, candidates):
         action = geometry.get('next_action') if isinstance(geometry, dict) else None
         action = action if isinstance(action, dict) else {}
         targets = action.get('target_candidate_ids')
-        if (initial_geometry is None and initial_text is None and scene and action.get('kind') == 'map_detail'
+        clarification = payload.get('clarification_question') if isinstance(payload, dict) else None
+        # The initial overview deliberately defers individual contours. If the
+        # model requests address text for its nominated bodies and no body was
+        # acquired, do not discard those available primitives or the existing
+        # joint2 slot. Empty retrieval is neither confirmation nor exclusion.
+        address_without_text = (action.get('kind') == 'address_text'
+            and geometry.get('decision') == 'uncertain' and not text_articles and bool(lookup)
+            and not (isinstance(clarification, str) and clarification.strip()))
+        if (initial_geometry is None and initial_text is None and scene
+                and (action.get('kind') == 'map_detail' or address_without_text)
                 and isinstance(action.get('reason'), str) and action['reason'].strip()
                 and isinstance(targets, list) and 1 <= len(targets) <= 3
                 and all(isinstance(cid, str) for cid in targets)
@@ -1468,6 +1477,9 @@ async def _suggest(service, story, transcript, candidates):
                     'physical_bodies': {**physical_context, 'rows': [row for row in physical_context['rows']
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
+                if address_without_text:
+                    detail_request.update(trigger='address_text_without_acquired_body',
+                        initial_requested_action=copy.deepcopy(action), address_text_lookup=copy.deepcopy(lookup))
         if issues or new_text_acquired or detail_request:
             native_followup = (initial_route == 'native_source_map'
                 and callable(getattr(researcher, 'plan_source_map_followup', None))
@@ -1484,7 +1496,12 @@ async def _suggest(service, story, transcript, candidates):
             followup_config = config
             followup_contract = response_contract
             if detail_request:
-                followup_prompt += ('\nExplicit requested MAP expansion; the second image and its new hash below '
+                expansion_reason = ('\nThe initial model requested address text for these nominated bodies, '
+                    'but the recorded lookup acquired no body. This is missing retrieval, not a negative '
+                    'identity verdict. Supply the previously deferred received MAP primitives in the '
+                    'same existing joint2; no address/plate alone establishes the whole physical body. '
+                    if address_without_text else '\nExplicit requested MAP expansion; ')
+                followup_prompt += (expansion_reason + 'the second image and its new hash below '
                     'replace the initial MAP image for this operation. The full overview/neutral labels remain unchanged; '
                     'the nominated detail is a display area, not identity acceptance or GPS accuracy. '
                     'The initial decision remains a conditional hypothesis, never proof. Reconsider the actual '
@@ -1492,7 +1509,8 @@ async def _suggest(service, story, transcript, candidates):
                     + json.dumps(detail_request, ensure_ascii=False, separators=(',', ':')))
                 record_identity_event(service, story['id'], 'identity_map_detail_prepared', {
                     'target_candidate_ids': action['target_candidate_ids'], 'initial_map_sha256': detail_request['initial_map_sha256'],
-                    'current_map_sha256': detail_request['current_map_sha256'], 'operation_budget': 'existing_joint_followup'})
+                    'current_map_sha256': detail_request['current_map_sha256'], 'operation_budget': 'existing_joint_followup',
+                    'trigger': detail_request.get('trigger', 'model_requested_map_detail')})
             if issues:
                 previous = json.dumps(payload, ensure_ascii=False) if not decode_error else (response.text or '')
                 if len(previous.encode()) > 32768:
