@@ -826,7 +826,10 @@ async def _suggest(service, story, transcript, candidates):
         errors, errors_truncated = validation_details(validation_schema, payload)
         rejected_text = None
         rejected_geometry_schema = None
-        if (errors or check_received_pointers) and isinstance(payload, dict) and not original_schema_readback and original_schema is None:
+        independent_text_queries = False
+        if ((errors or check_received_pointers) and isinstance(payload, dict)
+                and not original_schema_readback
+                and (original_schema is None or check_received_pointers)):
             from jsonschema import Draft202012Validator
             # Each independent field/item keeps its own issued contract. Plan
             # completeness cannot invalidate another closed, useful component.
@@ -859,6 +862,12 @@ async def _suggest(service, story, transcript, candidates):
                     raw_json_available=raw_json_available, provider_response_id=provider_response_id,
                     errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
             payload = {'first_wave_hypotheses': [], **usable}
+            # A closed text plan may contain an invalid physical pointer beside
+            # valid, independent search instructions. Keep only issued fields
+            # and received IDs; a search lead supplies no identity acceptance.
+            independent_text_queries = bool(check_received_pointers and original_schema is not None
+                and rejected and any(payload.get(name) for name in
+                    ('article_queries', 'wikipedia_queries', 'visual_query', 'commons_query')))
             if 'selected_wikipedia_page_ids' in validation_schema.get('properties', {}):
                 payload.setdefault('selected_wikipedia_page_ids', [])
             errors = []
@@ -1002,6 +1011,10 @@ async def _suggest(service, story, transcript, candidates):
                 # a complete broad search plan. Membership is still validated;
                 # no identity proof or invented alternative is created here.
                 effective_wave = {**effective_wave, 'required_grounded_count': 0}
+            if independent_text_queries:
+                record_identity_event(service, story['id'], 'identity_rejected_text_subject_queries_preserved',
+                    {'identity_established': False, 'unreceived_subject_accepted': False,
+                     'article_query_count': len(payload.get('article_queries') or [])})
             rendered = [] if original_schema_readback else render_first_wave(effective_wave, payload['first_wave_hypotheses'])
         except RetryableProviderError as exc:
             # A closed invalid answer is not key health or provider quota. Stop
