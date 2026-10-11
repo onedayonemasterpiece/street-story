@@ -752,6 +752,14 @@ async def review_retained_scope(engine, job, run_id, revision, fact_ids):
     return count
 
 
+def retained_review_remaining(job, now):
+    """Use the already accepted wave's deadline; never create a replay budget."""
+    deadline = json.loads(job['payload_json']).get('research_deadline_at')
+    if not isinstance(deadline, (int, float)) or isinstance(deadline, bool):
+        raise ValueError('Retained review requires its accepted research deadline')
+    return max(0, deadline-now)
+
+
 async def retained_review(args):
     """One explicitly scoped normal backend review, without photo/identity replay.
 
@@ -817,7 +825,7 @@ async def retained_review(args):
     started = time.monotonic()
     restore = instrument_control_boundary()
     try:
-        async with asyncio.timeout(75):
+        async with asyncio.timeout(retained_review_remaining(job, service.store.now())):
             count = await review_retained_scope(HeadlessFactReview(harness), job, run_id, revision, fact_ids)
         if count:
             report['product_outcome'] = harness._finish(job, run_id, revision, 'explicit_review_packet_completed')

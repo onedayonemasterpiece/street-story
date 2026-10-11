@@ -25,6 +25,15 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
+def test_retained_scope_deadline_is_original_remaining_time_without_restart_reset():
+    job = {'payload_json': json.dumps({'research_started_at': 100, 'research_deadline_at': 580})}
+    assert harness.retained_review_remaining(job, 300) == 280
+    assert harness.retained_review_remaining(job, 579) == 1
+    assert harness.retained_review_remaining(job, 600) == 0
+    with pytest.raises(ValueError, match='accepted research deadline'):
+        harness.retained_review_remaining({'payload_json': '{}'}, 300)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('unrelated_pending', [False, True])
 async def test_retained_review_continues_only_current_run_children_of_requested_claims(tmp_path, unrelated_pending):
