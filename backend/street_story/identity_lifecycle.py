@@ -465,6 +465,7 @@ class IdentityLifecycleMixin:
                 self._schedule_identity_visual()
                 record_identity_event(self, story_id, 'identity_shortlist_ready', {'generation': generation,
                     'candidate_count': len(candidates), 'discovery_may_continue': True})
+            reference_work_pending = bool(raw.get('_comparison_deferred') and candidates)
             if not (visual_match(raw, candidates) or non_reference_result_valid(raw, candidates, story)):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
@@ -526,6 +527,7 @@ class IdentityLifecycleMixin:
                         # Retaining references does not replace the current verdict.
                         ids = {item['candidate_id'] for item in discovered}
                         candidates = ([item for item in candidates if item['candidate_id'] not in ids] + discovered)[:36]
+                        reference_work_pending = bool(discovered)
                     if recovery_is_better:
                         raw = recovered_raw
                         ids = {item['candidate_id'] for item in discovered}
@@ -599,6 +601,7 @@ class IdentityLifecycleMixin:
                     else 'visual_reference' if reference_verified else None,
                 **({'geometry_proof': raw['geometry_proof']} if geometry_verified else {}),
                 **({'architectural_text_proof': raw['architectural_text_proof']} if text_verified else {})}
+            deferred_location_question = False
             with self.store.tx() as db:
                 current = self._story_row(db, story_id)
                 latest = json.loads(current['research_json'] or '{}')
@@ -614,7 +617,9 @@ class IdentityLifecycleMixin:
                 latest.update({'visual_identity': identity, 'osm': osm, 'photo_camera_hints': binding})
                 latest['wikipedia_metadata_complete'] = story.get('_wikipedia_metadata_complete', True)
                 question = ((latest.get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload', {}).get('clarification_question')
-                if not valid and not (isinstance(question, str) and question.strip()):
+                pending_visual = reference_work_pending and bool(
+                    getattr(getattr(self.providers, 'research', None), 'vision_available', False))
+                if not valid and not pending_visual and not (isinstance(question, str) and question.strip()):
                     # Missing coordinates are an observed input limitation,
                     # independent of semantic identity or provider availability.
                     question = 'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.'
@@ -622,6 +627,11 @@ class IdentityLifecycleMixin:
                     latest['identity_clarification'] = {'question': question.strip()[:200],
                         'reason': 'geographic_context_missing', 'photo_sha256': story['photo_sha256'],
                         'generation': generation, 'control_revision': control_revision}
+                elif not valid and pending_visual:
+                    # Acquired references already have a bounded continuation.
+                    # A host-created location question must not seal that wave
+                    # before the shared visual worker can compare them.
+                    deferred_location_question = True
                 # Keep successful discovery available to the SAME visual queue,
                 # but do not seal a generation while providers are unavailable.
                 if waiting:
@@ -663,6 +673,10 @@ class IdentityLifecycleMixin:
                                "AND json_extract(payload_json,'$.identity_generation')=?",
                                (self.store.now(), self.store.now(), story_id, generation))
                 result = self._story_repr(db, self._story_row(db, story_id))
+            if deferred_location_question:
+                record_identity_event(self, story_id, 'identity_location_question_deferred', {
+                    'generation': generation, 'candidate_count': len(candidates),
+                    'reason': 'pending_reference_comparison', 'identity_established': False})
             if waiting:
                 # Revisit independent work, not the slowest provider's cooldown.
                 # Each provider keeps its own admission/cooldown; this cannot

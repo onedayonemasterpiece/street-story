@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 
 from street_story import identity_discovery
 from street_story.identity_source_selection import expand_planner_packet
-from street_story.providers import PermanentProviderError, RetryableProviderError
+from street_story.providers import RetryableProviderError
 from test_observed_address_search_context import observed
 from test_structured_identity_first_wave import choice, payload
 from test_visual_search_continuation import prepared
@@ -85,15 +85,14 @@ async def test_fallback_receives_full_anchors_and_membership_but_host_rejects_fo
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=not_sent)
     service.providers.research = SimpleNamespace(plan_identity_search=planner)
     snapshot = {**service._identity_snapshot(story['id'])[0], '_identity_observed_candidates': observed()}
+    await identity_discovery.suggest(service, snapshot, '', [])
+    assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A', 'Observed City Exact avenue 13']
+    assert snapshot['_identity_search_plan_route'] == 'qualified_text_fallback'
     if foreign_id:
-        with pytest.raises(PermanentProviderError, match='identity_search_plan_unreceived_pointer'):
-            await identity_discovery.suggest(service, snapshot, '', [])
-        assert '_identity_geometry_result' not in snapshot
-    else:
-        await identity_discovery.suggest(service, snapshot, '', [])
-        assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A', 'Observed City Exact avenue 13']
-        assert snapshot['_identity_search_plan_route'] == 'qualified_text_fallback'
+        assert not snapshot['_identity_search_plan_payload'].get('observed_candidate_ids')
+    assert '_identity_geometry_result' not in snapshot
+    assert '_identity_accepted_result' not in snapshot
     assert len(plans) == 1
-    # Transport schema stays small; the actual fresh host guard above rejects
-    # the foreign ID using the full original frozen inventory.
+    # Transport schema stays small. The host rejects the foreign ID against
+    # the full inventory while retaining independent received address queries.
     assert Draft202012Validator(plans[0][1]['properties']['observed_candidate_ids']).is_valid(['osm:way:unreceived'])
