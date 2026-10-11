@@ -5,7 +5,10 @@ import json
 import logging
 from typing import Any
 
-from .model_facts import merge_source_payloads, normalized_claim_key, validated_model_fact_text
+from .model_facts import (
+    merge_source_payloads, normalized_claim_key, source_version_id as _source_version_id,
+    validated_model_fact_text,
+)
 
 REVIEW_STATUSES = {"unreviewed", "eligible", "disputed", "withheld", "quarantined"}
 ELIGIBILITY = {"unreviewed", "eligible", "withheld"}
@@ -35,28 +38,6 @@ def candidate_assertion_id(claim_key: Any, text: Any) -> str:
         # selections and clients keep stable references during migration.
         return _sha("fact_", value.casefold(), 20)
     return _sha("claim_", key + "\n" + value.casefold(), 20)
-
-
-def _source_version_id(source: dict[str, Any]) -> str:
-    """Return the durable fetched document version when available."""
-    durable = str(source.get("source_version_id") or "").strip()
-    if durable:
-        return durable
-    payload = {
-        "url": str(source.get("url") or "").rstrip("/"),
-        "type": str(source.get("type") or ""),
-        "title": str(source.get("title") or ""),
-        "supports": [
-            {
-                "kind": str(item.get("kind") or "support"),
-                "source_url": str(item.get("source_url") or source.get("url") or "").rstrip("/"),
-                "text": str(item.get("text") or "").strip(),
-            }
-            for item in source.get("supports") or []
-            if isinstance(item, dict) and str(item.get("text") or "").strip()
-        ],
-    }
-    return _sha("srcv_", _canonical(payload), 24)
 
 
 def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

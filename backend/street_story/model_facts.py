@@ -66,17 +66,28 @@ def _source_key(source: dict[str, Any]) -> str:
 
 
 def _support_key(source_url: str, support: dict[str, Any]) -> str:
-    return _source_canonical(
-        {
-            "kind": str(support.get("kind") or "support"),
-            "source_url": str(support.get("source_url") or source_url).rstrip("/"),
-            "text": str(support.get("text") or "").strip(),
-            "source_version_id": support.get("source_version_id"),
-            "span_sha256": support.get("span_sha256"),
-            "span_start": support.get("span_start"),
-            "span_end": support.get("span_end"),
-        }
-    )
+    # Only exact normalized repeats collapse. Locator/relation metadata belongs
+    # to the passage, even when another version contains the same literal text.
+    return _source_canonical(support)
+
+
+def source_version_id(source: dict[str, Any]) -> str:
+    """Freeze the existing ledger fallback before same-URL union changes it."""
+    durable = str(source.get("source_version_id") or "").strip()
+    if durable:
+        return durable
+    payload = {
+        "url": str(source.get("url") or "").rstrip("/"),
+        "type": str(source.get("type") or ""),
+        "title": str(source.get("title") or ""),
+        "supports": [{
+            "kind": str(item.get("kind") or "support"),
+            "source_url": str(item.get("source_url") or source.get("url") or "").rstrip("/"),
+            "text": str(item.get("text") or "").strip(),
+        } for item in source.get("supports") or []
+            if isinstance(item, dict) and str(item.get("text") or "").strip()],
+    }
+    return "srcv_" + hashlib.sha256(_source_canonical(payload).encode()).hexdigest()[:24]
 
 
 def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -101,6 +112,7 @@ def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]
                     if not current.get(field) and raw.get(field):
                         current[field] = raw.get(field)
             source_url = str(raw.get("url") or "").rstrip("/")
+            version = source_version_id(raw)
             supports: dict[str, dict[str, Any]] = {
                 _support_key(source_url, item): item
                 for item in current.get("supports") or []
@@ -112,11 +124,15 @@ def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]
                 text = str(support.get("text") or "").strip()
                 if not text:
                     continue
-                supports[_support_key(source_url, support)] = {
+                normalized = {
                     **support,
                     "source_url": str(support.get("source_url") or source_url).rstrip("/"),
                     "text": text,
+                    "source_version_id": str(support.get("source_version_id") or version).strip(),
                 }
+                if not normalized.get("chunk_id") and raw.get("chunk_id"):
+                    normalized["chunk_id"] = raw["chunk_id"]
+                supports[_support_key(source_url, normalized)] = normalized
             current["supports"] = list(supports.values())
     return [merged[key] for key in order]
 
