@@ -267,13 +267,17 @@ class GigaChatResearchClient:
         inventory = [{**{key: source.get(key) for key in ('source_version_id', 'url', 'title')},
                       'available_passage_ids': [p['passage_id'] for p in source.get('passages', [])]}
                      for source in sources.values()]
-        messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': _json({
+        from .source_assessment import CHECKS as ASSESSMENT_CHECKS, CONTRACT as ASSESSMENT_CONTRACT, response_schema
+        assessed = capsule.get('semantic_contract') == ASSESSMENT_CONTRACT
+        system = SYSTEM + (' ' + ASSESSMENT_CHECKS if assessed else '')
+        schema = response_schema(FINDINGS_SCHEMA, capsule.get('semantic_contract'))
+        messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json({
             'query': query, 'sources': inventory, 'context': capsule.get('context', {}),
             'known_fact_inventory': capsule.get('known_fact_inventory', [])})}]
         receipts, read_passages, status, tool_roundtrips = [], {}, 'failed', 0
         strict_final_required = False
         workload = {'purpose': purpose, 'modalities': ['text'], 'images': 0,
-                    'estimated_input_tokens': len(_json(public_capsule).encode('utf-8')) + len(SYSTEM.encode('utf-8'))
+                    'estimated_input_tokens': len(_json(public_capsule).encode('utf-8')) + len(system.encode('utf-8'))
                         + (12000 if len(full_inventory) > len(capsule.get('known_fact_inventory', [])) else 0),
                     'output_allowance': max_output_tokens, 'max_provider_sends': min(4, max_tool_calls + 2)}
         async with self.admission(self.binding, workload) as lease:
@@ -284,7 +288,7 @@ class GigaChatResearchClient:
                             'stream': False, 'functions': [FUNCTION, INVENTORY_FUNCTION],
                             'function_call': {'name': 'get_evidence'} if turn == 0 else 'none' if final_turn else 'auto'}
                     if final_turn:
-                        body['response_format'] = {'type': 'json_schema', 'schema': FINDINGS_SCHEMA, 'strict': True}
+                        body['response_format'] = {'type': 'json_schema', 'schema': schema, 'strict': True}
                     message, reason = await self._completion(lease, body, receipts, purpose, before_inference)
                     call = message.get('function_call')
                     if call:

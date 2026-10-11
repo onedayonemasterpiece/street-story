@@ -62,7 +62,7 @@ def partition_rows(rows, validate, dependencies):
         'errors': {i: failure.code for i, failure in failures.items()}}
 
 
-def isolate_rows(raw, schema, *, passage_ids=None):
+def isolate_rows(raw, schema, *, passage_ids=None, passages=None):
     if not isinstance(raw, dict) or not isinstance(raw.get('facts'), list):
         return None
     rows = raw['facts']
@@ -84,6 +84,11 @@ def isolate_rows(raw, schema, *, passage_ids=None):
             errors[index] = [{'path': list(error.path), 'validator': error.validator} for error in invalid]
         elif passage_ids is not None and any(pid not in passage_ids for pid in row.get('passage_ids', [])):
             errors[index] = [{'path': ['passage_ids'], 'validator': 'own_passage_membership'}]
+        elif 'own_evidence_values' in contract['items'].get('required', []):
+            from .source_assessment import row_errors
+            declared_errors = row_errors(row, passages)
+            if declared_errors:
+                errors[index] = declared_errors
 
     def dependencies(row):
         if not isinstance(row, dict):
@@ -113,9 +118,9 @@ def isolate_rows(raw, schema, *, passage_ids=None):
         'dependent_indices': sorted(blocked - set(errors)), 'errors': errors}}
 
 
-def isolate_result(envelope, schema, *, passage_ids=None):
+def isolate_result(envelope, schema, *, passage_ids=None, passages=None):
     """Compose validation boundaries using original answer row addresses."""
-    isolated = isolate_rows(envelope.get('result'), schema, passage_ids=passage_ids)
+    isolated = isolate_rows(envelope.get('result'), schema, passage_ids=passage_ids, passages=passages)
     if isolated is None:
         return None
     receipt = envelope.get('receipt') or {}

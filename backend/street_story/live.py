@@ -3538,7 +3538,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 expanded.append(group)  # Legacy receipts remain replayable.
         if len(expanded) > 32:
             raise ConflictError('live_research_facts_invalid', 'Save at most 32 claims per batch and continue the same core.')
-        consolidated = session.state.get('semantic_reading_contract') == 'source-reading-assessment-v2'
+        from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS
+        consolidated = session.state.get('semantic_reading_contract') in ASSESSMENT_CONTRACTS
         extractor_candidates = bool((session.state.get('headless_research') and not consolidated) or args.get('extractor_candidates'))
         extractor_existing_hints = [str(item.get('existing_fact_id') or '') for item in expanded if isinstance(item, dict)] if extractor_candidates else []
         if extractor_candidates:

@@ -1094,11 +1094,14 @@ class HeadlessFacts:
             extracted = await provider.extract_fact_page(page, dict(story), dict(context))
             if not isinstance(extracted, dict):
                 raise MalformedProviderResponse('research_fact_page_contract_invalid')
-            if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') == 'source-reading-assessment-v2':
+            from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS, response_schema
+            if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') in ASSESSMENT_CONTRACTS:
                 from .fact_page_boundary import isolate_result
                 from .research_adapter import FACT_PAGE_SCHEMA
-                isolated = isolate_result(extracted, FACT_PAGE_SCHEMA,
-                    passage_ids={p['passage_id'] for p in page['evidence_passages']})
+                isolated = isolate_result(extracted, response_schema(FACT_PAGE_SCHEMA,
+                    (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract')),
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                    passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
                 if isolated is None:
                     raise MalformedProviderResponse('research_fact_page_claim_invalid')
                 extracted = isolated
@@ -1161,11 +1164,14 @@ class HeadlessFacts:
                 raise ConflictError('live_research_save_stale', 'Owner inputs or the extraction lease changed; saved result is deferred.')
         # Only candidate additions can rebase the frozen recipe while owner inputs remain identical.
         session.state['research_chunk_receipts'][page['chunk_id']]['expected_story_revision'] = int(story['revision'])
-        if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') == 'source-reading-assessment-v2':
+        from .source_assessment import CONTRACT, CONTRACTS as ASSESSMENT_CONTRACTS, public_fact, response_schema
+        if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') in ASSESSMENT_CONTRACTS:
             from .fact_page_boundary import isolate_result
             from .research_adapter import FACT_PAGE_SCHEMA
-            isolated = isolate_result(extracted, FACT_PAGE_SCHEMA,
-                passage_ids={p['passage_id'] for p in page['evidence_passages']})
+            isolated = isolate_result(extracted, response_schema(FACT_PAGE_SCHEMA,
+                (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract')),
+                passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
             if isolated is None:
                 raise MalformedProviderResponse('research_fact_page_claim_invalid')
             extracted = isolated
@@ -1178,11 +1184,12 @@ class HeadlessFacts:
                          if isinstance(usage, dict) and usage.get('model_id')]
         session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or session.model)
         session.state['semantic_reading_contract'] = (receipt.get('binding') or {}).get('semantic_contract')
+        saved_claims = [public_fact(fact) for fact in claims] if session.state['semantic_reading_contract'] == CONTRACT else claims
         committed = await self.adapter._save_research_facts(session, page['_unit_id'], {
-            'facts': [{**fact, 'selected': False} for fact in claims],
-            'batch_reviewed': (receipt.get('binding') or {}).get('semantic_contract') == 'source-reading-assessment-v2',
-            'extractor_candidates': (receipt.get('binding') or {}).get('semantic_contract') != 'source-reading-assessment-v2',
-            'inventory_reviewed': (receipt.get('binding') or {}).get('semantic_contract') == 'source-reading-assessment-v2',
+            'facts': [{**fact, 'selected': False} for fact in saved_claims],
+            'batch_reviewed': session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS,
+            'extractor_candidates': session.state['semantic_reading_contract'] not in ASSESSMENT_CONTRACTS,
+            'inventory_reviewed': session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS,
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
         })
@@ -1212,13 +1219,13 @@ class HeadlessFacts:
                 if self._snapshot(job, run_id, control_revision):
                     mark_chunk(db, run_id=run_id, chunk_id=page['chunk_id'], status='failed',
                         error_code='malformed_fact_rows', observation_count=len(saved_facts),
-                        model_name=session.model, prompt_version='source-reading-assessment-v2', now=self.service.store.now())
+                        model_name=session.model, prompt_version=session.state['semantic_reading_contract'], now=self.service.store.now())
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
             'model_id': session.model, 'provider_id': receipt.get('provider_id', 'unknown'),
             'backend': receipt.get('backend', 'unknown'), 'audit': committed.get('save_research_audit') or {},
-            'candidate_only': session.state.get('semantic_reading_contract') != 'source-reading-assessment-v2',
+            'candidate_only': session.state.get('semantic_reading_contract') not in ASSESSMENT_CONTRACTS,
         }, source='fact_research')
         LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
                  story['id'], run_id, page['chunk_id'], page['batch_index'])

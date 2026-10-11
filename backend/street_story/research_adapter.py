@@ -19,6 +19,7 @@ from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
 from .service import ConflictError, canonical
 from .config import reveal
+from .source_assessment import CONTRACT as FACT_READING_CONTRACT, response_schema as assessment_schema
 
 LOG = logging.getLogger(__name__)
 
@@ -97,8 +98,6 @@ def _closed_malformed_visual(receipt):
             return False
     return True
 
-
-FACT_READING_CONTRACT = 'source-reading-assessment-v2'
 
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
@@ -971,7 +970,8 @@ class ProductResearchAdapter:
         # The bounded hints are sufficient for extraction. Mira later reconciles
         # candidates against the full ledger; omission does not imply completeness.
         return await self.run(story, 'facts', page['_unit_id'], lambda binding:
-                              self.client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding))
+                              self.client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding))
 
     def _fact_pool_routes(self):
         """Build only the configured primary and one approved extra transport.
@@ -1134,7 +1134,8 @@ class ProductResearchAdapter:
         client = route['client']
         public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
         return await self.run(story, route['role'], page['_unit_id'], lambda binding:
-                              client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding), client=client)
+                              client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding), client=client)
 
     async def extract_fact_page(self, page, story, context):
         """Serialize only duplicate units; independent chunks remain concurrent."""
@@ -1209,11 +1210,13 @@ class ProductResearchAdapter:
             try:
                 result = await self._extract_fact_route(route, capsule, page, owned, context)
                 from .fact_page_boundary import isolate_result
-                isolated = isolate_result(result, FACT_PAGE_SCHEMA,
-                    passage_ids={p['passage_id'] for p in page['evidence_passages']})
+                schema = assessment_schema(FACT_PAGE_SCHEMA, (result.get('receipt') or {}).get('binding', {}).get('semantic_contract'))
+                isolated = isolate_result(result, schema,
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                    passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
                 if isolated is not None:
                     result = isolated
-                if isolated is None or not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(result.get('result')):
+                if isolated is None or not Draft202012Validator(schema).is_valid(result.get('result')):
                     receipt = {**result['receipt'], 'phase': 'failed', 'provider_send_state': 'response_closed',
                                'retry_safe': True, 'error_type': 'MalformedProviderResponse'}
                     await self.checkpoint(receipt['binding'], receipt)
@@ -1250,6 +1253,8 @@ class ProductResearchAdapter:
         from .errors import MalformedProviderResponse
         from .research_budget import ResearchTerminated, require_remaining
         capsule = fact_page_capsule(page, context)
+        from .source_assessment import LEGACY_CONTRACT
+        capsule['semantic_contract'] = story.get('_fact_semantic_contract') or LEGACY_CONTRACT
         if self.giga is None:
             return await self._extract_opencode_page(capsule, page, story)
         input_sha256=hashlib.sha256(canonical({
@@ -1314,9 +1319,11 @@ class ProductResearchAdapter:
             receipt.update(receipts=result['receipts'],result=payload,actual_model=result.get('actual_model'),cost='unknown')
             receipt['raw_result'] = raw_payload
             from .fact_page_boundary import isolate_result
-            isolated = isolate_result({'result': payload, 'receipt': receipt}, FACT_PAGE_SCHEMA,
-                passage_ids={p['passage_id'] for p in page['evidence_passages']})
-            if isolated is None or not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(isolated['result']):
+            schema = assessment_schema(FACT_PAGE_SCHEMA, binding.get('semantic_contract'))
+            isolated = isolate_result({'result': payload, 'receipt': receipt}, schema,
+                passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+            if isolated is None or not Draft202012Validator(schema).is_valid(isolated['result']):
                 raise MalformedProviderResponse('gigachat:fact_page_schema_invalid')
             payload = isolated['result']
             receipt['result'] = payload
