@@ -45,7 +45,9 @@ class Backend:
                      'steps': self.h.config['agent']['plan']['steps'], 'permission': self.agent_permission}]
         if clean_path == '/config/providers':
             return {'providers': [{'id': 'opencode', 'models': {'mimo-v2.6-flash-free': {
-                'capabilities': self.image_capabilities}}}]}
+                'limit': {'context': 200000, 'output': 32000},
+                'capabilities': self.image_capabilities}, 'nemotron-3-ultra-free': {
+                'limit': {'context': 1000000, 'output': 128000}}}}]}
         if clean_path == '/experimental/tool/ids':
             if self.guard_loaded and self.h.config.get('plugin'):
                 self.h.config['username'] = self.h.config['plugin'][0][1]['marker']
@@ -182,7 +184,7 @@ async def test_existing_result_is_reconciled_without_second_prompt(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change,code', [
-    ({'provider': {'opencode': {'models': {'mimo-v2.6-flash-free': {'limit': {'output': 8193}}}}}},
+    ({'provider': {'opencode': {'models': {'mimo-v2.6-flash-free': {'limit': {'output': 0}}}}}},
      'research_model_output_not_bounded'),
     ({'plugin': ['untrusted']}, 'research_capsule_config_unverified'),
     ({'mcp': {'writer': {'enabled': True}}}, 'research_capsule_config_unverified'),
@@ -238,7 +240,7 @@ def test_scoped_profile_keeps_provider_credentials_and_other_native_agents_untou
     config = scoped_research_config('mimo-v2.6-flash-free')
     assert set(config['agent']) == {'plan', 'title', 'summary', 'compaction'}
     assert 'permission' not in config and 'default_agent' not in config and 'plugin' not in config
-    assert config['provider']['opencode']['models']['mimo-v2.6-flash-free'] == {'limit': {'context': 200000, 'output': 8192}}
+    assert 'provider' not in config
 
 
 def test_real_plugin_enforces_tool_boundary_without_limiting_search_quantity(tmp_path):
@@ -375,7 +377,7 @@ async def test_failed_guard_attestation_never_dispatches_inference(tmp_path, fai
 
 
 @pytest.mark.parametrize('limits', [ResearchLimits(timeout_seconds=0), ResearchLimits(max_steps=4),
-                                   ResearchLimits(max_output_tokens=8193)])
+                                   ResearchLimits(max_output_tokens=0)])
 def test_shared_worker_cannot_silently_expand_admission_bounds(tmp_path, limits):
     with pytest.raises(ValueError, match='research_shared_limits_invalid'):
         SharedDevCoveerResearch(str(tmp_path), model_id='mimo-v2.6-flash-free', limits=limits)
@@ -396,10 +398,10 @@ async def test_default_shared_bound_is_charged_before_send_without_relaxing_tool
     h, backend, adapter = setup(tmp_path)
     result = await adapter.search_articles('Facade alternatives', {'request_id': 'r'})
     binding, workload = h.admissions[0]
-    assert workload['max_output_tokens'] == 8192
+    assert workload['max_output_tokens'] == 32000
     assert workload['max_steps'] == 3
-    assert workload['estimated_tokens'] >= 10000 + 8192
-    assert result['receipt']['isolation']['max_output_tokens'] == 8192
+    assert workload['estimated_tokens'] >= 10000 + 32000
+    assert result['receipt']['isolation']['max_output_tokens'] == 32000
     assert result['receipt']['isolation']['deny_default'] is True
     assert result['receipt']['isolation']['allowed_tools'] == ['websearch']
     assert len(h.sends) == 1
@@ -409,17 +411,41 @@ async def test_default_shared_bound_is_charged_before_send_without_relaxing_tool
     ('opencode', 'kimi-k2.5'), ('opencode', 'mimo-v2.6-flash'),
     ('another-provider', 'mimo-v2.6-flash-free'),
 ])
-def test_other_shared_routes_preserve_original_completion_ceiling(tmp_path, provider, model):
+def test_all_shared_routes_inherit_provider_limits_without_name_specific_caps(tmp_path, provider, model):
     config = scoped_research_config(model, provider_id=provider)
-    assert config['provider'][provider]['models'][model]['limit']['output'] == 2048
+    assert 'provider' not in config
     adapter = SharedDevCoveerResearch(str(tmp_path), provider_id=provider, model_id=model)
-    assert adapter.limits.max_output_tokens == 2048
-    with pytest.raises(ValueError, match='research_shared_limits_invalid'):
-        SharedDevCoveerResearch(str(tmp_path), provider_id=provider, model_id=model,
-                               limits=ResearchLimits(max_output_tokens=2049))
-    clamped = scoped_research_config(model, provider_id=provider,
+    assert adapter.limits.max_output_tokens is None
+    explicit = scoped_research_config(model, provider_id=provider,
                                     limits=ResearchLimits(max_output_tokens=8192))
-    assert clamped['provider'][provider]['models'][model]['limit']['output'] == 2048
+    assert explicit['provider'][provider]['models'][model]['limit']['output'] == 8192
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model,output,role', [
+    ('mimo-v2.6-flash-free', 32000, 'facts'), ('mimo-v2.6-flash-free', 32000, 'search'),
+    ('mimo-v2.6-flash-free', 32000, 'vision'), ('nemotron-3-ultra-free', 128000, 'facts'),
+    ('nemotron-3-ultra-free', 128000, 'search'),
+])
+async def test_model_catalog_limit_is_reserved_for_every_original_route(tmp_path, model, output, role):
+    h, backend, adapter = setup(tmp_path)
+    adapter.model_id = model
+    # Metadata admission only; this does not qualify a route or assert semantics.
+    messages = h.messages
+
+    def configured_messages():
+        result = messages()
+        if result:
+            result[-1]['info']['modelID'] = model
+        return result
+
+    h.messages = configured_messages
+    h.result = {'summary': 'Closed own result'}
+    prompt = 'Use websearch for observed sources' if role == 'search' else 'Use supplied evidence'
+    result = await adapter._run(role, prompt, {'request_id': 'catalog-' + role}, {'type': 'object'})
+    assert h.admissions[0][1]['max_output_tokens'] == output
+    assert result['receipt']['isolation']['max_output_tokens'] == output
+    assert len(h.sends) == 1
 
 
 def test_generated_installer_uses_same_mimo_limit_and_guard_without_inference(tmp_path, monkeypatch, capsys):
@@ -447,7 +473,7 @@ def test_generated_installer_uses_same_mimo_limit_and_guard_without_inference(tm
     receipt = json.loads(capsys.readouterr().out)
     assert receipt['guard_sha256']
     assert receipt['tool_boundary_enforced'] is True
-    assert created[0].limits.max_output_tokens == 8192
+    assert created[0].limits.max_output_tokens is None
     assert json.loads((tmp_path / 'opencode.json').read_text()) == scoped_research_config(
         'mimo-v2.6-flash-free', directory=tmp_path)
     assert not h.sends and not any(method == 'POST' for method, *_ in backend.calls)

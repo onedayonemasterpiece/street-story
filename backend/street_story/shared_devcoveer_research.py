@@ -21,19 +21,6 @@ import httpx
 
 from .opencode_research import OpenCodeResearch, ResearchLimits, ResearchUnavailable
 
-# The connected MiMo route shares its finite ceiling across reasoning and JSON.
-MIMO_MAX_OUTPUT_TOKENS = 8192
-NEMOTRON_MAX_OUTPUT_TOKENS = 8192
-
-
-def shared_output_limit(model_id: str, provider_id: str = 'opencode') -> int:
-    if provider_id == 'opencode':
-        if model_id == 'mimo-v2.6-flash-free':
-            return MIMO_MAX_OUTPUT_TOKENS
-        if model_id == 'nemotron-3-ultra-free':
-            return NEMOTRON_MAX_OUTPUT_TOKENS
-    return ResearchLimits().max_output_tokens
-
 GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'research_guard.mjs'
 NATIVE_TOOL_IDS = {'invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write',
                    'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch'}
@@ -53,14 +40,16 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
     credentials remain selected by the shared server. Inherited plugins/MCP or
     instruction overrides fail runtime attestation rather than being replaced.
     """
-    output_limit = shared_output_limit(model_id, provider_id)
-    limits = limits or ResearchLimits(max_output_tokens=output_limit)
+    limits = limits or ResearchLimits()
     config = {'$schema': 'https://opencode.ai/config.json', 'share': 'disabled', 'snapshot': False,
             'tool_output': {'max_bytes': limits.max_search_context_chars, 'max_lines': 300},
             'agent': {'plan': {'steps': min(3, limits.max_steps)},
-                      **{name: {'disable': True} for name in ('title', 'summary', 'compaction')}},
-            'provider': {provider_id: {'models': {model_id: {'limit': {
-                'context': 200000, 'output': min(output_limit, limits.max_output_tokens)}}}}}}
+                      **{name: {'disable': True} for name in ('title', 'summary', 'compaction')}}}
+    # Inherit real model context/output limits. Explicit per-request profiles
+    # can retain a smaller envelope, but no model-name-specific default caps.
+    if limits.max_output_tokens is not None:
+        config['provider'] = {provider_id: {'models': {model_id: {
+            'limit': {'output': limits.max_output_tokens}}}}}
     if directory is not None:
         config['plugin'] = [guard_profile(directory, limits)]
     return config
@@ -88,13 +77,11 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ValueError('research_abort_timeout_invalid')
         if 'client' in kwargs or 'agent_names' in kwargs:
             raise ValueError('research_shared_transport_required')
-        output_limit = shared_output_limit(kwargs['model_id'], kwargs.get('provider_id', 'opencode'))
-        if kwargs.get('limits') is None:
-            kwargs['limits'] = ResearchLimits(max_output_tokens=output_limit)
         super().__init__('http://127.0.0.1:4097', agent_names={role: 'plan' for role in ('search', 'vision', 'facts')},
                          **kwargs)
         if (not 0 < self.limits.timeout_seconds <= 120 or not 0 < self.limits.max_steps <= 3
-                or not 0 < self.limits.max_output_tokens <= output_limit):
+                or self.limits.max_output_tokens is not None
+                and (type(self.limits.max_output_tokens) is not int or self.limits.max_output_tokens < 1)):
             raise ValueError('research_shared_limits_invalid')
         self.directory = str(path)
         self.require_guard = require_guard
@@ -214,15 +201,19 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_controller_steps_unverified')
         output = (config.get('provider', {}).get(self.provider_id, {}).get('models', {})
                   .get(self.model_id, {}).get('limit') or {}).get('output')
+        catalog = await self._request(client, 'GET', '/config/providers')
+        provider = next((p for p in catalog.get('providers', []) if p.get('id') == self.provider_id), {})
+        model = provider.get('models', {}).get(self.model_id, {})
+        if output is None:
+            output = (model.get('limit') or {}).get('output')
         tool_bytes = (config.get('tool_output') or {}).get('max_bytes')
-        if type(output) is not int or not 1 <= output <= self.limits.max_output_tokens:
+        if (type(output) is not int or output < 1
+                or self.limits.max_output_tokens is not None and output > self.limits.max_output_tokens):
             raise ResearchUnavailable('research_model_output_not_bounded')
         if type(tool_bytes) is not int or not 1 <= tool_bytes <= self.limits.max_search_context_chars:
             raise ResearchUnavailable('research_search_context_not_bounded')
         if role == 'vision':
-            catalog = await self._request(client, 'GET', '/config/providers')
-            provider = next((p for p in catalog.get('providers', []) if p.get('id') == self.provider_id), {})
-            capability = (provider.get('models', {}).get(self.model_id, {}).get('capabilities') or {})
+            capability = model.get('capabilities') or {}
             if capability.get('attachment') is not True or (capability.get('input') or {}).get('image') is not True:
                 raise ResearchUnavailable('research_model_image_input_unverified')
         return {'agent': 'plan', 'directory': self.directory, 'runtime_version': health.get('version'),

@@ -31,6 +31,9 @@ class Harness:
         path = request.url.path
         if path == '/config':
             return httpx.Response(200, json=self.config)
+        if path == '/config/providers':
+            return httpx.Response(200, json={'providers': [{'id': 'opencode', 'models': {
+                'mimo-v2.6-flash-free': {'limit': {'context': 200000, 'output': 32000}}}}]})
         if path == '/agent':
             agents = []
             for name, value in self.config['agent'].items():
@@ -212,6 +215,16 @@ async def test_fact_output_character_bound_uses_real_unicode_json(text, accepted
 
 
 @pytest.mark.asyncio
+async def test_default_output_preserves_closed_json_above_old_character_cap():
+    h = Harness()
+    h.result = {'text': 'Источник и полный закрытый ответ. ' * 800}
+    result = await h.adapter().extract_facts({'jsonschema': {'type': 'object'}}, {'request_id': 'large-json'})
+    assert result['result'] == h.result
+    assert result['receipt']['isolation']['max_output_tokens'] == 32000
+    assert len(h.sends) == 1
+
+
+@pytest.mark.asyncio
 async def test_fact_extraction_uses_supplied_capsule_schema_no_tool_or_new_fetch():
     h = Harness()
     h.result = {'facts': []}
@@ -248,7 +261,7 @@ async def test_permission_and_cost_bounds_are_not_only_prompt_instructions():
     h.config = research_config('mimo-v2.6-flash-free')
     h.config['provider']['opencode']['models']['mimo-v2.6-flash-free']['limit']['output'] = 32000
     with pytest.raises(ResearchUnavailable, match='research_model_output_not_bounded'):
-        await h.adapter().search_articles('photo', {'request_id': 'r'})
+        await h.adapter(limits=ResearchLimits(max_output_tokens=2048)).search_articles('photo', {'request_id': 'r'})
     assert not h.sends
 
 
@@ -275,6 +288,36 @@ async def test_timeout_aborts_and_preserves_correlation():
     assert failure.value.receipt['abort_acknowledged'] is True
     assert h.checkpoints[-1][0]['request_id'] == 'r'
     assert sum(path.endswith('/abort') for _method, path, _payload in h.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('finish', ['length', 'stop'])
+async def test_closed_empty_response_is_failed_immediately_without_abort_or_resend(finish):
+    h = Harness()
+    messages = h.messages
+
+    def closed_empty():
+        result = messages()
+        if result:
+            result[-1]['info'].pop('structured', None)
+            result[-1]['info']['finish'] = finish
+            result[-1]['info']['tokens'].update(output=0, reasoning=8194)
+            result[-1]['parts'] = [{'type': 'reasoning', 'text': 'Provider closed without JSON.'}]
+        return result
+
+    h.messages = closed_empty
+    code = 'research_output_exhausted' if finish == 'length' else 'research_empty_response'
+    with pytest.raises(ResearchUnavailable, match=code) as failure:
+        await h.adapter(limits=ResearchLimits(timeout_seconds=.02, poll_seconds=.001)).extract_facts(
+            {'jsonschema': {'type': 'object'}}, {'request_id': 'r'})
+    assert failure.value.receipt['phase'] == 'failed'
+    assert failure.value.receipt['provider_send_state'] == 'response_closed'
+    assert failure.value.receipt['response_finish'] == finish
+    assert len(h.sends) == 1
+    assert sum(path.endswith('/message') for _method, path, _payload in h.requests) == 2
+    assert not any(path.endswith('/abort') for _method, path, _payload in h.requests)
+    # Provider usage is settled, even though no usable product result exists.
+    assert h.finalized[0][1] == 'completed'
 
 
 @pytest.mark.asyncio
