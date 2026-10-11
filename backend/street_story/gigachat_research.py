@@ -267,9 +267,9 @@ class GigaChatResearchClient:
         inventory = [{**{key: source.get(key) for key in ('source_version_id', 'url', 'title')},
                       'available_passage_ids': [p['passage_id'] for p in source.get('passages', [])]}
                      for source in sources.values()]
-        from .source_assessment import CHECKS as ASSESSMENT_CHECKS, CONTRACT as ASSESSMENT_CONTRACT, response_schema
-        assessed = capsule.get('semantic_contract') == ASSESSMENT_CONTRACT
-        system = SYSTEM + (' ' + ASSESSMENT_CHECKS if assessed else '')
+        from .source_assessment import checks_for_contract, response_schema
+        checks = checks_for_contract(capsule.get('semantic_contract'))
+        system = SYSTEM + (' ' + checks if checks else '')
         schema = response_schema(FINDINGS_SCHEMA, capsule.get('semantic_contract'))
         messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json({
             'query': query, 'sources': inventory, 'context': capsule.get('context', {}),

@@ -1165,7 +1165,7 @@ class HeadlessFacts:
                 raise ConflictError('live_research_save_stale', 'Owner inputs or the extraction lease changed; saved result is deferred.')
         # Only candidate additions can rebase the frozen recipe while owner inputs remain identical.
         session.state['research_chunk_receipts'][page['chunk_id']]['expected_story_revision'] = int(story['revision'])
-        from .source_assessment import CONTRACT, CONTRACTS as ASSESSMENT_CONTRACTS, public_fact, response_schema
+        from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS, public_fact, response_schema
         if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') in ASSESSMENT_CONTRACTS:
             from .fact_page_boundary import isolate_result
             from .research_adapter import FACT_PAGE_SCHEMA
@@ -1185,7 +1185,7 @@ class HeadlessFacts:
                          if isinstance(usage, dict) and usage.get('model_id')]
         session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or session.model)
         session.state['semantic_reading_contract'] = (receipt.get('binding') or {}).get('semantic_contract')
-        saved_claims = [public_fact(fact) for fact in claims] if session.state['semantic_reading_contract'] == CONTRACT else claims
+        saved_claims = [public_fact(fact) for fact in claims] if session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS else claims
         committed = await self.adapter._save_research_facts(session, page['_unit_id'], {
             'facts': [{**fact, 'selected': False} for fact in saved_claims],
             'batch_reviewed': session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS,

@@ -2,8 +2,9 @@
 from copy import deepcopy
 
 LEGACY_CONTRACT = 'source-reading-assessment-v2'
-CONTRACT = 'source-reading-assessment-v3'
-CONTRACTS = {LEGACY_CONTRACT, CONTRACT}
+VALUE_CONTRACT = 'source-reading-assessment-v3'
+CONTRACT = 'source-reading-assessment-v4'
+CONTRACTS = {LEGACY_CONTRACT, VALUE_CONTRACT, CONTRACT}
 FIELDS = {
     'claims': {'type': 'array', 'minItems': 1, 'maxItems': 8,
         'description': 'All independently selectable propositions, not copies of a compound sentence. '
@@ -23,7 +24,7 @@ FIELDS = {
     'own_value_conflicts': {'type': 'array', 'maxItems': 12,
         'items': {'type': 'string', 'minLength': 1, 'maxLength': 500}},
 }
-CHECKS = (
+VALUE_CHECKS = (
     'For source-reading-assessment-v3, FIRST enumerate own_evidence_values for each asserted property '
     'from ALL own frozen passages, including every competing infobox/prose value. Copy exact own '
     'passage_ids and literal quotes for each value. Then declare own_value_conflicts; empty only '
@@ -47,10 +48,63 @@ CHECKS = (
     'statement or withhold the unsupported current assertion. '
 )
 
+RELATION_FIELDS = {
+    'source_roles': {'type': 'array', 'maxItems': 8, 'description':
+        'Read each named person in the own sentence AND its local context/references. '
+        'Enumerate actual roles, including authors of accounts or bibliography. A bare '
+        'according-to/by phrase does not explicitly identify an architect or other building participant.',
+        'items': {'type': 'object', 'properties': {
+            'entity': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+            'role': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+            'basis': {'enum': ['explicit_role', 'attributed_account', 'bibliographic_credit', 'unresolved']},
+            'passage_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'items': {'type': 'integer'}},
+            'quotes': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                'items': {'type': 'string', 'minLength': 1, 'maxLength': 900}}},
+            'required': ['entity', 'role', 'basis', 'passage_ids', 'quotes'], 'additionalProperties': False}},
+    'propositions': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+        'description': 'Factor every assertion in text into subject/property/value propositions. '
+            'One independently selectable property per proposition. Never bundle building count '
+            'with storeys under structure, or a dated event with a later condition under history.',
+        'items': {'type': 'object', 'properties': {
+            'subject': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+            'property': {'type': 'string', 'minLength': 1, 'maxLength': 100},
+            'value': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+            'text': {'type': 'string', 'minLength': 1, 'maxLength': 1200}},
+            'required': ['subject', 'property', 'value', 'text'], 'additionalProperties': False}},
+    'participant_role_indices': {'type': 'array', 'maxItems': 8, 'uniqueItems': True,
+        'description': 'Indices into source_roles for participant roles ASSERTED by this text. '
+            'A supported architect/designer/builder/etc assertion requires explicit_role, '
+            'never attributed_account/bibliographic_credit/unresolved. Empty for statements '
+            'that do not assign a building participant role.',
+        'items': {'type': 'integer', 'minimum': 0}},
+}
+CHECKS = (
+    'For source-reading-assessment-v4, resolve SOURCE relations before making a fact. '
+    'FIRST read source_roles using the sentence, local antecedents and ALL frozen reference/bibliography '
+    'passages. Distinguish the author of an account from a participant in the building history. '
+    'A phrase such as "built in [year], according to/by [person]" can attribute an account; '
+    'it does not by itself establish a designer. A matching name credited for a book is evidence '
+    'of authorship, not architecture. Without an explicit participant role, omit that role claim '
+    'or keep it nonpositive; do not disguise it by copying the ambiguous wording. '
+    'NEXT factor text into propositions with one subject/property/value each. Counts of buildings, '
+    'storeys and entrances are three properties. Eviction and a later ruined condition are separate. '
+    'Emit separate fact rows for these propositions in this SAME operation, even when an old claim '
+    'bundles them. supported requires one proposition whose text equals the fact text, and all '
+    'own_evidence_values must address that same property. participant_role_indices may support '
+    'only an explicitly established source_role. These declarations are your semantic judgments, '
+    'not permission to label an unresolved relation explicit. Then examine competing own values '
+    'and temporal qualifiers, then compare the normalized claim with prior inventory. '
+    + VALUE_CHECKS.replace('For source-reading-assessment-v3, FIRST', 'For own values,')
+)
+
+
+def checks_for_contract(contract):
+    return CHECKS if contract == CONTRACT else VALUE_CHECKS if contract == VALUE_CONTRACT else ''
+
 
 def source_first_input(capsule):
     """Order the unchanged evidence before the old matching index on the wire."""
-    if capsule.get('semantic_contract') != CONTRACT:
+    if capsule.get('semantic_contract') not in {VALUE_CONTRACT, CONTRACT}:
         return capsule
     keys = ('sources', 'semantic_contract', 'context', 'known_fact_inventory')
     return {**{key: capsule[key] for key in keys if key in capsule},
@@ -58,14 +112,18 @@ def source_first_input(capsule):
 
 
 def response_schema(legacy_schema, contract):
-    if contract != CONTRACT:
+    if contract not in {VALUE_CONTRACT, CONTRACT}:
         return legacy_schema
     schema = deepcopy(legacy_schema)
     row = schema['properties']['facts']['items']
     # Present the evidence examination before the conclusion in the actual
     # response contract, matching the instruction to enumerate before verdict.
     order = ('own_evidence_values', 'own_value_conflicts', 'claims')
-    row['properties'] = {**{key: deepcopy(FIELDS[key]) for key in order}, **row['properties']}
+    fields = FIELDS
+    if contract == CONTRACT:
+        order = (*RELATION_FIELDS, *order)
+        fields = {**RELATION_FIELDS, **FIELDS}
+    row['properties'] = {**{key: deepcopy(fields[key]) for key in order}, **row['properties']}
     row['required'] = [*order, *row['required']]
     return schema
 
@@ -76,7 +134,17 @@ def row_errors(row, passages=None):
             row['claims'] != [row['text']] or row['own_value_conflicts']):
         return [{'path': ['claims'], 'validator': 'declared_assessment_inconsistent'}]
     own = set(row['passage_ids'])
-    for value in row['own_evidence_values']:
+    if 'propositions' in row:
+        propositions = row['propositions']
+        if row['verdict'] == 'supported' and (len(propositions) != 1
+                or propositions[0]['text'] != row['text']
+                or any(value['property'] != propositions[0]['property'] for value in row['own_evidence_values'])):
+            return [{'path': ['propositions'], 'validator': 'declared_assessment_inconsistent'}]
+        roles = row['source_roles']
+        for index in row['participant_role_indices']:
+            if index >= len(roles) or (row['verdict'] == 'supported' and roles[index]['basis'] != 'explicit_role'):
+                return [{'path': ['participant_role_indices'], 'validator': 'declared_role_inconsistent'}]
+    for value in [*row['own_evidence_values'], *row.get('source_roles', [])]:
         if any(pid not in own for pid in value['passage_ids']):
             return [{'path': ['own_evidence_values'], 'validator': 'own_passage_membership'}]
         if passages is not None:
@@ -92,4 +160,4 @@ def row_errors(row, passages=None):
 def public_fact(row):
     # `claims` is a public evidence-group field with a different shape. Private
     # declarations remain in immutable raw receipts, not another acceptance writer.
-    return {key: value for key, value in row.items() if key not in FIELDS}
+    return {key: value for key, value in row.items() if key not in {*FIELDS, *RELATION_FIELDS}}

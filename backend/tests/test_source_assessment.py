@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from street_story.fact_page_boundary import isolate_rows
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_adapter import FACT_PAGE_SCHEMA
-from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, public_fact, response_schema, source_first_input
+from street_story.source_assessment import CONTRACT, LEGACY_CONTRACT, VALUE_CONTRACT, public_fact, response_schema, source_first_input
 from test_headless_fact_pool import fixture, partial, result
 
 SCHEMA = response_schema(FACT_PAGE_SCHEMA, CONTRACT)
@@ -69,7 +69,9 @@ def row(text='В 1944 году внутри были размещены скла
         'passage_ids':[pid], 'verdict':'supported','atomic':True,'support_complete':True,
         'qualifiers_preserved':True,'review_reason':'Own dated statement.', 'claims':[text],
         'own_evidence_values':[{'property':'use','value':'склады','passage_ids':[pid],
-            'quotes':[PASSAGES[pid]]}], 'own_value_conflicts':[]}
+            'quotes':[PASSAGES[pid]]}], 'own_value_conflicts':[], 'source_roles':[],
+        'participant_role_indices':[], 'propositions':[{
+            'subject':'Башня','property':'use','value':'склады','text':text}]}
 
 
 def isolate(rows):
@@ -111,6 +113,55 @@ def test_explicit_unresolved_conflict_stays_nonpositive_and_own_values_remain_in
     assert 'claims' not in public_fact(candidate)
 
 
+@pytest.mark.parametrize('basis', ['attributed_account','bibliographic_credit','unresolved'])
+def test_declared_account_author_cannot_be_supported_as_building_participant(basis):
+    bad=row('Архитектором здания был автор описания.',2,'designer')
+    bad['source_roles']=[{'entity':'Автор','role':'автор описания','basis':basis,
+        'passage_ids':[2],'quotes':[PASSAGES[2]]}]
+    bad['participant_role_indices']=[0]
+    dependent={**row('Другой связанный claim.',2,'designer')}
+    isolated=isolate([bad,dependent,row()])
+    assert isolated['row_isolation']['rejected_indices']==[0]
+    assert isolated['row_isolation']['dependent_indices']==[1]
+    assert isolated['result']['facts']==[row()]
+    assert isolated['raw_result']['facts']==[bad,dependent,row()]
+    bad['verdict']='insufficient'
+    assert isolate([bad])['result']['facts']==[bad]
+
+
+def test_model_explicit_role_is_not_reclassified_by_host_but_requires_own_quote():
+    candidate=row()
+    candidate['source_roles']=[{'entity':'Автор','role':'проектировщик','basis':'explicit_role',
+        'passage_ids':[2],'quotes':[PASSAGES[2]]}]
+    candidate['participant_role_indices']=[0]
+    assert isolate([candidate])['result']['facts']==[candidate]
+    candidate['source_roles'][0]['quotes']=[PASSAGES[1]]
+    assert isolate([candidate]) is None
+
+
+@pytest.mark.parametrize('defect', ['multiple_properties','different_value_property','foreign_role_index'])
+def test_factorized_properties_and_role_addresses_must_agree_with_positive_claim(defect):
+    bad=row()
+    if defect=='multiple_properties':
+        bad['propositions'].append({'subject':'Башня','property':'height','value':'12','text':'Высота 12 метров.'})
+    elif defect=='different_value_property':
+        bad['own_evidence_values'][0]['property']='height'
+    else:
+        bad['participant_role_indices']=[0]
+    assert isolate([bad]) is None
+
+
+def test_closed_v3_value_contract_does_not_require_new_relation_declarations():
+    old=row()
+    for field in ('source_roles','propositions','participant_role_indices'):
+        old.pop(field)
+    schema=response_schema(FACT_PAGE_SCHEMA,VALUE_CONTRACT)
+    assert Draft202012Validator(schema['properties']['facts']['items']).is_valid(old)
+    assert not Draft202012Validator(SCHEMA['properties']['facts']['items']).is_valid(old)
+    assert isolate_rows({'facts':[old], 'source_matches_poi':True,'source_content_valid':True,
+        'continuation_needed':False},schema,passage_ids=set(PASSAGES),passages=PASSAGES)['result']['facts']==[old]
+
+
 def test_old_closed_reading_schema_is_preserved_without_new_fields():
     candidate=public_fact(row())
     legacy=response_schema(FACT_PAGE_SCHEMA,LEGACY_CONTRACT)
@@ -120,7 +171,8 @@ def test_old_closed_reading_schema_is_preserved_without_new_fields():
 
 
 @pytest.mark.asyncio
-async def test_v3_onepass_commits_own_claim_without_second_review_and_reopens(tmp_path):
+@pytest.mark.parametrize('contract',[VALUE_CONTRACT,CONTRACT])
+async def test_versioned_onepass_commits_own_claim_without_second_review_and_reopens(tmp_path,contract):
     svc,job=fixture(tmp_path,count=1)
     calls=[]
     async def extract(page,story,context):
@@ -130,7 +182,10 @@ async def test_v3_onepass_commits_own_claim_without_second_review_and_reopens(tm
         own=page['evidence_passages'][0]
         fact.update(claims=[fact['text']],own_value_conflicts=[],own_evidence_values=[{
             'property':'use','value':'exhibit','passage_ids':[own['passage_id']],'quotes':[own['text']]}])
-        response['receipt']['binding']={'semantic_contract':CONTRACT}
+        if contract==CONTRACT:
+            fact.update(source_roles=[],participant_role_indices=[],propositions=[{
+                'subject':'Building','property':'use','value':'exhibit','text':fact['text']}])
+        response['receipt']['binding']={'semantic_contract':contract}
         return response
     svc.providers.research=SimpleNamespace(client=SimpleNamespace(model_id='controlled-model'),extract_fact_page=extract)
     await partial(HeadlessFacts(svc),job)
