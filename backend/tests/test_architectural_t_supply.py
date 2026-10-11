@@ -327,6 +327,35 @@ def test_compact_t_keeps_measured_neighbor_relations_without_nominating_neighbor
     assert receipt == original
 
 
+@pytest.mark.parametrize('comparison', ['omitted', 'addressed', 'uncertain', 'no_map_pair'])
+def test_t_addressed_map_side_pair_cannot_disappear_from_positive_body_decision(comparison):
+    from jsonschema import Draft202012Validator
+    from test_identity_spatial_features import building, story as spatial_story
+    from street_story.identity_spatial_features import supplied_relation_options
+    source, candidates, decision, receipt = _comparison_fixture()
+    source.update(spatial_story([building(7, 10, 20), building(88, 50, 25)]))
+    receipt['conditional_initial_decision']['candidate_ids'] = ['osm:way:7']
+    if comparison != 'no_map_pair':
+        receipt['manifest'] = {'relation_options': supplied_relation_options(
+            source, candidates, active_ids=['osm:way:7'])}
+    packet = prepare_architectural_comparison(source, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
+    decision['material_alternatives'] = []
+    if comparison == 'addressed':
+        decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
+            'reason': 'The model distinguishes the other received facade in this MAP side pair.'}]
+    elif comparison == 'uncertain':
+        decision['decision'] = 'uncertain'
+    assert Draft202012Validator(packet['schema']).is_valid(decision) is (comparison != 'omitted')
+    receipt['physical_link_inventory'] = packet['physical_link_inventory']
+    receipt['required_map_counterpoints'] = packet['required_map_counterpoints']
+    proof = freeze_architectural_text_proof(source, decision, receipt, candidates)
+    assert (proof is not None) is (comparison in {'addressed', 'no_map_pair'})
+    if comparison == 'addressed':
+        receipt['required_map_counterpoints'] = {}
+        assert freeze_architectural_text_proof(source, decision, receipt, candidates) is None
+
+
 def test_compact_t_missing_neighbor_primitive_stays_unknown_without_fabrication():
     source, candidates, _, receipt = _comparison_fixture()
     reference = {'candidate_id':'osm:way:not-received','kind':'segment','ring_index':0,'segment_index':0}

@@ -411,6 +411,30 @@ def source_subject_competition_guard(story, candidates, decision):
         'policy':'A closer OSM body is a semantic comparison candidate, '
             'not a T rejection or an assertion that it is visible in SOURCE.'}
 
+def received_map_counterpoints(story, candidates, receipt):
+    """Keep participants of issued side pairs; no host identity or ranking."""
+    from .identity_spatial_features import geometry_feature
+    catalog = {row.get('candidate_id'): row for row in
+        [*candidates, *(story.get('_identity_observed_candidates') or [])]
+        if isinstance(row, dict) and candidate_identity_eligible(row)
+        and not article_candidate(row)
+        and any(((row.get('map_object') or {}).get('tags') or {}).get(key)
+                for key in ('building', 'building:part'))}
+    pairs = {}
+    for option in (receipt.get('manifest') or {}).get('relation_options') or []:
+        if option.get('kind') != 'observed_side_pair':
+            continue
+        refs = option.get('map_features') or []
+        if (len(refs) != 2 or any(ref.get('candidate_id') not in catalog
+                or not geometry_feature(story, list(catalog.values()), ref) for ref in refs)):
+            continue
+        first, second = (ref['candidate_id'] for ref in refs)
+        if first != second:
+            pairs.setdefault(first, set()).add(second)
+            pairs.setdefault(second, set()).add(first)
+    return {cid: sorted(others) for cid, others in sorted(pairs.items())}
+
+
 def prepare_architectural_comparison(story, candidates, source_text_receipt, *, complete_source=False):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
@@ -528,6 +552,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
     # no extra inference, nomination, camera pose or identity is introduced.
     from .identity_spatial_features import geometry_feature
     map_relations = copy.deepcopy((receipt.get('manifest') or {}).get('relation_options') or [])
+    map_counterpoints = received_map_counterpoints(story, observed, receipt)
     relation_features = {}
     for option in map_relations:
         for reference in option.get('map_features') or []:
@@ -545,6 +570,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
         'observed_map_relations': map_relations,
+        'received_map_counterpoints_not_identity': map_counterpoints,
         'relation_feature_geometry': list(relation_features.values()),
         'physical_reserve': {
             'columns': ['candidate_id', 'map_label', 'observed_name', 'literal_address'],
@@ -584,7 +610,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'For an accepted decision, address EVERY earlier nominated candidate except the chosen one, '
         'including a reason when it is not a material alternative. Otherwise use uncertain.')
     required_prior_ids = [cid for cid in initial.get('candidate_ids', []) if cid in ids]
-    if required_prior_ids:
+    if required_prior_ids or map_counterpoints:
         schema['allOf'] = [{
             'if': {'properties': {'decision': {'const': 'accepted_architectural_text'},
                                   'candidate_id': {'const': chosen}},
@@ -592,8 +618,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
             'then': {'properties': {'material_alternatives': {'allOf': [
                 {'contains': {'properties': {'candidate_id': {'const': other}},
                               'required': ['candidate_id']}}
-                for other in required_prior_ids if other != chosen]}}}
-        } for chosen in ids if any(other != chosen for other in required_prior_ids)]
+                for other in sorted(set(required_prior_ids + map_counterpoints.get(chosen, [])) - {chosen})]}}}
+        } for chosen in ids if set(required_prior_ids + map_counterpoints.get(chosen, [])) - {chosen}]
     if len(physical_catalog) == 1:
         schema['properties']['material_alternatives']['maxItems'] = 0
     instruction = (
@@ -647,7 +673,11 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'If unresolved bodies cannot be addressed in this answer, use uncertain and research_priority. A singleton nomination '
         'is not evidence of uniqueness; another side of the street or an unexamined footprint may remain. '
         'For acceptance address every previously nominated OTHER candidate, explaining why it differs '
-        'or is nonmaterial; name additional material alternatives when relevant. Never list the chosen '
+        'or is nonmaterial. Also address every other received body in an issued MAP side pair '
+        'with the chosen body (received_map_counterpoints_not_identity), even if G did not nominate it. '
+        'Explain its discriminating SOURCE relationship or why it is nonmaterial; the side pair is '
+        'comparison context, never proof of identity. If unresolved, choose uncertain. '
+        'Name additional material alternatives when relevant. Never list the chosen '
         'candidate itself as its alternative. If individual-body scope or the discriminating SOURCE '
         'relationship remains unresolved, return uncertain, even when an article matches generic details. '
         'Optional research_priority can retain several received physical bodies and the next useful '
@@ -664,6 +694,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
             'characters': sum(len(span['source_quote']) for span in source_span_refs.values()),
             'portion_count': sum(len(row['displayed_portions']) for row in source_passages)},
         'physical_link_inventory': inventory,
+        'required_map_counterpoints': map_counterpoints,
         'source_span_refs': source_span_refs,
         'article_ids': article_ids, 'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}

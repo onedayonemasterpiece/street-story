@@ -1576,6 +1576,7 @@ async def _suggest(service, story, transcript, candidates):
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt,
                                                             complete_source=True)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']
+                source_text_receipt['required_map_counterpoints'] = compact_t['required_map_counterpoints']
                 source_text_receipt['source_span_refs'] = compact_t['source_span_refs']
                 source_text_receipt['text_delivery'] = compact_t['text_delivery']
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']

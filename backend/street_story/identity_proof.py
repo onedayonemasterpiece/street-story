@@ -398,6 +398,13 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     if not stable or any(item['candidate_id'] in {'', cid} or not item['reason'].strip()
             for item in decision['material_alternatives']):
         return None
+    if 'required_map_counterpoints' in receipt:
+        from .identity_architectural_comparison import received_map_counterpoints
+        counterpoints = received_map_counterpoints(story, list(catalog.values()), receipt)
+        if (receipt['required_map_counterpoints'] != counterpoints
+                or not set(counterpoints.get(cid, [])) <= {
+                    item['candidate_id'] for item in decision['material_alternatives']}):
+            return None
     if prior is not None:
         if (not isinstance(prior, dict) or prior.get('policy') != 'conditional-initial-joint-v1'
                 or prior.get('input_kind') != 'model_hypothesis_not_evidence'
