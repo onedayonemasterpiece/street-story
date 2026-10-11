@@ -3426,7 +3426,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         recipe["run_id"] = run_id
         session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
         session.state['research_current_chunk_id'] = candidate['chunk_id']
-        if "passage_cursor" not in args and len(seen) == len(passages):
+        # Reading every passage does not mean extracting every claim. A saved
+        # nonterminal batch explicitly retains this frozen core for continuation;
+        # serve its ordinary addressable pages again without fetching the source.
+        if "passage_cursor" not in args and len(seen) == len(passages) and batch_index == 0:
             session.state.setdefault('research_page_passage_ids', {})[candidate['chunk_id']] = set(seen)
             return {**result, "core_text": "", "context_text": "", "evidence_passages": [], "context_before": "", "context_after": "",
                     "checkpoint": {"next_batch_index": batch_index, "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3]},

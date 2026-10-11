@@ -126,6 +126,10 @@ class HeadlessFactReview:
                 and all(entry.get(key) is True for key in ('schema_verified', 'own_passages_verified',
                     'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified'))), None)
             if entry is not None:
+                route = {**route, '_review_admission': {
+                    'route_identity': self._route_identity(route),
+                    'controls': {key: True for key in ('schema_verified', 'own_passages_verified',
+                        'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')}}}
                 timing = entry.get('qualification_review_timing')
                 if (isinstance(timing, dict) and timing.get('source_sha256')
                         and timing['source_sha256'] == entry.get('qualification_sha256')):
@@ -135,7 +139,27 @@ class HeadlessFactReview:
 
     def _result_route_qualified(self, saved):
         identity = saved.get('route_identity')
-        return bool(identity and all(identity.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+        admission = saved.get('review_admission')
+        if admission is not None:
+            # New operations retain admission before sending. A cache expiry
+            # cannot retrospectively turn a closed own result into technical-only.
+            return bool(isinstance(admission, dict) and isinstance(identity, dict) and identity
+                and isinstance(saved.get('verifier_contract_id'), str) and saved['verifier_contract_id']
+                and isinstance(saved.get('verifier_schema'), dict)
+                and isinstance(saved.get('frozen_packet'), dict)
+                and all(identity.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                and admission.get('route_identity') == identity
+                and isinstance(admission.get('controls'), dict)
+                and all(admission['controls'].get(key) is True for key in
+                    ('schema_verified', 'own_passages_verified', 'qualifier_negative_verified',
+                     'nearby_duplicate_verified', 'nearby_conflict_verified'))
+                and admission.get('verifier_contract_id') == saved.get('verifier_contract_id')
+                and admission.get('schema_sha256') == hashlib.sha256(canonical(saved.get('verifier_schema')).encode()).hexdigest()
+                and admission.get('packet_sha256') == hashlib.sha256(canonical(saved.get('frozen_packet')).encode()).hexdigest())
+        # Historical receipts without a recorded admission keep their existing
+        # gate; never manufacture a qualification for them retrospectively.
+        return bool(isinstance(identity, dict) and identity
+                    and all(identity.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
                     and any(identity == self._route_identity(route)
                             for route in self._qualified_routes(available=False)))
 
@@ -260,6 +284,13 @@ class HeadlessFactReview:
                       'route_identity': self._route_identity(route), 'verifier_prompt': verifier_prompt,
                       'verifier_contract_id': verifier_contract, 'verifier_schema': schema,
                       'verifier_model_packet': model_view}
+            if observing and saved.get('review_admission') is not None:
+                frozen['review_admission'] = saved['review_admission']
+            elif not observing and route.get('_review_admission') is not None:
+                frozen['review_admission'] = {**route['_review_admission'],
+                    'verifier_contract_id': verifier_contract,
+                    'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest(),
+                    'packet_sha256': hashlib.sha256(canonical(packet).encode()).hexdigest()}
             self._put(job, unit, {**frozen, 'phase': 'started'})
             LOG.info('street_story_background_fact_review_started story_id=%s run_id=%s unit_id=%s model_id=%s original_readback=%s',
                      job['story_id'], packet['run_id'], unit, client.model_id, observing)

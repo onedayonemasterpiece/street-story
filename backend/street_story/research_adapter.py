@@ -1112,19 +1112,16 @@ class ProductResearchAdapter:
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
             story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
         latest = {}
-        with self.service.store.connection() as db:
-            rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                              "WHERE story_id=? AND role IN ('facts_live','facts_gigachat','facts','facts_opencode_nemotron') "
-                              "ORDER BY created_at DESC,rowid DESC", (story['id'],))
-            for row in rows:
-                receipt = json.loads(row['receipt_json'] or '{}')
-                binding = receipt.get('binding') or {}
-                if (row['logical_id'] not in logicals
-                        and not (binding.get('fact_unit_id') == unit
-                                 and binding.get('photo_sha256') == story['photo_sha256']
-                                 and binding.get('generation') == story.get('_identity_generation', 0))):
-                    continue
-                latest.setdefault(row['role'], receipt)
+        from .fact_unit_receipts import unit_attempt_rows
+        for row in unit_attempt_rows(self.service.store, story, unit, roles=roles, legacy_binding=True):
+            receipt = json.loads(row['receipt_json'] or '{}')
+            binding = receipt.get('binding') or {}
+            if (row['logical_id'] not in logicals
+                    and not (binding.get('fact_unit_id') == unit
+                             and binding.get('photo_sha256') == story['photo_sha256']
+                             and binding.get('generation') == story.get('_identity_generation', 0))):
+                continue
+            latest.setdefault(row['role'], receipt)
         return latest
 
     @staticmethod

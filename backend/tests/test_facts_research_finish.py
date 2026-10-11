@@ -582,6 +582,50 @@ async def test_numeric_passages_and_bounded_invalid_batch_resume(tmp_path):
     await reader.search_http.aclose()
 
 
+@pytest.mark.parametrize('reopen', [False, True])
+@pytest.mark.asyncio
+async def test_continuation_after_32_claims_retains_addressable_frozen_text(tmp_path, reopen):
+    from types import SimpleNamespace
+    import httpx
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    quotes = [f'Подтверждённый самостоятельный тезис номер {i}.' for i in range(33)]
+    body = '<main><p>' + ' '.join(quotes) + '</p></main>'
+    fetches = []
+    def serve(request):
+        fetches.append(str(request.url))
+        return httpx.Response(200, headers={'content-type': 'text/html'}, text=body)
+    await reader.search_http.aclose()
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(serve))
+    session.state['headless_research'] = True
+    chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
+    args = {**findings(chunk, []), 'continuation_needed': True, 'facts': [
+        {'claim_key': f'claim-{i}', 'text': quote, 'confidence': .95, 'selected': False,
+         'source_refs': [], 'evidence_refs': [], 'evidence_quotes': [quote]}
+        for i, quote in enumerate(quotes[:32])]}
+    saved = await adapter._save_research_facts(session, 'first-32', args)
+    assert saved['payload_saved']
+    if reopen:
+        adapter.on_stopped(session)
+        session = SimpleNamespace(id='live_remaining_claims', resource_id=session.resource_id,
+            model='gemini-3.8-live', state={'headless_research': True})
+    resumed = await adapter._get_research_chunk(session, {'run_id': run_id})
+    assert resumed['source_version_id'] == chunk['source_version_id']
+    assert resumed['chunk_id'] == chunk['chunk_id'] and resumed['batch_index'] == 1
+    assert resumed['batch_id'] != chunk['batch_id']
+    assert resumed['core_text'] == chunk['core_text']
+    assert quotes[-1] in ''.join(p['text'] for p in resumed['evidence_passages'])
+    assert len(fetches) == 1
+    tail = {**findings(resumed, []), 'facts': [{
+        'claim_key': 'claim-32', 'text': quotes[-1], 'confidence': .95, 'selected': False,
+        'source_refs': [], 'evidence_refs': [], 'evidence_quotes': [quotes[-1]]}]}
+    assert (await adapter._save_research_facts(session, 'remaining-one', tail))['payload_saved']
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['counts']['chunk_batches_total'] == 2
+        assert db.execute('SELECT COUNT(*) FROM fact_observations WHERE story_id=?',
+                          (session.resource_id,)).fetchone()[0] == 33
+    await reader.search_http.aclose()
+
+
 @pytest.mark.asyncio
 async def test_actual_task_cancellation_preserves_first_batch_for_resume(tmp_path):
     import asyncio

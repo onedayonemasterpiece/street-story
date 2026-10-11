@@ -350,6 +350,10 @@ CREATE TABLE IF NOT EXISTS research_provider_attempts(
 );
 CREATE INDEX IF NOT EXISTS idx_research_provider_logical ON research_provider_attempts(logical_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_research_provider_role_time ON research_provider_attempts(role,updated_at);
+CREATE INDEX IF NOT EXISTS idx_research_provider_story_role ON research_provider_attempts(story_id,role);
+CREATE INDEX IF NOT EXISTS idx_research_provider_fact_binding ON research_provider_attempts(
+ story_id,role,json_extract(receipt_json,'$.binding.fact_unit_id'),
+ json_extract(receipt_json,'$.binding.photo_sha256'),json_extract(receipt_json,'$.binding.generation'));
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,

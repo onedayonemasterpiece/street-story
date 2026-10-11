@@ -960,10 +960,8 @@ class HeadlessFacts:
 
     def _boundary_closed(self, story, unit_id):
         """Provider attempt receipts are authoritative about a prior send."""
-        with self.service.store.connection() as db:
-            attempts = list(db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                                       "WHERE story_id=? AND role LIKE 'facts%' ORDER BY created_at DESC,rowid DESC",
-                                       (story['id'],)))
+        from .fact_unit_receipts import unit_attempt_rows
+        attempts = unit_attempt_rows(self.service.store, story, unit_id)
         latest = {}
         for row in attempts:
             expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
