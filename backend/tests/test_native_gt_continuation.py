@@ -44,6 +44,8 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     svc.settings = replace(svc.settings, gemini_api_key='offline-controlled-key')
     _, _, decision, receipt = text_inputs(candidate_id='osm:way:2')
     articles = receipt['articles']
+    from test_geometry_identity_plan import cache_ready_articles
+    cache_ready_articles(svc, articles)
     articles[0]['lookup_candidate_ids'] = ['osm:way:2']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:3', 'reason': 'Distinct neighboring body.'}]
     async def catalogue(*args, **kwargs):
@@ -54,8 +56,8 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
     monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
     current_prepare = identity_architectural_comparison.prepare_architectural_comparison
-    def legacy_prepare(*args):
-        prepared = current_prepare(*args)
+    def legacy_prepare(*args, **kwargs):
+        prepared = current_prepare(*args, **kwargs)
         item = prepared['schema']['properties']['correspondences']['items']
         item['properties'].pop('source_span_ref')
         item['properties']['source_quote'] = {'type': 'string', 'maxLength': 600}

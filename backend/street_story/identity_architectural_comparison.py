@@ -64,6 +64,8 @@ async def ready_article_references(service, story, articles, *, timeout=4):
                     continue
                 if hashlib.sha256(body).hexdigest() != cached['sha256']:
                     continue
+                if not isinstance(cached.get('final_url'), str) or not cached['final_url']:
+                    continue  # Optional media never invalidates an acquired TEXT body.
                 _, media = extract_media(body, cached['final_url'])
                 # Two independent ready views per selected article. Page order
                 # is no verdict, and failure of one view cannot block the other.

@@ -258,5 +258,5 @@ async def test_broad_early_inventory_keeps_metadata_and_page_capacity_for_model_
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = None
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(prefetch) == min(5, service.settings.identity_max_pages - 3)
+    assert prefetch == []  # Cold bodies remain selectable; ready G cannot wait for HTTP.
     assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'

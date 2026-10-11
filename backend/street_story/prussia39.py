@@ -522,6 +522,8 @@ class Prussia39Adapter:
                 receipt.update(url=final, http_status=200, source_sha256=hashlib.sha256(raw).hexdigest(),
                                raw_content_sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
                                fetched_at=(cached or {}).get('acquired_at', self.store.now()))
+                if raw and _cached_body(self.store, key):
+                    receipt['raw_body_cache_key'] = key
                 origin = urlsplit(final)
                 if origin.hostname not in {'www.prussia39.ru', 'prussia39.ru'}:
                     raise ValueError('publisher_redirect_unavailable')

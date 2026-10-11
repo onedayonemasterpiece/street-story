@@ -70,7 +70,9 @@ async def test_local_daily_wait_rechecks_policy_without_sixty_second_hot_loop(tm
         assert research['automatic_research_outcome']['outcome'] == 'resource_blocked'
         assert db.execute('SELECT state FROM jobs WHERE id=?', (jid,)).fetchone()[0] == 'done'
         assert 'pending_fact_request' in research
+    assert service.recover_jobs() == 1  # The separately accepted second intent owns its own bounded wave.
     assert service.recover_jobs() == 0
+    assert calls == [jid, jid]  # Recovery schedules; it does not send an admission or model call.
 
 
 @pytest.mark.asyncio

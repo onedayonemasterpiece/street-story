@@ -106,7 +106,7 @@ def test_restart_worker_failure_exhaustion_schedules_followup_after_terminalizin
 
 
 @pytest.mark.asyncio
-async def test_provider_wait_beyond_envelope_terminates_without_implicit_joined_restart(tmp_path):
+async def test_provider_wait_terminates_original_and_only_explicit_accepted_wave_can_follow(tmp_path):
     svc, sid, jid = pending_request(tmp_path)
     with svc.store.tx() as db:
         db.execute('UPDATE jobs SET attempts=? WHERE id=?', (MAX_JOB_ATTEMPTS + 5, jid))
@@ -115,7 +115,6 @@ async def test_provider_wait_beyond_envelope_terminates_without_implicit_joined_
         raise RetryableProviderError('provider_quota_waiting', retry_at=svc.store.now() + 900)
     svc._run_research = wait
     assert await svc.run_once()
-    assert svc.recover_jobs() == 0
     with svc.store.connection() as db:
         job = db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
         assert job['state'] == 'done' and job['attempts'] > MAX_JOB_ATTEMPTS
@@ -125,6 +124,14 @@ async def test_provider_wait_beyond_envelope_terminates_without_implicit_joined_
         assert research['automatic_research_outcome']['reason'] == 'provider_quota_waiting'
         assert 'pending_fact_request' in research  # Owner intent is retained for a new explicit wave.
         assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
+    assert svc.recover_jobs() == 1
+    assert_followup(svc, sid, jid, preceding_state='done')
+    with svc.store.connection() as db:
+        current = json.loads(svc._story_row(db, sid)['research_json'])
+        previous = current['research_attempt_history'][-1]
+        assert previous['research_budget'] == original_budget
+        assert previous['automatic_research_outcome']['outcome'] == 'resource_blocked'
+    assert svc.recover_jobs() == 0
 
 
 def test_restart_unexpired_and_recovered_attempts_keep_pending_request(tmp_path):

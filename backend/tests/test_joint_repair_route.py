@@ -80,6 +80,8 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
     service.settings = replace(service.settings, gemini_api_key='offline-controlled-key')
     _story, _candidates, decision, receipt = text_inputs(candidate_id='osm:way:2')
     articles = receipt['articles']
+    from test_geometry_identity_plan import cache_ready_articles
+    cache_ready_articles(service, articles)
     aid = articles[0]['article_id']
     calls = []
 
@@ -155,6 +157,8 @@ async def test_closed_independent_source_route_owns_new_repair_without_replaying
         from test_architectural_text_identity import text_inputs
         _, _, _, receipt = text_inputs(candidate_id='osm:way:2')
         articles = receipt['articles']
+        from test_geometry_identity_plan import cache_ready_articles
+        cache_ready_articles(service, articles)
         assert not articles[0].get('lookup_candidate_ids')
 
         async def catalogue(*args, **kwargs):

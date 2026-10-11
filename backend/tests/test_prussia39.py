@@ -1,5 +1,6 @@
 """Offline publisher contracts; fixture names are unrelated to acceptance cases."""
 import asyncio
+import base64
 import hashlib
 import json
 
@@ -80,11 +81,15 @@ async def test_full_form_cp1251_literals_no_images_and_truthful_cards(tmp_path):
     (html('<div>Результаты поиска всего совпадений: 1</div>'), 'parse_failed', 'address_result_count_mismatch'),
 ])
 async def test_empty_parse_and_transport_are_distinct(tmp_path, body, status, error):
+    cache = Cache(tmp_path / 'cache')
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
-        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Улица')
+        value = await Prussia39Adapter(cache, http, resolver=resolver).address_search('Город', 'Улица')
     assert value['status'] == status and value.get('error_code') == error
     if body:
         assert value['source_sha256'] == hashlib.sha256(body).hexdigest()
+        retained = cache.cache_get(value['raw_body_cache_key'])
+        assert base64.b64decode(retained['body']) == body
+        assert retained['sha256'] == value['raw_content_sha256']
 
 
 @pytest.mark.asyncio

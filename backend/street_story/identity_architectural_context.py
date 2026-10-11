@@ -826,7 +826,9 @@ async def acquire_regional_text(service, story, candidates, request):
         results = lookup.get('results') or []
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),
-            'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
+            'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False),
+            'error_code': lookup.get('error_code'), 'raw_content_sha256': lookup.get('raw_content_sha256'),
+            'raw_body_cache_key': lookup.get('raw_body_cache_key')})
         # Read an entire small received inventory without interpreting postal
         # suffixes, ranges or historical addresses. A larger inventory remains
         # available for model selection, never silently reduced to its first rows.

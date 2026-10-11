@@ -28,7 +28,7 @@ def catalogue_card(sid, address):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body'])
+@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body', 'incomplete_cache'])
 async def test_t_uses_verified_cached_article_photo_without_extra_model_or_required_acquisition(monkeypatch, acquisition):
     from street_story.identity_architectural_comparison import ready_article_references
     from street_story import native_vision, identity_telemetry
@@ -37,6 +37,8 @@ async def test_t_uses_verified_cached_article_photo_without_extra_model_or_requi
                'source_sha256': hashlib.sha256(body).hexdigest()}
     cached = {'sha256': article['source_sha256'], 'final_url': article['url'],
               'body': base64.b64encode(body if acquisition != 'changed_cached_body' else b'changed').decode()}
+    if acquisition == 'incomplete_cache':
+        cached.pop('final_url')
     service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
     events, loads = [], []
     monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: events.append(args))
@@ -55,7 +57,7 @@ async def test_t_uses_verified_cached_article_photo_without_extra_model_or_requi
         assert receipt[0]['model_image_sha256'] == hashlib.sha256(images[0][2]).hexdigest()
     else:
         assert images == receipt == []
-    assert loads == ([] if acquisition == 'changed_cached_body' else ['https://example.org/facade.jpg'])
+    assert loads == ([] if acquisition in {'changed_cached_body', 'incomplete_cache'} else ['https://example.org/facade.jpg'])
 
 
 @pytest.mark.asyncio

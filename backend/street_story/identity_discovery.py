@@ -681,6 +681,19 @@ async def _suggest(service, story, transcript, candidates):
             packet = compact_planner_packet(packet)
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
             packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    if frozen_initial:
+        try:
+            frozen_packet, _ = json.JSONDecoder().raw_decode(
+                frozen_initial['prompt'].split('Данные ниже — только контекст:\n', 1)[1])
+            same_owner_context = (frozen_packet.get('author_context') == packet.get('author_context')
+                and frozen_packet.get('owner_hint', {}) == packet.get('owner_hint', {}))
+        except (ValueError, IndexError, TypeError):
+            same_owner_context = False
+        if same_owner_context:
+            # Late optional metadata is reserve, never a revision of joint1.
+            prompt = frozen_initial['prompt']
+            schema.clear()
+            schema.update(copy.deepcopy(frozen_initial['schema']))
     response_contract = identity_transport_schema(schema, map_label_references=bool(scene))
     literal_names = []
     if scene:
@@ -723,6 +736,10 @@ async def _suggest(service, story, transcript, candidates):
             'and explain their actual MAP correspondence and camera pose; naming the object alone is insufficient. '
             'If this spatial correspondence is not established, return uncertain and the best next action.'),
     )
+    if frozen_initial and same_owner_context and frozen_initial.get('configuration'):
+        # Keep the original instruction string; JSON storage reorders schema
+        # keys, so reconstructing it would change the addressed input hash.
+        config = types.GenerateContentConfig(**copy.deepcopy(frozen_initial['configuration']))
     record_identity_event(service, story['id'], 'identity_joint_input_prepared', {
         'scope': 'product_system_instruction_plus_prompt_utf8_v1',
         'text_utf8_bytes': len(prompt.encode()) + len(config.system_instruction.encode()),
@@ -1225,7 +1242,7 @@ async def _suggest(service, story, transcript, candidates):
             from .identity_plan_diagnostics import retain_closed_initial_plan
             retain_closed_initial_plan(service, story, initial_binding, payload, initial_schema,
                 response.text, prompt, getattr(response, 'response_id', None), response_id_resolutions,
-                source_text_receipt=source_text_receipt)
+                source_text_receipt=source_text_receipt, configuration=config.model_dump(mode='json', exclude_none=True))
         issues = (_geometry_binding_issues(payload.get('accepted_geometry'), scene_manifest)
             if scene and isinstance(payload, dict) else {})
         nomination_issues = _nomination_binding_issues(payload, observed_ids, scene_manifest)
