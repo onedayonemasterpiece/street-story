@@ -544,6 +544,40 @@ def test_observation_upload_form_excludes_all_evaluator_knowledge():
         'camera_coordinate_source': 'owner_approx_camera'}
 
 
+def test_harness_restart_rejects_runtime_or_config_change():
+    previous = {'policy': 'product-recovery-continuation-v2', 'source_sha': 'old',
+        'harness_sha256': 'old', 'source_hashes': {'service.py': 'same'},
+        'effective_settings_sha256': 'same', 'manifest_sha256': 'same'}
+    current = {**previous, 'source_sha': 'new', 'harness_sha256': 'new'}
+    with pytest.raises(ValueError):
+        harness.verify_observation_resume(previous, current)
+    harness.verify_observation_resume(previous, current, allow_harness_change=True)
+    for key in ('source_hashes', 'effective_settings_sha256', 'manifest_sha256'):
+        with pytest.raises(ValueError):
+            harness.verify_observation_resume(previous, {**current, key: 'changed'}, allow_harness_change=True)
+
+
+@pytest.mark.asyncio
+async def test_lost_upload_response_retries_identical_source_key(tmp_path):
+    import httpx
+    calls = []
+    response = object()
+    class Client:
+        async def post(self, path, **kwargs):
+            calls.append((path, kwargs))
+            if len(calls) == 1:
+                raise httpx.ReadError('Response lost after intake')
+            return response
+    case = {}
+    report = {'cases': [case]}
+    result = await harness.upload_http_source(Client(), item(), b'original-source', 'same-key',
+        {'client_story_id': 'same-key'}, case, report, tmp_path/'report.json')
+    assert result is response and len(calls) == 2 and calls[0] == calls[1]
+    assert calls[0][1]['headers']['Idempotency-Key'] == 'same-key'
+    assert calls[0][1]['files']['photo'][1] == b'original-source'
+    assert case['upload_transport_failures'] == ['ReadError']
+
+
 @pytest.mark.asyncio
 async def test_tcp_observation_ends_without_stopping_pending_product_job(tmp_path):
     from street_story.app import create_app

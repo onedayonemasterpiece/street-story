@@ -280,6 +280,17 @@ def require_frozen_checkout(expected_sha):
     return head
 
 
+def verify_observation_resume(previous, current, *, allow_harness_change=False):
+    """Permit a recorded transport-only segment, never a product/config change."""
+    if previous == current:
+        return
+    changed = {key for key in previous.keys() | current.keys()
+               if previous.get(key) != current.get(key)}
+    if (not allow_harness_change or previous.get('policy') != 'product-recovery-continuation-v2'
+            or not changed <= {'source_sha', 'harness_sha256'}):
+        raise ValueError('Source/config/qualification/manifest changed; this output cannot be resumed')
+
+
 def selected_items(items, messages):
     """Keep the requested simple→complex order, independent of manifest order."""
     requested = [int(value.strip()) for value in messages.split(',')] if messages else [
@@ -609,6 +620,23 @@ def upload_form(item, manifest_digest):
     return key, form
 
 
+async def upload_http_source(client, item, data, key, form, case, report, report_path):
+    import httpx
+    for retry in range(3):
+        try:
+            return await client.post('/v1/stories', data=form,
+                files={'photo': (f'photo-{item["message_id"]}.jpg', data, item['mime'])},
+                headers={'Idempotency-Key': key, 'X-Photo-SHA256': item['sha256']})
+        except httpx.TransportError as exc:
+            case.setdefault('upload_transport_failures', []).append(type(exc).__name__)
+            save(report_path, report)
+            if retry == 2:
+                raise
+            # A lost response is not proof that intake failed. Replay only the
+            # same SOURCE/idempotency key, without renewing provider operations.
+            await asyncio.sleep(1)
+
+
 async def observe_continuation(app, service, selected, cases, report, output, report_path,
                                manifest_digest, sha, seconds, journal_path, owner_hints=None):
     """Real TCP clients close while the ordinary backend lifespan keeps working.
@@ -629,7 +657,8 @@ async def observe_continuation(app, service, selected, cases, report, output, re
     observation = report.setdefault('continuation_observation', {'transport': 'real_loopback_TCP',
         'window_seconds': seconds, 'product_deadline': None, 'client_returns': [],
         'backend_shutdown_is_experiment_end': True})
-    headers = {'Authorization': 'Bearer ' + reveal(service.settings.device_token)}
+    headers = {'Authorization': 'Bearer ' + reveal(service.settings.device_token),
+               'Connection': 'close'}
     try:
         while not server.started:
             if server_task.done():
@@ -646,9 +675,7 @@ async def observe_continuation(app, service, selected, cases, report, output, re
                 if hashlib.sha256(data).hexdigest() != item['sha256']:
                     raise ValueError('Original corpus SOURCE changed')
                 key, form = upload_form(item, manifest_digest)
-                response = await client.post('/v1/stories', data=form,
-                    files={'photo': (f'photo-{item["message_id"]}.jpg', data, item['mime'])},
-                    headers={'Idempotency-Key': key, 'X-Photo-SHA256': item['sha256']})
+                response = await upload_http_source(client, item, data, key, form, case, report, report_path)
                 response.raise_for_status()
                 case.update(story_id=response.json()['id'], status='RUNNING')
                 save(report_path, report)
@@ -765,13 +792,21 @@ async def run(args):
     frozen['availability_history'] = availability_history(args.availability_from, frozen)
     run_path = output/'run.json'
     fresh_run = not run_path.exists()
-    if run_path.exists() and json.loads(run_path.read_text()) != frozen:
-        raise ValueError('Source/config/qualification/manifest changed; this output cannot be resumed')
-    save(run_path, frozen)
+    previous_run = json.loads(run_path.read_text()) if run_path.exists() else None
+    if previous_run is not None:
+        verify_observation_resume(previous_run, frozen,
+            allow_harness_change=getattr(args, 'resume_harness_segment', False))
+    else:
+        save(run_path, frozen)
     report_path = output/'results.json'
     report = json.loads(report_path.read_text()) if report_path.exists() else {
         'run': frozen, 'cases': [blank_result(item) for item in items]}
     cases = {case['message_id']: case for case in report['cases']}
+    if previous_run is not None and previous_run != frozen:
+        segment = {'previous_source_sha': previous_run['source_sha'], 'run': frozen,
+                   'restarted_at_utc': time.time(), 'runtime_source_unchanged': True}
+        save(output/f'resume-segment-{sha[:12]}.json', segment)
+        report.setdefault('resume_segments', []).append(segment)
     save(report_path, report)  # Every unselected manifest photo is explicitly NOT_RUN.
     logging.basicConfig(filename=output/'workers.log', level=logging.INFO)
     if 'street_story.app' in sys.modules:
@@ -1038,6 +1073,8 @@ def main():
                         help='Actual literal owner answers, applied at the 10-minute return through durable backend acceptance')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--expected-sha')
+    parser.add_argument('--resume-harness-segment', action='store_true',
+        help='Record an explicit harness-only restart segment; runtime/config/manifest hashes must be unchanged')
     parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
     parser.add_argument('--retained-review-run', type=Path, help='Explicit backend review segment over an existing retained DB; no identity replay')
     parser.add_argument('--retained-completion-db', type=Path, help='Offline in-memory completion replay; no provider or product acceptance')
