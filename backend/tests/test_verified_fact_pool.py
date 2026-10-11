@@ -214,7 +214,8 @@ def test_nemotron_transport_clones_same_server_without_any_request_or_profile_wr
     extra = primary.fact_extractor('nemotron-3-ultra-free')
     assert extra.directory == primary.directory and extra.endpoint == primary.endpoint
     assert extra.shared_backend is backend and extra.admission is admission and extra.checkpoint is checkpoint
-    assert extra.limits.max_output_tokens == 8192
+    assert extra.limits.max_output_tokens is None
+    assert primary.limits.max_output_tokens is None
     assert not list(tmp_path.iterdir())
     with pytest.raises(ValueError, match='not_approved'):
         primary.fact_extractor('unqualified-model')

@@ -118,9 +118,9 @@ def test_one_existing_profile_attests_pool_without_inference_or_new_server(tmp_p
         assert set(result['qualified_fact_extractors']) == {'GigaChat-2', 'mimo-v2.6-flash-free', 'nemotron-3-ultra-free'}
     assert calls == expected
     profile = json.loads((directory / 'opencode.json').read_text())
-    models = profile['provider']['opencode']['models']
-    assert set(models) == ({'mimo-v2.6-flash-free', 'nemotron-3-ultra-free'} if pool else {'mimo-v2.6-flash-free'})
-    assert all(value['limit']['output'] == 8192 for value in models.values())
+    # Effective limits come from the existing provider catalog for each model.
+    # The scoped profile must not install a local context/output override.
+    assert 'provider' not in profile
     assert len(profile['plugin']) == 1
     with sqlite3.connect(tmp_path / 'street-story.sqlite3') as db:
         retained = json.loads(db.execute('SELECT value_json FROM cache WHERE key=?', ('research-text-verification-v1',)).fetchone()[0])
