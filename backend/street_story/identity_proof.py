@@ -221,7 +221,11 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         'candidate_id': cid, 'scope': text, 'discriminating_combination': text,
         'article_bindings': {'type': 'array', 'maxItems': max(2, len(aid['enum'])), 'items': {'type': 'object', 'properties': {
             'article_id': aid, 'candidate_id': cid, 'scope': text, 'binding_basis': text,
-            'physical_binding_resolved': {'type': 'boolean'}},
+            'physical_binding_resolved': {'type': 'boolean',
+                'description': 'True only when this article resolves the chosen individual photographed '
+                    'OSM body and its physical_link_evidence has specific_photographed_OSM_body scope. '
+                    'An article about an unseen plaque, neighboring subject or historical complex is '
+                    'comparison context: use false, without a positive physical_link_evidence row.'}},
             'required': ['article_id', 'candidate_id', 'scope', 'binding_basis', 'physical_binding_resolved'],
             'additionalProperties': False}},
         'correspondences': {'type': 'array', 'maxItems': 12, 'items': {'type': 'object', 'properties': {

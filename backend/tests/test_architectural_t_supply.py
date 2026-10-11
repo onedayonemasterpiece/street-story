@@ -211,7 +211,7 @@ def _issued_span_decision(decision, packet, receipt):
     return result
 
 
-@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match'])
+@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match', 'complex_only_positive'])
 @pytest.mark.parametrize('article_count', [2, 3])
 def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage, article_count):
     from street_story.identity_architectural_evidence import literal_evidence_inventory
@@ -250,6 +250,15 @@ def test_declined_article_is_context_without_vetoing_or_proving_the_supported_bo
     elif damage == 'only_declined_match':
         decision['correspondences'][0]['status'] = 'not_observable'
         decision['correspondences'][1]['status'] = 'stable_match'
+    elif damage == 'complex_only_positive':
+        inventory = receipt['physical_link_inventory']
+        decision['article_bindings'][1].update(candidate_id=candidates[0]['candidate_id'],
+            physical_binding_resolved=True)
+        decision['physical_link_evidence'].append({**decision['physical_link_evidence'][0],
+            'article_id': unrelated['article_id'], 'subject_scope': 'historical_complex_only',
+            'relationship': 'documented_complex_component',
+            'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
+                if row['article_id'] == unrelated['article_id'])})
     packet = prepare_architectural_comparison(story, candidates, receipt)
     issued = _issued_span_decision(decision, packet, receipt)
     proof = freeze_architectural_text_proof(story, issued, receipt, candidates)
