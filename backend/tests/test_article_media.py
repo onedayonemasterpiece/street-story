@@ -1,4 +1,5 @@
 import json
+import shutil
 from types import SimpleNamespace
 
 import httpx
@@ -13,6 +14,8 @@ from test_reference_image_codec import jpeg
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('dev-artifacts') is None,
+                    reason='Devserver profile lifecycle integration requires dev-artifacts CLI')
 @pytest.mark.parametrize('ending', ['complete', 'startup_failure', 'cancelled'])
 async def test_disposable_browser_profile_is_removed_after_every_exit(monkeypatch, ending):
     import asyncio
