@@ -243,6 +243,28 @@ async def test_all_37_real_inventory_urls_fit_one_small_text_unit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_compact_inventory_over_16000_keeps_tail_in_one_fenced_operation(tmp_path):
+    svc, adapter, story = adapter_fixture(tmp_path)
+    urls = [{'url': f'https://news.example/{i}/' + 'observed-path-' * 15,
+             'title': 'Observed article ' + str(i)} for i in range(90)]
+    assert len(canonical(urls)) > 16000
+    calls = []
+    async def run(role, prompt, binding, schema):
+        calls.append(binding)
+        supplied = json.loads(prompt.split('Query and inventory:\n')[1])['observed_sources']
+        assert [s['url'] for s in supplied] == [s['url'] for s in urls]
+        result = {'summary': '', 'selected_sources': [{'url': urls[-1]['url'], 'reason': 'Modern exterior'}]}
+        receipt = {'phase': 'completed', 'result': result, 'binding': binding}
+        await adapter.checkpoint(binding, receipt)
+        return {'result': result, 'receipt': receipt}
+    adapter.client._run = run
+    result = await adapter.select_identity_sources('plain address', urls, story)
+    assert [s['url'] for s in result['sources']] == [urls[-1]['url']]
+    assert (await adapter.select_identity_sources('plain address', urls, story))['sources'] == result['sources']
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_restart_uses_original_public_inventory_before_unknown_selection(tmp_path, monkeypatch):
     svc, _adapter, story, _session = __import__('test_visual_search_continuation').prepared(tmp_path)
     story['_identity_search_query'] = 'plain mapped address'

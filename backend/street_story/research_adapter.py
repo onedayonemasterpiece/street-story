@@ -656,8 +656,10 @@ class ProductResearchAdapter:
                 if isinstance(support, dict) and support.get('text')), ''))[:160]} for source in observed]
         if len(canonical(inventory)) > 16000:
             inventory = [{key: source[key] for key in ('url', 'title')} for source in inventory]
-        if len(canonical(inventory)) > 16000:
-            raise RetryableProviderError('identity_source_selection_inventory_too_large', retry_at=self.service.store.now()+30)
+        # Keep every observed URL reachable in this same bounded operation.
+        # Provider admission accounts for the actual compact input; a local
+        # character threshold must not silently strand its tail or retry the
+        # identical oversized inventory forever.
         unit = canonical([query, inventory])
         role = 'identity_source_selection'
         logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
