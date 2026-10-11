@@ -1031,7 +1031,7 @@ async def test_repeated_local_capacity_polling_backs_off_without_model_send_or_o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown','exhausted'])
+@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown','aborted_ack','exhausted'])
 async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct(tmp_path,mode):
     from contextvars import ContextVar
     from street_story.research_adapter import ProductResearchAdapter
@@ -1051,10 +1051,14 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
         async def _run(self,role,prompt,binding,schema):
             calls.append(self.model_id)
             packet=json.loads(prompt.split('Frozen packet: ',1)[1])
-            if self.model_id=='mimo-v2.6-flash-free' and mode in {'unknown','aborted_unknown'}:
-                receipt={'binding':binding,'phase':'aborted' if mode=='aborted_unknown' else 'submitted','session_id':'ses_existing',
+            if self.model_id=='mimo-v2.6-flash-free' and mode in {'unknown','aborted_unknown','aborted_ack'}:
+                receipt={'binding':binding,'phase':'aborted' if mode!='unknown' else 'submitted','session_id':'ses_existing',
                          'message_id':'msg_existing','model_id':self.model_id}
+                if mode == 'aborted_ack':
+                    receipt['abort_acknowledged'] = True
                 await provider.checkpoint(binding,receipt)
+                if mode == 'aborted_ack':
+                    raise asyncio.CancelledError()
                 raise ResearchUnavailable('research_attempt_unknown',receipt)
             if self.model_id=='mimo-v2.6-flash-free' or mode == 'exhausted':
                 args={'decisions':'broken'}
@@ -1079,7 +1083,20 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
     session=SimpleNamespace(id='review',resource_id=job['story_id'],actor=None,closed=False,state={})
     packet=review_packets.read(harness.adapter,session,{'run_id':RUN,'_parallel_candidate_review':True})
     engine=HeadlessFactReview(harness)
-    response=await engine._infer(packet,job,'semantic-controlled-unit',{})
+    if mode == 'aborted_ack':
+        with pytest.raises(asyncio.CancelledError):
+            await engine._infer(packet, job, 'semantic-controlled-unit', {})
+        interrupted = svc.store.checkpoint_get(job['id'], 'headless_fact_review:semantic-controlled-unit')
+        assert interrupted['phase'] == 'unknown'
+        engine._recover_closed_reviews(job)
+        recovered = svc.store.checkpoint_get(job['id'], 'headless_fact_review:semantic-controlled-unit')
+        assert recovered['phase'] == 'closed_error'
+        assert recovered['original_abort_acknowledged'] is True
+        assert recovered['closed_routes'] == ['facts_review_mimo-v2.6-flash-free']
+        assert recovered['packet_ref'] == interrupted['packet_ref']
+        response = await engine._infer(packet, job, 'semantic-controlled-unit', recovered)
+    else:
+        response=await engine._infer(packet,job,'semantic-controlled-unit',{})
     assert calls==['mimo-v2.6-flash-free']+([] if mode in {'unknown','aborted_unknown'} else ['nemotron-3-ultra-free'])
     assert (response is None)==(mode in {'unknown','aborted_unknown','exhausted'})
     if mode == 'exhausted':

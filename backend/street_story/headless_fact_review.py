@@ -373,7 +373,7 @@ class HeadlessFactReview:
         return blocked
 
     def _recover_closed_reviews(self, job):
-        """Consume the original durable result after executor interruption.
+        """Consume an original durable result or acknowledged abort after interruption.
 
         No model operation is submitted here. The regular packet guard still
         decides whether this frozen result may be committed to current facts.
@@ -392,6 +392,17 @@ class HeadlessFactReview:
                 continue
             prior = next((receipt for role, receipt in attempts if role == saved.get('route')
                           and (receipt.get('binding') or {}).get('fact_unit_id') == unit), None)
+            if (prior and prior.get('phase') == 'aborted'
+                    and prior.get('abort_acknowledged') is True):
+                # Cancellation can checkpoint UNKNOWN after the transport has
+                # durably acknowledged closure. This is no longer an unknown
+                # send: retain the exact unit and exclude its closed route.
+                self._put(job, unit, {**saved, 'phase': 'closed_error',
+                    'closed_routes': sorted(set(saved.get('closed_routes') or []) | {saved['route']}),
+                    'original_abort_acknowledged': True})
+                LOG.info('street_story_background_fact_review_abort_recovered story_id=%s unit_id=%s route=%s original_send_closed=true',
+                         job['story_id'], unit, saved['route'])
+                continue
             if not prior or prior.get('phase') != 'completed':
                 continue
             from .research_result_normalization import normalize_result
@@ -554,6 +565,8 @@ class HeadlessFactReview:
                 with self.service.store.connection() as db:
                     current = review_packets.bundle(db, job['story_id'])
                     job_ids = [row[0] for row in db.execute('SELECT id FROM jobs WHERE story_id=?', (job['story_id'],))]
+                for jid in job_ids:
+                    self._recover_closed_reviews({**job, 'id': jid})
                 blocked = set().union(*(self._unknown_candidates({**job, 'id': jid}, current) for jid in job_ids))
                 if blocked.intersection(fact_ids):
                     raise ConflictError('live_fact_review_outcome_unknown', 'Explicit reconsideration cannot repeat an unchanged UNKNOWN scope.')
