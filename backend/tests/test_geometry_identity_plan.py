@@ -525,8 +525,11 @@ async def test_uncertain_joint_geometry_can_choose_one_bound_distinguishing_addr
     plan['visual_query'] = 'Generic appearance search must not become a compulsory extra step'
     plan['first_wave_hypotheses'] = [{'kind': 'address', 'subject_id': 'osm:way:2', 'query': '',
         'reason': 'Read the actual mapped address source for the chosen remaining question.'}]
+    calls = []
     async def generate(*args, **kwargs):
-        return SimpleNamespace(text=json.dumps(plan))
+        calls.append(args)
+        answer = plan if len(calls) == 1 else {'accepted_geometry': decision}
+        return SimpleNamespace(text=json.dumps(answer))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     assert history['planned_queries'] == ['Observed city Observed street 12A']

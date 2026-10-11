@@ -12,6 +12,51 @@ from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ending', ['complete', 'startup_failure', 'cancelled'])
+async def test_disposable_browser_profile_is_removed_after_every_exit(monkeypatch, ending):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+    import sys
+    import street_story.article_media as media
+    profiles, closed = [], []
+    class Context:
+        async def route(self, *args):
+            pass
+        async def new_page(self):
+            return object()
+        async def close(self):
+            closed.append(True)
+    class Chromium:
+        executable_path = 'fixture'
+        async def launch_persistent_context(self, profile, **kwargs):
+            profiles.append(Path(profile))
+            assert (Path(profile).parent / '.artifact.json').is_file()
+            if ending == 'startup_failure':
+                raise RuntimeError('fixture startup failure')
+            return Context()
+    @asynccontextmanager
+    async def playwright():
+        yield SimpleNamespace(chromium=Chromium())
+    async def resolve(host):
+        return '93.184.216.34'
+    monkeypatch.setitem(sys.modules, 'playwright.async_api', SimpleNamespace(async_playwright=playwright))
+    monkeypatch.setattr(media, 'resolve_public', resolve)
+    monkeypatch.setattr(media, 'browser_executable', lambda path: path)
+    async def use():
+        async with media._article_browser('https://example.org/article'):
+            if ending == 'cancelled':
+                raise asyncio.CancelledError
+    if ending == 'complete':
+        await use()
+    else:
+        with pytest.raises(RuntimeError if ending == 'startup_failure' else asyncio.CancelledError):
+            await use()
+    assert len(profiles) == 1 and not profiles[0].parent.exists()
+    assert closed == ([] if ending == 'startup_failure' else [True])
+
+
 def test_legacy_table_content_keeps_photo_and_logon_is_not_logo():
     title, images = extract_media('''<title>Exterior photo</title><table id="content"><tr>
         <td id="cencolum_logon"><table><tr><td>

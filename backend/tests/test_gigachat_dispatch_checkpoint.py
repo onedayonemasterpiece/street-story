@@ -63,8 +63,8 @@ async def test_large_giga_context_reaches_provider_with_complete_evidence(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_envelope_expires_during_admission_before_giga_chat_dispatch(tmp_path):
-    from street_story.research_budget import ResearchTerminated, ensure_budget
+async def test_elapsed_twenty_minutes_during_admission_does_not_stop_giga(tmp_path):
+    from street_story.research_budget import ensure_budget
     from contextlib import asynccontextmanager
     provider, admission = EmptyFindings(), Admission()
     adapter, story = setup(tmp_path, provider, admission)
@@ -74,16 +74,15 @@ async def test_envelope_expires_during_admission_before_giga_chat_dispatch(tmp_p
     @asynccontextmanager
     async def expire_in_admission(binding, workload):
         async with admission(binding, workload) as lease:
-            clock[0] = budget['deadline_at']
+            clock[0] = budget['started_at']+1200
             yield lease
     adapter.giga.admission = expire_in_admission
     try:
-        with pytest.raises(ResearchTerminated, match='research_deadline_exceeded'):
-            await adapter._extract_giga_page(PAGE, story, {'coverage_goal': 'Check the source'}, allow_fallback=False)
-        assert provider.chats == 0
+        await adapter._extract_giga_page(PAGE, story, {'coverage_goal': 'Check the source'}, allow_fallback=False)
+        assert provider.chats == 2
         saved = receipts(adapter)
-        assert len(saved) == 1 and saved[0]['provider_send_state'] == 'not_sent'
-        assert 'inference_sends' not in saved[0]
+        assert len(saved) == 1 and saved[0]['provider_send_state'] == 'response_closed'
+        assert len(saved[0]['inference_sends']) == 2
         assert ensure_budget(adapter.service, story['id'])['deadline_at'] == budget['deadline_at']
     finally:
         await adapter.giga.aclose()

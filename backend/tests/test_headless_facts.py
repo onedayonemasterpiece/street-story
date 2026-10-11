@@ -191,8 +191,8 @@ async def test_unknown_core_keeps_original_wait_and_does_not_use_ready_continuat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('role,expected_terminal', [('facts_live', True), ('facts', False)])
-async def test_only_closed_unobservable_live_unknown_finishes_without_resending(tmp_path, role, expected_terminal):
+@pytest.mark.parametrize('role', ['facts_live', 'facts'])
+async def test_unknown_request_keeps_task_pending_without_resending(tmp_path, role):
     from street_story.research_adapter import ProductResearchAdapter, canonical
     svc, job, researcher, reader, _ = await fixture(tmp_path)
     calls = []
@@ -212,13 +212,9 @@ async def test_only_closed_unobservable_live_unknown_finishes_without_resending(
     researcher.extract_fact_page = unknown
     try:
         for _ in range(2):
-            if expected_terminal:
-                result = await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-                assert result['outcome'] == 'resource_blocked'
-                assert result['reason'] == 'live_research_original_outcome_unavailable'
-            else:
-                with pytest.raises(RetryableProviderError):
-                    await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+            with pytest.raises(RetryableProviderError) as waiting:
+                await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+            assert waiting.value.retry_at >= svc.store.now() + 299
         assert len(calls) == 1 and svc.story(job['story_id'])['facts'] == []
         with svc.store.connection() as db:
             receipt = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])

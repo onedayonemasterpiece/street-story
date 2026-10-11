@@ -1,4 +1,4 @@
-"""Durable wall-clock envelope for one photo research wave, not a quota ledger."""
+"""Durable SOURCE scope and work journal, independent of provider quota/timeouts."""
 from __future__ import annotations
 
 import json
@@ -37,7 +37,7 @@ class ResearchWorkExhausted(RetryableProviderError):
 
 
 def reserve_available_work(service, story_id, kind, unit_ids, *, purpose='identity'):
-    """Keep each admitted unit, skipping only new units outside this cap."""
+    """Journal each distinct admitted unit; cached reads remain reusable."""
     admitted = []
     for unit in dict.fromkeys(unit_ids):
         if kind == 'pages':
@@ -55,12 +55,12 @@ def reserve_available_work(service, story_id, kind, unit_ids, *, purpose='identi
 
 def _envelope(service, row, research, *, start=None):
     started = float(row['created_at'] if start is None else start)
-    return {'policy_version': 'photo-research-budget-v1',
+    return {'policy_version': 'photo-research-continuation-v2',
             'photo_sha256': row['photo_sha256'],
             'identity_generation': int(research.get('identity_generation') or 0),
             'started_at': started,
-            'identity_deadline_at': started + service.settings.identity_timeout_seconds,
-            'deadline_at': started + service.settings.research_timeout_seconds,
+            'identity_deadline_at': None,
+            'deadline_at': None,
             'last_progress_at': started}
 
 
@@ -93,13 +93,26 @@ def ensure_budget(service, story_id, *, db=None, explicit=False):
             research.pop('automatic_research_outcome', None)
             conn.execute('UPDATE stories SET research_json=? WHERE id=?',
                          (json.dumps(research, ensure_ascii=False), story_id))
+        elif not research.get('automatic_research_outcome') and budget.get('policy_version') != 'photo-research-continuation-v2':
+            # Migrate only an active wave. Historical terminal outcomes and
+            # cancelled jobs stay closed; original provider bindings are never
+            # renewed or resent by changing this scheduler policy.
+            budget = {**budget, 'policy_version': 'photo-research-continuation-v2',
+                'previous_deadlines': {key: budget.get(key) for key in ('identity_deadline_at', 'deadline_at')},
+                'identity_deadline_at': None, 'deadline_at': None}
+            research['research_budget'] = budget
+            conn.execute('UPDATE stories SET research_json=? WHERE id=?',
+                         (json.dumps(research, ensure_ascii=False), story_id))
+            LOG.info('street_story_research_continuation_enabled story_id=%s generation=%s',
+                     story_id, budget['identity_generation'])
         return budget
 
 
 def remaining_seconds(service, story_id, purpose='facts', *, db=None):
-    budget = ensure_budget(service, story_id, db=db)
-    key = 'identity_deadline_at' if purpose == 'identity' else 'deadline_at'
-    return max(0.0, float(budget[key]) - service.store.now())
+    ensure_budget(service, story_id, db=db)
+    # Compatibility for callers bounding ONE request by min(request_timeout,
+    # remaining). The background task itself has no elapsed-time deadline.
+    return float('inf')
 
 
 def require_remaining(service, story_id, purpose='facts'):
@@ -109,9 +122,6 @@ def require_remaining(service, story_id, purpose='facts'):
     finished = research.get('automatic_research_outcome')
     if finished:
         raise ResearchTerminated(finished['outcome'], 'research_attempt_already_finished')
-    if remaining <= 0:
-        raise ResearchTerminated(reason='identity_deadline_exceeded' if purpose == 'identity'
-                                 else 'research_deadline_exceeded')
     return remaining
 
 
@@ -120,17 +130,13 @@ def bounded_timeout(service, story_id, seconds, purpose='facts'):
 
 
 def reserve_work(service, story_id, kind, unit_ids, *, purpose='identity'):
-    """Bound distinct evidence work, preserving already-addressed units.
+    """Journal distinct evidence work, preserving already-addressed units.
 
-    This is a wave envelope; provider admission and receipts still own actual
+    This is a work journal; provider admission and receipts still own actual
     sends/accounting. Reusing one exact reference on its original operation
-    does not consume another slot.
+    does not create another unit.
     """
-    limit = {'exact_pairs': service.settings.identity_max_exact_pairs,
-             'query_hypotheses': service.settings.identity_max_query_hypotheses,
-             'pages': service.settings.identity_max_pages,
-             'planner_calls': service.settings.identity_max_planner_calls}.get(kind)
-    if limit is None:
+    if kind not in {'exact_pairs', 'query_hypotheses', 'pages', 'planner_calls'}:
         raise ValueError('research_work_kind_invalid')
     with service.store.tx() as db:
         budget = ensure_budget(service, story_id, db=db)
@@ -139,18 +145,9 @@ def reserve_work(service, story_id, kind, unit_ids, *, purpose='identity'):
         finished = research.get('automatic_research_outcome')
         if finished:
             raise ResearchTerminated(finished['outcome'], 'research_attempt_already_finished')
-        deadline = budget['identity_deadline_at' if purpose == 'identity' else 'deadline_at']
-        if deadline <= service.store.now():
-            raise ResearchTerminated()
         work = budget.setdefault('work_units', {})
         previous = list(work.get(kind) or [])
         combined = list(dict.fromkeys([*previous, *unit_ids]))
-        if len(combined) > limit:
-            scope = {'exact_pairs': 'exact_pair', 'query_hypotheses': 'query_hypothesis',
-                     'pages': 'page', 'planner_calls': 'planner_call'}[kind]
-            LOG.info('street_story_research_work_deferred story_id=%s kind=%s used=%s limit=%s',
-                     story_id, kind, len(previous), limit)
-            raise ResearchWorkExhausted(kind, 'identity_' + scope + '_envelope_exhausted')
         if combined != previous:
             work[kind] = combined
             row = service._story_row(db, story_id)
@@ -220,7 +217,7 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
         'purpose': purpose, 'identity_generation': int(research.get('identity_generation') or 0),
         'photo_sha256': row['photo_sha256']}
     budget = research.setdefault('research_budget', _envelope(service, row, research))
-    # A slow discovery sibling may reach its identity deadline after another
+    # A slow discovery sibling may close its own search after another
     # worker has proved the object. Its closure cannot end the fact wave.
     identity_already_proved = purpose == 'identity' and matched
     research['identity_attempt_outcome' if identity_already_proved else 'automatic_research_outcome'] = result
@@ -257,7 +254,7 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
         (json.dumps(research, ensure_ascii=False), state, None if matched else
             'identity_clarification_required' if outcome == 'clarification_required' else 'visual_identity_uncertain',
          None if matched else str((research.get('identity_clarification') or {}).get('question') or '')[:500]
-            if outcome == 'clarification_required' else 'Не удалось надёжно определить объект за время исследования.',
+            if outcome == 'clarification_required' else 'Не удалось надёжно определить объект по доступным подтверждениям.',
          service.store.now(), story_id))
     LOG.info('street_story_research_terminal story_id=%s outcome=%s reason=%s eligible=%s coverage_complete=%s',
              story_id, outcome, reason, eligible, coverage_complete)
@@ -265,26 +262,12 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
 
 
 def expire_queued(service, db):
-    now = service.store.now()
     rows = list(db.execute("SELECT DISTINCT s.* FROM stories s JOIN jobs j ON j.story_id=s.id "
         "WHERE j.kind IN ('identity','identity_visual','research','refinement') "
         "AND j.state IN ('ready','retry')"))
-    expired = 0
     for row in rows:
-        budget = ensure_budget(service, row['id'], db=db)
-        research = json.loads(service._story_row(db, row['id'])['research_json'] or '{}')
-        matched = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
-        purpose = 'facts' if matched else 'identity'
-        deadline = budget['deadline_at'] if matched else budget['identity_deadline_at']
-        if now >= deadline:
-            # A live owner is stopped by its bounded worker; do not fence a
-            # concurrent provider observer simply because a sibling is queued.
-            if db.execute("SELECT 1 FROM jobs WHERE story_id=? AND state='running' AND lease_until>?",
-                          (row['id'], now)).fetchone():
-                continue
-            expired += int(finish_attempt(service, db, row['id'], outcome='deadline_exceeded',
-                reason='research_deadline_exceeded' if matched else 'identity_deadline_exceeded', purpose=purpose))
-    return expired
+        ensure_budget(service, row['id'], db=db)
+    return 0
 
 
 # Existing bounded Live page contract remains authoritative.

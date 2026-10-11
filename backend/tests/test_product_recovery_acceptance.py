@@ -25,13 +25,11 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
-def test_retained_scope_deadline_is_original_remaining_time_without_restart_reset():
+def test_retained_scope_has_no_elapsed_product_deadline():
     job = {'payload_json': json.dumps({'research_started_at': 100, 'research_deadline_at': 580})}
-    assert harness.retained_review_remaining(job, 300) == 280
-    assert harness.retained_review_remaining(job, 579) == 1
-    assert harness.retained_review_remaining(job, 600) == 0
-    with pytest.raises(ValueError, match='accepted research deadline'):
-        harness.retained_review_remaining({'payload_json': '{}'}, 300)
+    for now in (300, 579, 600, 1300):
+        assert harness.retained_review_remaining(job, now) is None
+    assert harness.retained_review_remaining({'payload_json': '{}'}, 1300) is None
 
 
 @pytest.mark.asyncio
@@ -300,7 +298,7 @@ def readback_fixture(tmp_path):
     sources = canonical([{'url': 'https://official.example/history'}])
     text = 'A model reviewed building history claim.'
     proof = {'detector': 'backend_semantic_review', 'scan_id': 1, 'source_story_id': story['id'],
-        'snapshot': list(_review_snapshot(text, sources))}
+        'snapshot': list(_review_snapshot(text, sources)), 'reviewed_at': 390}
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET created_at=100,state=\'identity_ready\',research_json=? WHERE id=?',
             (canonical({'visual_identity': identity}), story['id']))
@@ -379,7 +377,10 @@ def test_first_fact_does_not_end_wait_and_caps_use_original_upload(tmp_path):
     now[0] = 581
     result = harness.read_case(svc, case, item())
     assert result['terminal'] and result['total_elapsed_s'] == 481
-    assert result['gates']['terminal_in_480s'] is False and result['status'] == 'FAIL'
+    assert 'terminal_in_480s' not in result['gates']
+    assert result['total_elapsed_s'] == 481
+    assert result['gates']['identity_proof'] is True
+    assert result['status'] == 'PASS_CANDIDATE'
     assert result['first_eligible_elapsed_s'] == 290
 
 
@@ -532,3 +533,34 @@ def test_question_and_conditional_source_discussion_are_not_automatic_pass():
         'conditional_identity_context': {'joint_visual_input_verified': False,
             'hypotheses': [{'support_status': 'spatially_supported'}],
             'article_sources': [{'canonical_eligible': False}]}}) == 'FAIL'
+
+
+def test_observation_upload_form_excludes_all_evaluator_knowledge():
+    entry = {**item(), 'expected_physical_ids': ['report-only-id'],
+             'owner_approx_camera': {'latitude': 54.7, 'longitude': 20.5}}
+    key, form = harness.upload_form(entry, 'manifest')
+    assert form == {'client_story_id': key, 'photo_sha256': entry['sha256'],
+        'voice_protocol': 'voice-chunks-v2', 'lat': '54.7', 'lon': '20.5',
+        'camera_coordinate_source': 'owner_approx_camera'}
+
+
+@pytest.mark.asyncio
+async def test_tcp_observation_ends_without_stopping_pending_product_job(tmp_path):
+    from street_story.app import create_app
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 1300  # Fast control of an unfinished 20-minute-old job, not wall-time evidence.
+    with svc.store.tx() as db:
+        db.execute('UPDATE jobs SET lease_until=5000 WHERE id=\'facts\'')
+    app = create_app(svc.settings, svc)
+    report = {'cases': [case]}
+    async with app.router.lifespan_context(app):
+        await harness.observe_continuation(app, svc, [item()], {102: case}, report,
+            tmp_path, tmp_path/'results.json', 'manifest', 'fixture', .05, tmp_path/'sdk.jsonl')
+        with svc.store.connection() as db:
+            assert db.execute('SELECT state FROM jobs WHERE id=\'facts\'').fetchone()[0] == 'running'
+            research = json.loads(svc._story_row(db, case['story_id'])['research_json'])
+    assert 'automatic_research_outcome' not in research
+    assert not case['terminal'] and case['status'] == 'RUNNING'
+    assert report['continuation_observation']['pending_story_ids'] == [case['story_id']]
+    returned = report['continuation_observation']['client_returns'][0]['cases'][0]
+    assert returned['story_id'] == case['story_id'] and not returned['terminal']

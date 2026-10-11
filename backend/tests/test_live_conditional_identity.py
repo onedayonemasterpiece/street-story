@@ -162,7 +162,7 @@ async def test_expired_clarification_reply_persists_hint_and_opens_bounded_wave(
     await adapter._resolve_place_state(session, 'Owner city')
     with svc.store.connection() as db:
         research = json.loads(svc._story_row(db, session.resource_id)['research_json'])
-        assert research['research_budget']['identity_deadline_at'] > svc.store.now()
+        assert research['research_budget']['identity_deadline_at'] is None
         assert 'automatic_research_outcome' not in research
         assert research['identity_owner_hint']['text'] == 'Owner city'
 

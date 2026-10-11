@@ -204,19 +204,21 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert config.response_json_schema is None
         # Provider transport cannot drop the complete host proof contract.
         issued = json.loads(config.system_instruction.split('\n', 1)[1])
-        assert 'allOf' in issued
-        assert issued['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
+        assert set(issued['properties']) == {'accepted_geometry', 'accepted_architectural_text'}
+        assert 'allOf' in issued['properties']['accepted_architectural_text']
+        assert issued['properties']['accepted_architectural_text']['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
         assert set(reads) == {'osm:way:2', 'osm:way:3'}
         assert receipt['articles'][0]['text'] in contents[-1]
         assert all(a['text'] in contents[-1] for a in articles)
-        packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        packet = next(json.loads(line) for line in contents[-1].splitlines()
+                      if line.startswith('{') and 'literal_source_passages' in line)
         assert any(row[0] == 'osm:way:4' for row in packet['physical_reserve']['rows'])
         for relation in answer['correspondences']:
             own = next(row['passages'] for row in packet['literal_source_passages']
                 if row['article_id'] == relation['article_id'])
             literal = relation.pop('source_quote')
             relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
-        return SimpleNamespace(text=json.dumps(answer))
+        return SimpleNamespace(text=json.dumps({'accepted_geometry': g, 'accepted_architectural_text': answer}))
 
     monkeypatch.setattr(context, 'acquire_regional_text', acquire)
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)

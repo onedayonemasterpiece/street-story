@@ -209,15 +209,13 @@ class IdentityLifecycleMixin:
             for control in (research.get('research_controls') or {}).values():
                 if control.get('photo_sha256') == row['photo_sha256'] and control.get('identity_generation') == generation - 1:
                     control['identity_generation'] = generation
-            late_reply = float(budget.get('identity_deadline_at') or 0) <= self.store.now()
-            if not late_reply:
-                research['research_budget'] = {**budget, 'identity_generation': generation}
-            else:
-                research.pop('research_budget', None)  # The archived envelope remains immutable.
+            late_reply = answering
+            # An owner reply changes input generation, never SOURCE lifetime.
+            # Archive the closed question while keeping the original work journal.
+            research['research_budget'] = {**budget, 'identity_generation': generation,
+                'identity_deadline_at': None, 'deadline_at': None}
             db.execute("UPDATE stories SET research_json=?,state='identifying',error_code=NULL,error_message=NULL,"
                        'revision=revision+1,updated_at=? WHERE id=?', (canonical(research), self.store.now(), story_id))
-            if late_reply:
-                ensure_budget(self, story_id, db=db, explicit=True)
             jid = self._enqueue_job(db, story_id, 'identity', 'identity-hint:' + digest([story_id, key]),
                 {'identity_generation': generation, 'photo_sha256': row['photo_sha256'],
                  'control_revision': epoch, 'owner_hint': text[:500], 'transcript': transcript[:12000],

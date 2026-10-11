@@ -394,25 +394,32 @@ async def _article_browser(page_url: str):
     if process.returncode or not workspace.is_relative_to('/home/dev/artifacts') or not (workspace / '.artifact.json').is_file():
         raise ValueError('article_browser_artifact_unavailable')
     workspace.chmod(0o700)
-    async with async_playwright() as playwright:
-        executable = browser_executable(playwright.chromium.executable_path)
-        context = await playwright.chromium.launch_persistent_context(str(workspace / 'profile'),
-            headless=True, executable_path=executable, service_workers='block', accept_downloads=False)
-        try:
-            async def guard(route):
-                raw = public_url(route.request.url)
-                if not raw or route.request.resource_type in {'media', 'font', 'websocket'}:
-                    return await route.abort()
-                try:
-                    await resolve_public(urlsplit(raw).hostname)
-                except (ValueError, OSError):
-                    return await route.abort()
-                await route.continue_()
-            await context.route('**/*', guard)
-            page = await context.new_page()
-            yield page
-        finally:
-            await context.close()
+    try:
+        async with async_playwright() as playwright:
+            executable = browser_executable(playwright.chromium.executable_path)
+            context = await playwright.chromium.launch_persistent_context(str(workspace / 'profile'),
+                headless=True, executable_path=executable, service_workers='block', accept_downloads=False)
+            try:
+                async def guard(route):
+                    raw = public_url(route.request.url)
+                    if not raw or route.request.resource_type in {'media', 'font', 'websocket'}:
+                        return await route.abort()
+                    try:
+                        await resolve_public(urlsplit(raw).hostname)
+                    except (ValueError, OSError):
+                        return await route.abort()
+                    await route.continue_()
+                await context.route('**/*', guard)
+                page = await context.new_page()
+                yield page
+            finally:
+                await context.close()
+    finally:
+        # A profile is one-use browser state, not research evidence. Acquired
+        # text/media receipts have already been persisted by the caller.
+        # This also runs when Chromium startup fails or acquisition is cancelled.
+        shutil.rmtree(workspace)
+
 
 
 class ArticleMediaBrowserError(ValueError):

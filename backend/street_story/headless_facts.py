@@ -304,7 +304,7 @@ class HeadlessFacts:
     def _only_unobservable_live_work(self, job, run_id, story):
         """A closed Live socket has no remote readback; keep its send fenced.
 
-        End only when every remaining unit has that exact receipt and no unread
+        Wait without resending when every remaining unit has that exact receipt and no unread
         source, saved result or review can advance independently. Other providers'
         unknowns and Live sends without closure evidence retain normal waiting.
         """
@@ -728,7 +728,8 @@ class HeadlessFacts:
                 return self._finish(job, run_id, control_revision,
                                     'source_manifest_exhausted' if not complete else 'fact_review_exhausted')
             if self._only_unobservable_live_work(job, run_id, story):
-                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
             if complete and unreviewed:
                 # Keep a durable retry while the backend verifier owns this
                 # scope. A closed client must never be required to resume it.
@@ -750,7 +751,8 @@ class HeadlessFacts:
                     return await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return self._finish(job, run_id, control_revision, 'source_batches_reviewed')
             if self._only_unobservable_live_work(job, run_id, story):
-                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
             self._partial(run_id, 'research_fact_source_coverage_partial',
                           retry_at=self._pending_retry_at(job, run_id))
         story, research, _ = snapshot
@@ -920,7 +922,8 @@ class HeadlessFacts:
                               now=self.service.store.now(), completed=False)
             if pending or unread:
                 if self._only_unobservable_live_work(job, run_id, story):
-                    return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                    return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
                 due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
                 due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))

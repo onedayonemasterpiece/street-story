@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from test_fact_request_recovery import pending_request, assert_followup
+from test_fact_request_recovery import pending_request
 from street_story.errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from street_story.service import MAX_JOB_ATTEMPTS
 
@@ -47,7 +47,7 @@ async def test_many_quota_and_chunk_waits_then_first_closed_failure_is_retryable
 
 
 @pytest.mark.asyncio
-async def test_only_actual_worker_failures_exhaust_the_budget_and_schedule_joined_request(tmp_path):
+async def test_repeated_actual_worker_failures_keep_original_and_joined_request(tmp_path):
     svc, sid, jid = pending_request(tmp_path)
     async def closed(job):
         raise MalformedProviderResponse('gigachat:semantic_json_invalid')
@@ -64,7 +64,11 @@ async def test_only_actual_worker_failures_exhaust_the_budget_and_schedule_joine
             assert await svc.run_once()
             assert svc.store.checkpoint_get(jid, 'worker_non_wait_failures') == {'count': index+1}
             ready_again(svc, jid)
-    assert_followup(svc, sid, jid)
+    assert job_state(svc, jid)['state'] == 'retry'
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
+        assert 'pending_fact_request' in json.loads(svc._story_row(db, sid)['research_json'])
+    assert svc.recover_jobs() == 0
 
 
 @pytest.mark.asyncio

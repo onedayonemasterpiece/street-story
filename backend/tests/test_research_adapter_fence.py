@@ -414,9 +414,9 @@ async def test_completed_receipt_records_only_novel_current_owned_evidence(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readback(tmp_path):
+async def test_new_exact_pair_after_six_prior_pairs_and_original_readback_are_allowed(tmp_path):
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
+    from street_story.research_budget import ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -427,10 +427,15 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
         '_research_job_id': job['id'], '_research_job_attempt': job['attempts']}, {}, {
         'comparison_id': 'cap-fixture', 'references': [{'candidate_id': 'wiki:1', 'reference_id': 'new-ref'}]})
     _, story, schema, context = args
-    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
+    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(6)])
     adapter.visual_pair_receipts = lambda *_: {}
-    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
-        await adapter._visual_pair_route_owned('native', story, schema, context, 'unit')
+    sends = []
+    async def dispatch(*args):
+        sends.append(args)
+        return {'result': {'status': 'mismatch'}, 'receipt': {'phase': 'completed'}}
+    adapter.native_vision = SimpleNamespace(available=True, compare_visual=dispatch)
+    assert (await adapter._visual_pair_route_owned('native', story, schema, context, 'unit'))['result']['status'] == 'mismatch'
+    assert len(sends) == 1
     result = {'status': 'mismatch'}
     completed = {'phase': 'completed', 'result': result}
     adapter.visual_pair_receipts = lambda *_: {'vision_native': completed}
@@ -444,15 +449,15 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
         return {'result': result, 'receipt': completed}
     adapter.native_vision = SimpleNamespace(compare_visual=readback)
     assert (await adapter._visual_pair_route_owned('native', story, schema, context, 'unit'))['result'] == result
-    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs
+    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == 7
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', ['google', 'native', 'opencode'])
-async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, route):
+async def test_standalone_visual_after_six_prior_pairs_reaches_qualified_route(tmp_path, route):
     import json
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
+    from street_story.research_budget import ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -464,9 +469,11 @@ async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, 
         '_research_job_id': job['id'], '_research_job_attempt': job['attempts']}, {}, {
         'comparison_id': 'standalone-cap-fixture',
         'references': [{'candidate_id': 'wiki:1', 'reference_id': 'new-standalone-ref'}]})
-    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
+    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(6)])
+    sends = []
     async def dispatch(*args):
-        pytest.fail('Exact-reference envelope must reject before provider dispatch')
+        sends.append(args)
+        return {'result': {'status': 'mismatch'}, 'receipt': {'phase': 'completed'}}
     adapter.primary_vision = SimpleNamespace(available=route == 'google', compare_visual=dispatch)
     adapter.native_vision = SimpleNamespace(available=route == 'native', compare_visual=dispatch)
     adapter.client = SimpleNamespace(endpoint='qualified-opencode', provider_id='opencode',
@@ -474,12 +481,12 @@ async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, 
     service.store.cache_put('research-vision-verification-v1', {
         'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
         'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}, ttl_seconds=3600)
-    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
-        await adapter.visual_verdict(*args)
+    assert (await adapter.visual_verdict(*args))['result']['status'] == 'mismatch'
+    assert len(sends) == 1
     with service.store.connection() as db:
         receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
-    assert all(receipt['phase'] in {'created', 'failed'} for receipt in receipts)
-    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs
+    assert all(receipt['phase'] in {'created', 'failed', 'completed'} for receipt in receipts)
+    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == 7
 
 
 @pytest.mark.asyncio

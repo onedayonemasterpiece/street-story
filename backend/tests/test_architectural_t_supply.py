@@ -895,9 +895,9 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
     assert list(validator.iter_errors(decision))
 
 
-def test_tail_only_text_reaches_t_inside_real_two_planner_slots(tmp_path):
+def test_tail_only_text_reaches_t_and_new_evidence_is_not_lifetime_capped(tmp_path):
     from dataclasses import replace
-    from street_story.research_budget import reserve_work, ResearchWorkExhausted
+    from street_story.research_budget import reserve_work
     from street_story.service import digest
     from test_visual_search_continuation import prepared
     from test_architectural_text_identity import TEXT, with_received_physical_links
@@ -919,7 +919,6 @@ def test_tail_only_text_reaches_t_inside_real_two_planner_slots(tmp_path):
     receipt.update(physical_link_inventory=packet['physical_link_inventory'], source_span_refs=packet['source_span_refs'])
     answer = with_received_physical_links(decision, [packet['prompt']])
     assert freeze_architectural_text_proof(story, answer, receipt, candidates)
-    with pytest.raises(ResearchWorkExhausted):
-        reserve_work(svc, story['id'], 'planner_calls', ['unplanned-third-comparison'])
+    reserve_work(svc, story['id'], 'planner_calls', ['new-distinct-source-portion'])
     _, research = svc._identity_snapshot(story['id'])
-    assert len(research['research_budget']['work_units']['planner_calls']) == 2
+    assert len(research['research_budget']['work_units']['planner_calls']) == 3

@@ -63,7 +63,7 @@ async def test_provider_quota_error_invalidates_permission_before_expiry():
     permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
     grant = await permission.ensure(client)
     permission.invalidate(grant, 'provider_quota')
-    client.reply['rateLimits']['primary']['usedPercent'] = 98
+    client.reply['rateLimits']['primary']['usedPercent'] = 100
     with pytest.raises(RetryableProviderError, match='below_reserve') as exc:
         await permission.ensure(client)
     assert client.calls == 2 and exc.value.retry_at == 9000
@@ -78,12 +78,20 @@ async def test_unknown_invalid_quota_does_not_issue_permission(used):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('used', [98, 99, 99.9])
+async def test_positive_real_quota_is_allowed_without_artificial_three_percent_reserve(used):
+    permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'binding')
+    grant = await permission.ensure(Client(used))
+    assert grant['remaining_percent'] == pytest.approx(100-used)
+
+
+@pytest.mark.asyncio
 async def test_exact_threshold_and_all_native_windows_are_checked():
     permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'binding')
     assert (await permission.ensure(Client(97)))['remaining_percent'] == 3
     permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'other')
     client = Client(20)
-    client.reply['rateLimits']['secondary'] = {'usedPercent': 99, 'resetsAt': 3000}
+    client.reply['rateLimits']['secondary'] = {'usedPercent': 100, 'resetsAt': 3000}
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await permission.ensure(client)
 

@@ -18,7 +18,6 @@ from .research_budget import bounded_timeout, require_remaining
 from .service import canonical
 
 POLICY = 'reference-contact-sheet-v2'
-MAX_ATLASES = 4
 KINDS = ('modern_exterior', 'interior', 'historical', 'detail', 'diagram', 'map', 'logo', 'generic_scene', 'unclear')
 APPLICABILITY = ('exterior_geometry', 'not_comparable', 'unclear')
 LOG = logging.getLogger('uvicorn.error')
@@ -193,10 +192,7 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
     fresh = [c for c in state.get('queue') or [] if not c.get('reference_triage') and c.get('reference_id') not in covered]
     if not fresh:
         return
-    if len(history) >= MAX_ATLASES:
-        state['reference_triage_budget_exhausted'] = True
-        adapter._save_visual_queue(session, state)
-        return
+    state.pop('reference_triage_budget_exhausted', None)
     if not routes:
         state['reference_triage_waiting'] = True
         adapter._save_visual_queue(session, state)

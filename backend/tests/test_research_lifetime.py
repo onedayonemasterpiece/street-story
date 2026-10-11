@@ -1,11 +1,10 @@
-"""Photo deadlines bound queue waits, retries and active work without resends."""
+"""Elapsed time cannot terminate durable research; SOURCE and UNKNOWN stay fenced."""
 import asyncio
 import json
-from dataclasses import replace
 
 import pytest
 
-from street_story.research_budget import ensure_budget, require_remaining, reserve_work, ResearchTerminated, ResearchWorkExhausted, finish_attempt
+from street_story.research_budget import ensure_budget, require_remaining, reserve_work, ResearchTerminated, finish_attempt
 from test_mvp_research import service
 
 
@@ -14,150 +13,121 @@ def job(svc, sid, kind='identity', key='bounded-wave'):
         return svc._enqueue_job(db, sid, kind, key, {'identity_generation': 0})
 
 
-def test_queue_wait_and_restart_inherit_upload_deadline(tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['identity', 'identity_visual', 'research', 'refinement'])
+@pytest.mark.parametrize('elapsed', [600, 1200])
+def test_queue_wait_and_restart_continue_after_closed_client(tmp_path, monkeypatch, kind, elapsed):
     svc, _, story = service(tmp_path)
     sid = story['id']
     original = ensure_budget(svc, sid)
-    jid = job(svc, sid)
-    monkeypatch.setattr(svc.store, 'now', lambda: original['started_at'] + 181)
+    jid = job(svc, sid, kind)
+    monkeypatch.setattr(svc.store, 'now', lambda: original['started_at'] + elapsed)
     svc.recover_jobs()
     with svc.store.connection() as db:
         row = db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
         state = json.loads(svc._story_row(db, sid)['research_json'])
-    assert row['state'] == 'done'
+    assert row['state'] == 'ready'
     assert state['research_budget'] == original
-    assert state['automatic_research_outcome']['outcome'] == 'deadline_exceeded'
-    assert state['identity_progress']['finished'] is True
-    assert not any(step['status'] == 'working' for step in state['identity_progress']['steps'])
-    assert svc.story(sid)['research_outcome']['outcome'] == 'deadline_exceeded'
-    assert svc._claim(claim_story_id=sid) is None
+    assert 'automatic_research_outcome' not in state
+    assert require_remaining(svc, sid, 'identity') == float('inf')
+    assert require_remaining(svc, sid, 'facts') == float('inf')
+    assert svc._claim(claim_story_id=sid)['id'] == jid
 
 
-def test_automatic_new_goal_does_not_renew_budget(tmp_path, monkeypatch):
+def test_active_legacy_deadline_migrates_without_new_operation(tmp_path, monkeypatch):
     svc, _, story = service(tmp_path)
     sid = story['id']
-    original = ensure_budget(svc, sid)
-    monkeypatch.setattr(svc.store, 'now', lambda: original['started_at'] + 400)
-    job(svc, sid, 'research', 'model-continuation')
-    assert ensure_budget(svc, sid) == original
-    monkeypatch.setattr(svc.store, 'now', lambda: original['deadline_at'] + 1)
-    with pytest.raises(ResearchTerminated):
-        require_remaining(svc, sid)
-    assert ensure_budget(svc, sid)['deadline_at'] == original['deadline_at']
+    initial = ensure_budget(svc, sid)
+    old = {**initial, 'policy_version': 'photo-research-budget-v1',
+           'identity_deadline_at': initial['started_at'] + 180, 'deadline_at': initial['started_at'] + 480}
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, sid)['research_json'])
+        research['research_budget'] = old
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), sid))
+    jid = job(svc, sid)
+    monkeypatch.setattr(svc.store, 'now', lambda: initial['started_at'] + 1200)
+    svc.recover_jobs()
+    migrated = ensure_budget(svc, sid)
+    assert migrated['started_at'] == initial['started_at']
+    assert migrated['previous_deadlines']['identity_deadline_at'] == old['identity_deadline_at']
+    assert migrated['identity_deadline_at'] is migrated['deadline_at'] is None
+    assert svc._claim(claim_story_id=sid)['id'] == jid
 
 
 @pytest.mark.asyncio
-async def test_active_worker_is_bounded_and_preserves_unknown_receipt(tmp_path):
+async def test_active_worker_keeps_unknown_receipt_after_twenty_minutes(tmp_path, monkeypatch):
+    from street_story.errors import RetryableProviderError
     svc, _, story = service(tmp_path)
     sid = story['id']
-    svc.settings = replace(svc.settings, identity_timeout_seconds=.5)
-    ensure_budget(svc, sid, explicit=True)
+    original = ensure_budget(svc, sid)
     jid = job(svc, sid)
+    entered, release = asyncio.Event(), asyncio.Event()
+    receipt = {'phase': 'unknown', 'thread_id': 'same-thread', 'turn_id': 'same-turn'}
     calls = []
     async def pending_worker(_job):
         calls.append(_job['id'])
         with svc.store.tx() as db:
-            db.execute('INSERT INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
-                ('unknown-original', 'original-unit', sid, 'vision_native',
-                 json.dumps({'phase': 'unknown', 'thread_id': 'same-thread', 'turn_id': 'same-turn'}), svc.store.now(), svc.store.now()))
-        await asyncio.sleep(2)
-    svc._run_identity = pending_worker
-    assert await svc.run_once(claim_story_id=sid) is True
-    assert await svc.run_once(claim_story_id=sid) is False
-    assert calls == [jid]
-    with svc.store.connection() as db:
-        receipt = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id='unknown-original'").fetchone()[0])
-        state = json.loads(svc._story_row(db, sid)['research_json'])
-    assert receipt == {'phase': 'unknown', 'thread_id': 'same-thread', 'turn_id': 'same-turn'}
-    assert state['automatic_research_outcome']['reason'] == 'identity_deadline_exceeded'
-
-
-@pytest.mark.asyncio
-async def test_one_unknown_visual_unit_cannot_end_independent_discovery(tmp_path, monkeypatch):
-    from street_story.errors import RetryableProviderError
-    from street_story.headless_identity import HeadlessIdentity
-    svc, _, story = service(tmp_path)
-    sid = story['id']
-    envelope = ensure_budget(svc, sid)
-    visual = job(svc, sid, 'identity_visual', 'unknown-visual')
-    discovery = job(svc, sid, 'identity', 'independent-discovery')
-    with svc.store.tx() as db:
-        db.execute("UPDATE jobs SET state='running',lease_until=? WHERE id=?",
-                   (envelope['deadline_at'], discovery))
-        db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
-            ('frozen-unknown', 'same-comparison', sid, 'vision_google_pair',
-             json.dumps({'phase': 'unknown', 'provider_send_state': 'possibly_sent', 'comparison_id': 'same-comparison'}),
-             svc.store.now(), svc.store.now()))
-    async def unknown(_self, _job):
-        raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=svc.store.now()+300)
-    monkeypatch.setattr(HeadlessIdentity, 'run', unknown)
-    assert await svc.run_once(claim_kind='identity_visual')
-    with svc.store.connection() as db:
-        research = json.loads(svc._story_row(db, sid)['research_json'])
-        assert 'automatic_research_outcome' not in research
-        assert tuple(db.execute('SELECT state,available_at FROM jobs WHERE id=?', (visual,)).fetchone()) == (
-            'retry', pytest.approx(envelope['identity_deadline_at'], abs=.02))
-        assert db.execute('SELECT state FROM jobs WHERE id=?', (discovery,)).fetchone()[0] == 'running'
-        assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])['comparison_id'] == 'same-comparison'
-    monkeypatch.setattr(svc.store, 'now', lambda: envelope['identity_deadline_at']+1)
-    with svc.store.tx() as db:
-        db.execute("UPDATE jobs SET state='done',lease_until=0 WHERE id=?", (discovery,))
-    svc.recover_jobs()
-    assert svc.story(sid)['research_outcome']['outcome'] == 'deadline_exceeded'
-
-
-@pytest.mark.asyncio
-async def test_product_deadline_closes_before_cancelled_sdk_finishes_accounting(tmp_path):
-    svc, _, story = service(tmp_path)
-    sid = story['id']
-    svc.settings = replace(svc.settings, identity_timeout_seconds=.15)
-    ensure_budget(svc, sid, explicit=True)
-    job(svc, sid)
-    entered, cleanup = asyncio.Event(), asyncio.Event()
-    async def delayed_sdk(_job):
+            db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+                ('unknown-original', 'original-unit', sid, 'vision_native', json.dumps(receipt), svc.store.now(), svc.store.now()))
         entered.set()
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            await cleanup.wait()  # Existing remote receipt/accounting cleanup.
-            raise
-    svc._run_identity = delayed_sdk
+        await release.wait()
+        raise RetryableProviderError('original_outcome_unknown', retry_at=svc.store.now()+3600)
+    svc._run_identity = pending_worker
     task = asyncio.create_task(svc.run_once(claim_story_id=sid))
     try:
         await entered.wait()
-        await asyncio.sleep(.2)
+        monkeypatch.setattr(svc.store, 'now', lambda: original['started_at']+1200)
+        await svc.maintenance_tick()
+        await asyncio.sleep(0)
         assert not task.done()
-        outcome = svc.story(sid)['research_outcome']
-        assert outcome['outcome'] == 'deadline_exceeded'
-        assert outcome['reason'] == 'identity_deadline_exceeded'
-        assert not svc.story(sid)['research_pending']['identity']
+        assert svc.story(sid)['research_pending']['identity']
+        release.set()
+        assert await task
+        with svc.store.connection() as db:
+            row = db.execute('SELECT state,available_at FROM jobs WHERE id=?', (jid,)).fetchone()
+            assert row['state'] == 'retry' and row['available_at'] == svc.store.now()+3600
+            assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0]) == receipt
+            state = json.loads(svc._story_row(db, sid)['research_json'])
+        assert 'automatic_research_outcome' not in state and calls == [jid]
     finally:
-        cleanup.set()
+        release.set()
         await task
 
 
-def test_explicit_owner_wave_renews_time_without_erasing_history(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['identity', 'identity_visual', 'research', 'refinement'])
+async def test_individual_request_timeout_retries_whole_task_without_terminal_state(tmp_path, kind, monkeypatch):
+    from street_story.headless_identity import HeadlessIdentity
     svc, _, story = service(tmp_path)
-    sid = story['id']
-    initial = ensure_budget(svc, sid)
-    monkeypatch.setattr(svc.store, 'now', lambda: initial['deadline_at'] + 60)
-    renewed = ensure_budget(svc, sid, explicit=True)
-    assert renewed['started_at'] == initial['deadline_at'] + 60
-    assert renewed['deadline_at'] == renewed['started_at'] + 480
+    jid = job(svc, story['id'], kind)
+    async def timed_out(*args):
+        raise TimeoutError('one transport request')
+    svc._run_identity = svc._run_research = timed_out
+    monkeypatch.setattr(HeadlessIdentity, 'run', timed_out)
+    assert await svc.run_once(claim_kind=kind)
+    with svc.store.connection() as db:
+        row = db.execute('SELECT state,last_error,available_at FROM jobs WHERE id=?', (jid,)).fetchone()
+        research = json.loads(svc._story_row(db, story['id'])['research_json'])
+    assert row['state'] == 'retry' and row['last_error'] == 'research_request_timeout'
+    assert row['available_at'] > svc.store.now()
+    assert 'automatic_research_outcome' not in research
 
 
-def test_exact_pair_envelope_preserves_original_units_and_resets_only_on_owner_wave(tmp_path):
+@pytest.mark.parametrize('kind', ['exact_pairs', 'query_hypotheses', 'pages', 'planner_calls'])
+def test_distinct_work_has_no_artificial_wave_ceiling_and_same_unit_is_idempotent(tmp_path, kind):
     svc, _, story = service(tmp_path)
-    sid = story['id']
-    assert reserve_work(svc, sid, 'exact_pairs', ['ref1', 'ref2']) == ['ref1', 'ref2']
-    assert reserve_work(svc, sid, 'exact_pairs', ['ref1']) == ['ref1', 'ref2']
-    reserve_work(svc, sid, 'exact_pairs', ['ref3', 'ref4', 'ref5', 'ref6'])
-    with pytest.raises(ResearchWorkExhausted) as exhausted:
-        reserve_work(svc, sid, 'exact_pairs', ['ref7'])
-    assert exhausted.value.kind == 'exact_pairs'
-    assert len(ensure_budget(svc, sid)['work_units']['exact_pairs']) == 6
-    ensure_budget(svc, sid, explicit=True)
-    assert reserve_work(svc, sid, 'exact_pairs', ['ref7']) == ['ref7']
+    units = [str(n) for n in range(100)]
+    assert reserve_work(svc, story['id'], kind, units) == units
+    assert reserve_work(svc, story['id'], kind, units) == units
+    assert ensure_budget(svc, story['id'])['work_units'][kind] == units
+
+
+def test_explicit_owner_wave_preserves_history_without_elapsed_cutoff(tmp_path, monkeypatch):
+    svc, _, story = service(tmp_path)
+    initial = ensure_budget(svc, story['id'])
+    monkeypatch.setattr(svc.store, 'now', lambda: initial['started_at']+1200)
+    renewed = ensure_budget(svc, story['id'], explicit=True)
+    assert renewed['started_at'] == initial['started_at']+1200
+    assert renewed['deadline_at'] is renewed['identity_deadline_at'] is None
 
 
 def test_terminal_attempt_forbids_new_send_even_with_positive_remaining_time(tmp_path):
@@ -192,7 +162,7 @@ async def test_google_admission_cannot_send_after_its_research_scope_expires(tmp
                     db.execute('UPDATE stories SET research_json=? WHERE id=?',
                         (json.dumps(research), story['id']))
             else:
-                now[0] = budget['identity_deadline_at'] + 1
+                now[0] = budget['started_at'] + 1200
             return await invoke()
     client = GeminiClient.__new__(GeminiClient)
     client.settings = svc.settings
@@ -208,13 +178,17 @@ async def test_google_admission_cannot_send_after_its_research_scope_expires(tmp
             return await client._generate(key, timeout, ['fixture'], quota=Admission())
         await executor.execute('grounded_research', invoke)
     svc._run_identity = handler
-    with pytest.raises(ResearchTerminated, match='scope_superseded' if superseded else 'identity_deadline_exceeded'):
+    if superseded:
+        with pytest.raises(ResearchTerminated, match='scope_superseded'):
+            await svc._execute_job_with_deadline({'kind': 'identity', 'story_id': story['id']})
+        assert calls == []
+    else:
         await svc._execute_job_with_deadline({'kind': 'identity', 'story_id': story['id']})
-    assert calls == []
+        assert calls == ['provider_send']
     assert admissions == ['admission'] and pool.snapshot()['in_flight'] == 0
     # The worker scope is reset; unrelated requests inherit no expired story.
     await client._generate('fixture', 20, ['fixture'], quota=Admission())
-    assert calls == ['provider_send']
+    assert calls == (['provider_send'] if superseded else ['provider_send', 'provider_send'])
 
 
 def test_late_identity_sibling_cannot_end_confirmed_fact_wave(tmp_path):
@@ -260,7 +234,7 @@ def test_owner_new_fact_request_renews_terminal_wave_and_idempotent_replay_does_
         research['visual_identity'] = {'status': 'match', 'candidate_id': 'physical-building'}
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), sid))
         finish_attempt(svc, db, sid, outcome='no_supported_facts', reason='search_exhausted')
-    now = original['deadline_at'] + 60
+    now = original['started_at'] + 600
     monkeypatch.setattr(svc.store, 'now', lambda: now)
     request = {'action': 'research', 'goal': 'Сведения о ремонте'}
     svc.mutate_facts(sid, 'new-owner-goal', request)
@@ -287,7 +261,7 @@ def test_separately_accepted_waiting_owner_wave_runs_after_exhaustion_once(tmp_p
     with svc.store.connection() as db:
         waiting = json.loads(svc._story_row(db, sid)['research_json'])['pending_fact_request']
         assert db.execute("SELECT resource_id FROM idempotency WHERE key='second-accepted' AND action='research'").fetchone()[0] == sid
-    now = initial['deadline_at'] + 10
+    now = initial['started_at'] + 600
     monkeypatch.setattr(svc.store, 'now', lambda: now)
     with svc.store.tx() as db:
         finish_attempt(svc, db, sid, outcome='deadline_exceeded', reason='research_deadline_exceeded')
@@ -305,3 +279,38 @@ def test_separately_accepted_waiting_owner_wave_runs_after_exhaustion_once(tmp_p
     assert current['research_attempt_history'][-1]['research_budget']['started_at'] == initial['started_at']
     svc.mutate_facts(sid, 'second-accepted', {'action': 'research', 'goal': 'Later restoration'})
     assert ensure_budget(svc, sid) == renewed
+
+
+@pytest.mark.parametrize('kind', ['identity', 'identity_visual', 'research', 'refinement'])
+def test_restart_does_not_close_research_after_repeated_worker_failures(tmp_path, kind):
+    from street_story.service import canonical
+    svc, _, story = service(tmp_path)
+    sid = story['id']
+    original = ensure_budget(svc, sid)
+    jid = job(svc, sid, kind)
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET state='retry',attempts=20,last_error='worker_failure:RuntimeError' WHERE id=?", (jid,))
+        db.execute("INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)",
+                   (jid, 'worker_non_wait_failures', canonical({'count': 20}), svc.store.now()))
+    svc.recover_jobs()
+    with svc.store.connection() as db:
+        assert db.execute('SELECT state FROM jobs WHERE id=?', (jid,)).fetchone()[0] == 'retry'
+        research = json.loads(svc._story_row(db, sid)['research_json'])
+    assert research['research_budget'] == original
+    assert 'automatic_research_outcome' not in research
+
+
+def test_legacy_environment_cannot_restore_background_cutoffs(monkeypatch):
+    from street_story.config import Settings
+    for name, value in {'IDENTITY_TIMEOUT_SECONDS': '180', 'RESEARCH_TIMEOUT_SECONDS': '480',
+        'IDENTITY_MAX_EXACT_PAIRS': '6', 'IDENTITY_MAX_QUERY_HYPOTHESES': '8',
+        'IDENTITY_MAX_PAGES': '6', 'IDENTITY_MAX_PLANNER_CALLS': '2'}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv('GEMINI_CALL_TIMEOUT_SECONDS', '17')
+    monkeypatch.setenv('GEMINI_ATTEMPT_TIMEOUT_SECONDS', '53')
+    settings = Settings.from_env()
+    assert settings.identity_timeout_seconds == settings.research_timeout_seconds == 0
+    assert settings.identity_max_exact_pairs == settings.identity_max_query_hypotheses == 0
+    assert settings.identity_max_pages == settings.identity_max_planner_calls == 0
+    assert settings.gemini_call_timeout_seconds == 17
+    assert settings.gemini_attempt_timeout_seconds == 53

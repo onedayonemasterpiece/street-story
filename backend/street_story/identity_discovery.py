@@ -498,7 +498,7 @@ async def _suggest(service, story, transcript, candidates):
             # read. A small complete inventory can be supplied whole without
             # pre-proving its physical binding or silently taking first rows.
             prefetched_ids = list(dict.fromkeys(row['article_id'] for row in regional_catalogue['results']))
-        early_page_capacity = min(8, max(0, int(service.settings.identity_max_pages) - 3))
+        early_page_capacity = 8  # One bounded preparation batch, no lifetime page ceiling.
         # Keep ready text; unread cards remain reachable through the catalogue.
         from .prussia39 import cached_get_available
         cached_ids = {row['article_id'] for row in regional_catalogue.get('results') or []
@@ -1497,11 +1497,11 @@ async def _suggest(service, story, transcript, candidates):
         targets = action.get('target_candidate_ids')
         clarification = payload.get('clarification_question') if isinstance(payload, dict) else None
         # The initial overview deliberately defers individual contours. If the
-        # model requests address text for its nominated bodies, do not discard
+        # model requests own address text or a ready article for its nominated bodies, do not discard
         # those available primitives or the existing joint2 slot when retrieval
         # is empty or belongs to a different subject.
-        address_detail = (action.get('kind') == 'address_text'
-            and geometry.get('decision') == 'uncertain' and bool(lookup)
+        address_detail = (action.get('kind') in {'address_text', 'ready_article'}
+            and geometry.get('decision') == 'uncertain' and bool(lookup or text_articles)
             and not (isinstance(clarification, str) and clarification.strip()))
         if (initial_geometry is None and initial_text is None and scene
                 and (action.get('kind') == 'map_detail' or address_detail)
@@ -1526,8 +1526,8 @@ async def _suggest(service, story, transcript, candidates):
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
                 if address_detail:
-                    detail_request.update(trigger=('address_text_with_deferred_geometry' if text_articles
-                        else 'address_text_without_acquired_body'),
+                    detail_request.update(trigger=(action['kind'] + '_with_deferred_geometry' if text_articles
+                        else action['kind'] + '_without_acquired_body'),
                         initial_requested_action=copy.deepcopy(action), address_text_lookup=copy.deepcopy(lookup))
         if issues or new_text_acquired or detail_request:
             native_followup = (initial_route == 'native_source_map'
@@ -1954,14 +1954,14 @@ async def _suggest(service, story, transcript, candidates):
                                 # time before assigning this same joint2 elsewhere.
                                 # Wait outside an executor/lease for the SAME
                                 # authoritative unsent request. The second turn
-                                # is bounded by the remaining identity clock,
-                                # reserving30s for independent REF if unresolved.
+                                # keeps its own request timeout; independent REF
+                                # may still progress while the task remains pending.
                                 joint_followup_marker(service, story, binding=joint_followup_binding, phase='not_sent',
                                     admission_retry={'retry_at': retry_at, 'wait_seconds': delay, 'retry_count': 0,
                                         'prepared_request_sha256': prepared_request['sha256']})
                                 record_identity_event(service, story['id'], 'identity_native_followup_admission_wait',
                                     {'provider_send_state': 'not_sent', 'wait_seconds': round(delay, 3),
-                                     'retry_at': retry_at, 'remaining_seconds': round(remaining, 3),
+                                     'retry_at': retry_at, 'remaining_seconds': round(remaining, 3) if math.isfinite(remaining) else None,
                                      'independent_ref_reserve_seconds': 30, 'same_binding': True})
                                 await asyncio.sleep(delay)
                                 check_prepared_request()
@@ -1990,7 +1990,7 @@ async def _suggest(service, story, transcript, candidates):
                                     story['_identity_search_plan_route'] = 'google'
                                     record_identity_event(service, story['id'], 'identity_joint_followup_unsent_route_assigned',
                                         {'from_model': 'gpt-6-luna', 'model': model, 'provider_send_state': 'not_sent',
-                                         'same_binding': True, 'remaining_seconds': round(remaining, 3)})
+                                         'same_binding': True, 'remaining_seconds': round(remaining, 3) if math.isfinite(remaining) else None})
                                     execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
                                     response = await execute('grounded_research', send_followup)
                                     break
@@ -2094,7 +2094,7 @@ async def _suggest(service, story, transcript, candidates):
                             record_identity_event(service, story['id'], 'identity_joint_followup_closed_route_assigned',
                                 {'from_model': previous_model, 'model': model, 'status_code': status_code,
                                  'same_binding': True, 'additional_planner_unit': False,
-                                 'remaining_seconds': round(remaining, 3)})
+                                 'remaining_seconds': round(remaining, 3) if math.isfinite(remaining) else None})
                             continue
                     joint_followup_failure = exc
                     if (phase in {'not_sent', 'unknown', 'closed_failure'}
@@ -2158,9 +2158,9 @@ async def _suggest(service, story, transcript, candidates):
                         # or accepted basis. Keep its original response retained.
                         unbound = {row['article_id'] for row in text_answer.get('article_bindings', [])
                             if row['physical_binding_resolved'] is False}
-                        if 'subject_article_bindings' in payload:
-                            payload['subject_article_bindings'] = [row for row in
-                                payload['subject_article_bindings'] if row['article_id'] not in unbound]
+                        for name in ('subject_article_bindings', 'regional_article_selections'):
+                            if name in payload:
+                                payload[name] = [row for row in payload[name] if row['article_id'] not in unbound]
                     else:
                         payload = combine_architectural_decision(payload, answer, decision_schema)
                 except (ValueError, TypeError) as exc:

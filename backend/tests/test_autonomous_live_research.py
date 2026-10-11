@@ -17,7 +17,7 @@ SCHEMA = {'type': 'object', 'properties': {'facts': {'type': 'array', 'items': {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('attempt_cap,wave_cap,completed',[(.2,.5,True),(.02,.5,False),(.2,.02,False)])
+@pytest.mark.parametrize('attempt_cap,wave_cap,completed',[(.2,.5,True),(.02,.5,False),(.2,.02,True)])
 async def test_live_completion_uses_existing_configured_attempt_and_original_wave_bounds(tmp_path,attempt_cap,wave_cap,completed):
     svc,_,story=service(tmp_path)
     svc.settings=replace(svc.settings,gemini_attempt_timeout_seconds=attempt_cap,research_timeout_seconds=wave_cap)
@@ -46,7 +46,7 @@ async def test_live_completion_uses_existing_configured_attempt_and_original_wav
         with pytest.raises(ResearchUnavailable) as caught:
             await provider._run('facts','Frozen own evidence',owned,SCHEMA)
         assert caught.value.receipt['phase']=='unknown'
-        assert 0 < caught.value.receipt['operation_timeout_seconds'] <= min(attempt_cap,wave_cap)
+        assert 0 < caught.value.receipt['operation_timeout_seconds'] <= attempt_cap
         with pytest.raises(ResearchUnavailable,match='original_outcome_unknown'):
             await provider._run('facts','Frozen own evidence',{**owned,'phase':'unknown'},SCHEMA)
     assert [name for name,_ in calls]==['start','input','stop']
@@ -233,7 +233,7 @@ async def test_live_setup_quota_is_exact_not_sent_blocker(tmp_path):
 @pytest.mark.asyncio
 async def test_live_timeout_preserves_unknown_and_will_not_restart(tmp_path):
     svc, _, story = service(tmp_path)
-    svc.settings = replace(svc.settings, research_timeout_seconds=.5)
+    svc.settings = replace(svc.settings, gemini_attempt_timeout_seconds=.5)
     ensure_budget(svc, story['id'], explicit=True)
     provider, calls = client(svc, 'pending')
     original = binding(svc, story)

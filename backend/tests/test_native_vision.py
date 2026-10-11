@@ -289,7 +289,7 @@ async def test_unsent_setup_deadline_is_local_but_external_cancellation_propagat
 @pytest.mark.asyncio
 async def test_below_reserve_never_sends_model_turn(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
-    client.used = 98
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
@@ -343,7 +343,7 @@ async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(
     images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
     host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
                                  'map_image_sha256': hashlib.sha256(source).hexdigest()}}
-    client.used = 99
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.compare_source_map(story, VERDICT_SCHEMA, 'bounded geometry', images,
                                          {'attempt_id': 'spatial'}, host)
@@ -612,7 +612,7 @@ async def test_native_rejection_invalidates_quota_grant_before_expiry(tmp_path):
     with pytest.raises(RetryableProviderError):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert provider.service.store.cache[provider.permission._key('owner-binding')]['expires_at'] == 0
-    client.used = 98
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.permission.ensure(client)
     assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2

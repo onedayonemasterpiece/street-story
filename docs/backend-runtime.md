@@ -210,3 +210,31 @@ A running unit finishes under its existing lease; it is not preempted.
 ### Regional article search: Prussia39
 
 Photo-search target (2026-10-08): [three equal identity methods and Prussia39 discovery](photo-search-methods.md), governed by the [unified brief](prompts/street-story-unified-photo-search-20261008.md). Prussia39 is an address/coordinate discovery and architectural-text source adapter over the existing cache, rather than only an external search hint. It is conditional on a remaining identity/fact question; it is not a crawler, mandatory step or separate POI catalogue. Audit addresses/article IDs are test truth only. Deployment acceptance requires one frozen version and source-backed reviewed facts; source changes and manual studies do not establish product PASS.
+
+### Durable background research (owner override, 2026-10-11)
+
+Accepted photo intake belongs to backend jobs, independently of client sockets.
+Identity, reference comparison, fact research and refinement have no terminal
+180/480-second upload deadline and no cumulative local ceiling on comparisons,
+queries, page reads, planner units or worker attempts. Legacy lifetime/work-cap
+environment variables are ignored. Active legacy envelopes migrate in place;
+original upload time, work journal and provider operation identities survive.
+Historical closed outcomes and cancelled jobs remain closed. A real owner reply
+can reopen its clarification in the same story without changing the SOURCE.
+
+Each HTTP/provider request still has its own timeout. A request timeout or
+provider admission wait leaves the task durable and retryable. UNKNOWN receipts
+keep the original addressed operation and prohibit duplicate sends. Provider
+Retry-After, real quota checks, accounting and SOURCE/generation/Stop fences stay
+mandatory. A request lease expiry is not a task completion deadline. Repeated
+worker failures use backoff and retain accepted facts, selections and drafts.
+Natural evidence exhaustion, an actual clarification and owner Stop still have
+explicit outcomes; elapsed time alone does not produce one.
+
+The corpus harness supports `--observe-continuation-seconds 1200`: it uploads
+original bytes through real loopback HTTP, closes the client, and opens new
+clients at 600 and 1200 seconds while normal backend workers continue. The
+observation window limits the experiment, not the product task. Pending jobs
+remain pending at experiment shutdown, and the report does not count them as
+successful product acceptance. Report-only evaluator IDs never enter intake.
+One-use Chromium profiles are deleted on close, startup failure and cancellation.

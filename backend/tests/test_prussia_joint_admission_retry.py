@@ -235,16 +235,17 @@ async def test_restart_during_admission_wait_does_not_resume_optional_retry(tmp_
 
 
 @pytest.mark.asyncio
-async def test_delayed_wake_rechecks_operation_headroom_before_reacquiring_key(tmp_path, monkeypatch):
+async def test_delayed_wake_after_twenty_minutes_reacquires_same_unsent_request(tmp_path, monkeypatch):
     def delayed(service, story, clock):
         budget = service._identity_snapshot(story['id'])[1]['research_budget']
-        clock[0] = budget['identity_deadline_at'] - .05
+        clock[0] = budget['started_at'] + 1200
     service, story, active, requests, _, sends, waits, pool = setup(
         tmp_path, monkeypatch, denial(), wake=delayed)
     await identity_discovery.suggest(service, story, '', active)
-    assert len(requests) == 2 and sends == ['initial'] and waits == [47.462]
+    assert len(requests) == 3 and sends == ['initial', 'useful-text'] and waits == [47.462]
+    assert requests[1] == requests[2]
     assert sum(pool._in_flight.values()) == 0
-    assert joint_followup_marker(service, story)['phase'] == 'not_sent'
+    assert joint_followup_marker(service, story)['phase'] == 'response_closed'
 
 
 @pytest.mark.asyncio
@@ -262,13 +263,14 @@ async def test_unknown_or_closed_provider_failure_never_uses_unsent_retry(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_retry_delay_plus_operation_timeout_must_fit_original_upload_deadline(tmp_path, monkeypatch):
+async def test_retry_delay_after_old_upload_deadline_preserves_same_request(tmp_path, monkeypatch):
     service, story, active, requests, _, sends, waits, _ = setup(tmp_path, monkeypatch, denial())
     with service.store.tx() as db:
         db.execute('UPDATE stories SET created_at=? WHERE id=?', (service.store.now() - 179, story['id']))
     await identity_discovery.suggest(service, story, '', active)
-    assert len(requests) == 2 and sends == ['initial'] and not waits
-    assert joint_followup_marker(service, story)['phase'] == 'not_sent'
+    assert len(requests) == 3 and sends == ['initial', 'useful-text'] and waits == [47.462]
+    assert requests[1] == requests[2]
+    assert joint_followup_marker(service, story)['phase'] == 'response_closed'
 
 
 @pytest.mark.asyncio

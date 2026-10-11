@@ -1,4 +1,4 @@
-"""Distinct new semantic work shares a durable wave cap; readback is separate."""
+"""Distinct semantic work is journaled without lifetime ceilings; readback is separate."""
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -9,11 +9,11 @@ import pytest
 from street_story.article_media import article_candidates
 from street_story.errors import PermanentProviderError
 from street_story.identity_discovery import _claim_article_query, _retain_article_discovery, suggest
-from street_story.research_budget import ensure_budget, reserve_work, ResearchTerminated, ResearchWorkExhausted
+from street_story.research_budget import ensure_budget, reserve_work, ResearchTerminated
 from test_visual_search_continuation import prepared
 
 
-def test_queries_share_cap_across_routes_and_unknown_readback_bypasses_exhausted_envelope(tmp_path):
+def test_queries_continue_across_routes_and_unknown_readback_never_resends(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     svc.settings = replace(svc.settings, identity_max_query_hypotheses=1)
     snapshot = svc._identity_snapshot(story['id'])[0]
@@ -22,7 +22,7 @@ def test_queries_share_cap_across_routes_and_unknown_readback_bypasses_exhausted
     assert _claim_article_query(svc, snapshot, '  observed city   address 1 ')[0] is None
     assert len(ensure_budget(svc, story['id'])['work_units']['query_hypotheses']) == 1
     token2, deferred = _claim_article_query(svc, snapshot, 'Different address 2')
-    assert token2 is None and deferred['status'] == 'deferred'
+    assert token2 and deferred['status'] == 'in_progress'
     assert not json.loads(svc._identity_snapshot(story['id'])[0]['research_json']).get('automatic_research_outcome')
     _retain_article_discovery(svc, snapshot, [], query_results={'Observed City Address 1': {
         'status': 'unknown', 'claim_id': token, 'sources': []}})
@@ -34,14 +34,14 @@ def test_queries_share_cap_across_routes_and_unknown_readback_bypasses_exhausted
     with pytest.raises(ResearchTerminated, match='already_finished'):
         reserve_work(svc, story['id'], 'query_hypotheses', ['observed city address 1'])
     budget = ensure_budget(svc, story['id'])
-    svc.store.now = lambda: budget['identity_deadline_at'] + 10
+    svc.store.now = lambda: budget['started_at'] + 1200
     # A receipt observer is selected before reservation/deadline admission.
     assert _claim_article_query(svc, snapshot, 'Observed City Address 1')[1]['status'] == 'unknown'
-    assert len(ensure_budget(svc, story['id'])['work_units']['query_hypotheses']) == 1
+    assert len(ensure_budget(svc, story['id'])['work_units']['query_hypotheses']) == 2
 
 
 @pytest.mark.asyncio
-async def test_page_cap_uses_canonical_url_not_gallery_cursor_and_stops_new_http(tmp_path):
+async def test_page_journal_uses_canonical_url_and_allows_new_http(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     svc.settings = replace(svc.settings, identity_max_pages=1)
     calls = []
@@ -59,13 +59,13 @@ async def test_page_cap_uses_canonical_url_not_gallery_cursor_and_stops_new_http
         receipts = []
         assert await article_candidates(svc, story, [{'url': 'https://example.com/new-page'}], set(),
             http=client, resolver=resolver, browser=forbidden, receipts=receipts) == []
-    assert receipts[0]['status'] == 'deferred'
-    assert calls == ['/page', '/page']  # Public transport uses the resolved IP.
-    assert ensure_budget(svc, story['id'])['work_units']['pages'] == ['https://example.com/page']
+    assert receipts[0]['status'] == 'completed'
+    assert calls == ['/page', '/page', '/new-page']  # Public transport uses the resolved IP.
+    assert ensure_budget(svc, story['id'])['work_units']['pages'] == ['https://example.com/page', 'https://example.com/new-page']
 
 
 @pytest.mark.asyncio
-async def test_planner_cap_counts_distinct_frozen_inputs_before_new_inference(tmp_path):
+async def test_planner_journal_preserves_frozen_inputs_without_cumulative_cap(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     svc.settings = replace(svc.settings, identity_max_planner_calls=2)
     calls = []
@@ -85,9 +85,8 @@ async def test_planner_cap_counts_distinct_frozen_inputs_before_new_inference(tm
     # changing prose alone cannot reopen the closed initial operation.
     reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
     assert reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
-    with pytest.raises(ResearchWorkExhausted) as exhausted:
-        reserve_work(svc, story['id'], 'planner_calls', ['fixture-third-distinct-input'])
-    assert exhausted.value.kind == 'planner_calls' and len(calls) == 1
+    assert reserve_work(svc, story['id'], 'planner_calls', ['fixture-third-distinct-input'])
+    assert len(calls) == 1  # A closed initial operation is still never reissued.
 
 
 def test_wave_caps_reset_only_for_explicit_owner_wave(tmp_path):

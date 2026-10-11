@@ -69,7 +69,7 @@ async def test_background_failure_preserves_current_product_stage_and_editorial(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('restart',[False,True])
-async def test_actual_failure_exhaustion_leaves_job_failed_but_story_usable(tmp_path,restart):
+async def test_repeated_worker_failure_keeps_job_retryable_and_story_usable(tmp_path,restart):
     svc,sid,jid,run=prepared(tmp_path)
     svc.store.checkpoint_put(jid,'worker_non_wait_failures',{'count':MAX_JOB_ATTEMPTS if restart else MAX_JOB_ATTEMPTS-1})
     with svc.store.tx() as db:
@@ -83,7 +83,7 @@ async def test_actual_failure_exhaustion_leaves_job_failed_but_story_usable(tmp_
         svc._run_research=fail
         assert await svc.run_once()
     story,job,research,selected,assertion=snapshot(svc,sid,jid,run)
-    assert job['state']=='failed' and research['state']=='partial' and research['completed_at'] is None
+    assert job['state']=='retry' and research['state']=='partial' and research['completed_at'] is None
     assert story['state']=='review' and story['error_code'] is None
     assert selected==1 and assertion==(1,'eligible')
 

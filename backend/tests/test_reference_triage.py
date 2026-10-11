@@ -204,7 +204,7 @@ async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_pr
 
 
 @pytest.mark.asyncio
-async def test_four_atlas_envelope_preserves_pairs_without_download_and_two_images_can_be_triaged(tmp_path, monkeypatch):
+async def test_new_atlas_after_four_closed_atlases_is_allowed_and_readback_is_reused(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare
     from street_story.headless_identity import HeadlessIdentity
     svc, story, source = prepare(tmp_path, count=3)
@@ -216,13 +216,12 @@ async def test_four_atlas_envelope_preserves_pairs_without_download_and_two_imag
     candidates = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
     state = {'queue': candidates.copy(), 'reference_triage_atlases': {str(i): {} for i in range(4)}}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    assert state['reference_triage_budget_exhausted'] and state['queue'] == candidates
+    assert not state.get('reference_triage_budget_exhausted')
     assert not state.get('reference_triage_deferred')
-    assert downloads == [] and sends == []
-    state = {'queue': candidates[:2]}
+    assert len(downloads) == 3 and len(sends) == 1
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    assert len(downloads) == 2 and len(sends) == 1
-    assert all(c['reference_triage']['applicability'] == 'unclear' for c in state['queue'])
+    assert len(downloads) == 3 and len(sends) == 1  # Original atlas readback.
+    assert {c['reference_triage']['applicability'] for c in state['queue']} == {'unclear', 'exterior_geometry'}
 
 
 @pytest.mark.asyncio
@@ -347,10 +346,8 @@ async def test_optional_triage_failure_preserves_pair_and_original_receipt(tmp_p
 @pytest.mark.asyncio
 async def test_optional_atlas_allowance_does_not_block_full_pair(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare, response
-    import street_story.reference_triage as triage
     svc, story, _ = prepare(tmp_path, count=1)
     provider, _, sends = provider_fixture(svc, monkeypatch)
-    monkeypatch.setattr(triage, 'MAX_ATLASES', 0)
     await prepare_closed_triage(svc, story)
     pairs = []
     async def compare(snapshot, item, schema, context):
@@ -358,10 +355,10 @@ async def test_optional_atlas_allowance_does_not_block_full_pair(tmp_path, monke
         return response(item, 'independent-native-fixture', 'match')
     monkeypatch.setattr(provider, 'visual_verdict', compare)
     assert await svc.run_once(claim_kind='identity_visual')
-    assert sends == [] and len(pairs) == 1
+    assert len(sends) == 1 and len(pairs) == 1
     assert svc.story(story['id'])['visual_identity']['status'] == 'match'
     _, research = svc._identity_snapshot(story['id'])
-    assert research['visual_search_operation']['reference_triage_budget_exhausted']
+    assert not research['visual_search_operation'].get('reference_triage_budget_exhausted')
     assert len(research['visual_search_operation']['reviewed_reference_ids']) == 1
 
 

@@ -15,10 +15,12 @@ from dataclasses import fields
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
 import sqlite3
+import socket
 import subprocess
 import sys
 import time
@@ -512,10 +514,7 @@ def read_case(service, case, item):
         if candidate.get('candidate_id') == identity.get('candidate_id')), {})
     expected = item.get('expected_physical_ids') or [item.get('expected_physical_id')]
     expected = [value for value in expected if value]
-    gates = {'identity_in_180s': case.get('identity_elapsed_s', float('inf')) <= CAPS['identity_seconds'],
-        'first_eligible_in_300s': case.get('first_eligible_elapsed_s', float('inf')) <= CAPS['first_eligible_seconds'],
-        'terminal_in_480s': terminal and total <= CAPS['total_seconds'],
-        'eligible_minimum': len(proved) >= item['min_useful_facts'],
+    gates = {'eligible_minimum': len(proved) >= item['min_useful_facts'],
         'correct_physical_object': identity.get('candidate_id') in expected if expected else None,
         'identity_proof': verified_physical_identity(identity, photo_sha256=row['photo_sha256'],
             generation=int(research.get('identity_generation') or 0)),
@@ -594,23 +593,122 @@ def stop_wrong_physical_case(service, case, item):
 
 
 def apply_hard_cap(service, story_id):
-    from street_story.research_budget import finish_attempt
-    from street_story.research_control import research_stopped
-    with service.store.tx() as db:
-        row = service._story_row(db, story_id)
-        research = json.loads(row['research_json'] or '{}')
-        if research.get('automatic_research_outcome'):
-            return
-        elapsed = service.store.now() - row['created_at']
-        matched = (research.get('visual_identity') or {}).get('status') == 'match'
-        if research_stopped(research, 'facts' if matched else 'identity',
-                photo_sha256=row['photo_sha256'], identity_generation=int(research.get('identity_generation') or 0)):
-            return  # Operator Stop is reported separately, never rewritten as natural completion.
-        # Allow the application deadline watcher one scheduling tick; if the
-        # harness must intervene, natural_product_terminal explicitly fails.
-        if elapsed >= CAPS['total_seconds']+1 or not matched and elapsed >= CAPS['identity_seconds']+1:
-            finish_attempt(service, db, story_id, outcome='deadline_exceeded',
-                reason='acceptance_upload_deadline_exceeded', purpose='facts' if matched else 'identity')
+    """Compatibility: observation never terminates the product task."""
+    return None
+
+
+def upload_form(item, manifest_digest):
+    """Only ordinary intake fields, with no evaluator knowledge."""
+    key = f'acceptance:{manifest_digest}:{item["message_id"]}'
+    form = {'client_story_id': key, 'photo_sha256': item['sha256'],
+            'voice_protocol': 'voice-chunks-v2'}
+    camera = item.get('owner_approx_camera') or {}
+    if camera:
+        form.update(lat=str(camera['latitude']), lon=str(camera['longitude']),
+                    camera_coordinate_source='owner_approx_camera')
+    return key, form
+
+
+async def observe_continuation(app, service, selected, cases, report, output, report_path,
+                               manifest_digest, sha, seconds, journal_path, owner_hints=None):
+    """Real TCP clients close while the ordinary backend lifespan keeps working.
+
+    The observation window bounds this experiment, never a product task. An
+    unfinished job remains pending in SQLite when the test server shuts down.
+    """
+    import httpx
+    import uvicorn
+    from street_story.config import reveal
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('Continuation observation must be finite and positive')
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    base = f'http://127.0.0.1:{sock.getsockname()[1]}'
+    server = uvicorn.Server(uvicorn.Config(app, lifespan='off', access_log=False, log_config=None))
+    server_task = asyncio.create_task(server.serve(sockets=[sock]))
+    observation = report.setdefault('continuation_observation', {'transport': 'real_loopback_TCP',
+        'window_seconds': seconds, 'product_deadline': None, 'client_returns': [],
+        'backend_shutdown_is_experiment_end': True})
+    headers = {'Authorization': 'Bearer ' + reveal(service.settings.device_token)}
+    try:
+        while not server.started:
+            if server_task.done():
+                await server_task
+                raise RuntimeError('Observation server did not start')
+            await asyncio.sleep(.05)
+        async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+            for item in selected:
+                case = cases[item['message_id']]
+                if case.get('story_id'):
+                    continue
+                require_frozen_checkout(sha)
+                data = Path(item['path']).read_bytes()
+                if hashlib.sha256(data).hexdigest() != item['sha256']:
+                    raise ValueError('Original corpus SOURCE changed')
+                key, form = upload_form(item, manifest_digest)
+                response = await client.post('/v1/stories', data=form,
+                    files={'photo': (f'photo-{item["message_id"]}.jpg', data, item['mime'])},
+                    headers={'Idempotency-Key': key, 'X-Photo-SHA256': item['sha256']})
+                response.raise_for_status()
+                case.update(story_id=response.json()['id'], status='RUNNING')
+                save(report_path, report)
+        # Leaving the client context above closes its connections. No socket,
+        # editor session or polling client owns the background research jobs.
+        closed_at = time.monotonic()
+        observation['client_closed_at_utc'] = time.time()
+        due = sorted({min(seconds, 600), seconds})
+        while True:
+            elapsed = time.monotonic() - closed_at
+            for item in selected:
+                case = cases[item['message_id']]
+                read_case(service, case, item)
+                if stop_wrong_physical_case(service, case, item):
+                    read_case(service, case, item)
+                save(output/f'case-{item["message_id"]}.json', case)
+            report['sdk_accounting'] = summarize_sdk_journal(journal_path)
+            observation['elapsed_client_closed_seconds'] = elapsed
+            if due and elapsed >= due[0]:
+                threshold = due.pop(0)
+                # Each return uses a new client and the public story projection.
+                async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+                    returned = []
+                    for item in selected:
+                        case = cases[item['message_id']]
+                        response = await client.get('/v1/stories/' + case['story_id'])
+                        response.raise_for_status()
+                        visible = response.json()
+                        returned.append({'message_id': item['message_id'], 'story_id': visible['id'],
+                            'source_available': visible.get('source_available'), 'state': visible.get('state'),
+                            'identity': visible.get('visual_identity'),
+                            'fact_ids': [fact['fact_id'] for fact in visible.get('facts') or []],
+                            'terminal': case['terminal'], 'status': case['status']})
+                observation['client_returns'].append({'after_seconds': threshold,
+                    'actual_after_seconds': time.monotonic() - closed_at, 'cases': returned})
+                if threshold == 600:
+                    for message_id, hint in (owner_hints or {}).items():
+                        case = cases[message_id]
+                        if (case.get('product_outcome') or {}).get('outcome') != 'clarification_required':
+                            continue
+                        # Reuse only an actual owner's literal answer. This is
+                        # ordinary durable backend acceptance, recorded separately
+                        # from the TCP/Android/voice delivery observations.
+                        key = 'corpus-owner-hint:' + digest([case['story_id'], hint])
+                        service.accept_identity_hint(case['story_id'], key, hint)
+                        case['owner_hint_delivery'] = {'mode': 'ordinary_backend_accept_identity_hint',
+                            'actual_owner_literal': hint, 'after_client_close_seconds': elapsed,
+                            'request_key': key, 'android_or_voice_claim': False}
+            save(report_path, report)
+            if not due:
+                break
+            await asyncio.sleep(min(5, max(.05, due[0] - elapsed)))
+        observation['completed'] = True
+        observation['pending_story_ids'] = [cases[item['message_id']]['story_id'] for item in selected
+                                            if not cases[item['message_id']]['terminal']]
+        save(report_path, report)
+    finally:
+        server.should_exit = True
+        await server_task
+        sock.close()
 
 
 async def run(args):
@@ -629,8 +727,7 @@ async def run(args):
     os.environ['STREET_STORY_DEPLOY_SHA'] = sha
     # app.py constructs its default app on import. Redirect configuration before
     # that import so even initialization/recovery can only touch this task DB.
-    os.environ.update(DATA_DIR=str(output/'data'), VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='',
-        IDENTITY_TIMEOUT_SECONDS=str(CAPS['identity_seconds']), RESEARCH_TIMEOUT_SECONDS=str(CAPS['total_seconds']))
+    os.environ.update(DATA_DIR=str(output/'data'), VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='')
     from street_story.config import Settings
     settings = Settings.from_env()
     effective = {field.name: getattr(settings, field.name) for field in fields(settings)}
@@ -654,9 +751,12 @@ async def run(args):
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
             raise ValueError('Provider qualification evidence changed')
     runtime_caches = runtime_qualification_caches(qualification, installer)
-    frozen = {'policy': 'product-recovery-acceptance-v1', 'source_sha': sha,
+    frozen = {'policy': 'product-recovery-continuation-v2', 'source_sha': sha,
         'manifest_sha256': manifest_digest, 'environment_sha256': environment_digests,
-        'qualification_sha256': digest(qualification), 'caps_from_upload': CAPS,
+        'qualification_sha256': digest(qualification), 'legacy_timing_metrics': CAPS,
+        'product_wave_deadline': None, 'continuation_observation_seconds': getattr(args, 'observe_continuation_seconds', 0),
+        'owner_hints_sha256': hashlib.sha256(managed(args.owner_hints).read_bytes()).hexdigest()
+            if getattr(args, 'owner_hints', None) else None,
         'runtime_qualification_caches_sha256': digest(runtime_caches),
         'effective_settings_sha256': effective_digest, 'public_settings': public_settings,
         'source_hashes': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -690,6 +790,17 @@ async def run(args):
     restore_references = block_directed_reference_inference(service, selected)
     try:
         async with app.router.lifespan_context(app):
+            if getattr(args, 'observe_continuation_seconds', 0):
+                owner_hints = {}
+                if getattr(args, 'owner_hints', None):
+                    owner_hints = {int(key): value for key, value in json.loads(managed(args.owner_hints).read_text()).items()}
+                    if (not set(owner_hints) <= {item['message_id'] for item in selected}
+                            or any(not isinstance(value, str) or not value.strip() or len(value) > 500
+                                   for value in owner_hints.values())):
+                        raise ValueError('Owner hints require selected photos and short literal answers')
+                await observe_continuation(app, service, selected, cases, report, output, report_path,
+                    manifest_digest, sha, args.observe_continuation_seconds, journal_path, owner_hints)
+                return
             for item in selected:
                 case = cases[item['message_id']]
                 if case.get('terminal'):
@@ -762,10 +873,8 @@ async def review_retained_scope(engine, job, run_id, revision, fact_ids):
 
 def retained_review_remaining(job, now):
     """Use the already accepted wave's deadline; never create a replay budget."""
-    deadline = json.loads(job['payload_json']).get('research_deadline_at')
-    if not isinstance(deadline, (int, float)) or isinstance(deadline, bool):
-        raise ValueError('Retained review requires its accepted research deadline')
-    return max(0, deadline-now)
+    return None  # asyncio.timeout(None): one review owns its request timeouts, not an elapsed wave cap.
+
 
 
 async def retained_review(args):
@@ -925,6 +1034,8 @@ async def retained_completion(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path)
+    parser.add_argument('--owner-hints', type=Path,
+                        help='Actual literal owner answers, applied at the 10-minute return through durable backend acceptance')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--expected-sha')
     parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
@@ -934,6 +1045,8 @@ def main():
     parser.add_argument('--fact-ids', default='')
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
                         help='Prior frozen run: import only same-config observed provider429 history')
+    parser.add_argument('--observe-continuation-seconds', type=float, default=0,
+        help='Observe ordinary corpus uploads over real HTTP; close clients, reopen after10/20min. No terminal Stop at observation end.')
     parser.add_argument('--messages', default='104', help='Ordered IDs; default is the simple canary')
     args = parser.parse_args()
     if args.inspect_initial_db:

@@ -149,13 +149,11 @@ class StreetStoryService:
             )]
             changed = identity_recovered + expired
             for job in exhausted:
-                if job['kind'] in {'research', 'refinement'}:
-                    row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
-                                     (job['id'], 'worker_non_wait_failures')).fetchone()
-                    if not row or int(json.loads(row[0]).get('count', 0)) < MAX_JOB_ATTEMPTS:
-                        continue
-                elif job["kind"] in RESEARCH_JOB_KINDS and not str(job.get('last_error') or '').startswith('worker_failure:'):
-                    continue
+                if job['kind'] in RESEARCH_JOB_KINDS:
+                    if str(job.get('last_error') or '').startswith('worker_failure:'):
+                        self._preserve_background_fact_value(db, job,
+                            error=job['last_error'], terminal=False)
+                    continue  # Durable research has no cumulative attempt ceiling.
                 self._fail_retry_exhausted(db, job, "retry_budget_exhausted")
                 changed += 1
             changed += db.execute(
@@ -1091,20 +1089,8 @@ class StreetStoryService:
                     db.execute("UPDATE jobs SET lease_until=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+90, job['id'], job['attempts']))
 
         lease_task = asyncio.create_task(heartbeat())
-        async def close_at_deadline():
-            from .research_budget import remaining_seconds, finish_attempt
-            purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
-            await asyncio.sleep(max(0, remaining_seconds(self, job['story_id'], purpose)))
-            # SDK cancellation can await remote accounting cleanup. Product
-            # waiting ends on its own clock while the original receipt remains
-            # available for bounded reconciliation.
-            with self.store.tx() as db:
-                finish_attempt(self, db, job['story_id'], outcome='deadline_exceeded',
-                    reason='identity_deadline_exceeded' if purpose == 'identity' else 'research_deadline_exceeded',
-                    purpose=purpose, job=job)
-        deadline_task = asyncio.create_task(close_at_deadline()) if job['kind'] in RESEARCH_JOB_KINDS else None
         try:
-            from .research_budget import ResearchTerminated, finish_attempt, remaining_seconds
+            from .research_budget import ResearchTerminated, finish_attempt
             result = await self._execute_job_with_deadline(job)
             if isinstance(result, dict) and result.get('outcome'):
                 with self.store.tx() as db:
@@ -1131,28 +1117,6 @@ class StreetStoryService:
         except RetryableProviderError as exc:
             reason = str(getattr(exc, 'code', None) or exc)
             retry_at = research_retry_at(reason, self.store.now(), exc.retry_at) if job['kind'] in RESEARCH_JOB_KINDS else exc.retry_at
-            if job['kind'] in RESEARCH_JOB_KINDS:
-                purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
-                remaining = remaining_seconds(self, job['story_id'], purpose)
-                deadline = self.store.now() + max(0, remaining)
-                beyond_deadline = retry_at is not None and retry_at >= deadline
-                with self.store.connection() as db:
-                    independent = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND id<>? "
-                        "AND kind IN ('identity','identity_visual','research','refinement') "
-                        "AND (state='running' OR state IN ('ready','retry') AND available_at<?)",
-                        (job['story_id'], job['id'], deadline)).fetchone() is not None
-                # UNKNOWN belongs to one frozen operation, not to the whole
-                # story. Its original readback may be later than this wave;
-                # keep independent discovery/comparisons alive until the same
-                # absolute deadline, without making its send retryable.
-                unknown = 'unknown' in reason.lower()
-                if remaining <= 0 or beyond_deadline and not independent and not unknown:
-                    with self.store.tx() as db:
-                        finish_attempt(self, db, job['story_id'], outcome='resource_blocked' if remaining > 0 else 'deadline_exceeded',
-                                       reason=reason, purpose=purpose, job=job)
-                    return True
-                if beyond_deadline:
-                    retry_at = deadline  # Product expiry; never an early provider readback.
             logging.getLogger('uvicorn.error').info('street_story_worker_waiting %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
@@ -1189,9 +1153,7 @@ class StreetStoryService:
             return True
         finally:
             lease_task.cancel()
-            if deadline_task is not None:
-                deadline_task.cancel()
-            await asyncio.gather(lease_task, *([deadline_task] if deadline_task is not None else []), return_exceptions=True)
+            await asyncio.gather(lease_task, return_exceptions=True)
             if job['kind'] in RESEARCH_JOB_KINDS:
                 self._observe_terminal_attempts(story_id=job['story_id'])
         return True
@@ -1235,7 +1197,7 @@ class StreetStoryService:
         if job['kind'] not in RESEARCH_JOB_KINDS:
             return await execute()
         purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
-        remaining = require_remaining(self, job['story_id'], purpose)
+        require_remaining(self, job['story_id'], purpose)
         with self.store.connection() as db:
             original = self._story_row(db, job['story_id'])
             source_scope = (original['photo_sha256'],
@@ -1253,11 +1215,11 @@ class StreetStoryService:
             require_remaining(self, job['story_id'], purpose)
         send_token = RESEARCH_SEND_GUARD.set(guard_send)
         try:
-            async with asyncio.timeout(remaining):
-                return await execute()
+            return await execute()
         except TimeoutError:
-            raise ResearchTerminated(reason='identity_deadline_exceeded' if purpose == 'identity'
-                                     else 'research_deadline_exceeded') from None
+            # A request timeout never decides the fate of the SOURCE task.
+            # Its original provider receipt still determines readback vs send.
+            raise RetryableProviderError('research_request_timeout', retry_at=self.store.now()+30) from None
         finally:
             RESEARCH_SEND_GUARD.reset(send_token)
 
@@ -1274,7 +1236,7 @@ class StreetStoryService:
                 return True
             error = f"worker_failure:{type(exc).__name__}"
             failure_attempts = job["attempts"]
-            if job['kind'] in {'research', 'refinement'}:
+            if job['kind'] in RESEARCH_JOB_KINDS:
                 # Queue claims include quota and lease waits. Only actual
                 # worker failures consume the research failure budget.
                 row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
@@ -1288,10 +1250,10 @@ class StreetStoryService:
                     'kind': job['kind'], 'attempt': job['attempts'], 'failure_count': failure_attempts,
                     'error_type': type(exc).__name__,
                 }))
-            if failure_attempts >= MAX_JOB_ATTEMPTS:
+            if job['kind'] not in RESEARCH_JOB_KINDS and failure_attempts >= MAX_JOB_ATTEMPTS:
                 self._fail_retry_exhausted(db, job, error)
             else:
-                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+min(300, 2 ** min(failure_attempts, 8)), error, self.store.now(), job["id"], job['attempts']))
                 self._preserve_background_fact_value(db, job, error=error, terminal=False)
         return True
 
@@ -1411,6 +1373,7 @@ class StreetStoryService:
             reverse = osm.get("reverse", {})
             place_name = str(grounded.payload.get("place_name") or (reverse.get("namedetails") or {}).get("name") or reverse.get("display_name") or "").strip() or None
             research = {
+                **json.loads(self._story_row(db, story_id)["research_json"] or "{}"),
                 "transcript": transcript,
                 "osm": osm,
                 "wikipedia": wikipedia,

@@ -750,7 +750,7 @@ async def continue_requested_text(service, story, candidates, payload, history):
     """Addressed next portions of retained T bodies, using the existing transport.
 
     Only the closed model's explicit requests open another bounded input. The
-    wave's planner cap and deadline still apply; UNKNOWN reads its original turn.
+    SOURCE/Stop fences and request timeouts still apply; UNKNOWN reads its original turn.
     """
     from .identity_discovery import _retain_article_discovery
     from .identity_proof import freeze_architectural_text_proof
