@@ -261,13 +261,21 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
     return True
 
 
-def expire_queued(service, db):
-    rows = list(db.execute("SELECT DISTINCT s.* FROM stories s JOIN jobs j ON j.story_id=s.id "
+def maintain_queued_budgets(service, db):
+    """Migrate only pending active budgets, outside worker claim polling."""
+    rows = list(db.execute("SELECT DISTINCT s.id FROM stories s JOIN jobs j ON j.story_id=s.id "
         "WHERE j.kind IN ('identity','identity_visual','research','refinement') "
-        "AND j.state IN ('ready','retry')"))
+        "AND j.state IN ('ready','retry') "
+        "AND json_extract(s.research_json,'$.automatic_research_outcome') IS NULL "
+        "AND (json_extract(s.research_json,'$.research_budget.policy_version') IS NOT 'photo-research-continuation-v2' "
+        "OR json_extract(s.research_json,'$.research_budget.photo_sha256') IS NOT s.photo_sha256 "
+        "OR json_extract(s.research_json,'$.research_budget.identity_generation') IS NOT "
+        "coalesce(json_extract(s.research_json,'$.identity_generation'),0))"))
     for row in rows:
         ensure_budget(service, row['id'], db=db)
-    return 0
+    if rows:
+        LOG.info('street_story_research_budget_maintenance changed_stories=%s', len(rows))
+    return len(rows)
 
 
 # Existing bounded Live page contract remains authoritative.

@@ -1,7 +1,7 @@
 import json
 
 from street_story.identity_telemetry import record_identity_event
-from street_story.research_budget import expire_queued, finish_attempt
+from street_story.research_budget import maintain_queued_budgets, finish_attempt
 from test_identity_lifecycle import create, make_service
 
 
@@ -23,7 +23,7 @@ def test_deadline_ended_photo_is_not_resurrected_by_retained_outage_or_foregroun
         # A recorded HISTORICAL terminal outcome stays closed; elapsed time
         # no longer creates it for active tasks.
         finish_attempt(svc, db, story['id'], outcome='deadline_exceeded', reason='identity_deadline_exceeded', purpose='identity')
-        assert expire_queued(svc, db) == 0
+        assert maintain_queued_budgets(svc, db) == 0
         assert svc._recover_transient_identity(db) == 0
     assert svc.ensure_identity(story['id'])['state'] == 'needs_review'
     svc.recover_jobs()

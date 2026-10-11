@@ -117,8 +117,8 @@ class StreetStoryService:
     def recover_jobs(self) -> int:
         now = self.store.now()
         with self.store.tx() as db:
-            from .research_budget import expire_queued
-            expired = expire_queued(self, db)
+            from .research_budget import maintain_queued_budgets
+            maintain_queued_budgets(self, db)
             recover_identity = getattr(self, '_recover_transient_identity', None)
             identity_recovered = recover_identity(db) if callable(recover_identity) else 0
             # Upgrade existing long provider waits to the same bounded revisit
@@ -147,7 +147,7 @@ class StreetStoryService:
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),
             )]
-            changed = identity_recovered + expired
+            changed = identity_recovered
             for job in exhausted:
                 if job['kind'] in RESEARCH_JOB_KINDS:
                     if str(job.get('last_error') or '').startswith('worker_failure:'):
@@ -947,8 +947,6 @@ class StreetStoryService:
             exclude_kind=exclude_kind, claim_story_id=claim_story_id)
         params = [now, now, *filter_params]
         with self.store.tx() as db:
-            from .research_budget import expire_queued
-            expire_queued(self, db)
             # Owner actions and their visual continuation precede speculative
             # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
@@ -962,6 +960,9 @@ class StreetStoryService:
             ).fetchone()
             if not row:
                 return None
+            if row['kind'] in RESEARCH_JOB_KINDS:
+                from .research_budget import ensure_budget
+                ensure_budget(self, row['story_id'], db=db)
             db.execute("UPDATE jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE id=?", (now + 90, now, row["id"]))
             return dict(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
 
@@ -1061,6 +1062,9 @@ class StreetStoryService:
     async def maintenance_tick(self):
         """Bounded accounting/original readback, independent of queue claims."""
         async with self._maintenance_lock:
+            from .research_budget import maintain_queued_budgets
+            with self.store.tx() as db:
+                maintain_queued_budgets(self, db)
             self._observe_terminal_attempts()
             recover_accounting = getattr(self.providers.research, 'recover_accounting', None)
             if callable(recover_accounting):
