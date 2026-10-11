@@ -752,7 +752,7 @@ async def continue_requested_text(service, story, candidates, payload, history):
     from .identity_scene import planner_scene
     from .identity_source_selection import compact_scene_manifest
     from .providers import PermanentProviderError, RetryableProviderError
-    from .reference_image_codec import normalize_reference
+    from .reference_image_codec import normalize_reference, normalize_source
     from .research_budget import reserve_work
     from .identity_telemetry import record_identity_event
 
@@ -783,7 +783,9 @@ async def continue_requested_text(service, story, candidates, payload, history):
         articles = [{**article, 'text_cursor': cursors[article['article_id']]}
                     for article in articles if article['article_id'] in cursors]
         source = service._source_photo_bytes(story['id'])
-        source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source)
+        normalizer = (normalize_source if (receipt.get('source_preparation') or {}).get('normalizer')
+            == 'reference_image_codec.normalize_source' else normalize_reference)
+        source_mime, source_bytes = await asyncio.to_thread(normalizer, source)
         scene = await planner_scene(service, story, candidates)
         selected_articles = articles
         receipt.update(articles=selected_articles, source_image_input=True,

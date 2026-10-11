@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 import pytest
 
 from street_story.identity_references import reference_images, thumbnail_reference
-from street_story.reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
+from street_story.reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference, normalize_source
 
 
 def jpeg(size=(80, 120), *, orientation=1):
@@ -62,6 +62,33 @@ def test_wide_reference_keeps_both_edges_without_crop():
         assert image.size == (1280, 320)
         assert image.getpixel((10, 160))[0] > 200
         assert image.getpixel((1270, 160))[2] > 200
+
+
+def test_source_keeps_original_resolution_orientation_and_both_edges():
+    source = Image.new('RGB', (4000, 1000), 'white')
+    draw = ImageDraw.Draw(source)
+    draw.rectangle((0, 0, 200, 999), fill='red')
+    draw.rectangle((3799, 0, 3999, 999), fill='blue')
+    exif = Image.Exif()
+    exif[274] = 6
+    exif[315] = 'private-metadata-not-for-model'
+    output = BytesIO()
+    source.save(output, format='JPEG', exif=exif)
+    raw = output.getvalue()
+    _, data = normalize_source(raw)
+    with Image.open(BytesIO(data)) as image:
+        assert image.size == (1000, 4000)
+        assert image.getpixel((500, 10))[0] > 200
+        assert image.getpixel((500, 3990))[2] > 200
+        assert not image.getexif()
+    assert output.getvalue() == raw
+    assert b'private-metadata-not-for-model' not in data
+
+
+def test_source_byte_limit_never_silently_discards_resolution(monkeypatch):
+    monkeypatch.setattr('street_story.reference_image_codec.MAX_MODEL_BYTES', 1)
+    with pytest.raises(ValueError, match='source_model_size'):
+        normalize_source(jpeg((2000, 1500)))
 
 
 def test_invalid_or_oversized_input_is_rejected_before_budget_preparation():

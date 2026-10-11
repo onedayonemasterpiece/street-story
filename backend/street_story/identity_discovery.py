@@ -391,7 +391,7 @@ async def _suggest(service, story, transcript, candidates):
     source_bytes = service._source_photo_bytes(story['id'])
     original_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     story['_identity_original_source_sha256'] = original_source_sha256
-    from .reference_image_codec import normalize_reference
+    from .reference_image_codec import SOURCE_MODEL_PREPARATION, normalize_reference, normalize_source
     from .identity_architectural_context import (prepare_regional_catalogue,
         catalogue_model_context, regional_selection_schema)
     # Optional bounded HTTP preparation overlaps the existing SOURCE/map CPU
@@ -403,7 +403,18 @@ async def _suggest(service, story, transcript, candidates):
         allow_network=allow_catalogue_network),
         name='street-story-regional-catalogue')
     story['_identity_regional_catalogue_task'] = catalogue_task
-    source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
+    # An addressed operation keeps its original image preparation across an
+    # upgrade. New G/T decisions preserve SOURCE resolution; Live REF budgets
+    # remain independent. Neither branch changes the stored original upload.
+    source_binding = (addressed_initial or {}).get('binding')
+    saved_preparation = (((native_saved or {}).get('frozen_source_map') or {})
+        .get('host_context') or {}).get('source_map_receipt', {}).get('source_preparation') or {}
+    legacy_source = (source_binding is not None
+        and source_binding.get('source_preparation') != SOURCE_MODEL_PREPARATION
+        or source_binding is None and native_original
+        and saved_preparation.get('normalizer') != 'reference_image_codec.normalize_source')
+    source_normalizer = normalize_reference if legacy_source else normalize_source
+    source_mime, source_bytes = await asyncio.to_thread(source_normalizer, source_bytes)
     from .identity_scene import planner_scene
     scene = await planner_scene(service, story, candidates)
     regional_catalogue = (catalogue_task.result() if catalogue_task.done()
@@ -461,7 +472,7 @@ async def _suggest(service, story, transcript, candidates):
     from PIL import Image
     with Image.open(io.BytesIO(source_bytes)) as normalized_image:
         source_preparation = {'mime_type': source_mime, 'width': normalized_image.width,
-            'height': normalized_image.height, 'normalizer': 'reference_image_codec.normalize_reference',
+            'height': normalized_image.height, 'normalizer': 'reference_image_codec.' + source_normalizer.__name__,
             'camera_metadata': story.get('_camera_hints') or {}}
     scene_manifest = compact_scene_manifest(scene['manifest']) if scene else None
     if scene:
@@ -759,6 +770,8 @@ async def _suggest(service, story, transcript, candidates):
         'configuration_sha256': hashlib.sha256(canonical([config.model_dump(mode='json', exclude_none=True),
             getattr(getattr(service, 'settings', None), 'gemini_web_search_model', None),
             [route[0] for route in getattr(gemini, 'research_routes', None) or []]]).encode()).hexdigest()}
+    if not legacy_source:
+        initial_unit_binding['source_preparation'] = SOURCE_MODEL_PREPARATION
     text_articles = copy.deepcopy(early_text_articles)
     source_text_receipt = ({'source_photo_sha256': story['photo_sha256'],
         'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,

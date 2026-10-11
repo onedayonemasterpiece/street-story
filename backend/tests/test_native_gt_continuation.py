@@ -37,6 +37,35 @@ async def test_sufficient_native_primary_or_original_readback_needs_no_google_ex
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_addressed', [False, True])
+async def test_source_map_input_preserves_new_resolution_and_original_addressed_preparation(tmp_path, monkeypatch, legacy_addressed):
+    from io import BytesIO
+    from PIL import Image
+    from street_story.reference_image_codec import normalize_reference, normalize_source
+    from test_reference_image_codec import jpeg
+    svc, story, active = geometry_setup(tmp_path)
+    raw = jpeg((4000, 3000))
+    monkeypatch.setattr(svc, '_source_photo_bytes', lambda sid: raw)
+    source_receipt = {'phase': 'unknown', 'turn_id': 'original-G'} if legacy_addressed else None
+    async def readback(snapshot, prompt, schema, images, host_context):
+        assert images[0][0] == 'SOURCE'
+        expected = (normalize_reference if legacy_addressed else normalize_source)(raw)[1]
+        assert images[0][2] == expected
+        with Image.open(BytesIO(images[0][2])) as image:
+            assert image.size == ((1280, 960) if legacy_addressed else (4000, 3000))
+        proof = host_context['source_map_receipt']
+        assert proof['original_source_sha256'] == hashlib.sha256(raw).hexdigest()
+        assert proof['model_source_sha256'] == hashlib.sha256(expected).hexdigest()
+        return {'result': payload(geometry_decision()), 'receipt': {'phase': 'completed', 'turn_id': 'original-G'},
+            'host_context': host_context}
+    svc.providers.gemini = SimpleNamespace()
+    svc.providers.research = SimpleNamespace(source_map_receipt=lambda s: source_receipt,
+        source_map_available=True, native_vision=SimpleNamespace(available=True), plan_source_map=readback)
+    await identity_discovery.prepare_search_plan(svc, story, '', active)
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
 async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contract_update(tmp_path, monkeypatch):
     from dataclasses import replace
     from street_story import identity_architectural_comparison, identity_architectural_context
