@@ -315,7 +315,7 @@ def block_directed_reference_inference(service, items):
     from street_story.errors import PermanentProviderError
     from street_story.live_visual_comparison import LiveVisualComparisonMixin
     restricted = {item['sha256'] for item in items
-        if item.get('acceptance_mode') == 'geometry_without_reference'}
+        if item.get('acceptance_mode') in {'geometry_without_reference', 'physical_identity_G_or_T'}}
     original_reply = LiveVisualComparisonMixin._visual_reply
     original_photo, original_batch = service._identify_photo, service._identify_photo_batch
     async def photo(story, *args, **kwargs):

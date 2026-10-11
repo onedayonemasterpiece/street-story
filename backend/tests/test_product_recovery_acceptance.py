@@ -115,7 +115,8 @@ def test_explicit_owner_approx_camera_is_input_but_truth_and_geometric_result_ar
 
 
 @pytest.mark.asyncio
-async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source():
+@pytest.mark.parametrize('mode', ['geometry_without_reference', 'physical_identity_G_or_T'])
+async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source(mode):
     from street_story.errors import PermanentProviderError
     class Service:
         async def _identify_photo(self, story, *args, **kwargs):
@@ -124,11 +125,14 @@ async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected
             return 'ordinary-reference-batch'
     service = Service()
     restore = harness.block_directed_reference_inference(service, [{**item(),
-        'acceptance_mode': 'geometry_without_reference'}])
+        'acceptance_mode': mode}])
     try:
         with pytest.raises(PermanentProviderError, match='external_reference_disabled'):
             await service._identify_photo({'photo_sha256': item()['sha256']}, '', [])
+        with pytest.raises(PermanentProviderError, match='external_reference_disabled'):
+            await service._identify_photo_batch({'photo_sha256': item()['sha256']}, '', [])
         assert await service._identify_photo({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-path'
+        assert await service._identify_photo_batch({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-batch'
     finally:
         restore()
     assert await service._identify_photo({'photo_sha256': item()['sha256']}, '', []) == 'ordinary-reference-path'
