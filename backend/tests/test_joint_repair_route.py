@@ -191,7 +191,14 @@ async def test_closed_independent_source_route_owns_new_repair_without_replaying
             assert 'json_syntax' in contents[-1]
             assert articles[0]['text'] in contents[-1]
             assert 'osm:way:3' in contents[-1]  # Full alternative reserve still supplied.
-        return SimpleNamespace(text=json.dumps(payload(decision)))
+        answer = payload(decision)
+        if initial_result == 'malformed_with_unbound_early_article' and len(calls) > 2:
+            from street_story.identity_subject_resolution import INSTRUCTIONS
+            assert INSTRUCTIONS in contents[-1]
+            answer['subject_resolution'] = {'decision': 'accepted', 'basis_kind': 'G',
+                'candidate_id': 'osm:way:2', 'unresolved_counterevidence': [],
+                'reason': 'Independent geometry resolves SOURCE; the acquired unbound article supplies no contrary body evidence.'}
+        return SimpleNamespace(text=json.dumps(answer))
 
     service.providers.gemini = SimpleNamespace(executor=Allowed(), _generate=generate,
         web_search_routes=[('preferred', object(), object(), Allowed()),

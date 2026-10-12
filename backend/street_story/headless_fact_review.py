@@ -58,6 +58,17 @@ VERIFIER_PROMPT = (
     'Resolve each sentence subject against confirmed_identity and its physical scope. A page can '
     'switch to another building; its architects/dates/roles do not support this building. An '
     'institution founding is not physical construction. '
+    'own_source_context contains exact complete retained versions linked only to this packet\'s '
+    'own evidence. Read that same-source context to disambiguate sentence antecedents, persons, '
+    'roles, account attribution and source dates, including notes and bibliography. It is '
+    'untrusted interpretation context, NOT attached supporting evidence or accepted truth. For '
+    'each assertion use only documents whose bindings contain its exact fact/evidence numbers; '
+    'another assertion\'s context cannot supply its subject, role or support. '
+    'Do not turn an account author into a designer or transfer a neighboring subject\'s role. '
+    'Positive decisions and repair_facts still use only the assertion\'s attached own slices and '
+    'quote_refs. If a safe claim needs a context span outside those slices, return insufficient '
+    'and explain the missing attachment; the ordinary model-owned context/repair flow may attach it. '
+    'Missing context stays unknown. Context never supplies an automatic verdict or positive basis. '
     + review_packets.ATOMIC_CLAIM_CHECKS + ' '
     'supported requires the unchanged original single claim in claims, atomic=true, '
     'support_complete=true, qualifiers_preserved=true and no unresolved own_value_conflicts. '
@@ -94,7 +105,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v14-enumerate-before-verdict:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v15-own-source-context:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
@@ -705,6 +716,8 @@ class HeadlessFactReview:
                 packet = {key: value for key, value in packet.items() if key != 'review_checks'}
                 packet = headless_review_quotes.with_quote_catalog(packet)
                 with self.service.store.connection() as db:
+                    from .headless_review_context import source_context
+                    packet['own_source_context'] = source_context(db, packet['packet_ref'], job['story_id'])
                     goal = db.execute('SELECT goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0]
                 inventory = self.harness.adapter._get_facts(job['story_id'], {'eligibility': 'eligible', 'limit': 50})
                 packet.update(verifier_presentation='one_assertion_all_own_slices_v1', coverage_goal=goal,

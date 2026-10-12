@@ -208,7 +208,8 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert config.response_json_schema is None
         # Provider transport cannot drop the complete host proof contract.
         issued = json.loads(config.system_instruction.split('\n', 1)[1])
-        assert set(issued['properties']) == {'accepted_geometry', 'accepted_architectural_text'}
+        assert set(issued['properties']) == {'accepted_geometry', 'accepted_architectural_text', 'subject_resolution'}
+        assert 'subject_resolution' in issued['required']
         assert 'allOf' in issued['properties']['accepted_architectural_text']
         assert issued['properties']['accepted_architectural_text']['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
         assert set(reads) == {'osm:way:2', 'osm:way:3'}
@@ -224,7 +225,10 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
                 if row['article_id'] == relation['article_id'])
             literal = relation.pop('source_quote')
             relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
-        return SimpleNamespace(text=json.dumps({'accepted_geometry': g, 'accepted_architectural_text': answer}))
+        return SimpleNamespace(text=json.dumps({'accepted_geometry': g, 'accepted_architectural_text': answer,
+            'subject_resolution': {'decision': 'uncertain', 'basis_kind': 'none', 'candidate_id': '',
+                'unresolved_counterevidence': ['The next nominated body still requires inspection.'],
+                'reason': 'Keep the addressed T research priority without accepting an individual SOURCE body.'}}))
 
     monkeypatch.setattr(context, 'acquire_regional_text', acquire)
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)

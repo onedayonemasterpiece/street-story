@@ -379,7 +379,8 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
         ids = review_packets.pending_candidates(db, job['story_id'], RUN)
     full, _, _ = engine._prepare_packet(job, RUN, session, ids)
     prompt = VERIFIER_PROMPT + canonical(model_packet(full))
-    assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
+    assert len(prompt.encode('utf-8')) > len(prompt)
+    assert len(prompt.encode('utf-8')) > 24000
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
         remaining = len(review_packets.pending_candidates(db, job['story_id'], RUN))
@@ -459,6 +460,8 @@ async def test_fresh_large_live_packet_keeps_live_route_and_complete_evidence(tm
 
 @pytest.mark.asyncio
 async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp_path):
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.service import canonical
     texts = [f'Здание {i} сохранило ' + 'кирпичную облицовку фасада с узорчатыми деталями, ' * 8
              + 'согласно описанию 2005 года.' for i in range(12)]
     svc, job, harness = await candidates(tmp_path, source_texts=texts)
@@ -466,6 +469,16 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
     class AvailableReview(ControlledReview):
         MAX_PACKET_FACTS = 12
         async def _infer(self, packet, *args, **kwargs):
+            assert len(VERIFIER_PROMPT + canonical(model_packet(packet))) <= 24000 or packet['total_facts'] == 1
+            context = packet['own_source_context']
+            assert context['complete'] is True
+            assert all(document['complete'] and not document['attached_as_support'] for document in context['documents'])
+            assert all(fact['text'] in '\n'.join(document['text'] for document in context['documents'])
+                for fact in model_packet(packet)['facts'])
+            with svc.store.connection() as db:
+                for document in context['documents']:
+                    assert document['text'] == db.execute('SELECT normalized_text FROM source_versions WHERE source_version_id=?',
+                        (document['source_version_id'],)).fetchone()[0]
             calls.append(packet['total_facts'])
             return await super()._infer(packet, *args, **kwargs)
     engine = AvailableReview(harness)
@@ -473,8 +486,11 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
               {**controlled_review_route(SimpleNamespace(directory=None, limits=SimpleNamespace(max_input_chars=24000))),
                'role': 'facts_native'}]
     engine._qualified_routes = lambda available=True: [r for r in routes if not available or r['available']]
-    assert await engine.run(job, RUN, 0) == 1
-    assert calls == [12]
+    assert await engine.run(job, RUN, 0) == len(calls)
+    assert sum(calls) == len(texts)
+    with svc.store.connection() as db:
+        assert not review_packets.pending_candidates(db, job['story_id'], RUN)
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
 
 
 @pytest.mark.asyncio
