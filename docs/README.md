@@ -29,6 +29,8 @@ records observations and limitations; it is not proof that proposed repairs ship
 
 The later owner-approved [map-selection MVP design (12 October)](design/street-story-owner-map-selection-mvp-20261012.md) defines the manual MVP path: photo → map → confirmed building or candidate group → sourced facts → saved material → publication. For an exact owner-confirmed building, it explicitly changes the CORE-PHOTO-IDENTITY boundary for this MVP: no additional identity check is required; approximate groups still require identification. It includes changing the confirmed selection within the story and isolating stale results. This is a proposed implementation contract, not evidence of shipped behavior; requirements.json and product code are unchanged.
 
+The self-contained [map and facts delivery audit (12 October)](reports/street-story-map-facts-delivery-audit-20261012.md) is the coding-agent task for that MVP: place selection and fixation contract, the verified facts chain with its breakpoints, staged gates and the status of earlier audit findings.
+
 The [photo search methods](photo-search-methods.md), [backend contract](backend-contract.md),
 [runtime runbook](backend-runtime.md) and [POI contract](poi-knowledge-base.md)
 describe their domain boundaries. Label current implementation separately from
