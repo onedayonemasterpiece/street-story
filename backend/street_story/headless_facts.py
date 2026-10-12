@@ -1043,9 +1043,20 @@ class HeadlessFacts:
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
-                self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
-                                 retry_at=self.service.store.now()+300)
-                continue
+                from .research_adapter import ProductResearchAdapter
+                receipts = ProductResearchAdapter._fact_pool_receipts(self, story, page['_unit_id'])
+                addressed = any(ProductResearchAdapter._fact_pool_unknown(receipt)
+                    and receipt.get('provider_id') == 'opencode'
+                    and receipt.get('session_id') and receipt.get('message_id')
+                    for receipt in receipts.values())
+                if not addressed:
+                    self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
+                                     retry_at=self.service.store.now()+300)
+                    continue
+                # The pool observes this exact original route; UNKNOWN forbids
+                # admission/fallback even when its qualification has expired.
+                LOG.info('street_story_headless_fact_readback story_id=%s run_id=%s unit_id=%s',
+                         story['id'], run_id, page['_unit_id'])
             if saved and saved['owner'] != owner:
                 old_owner = saved['owner']
                 current_control = (owner.get('controls') or {}).get('facts') or {}

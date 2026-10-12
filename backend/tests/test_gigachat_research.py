@@ -143,13 +143,50 @@ async def test_actual_protocol_tool_roundtrip_usage_and_preserved_plan():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('requested', [None, 16384])
+async def test_provider_default_or_explicit_output_keeps_nonzero_admission(requested):
+    provider, admission = Provider(), Admission()
+    adapter = client(provider, admission)
+    try:
+        await adapter.research('Read the whole source', capsule=CAPSULE, max_output_tokens=requested)
+    finally:
+        await adapter.aclose()
+    chats = [json.loads(request.content) for request in provider.requests if request.url.path != '/api/v2/oauth']
+    assert len(chats) == 2
+    if requested is None:
+        assert all('max_tokens' not in body for body in chats)
+        assert admission.bindings[0][1]['output_allowance'] == 128000  # Documented context upper bound, not output limit.
+    else:
+        assert all(body['max_tokens'] == requested for body in chats)
+        assert admission.bindings[0][1]['output_allowance'] == requested
+    allowance = admission.bindings[0][1]['output_allowance']
+    assert all(send['output_allowance'] == allowance and send['estimated_tokens'] > allowance for send in admission.sends)
+    assert admission.finalized[0]['usage_known'] is True
+    assert admission.finalized[0]['output_tokens'] == 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested', [0, -1, True, 1.5, '16384', 2147483648])
+async def test_invalid_output_request_is_rejected_before_auth_or_admission(requested):
+    provider, admission = Provider(), Admission()
+    adapter = client(provider, admission)
+    try:
+        with pytest.raises(ValueError, match='bounded_request_required'):
+            await adapter.research('Read source', capsule=CAPSULE, max_output_tokens=requested)
+    finally:
+        await adapter.aclose()
+    assert not admission.bindings and not provider.requests
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('selected_ids',[[0,7],[0]])
-async def test_current_source_reading_tool_projects_only_exact_fully_covered_text(selected_ids):
+@pytest.mark.parametrize('contract_version', ['source-reading-assessment-v3', 'source-reading-assessment-v4'])
+async def test_current_source_reading_tool_projects_only_exact_fully_covered_text(selected_ids, contract_version):
     import copy
-    from street_story.source_assessment import CHECKS,CONTRACT
+    from street_story.source_assessment import CHECKS
     body='A dated account. A different account. References and authors.'
     passages=[{'passage_id':0,'text':body[:32]},{'passage_id':7,'text':body[17:]}]
-    capsule={'semantic_contract':CONTRACT,'sources':[{'source_version_id':'srcv_frozen',
+    capsule={'semantic_contract':contract_version,'sources':[{'source_version_id':'srcv_frozen',
         'url':'https://example.org/article','reading_text':body,'passages':passages}]}
     original=copy.deepcopy(capsule)
     provider,admission=Provider(),Admission()

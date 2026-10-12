@@ -4255,8 +4255,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         admitted = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
                                               (story_id, fact['fact_id'])).fetchone()
                         adverse = review['verdict'] in {'contradicted', 'possible_conflict'} or bool(review.get('conflicts_with_existing'))
+                        # A qualified assessment of this exact prior wording can
+                        # explicitly reject its shape. Merely opening recheck,
+                        # adding incomplete support, or rejecting a new equivalent
+                        # paraphrase must not revoke the immutable accepted claim.
+                        exact_shape_rejection = (consolidated
+                            and fact.get('existing_fact_id') == fact['fact_id']
+                            and fact.get('observation_text') == fact['text']
+                            and (review['atomic'] is False or review['qualifiers_preserved'] is False))
+                        adverse = adverse or exact_shape_rejection
                         if adverse or not accepted_basis_valid(db, story_id, admitted):
                             db.execute("UPDATE fact_assertions SET eligibility='withheld',review_status='withheld',accepted_basis_json=NULL,accepted_revision_digest=NULL WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact['fact_id']))
+                            if exact_shape_rejection:
+                                logger.info('street_story_fact_shape_withheld story_id=%s run_id=%s batch_id=%s fact_id=%s atomic=%s qualifiers_preserved=%s',
+                                            story_id, run_id, save_batch_id, fact['fact_id'],
+                                            review['atomic'], review['qualifiers_preserved'])
                 # The same semantic operation's declared contradictions enter
                 # the existing pair ledger, with each side's own evidence.
                 model_items = conflict_scan_items([{**dict(row), 'sources': json.loads(row['sources_json'])}
