@@ -261,30 +261,66 @@ class PlaceMapPanel(
         }
     }
 
+    private fun observedContext(feature: Feature?): Map<String, String> {
+        if (feature == null) return emptyMap()
+        val anchor = feature.properties()?.get("search_anchor")?.takeIf { it.isJsonObject }?.asJsonObject
+        val address = feature.properties()?.get("address")?.takeIf { it.isJsonObject }?.asJsonObject
+        val tags = feature.properties()?.get("tags")?.takeIf { it.isJsonObject }?.asJsonObject
+        fun value(objectValue: JsonObject?, key: String): String? = objectValue?.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotBlank() }
+        val city = value(anchor, "city") ?: value(address, "city") ?: value(tags, "addr:city")
+        val street = value(anchor, "street") ?: value(address, "street") ?: value(tags, "addr:street")
+        val number = value(anchor, "house_number") ?: value(address, "house_number") ?: value(tags, "addr:housenumber")
+        val streetAddress = value(anchor, "address") ?: if (street != null && number != null) "$street $number" else null
+        val name = anchor?.get("names")?.takeIf { it.isJsonArray }?.asJsonArray?.firstOrNull { it.isJsonPrimitive && it.asString.isNotBlank() }?.asString
+            ?: value(tags, "name")
+        return mapOf("city" to city.orEmpty(), "address" to streetAddress.orEmpty(), "name" to name.orEmpty())
+    }
+
     private fun confirmSelection() {
         if (explicitPoint != null) { askAnchor(true); return }
         val feature = selected ?: return
-        if (featureLabel(feature) == candidateId(feature) || featureLabel(feature).startsWith("Здание osm:")) askAnchor(false) else enqueuePlace(emptyMap())
+        val context = observedContext(feature)
+        if (context["city"].isNullOrBlank() || (context["address"].isNullOrBlank() && context["name"].isNullOrBlank())) {
+            askAnchor(false)
+        } else enqueuePlace(emptyMap())
     }
 
     private fun askAnchor(pointMode: Boolean) {
+        val observed = observedContext(if (pointMode) null else selected)
         val fields = LinearLayout(activity).apply { orientation = VERTICAL; setPadding(dp(16f), 0, dp(16f), 0) }
-        val city = EditText(activity).apply { hint = "Город"; setSingleLine() }; fields.addView(city)
-        val address = EditText(activity).apply { hint = "Адрес или название объекта"; setSingleLine() }; fields.addView(address)
+        fields.addView(TextView(activity).apply {
+            text = if (pointMode) "Укажите город и адрес или название выбранной точки." else "Добавьте город и адрес или название выбранного дома."
+            textSize = 13f
+        })
+        val city = EditText(activity).apply {
+            hint = "Город"; contentDescription = "owner-place-city"; setSingleLine(); setText(observed["city"].orEmpty())
+        }; fields.addView(city)
+        val address = EditText(activity).apply {
+            hint = "Адрес выбранного дома"; contentDescription = "owner-place-address"; setSingleLine(); setText(observed["address"].orEmpty())
+        }; fields.addView(address)
+        val name = EditText(activity).apply {
+            hint = "Название объекта (если известно)"; contentDescription = "owner-place-name"; setSingleLine(); setText(observed["name"].orEmpty())
+        }; fields.addView(name)
         val point = explicitPoint
         val latitude = EditText(activity).apply { hint = "Широта"; setSingleLine(); setText(point?.latitude?.toString().orEmpty()) }
         val longitude = EditText(activity).apply { hint = "Долгота"; setSingleLine(); setText(point?.longitude?.toString().orEmpty()) }
         if (pointMode) { fields.addView(latitude); fields.addView(longitude) }
-        val dialog = AlertDialog.Builder(activity).setTitle("Название или адрес выбранного места").setView(fields)
+        val dialog = AlertDialog.Builder(activity).setTitle("Контекст выбранного места").setView(fields)
             .setNegativeButton("Назад к карте", null).setPositiveButton("Подтвердить", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            if (address.text.isBlank() || city.text.isBlank()) { address.error = "Укажите город и адрес или название"; return@setOnClickListener }
+            if (city.text.isBlank()) { city.error = "Укажите город"; return@setOnClickListener }
+            if (address.text.isBlank() && name.text.isBlank()) {
+                address.error = "Укажите адрес или название выбранного дома"
+                return@setOnClickListener
+            }
+            val owner = mapOf("city" to city.text.toString().trim(), "address" to address.text.toString().trim(), "name" to name.text.toString().trim())
+                .filterValues { it.isNotBlank() }
             if (pointMode) {
                 val lat = latitude.text.toString().toDoubleOrNull(); val lon = longitude.text.toString().toDoubleOrNull()
                 if (lat == null || lon == null || lat !in -90.0..90.0 || lon !in -180.0..180.0) { latitude.error = "Укажите координаты точки"; return@setOnClickListener }
                 explicitPoint = LatLng(lat, lon)
-                enqueuePlace(mapOf("fallback" to mapOf("latitude" to lat, "longitude" to lon, "city" to city.text.toString(), "name" to address.text.toString(), "address" to address.text.toString())))
-            } else enqueuePlace(mapOf("owner_context" to mapOf("city" to city.text.toString(), "address" to address.text.toString(), "name" to address.text.toString())))
+                enqueuePlace(mapOf("fallback" to (owner + mapOf("latitude" to lat, "longitude" to lon))))
+            } else enqueuePlace(mapOf("owner_context" to owner))
             dialog.dismiss()
         } }
         dialog.show()

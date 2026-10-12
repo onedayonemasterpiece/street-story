@@ -118,6 +118,7 @@ class OwnerPlaceInstrumentedTest {
                         assertTrue("$description must be visible with the other selection controls", view.getGlobalVisibleRect(android.graphics.Rect()))
                     }
                 }
+                assertTrue("opening the map must not enqueue recognition", store.pendingOperations(id).none { it.kind == "identity" })
                 val deadline = android.os.SystemClock.elapsedRealtime() + 12000
                 var rendered = false
                 var targetX = 0; var targetY = 0
@@ -137,6 +138,34 @@ class OwnerPlaceInstrumentedTest {
                 val device = androidx.test.uiautomator.UiDevice.getInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation())
                 device.click(targetX, targetY)
                 assertNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("Дом карты")), 3000))
+                assertTrue("retain native contour selection screenshot", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-ui.png")))
+                scenario.onActivity { activity ->
+                    descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-confirm" }.performClick()
+                }
+                val cityInput = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.desc("owner-place-city")), 3000))
+                assertTrue("city must not be guessed from EXIF", cityInput.text.isNullOrBlank() || cityInput.text == "Город")
+                cityInput.text = "Калининград"
+                requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-address"))).text = "Клиническая 19А"
+                requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-name"))).text = "Дом карты"
+                requireNotNull(device.findObject(androidx.test.uiautomator.By.res("android:id/button1"))).click()
+                val queued = store.pendingOperations(id).single { it.kind == "place" }
+                val payload = JsonParser.parseString(queued.payloadJson).asJsonObject
+                assertEquals("osm:way:fixture", payload["candidate_id"].asString)
+                assertEquals("ui-map", payload["snapshot_id"].asString)
+                assertEquals("Калининград", payload.getAsJsonObject("owner_context")["city"].asString)
+                assertEquals("Клиническая 19А", payload.getAsJsonObject("owner_context")["address"].asString)
+                assertEquals("Дом карты", payload.getAsJsonObject("owner_context")["name"].asString)
+                MockWebServer().apply { start() }.use { transport ->
+                    transport.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("{\"id\":\"ui-story\"}"))
+                    ApiClient(transport.url("/").toString().trimEnd('/'), "instrumentation-only").mutate("ui-story", "place", queued.payloadJson, queued.requestKey)
+                    val sent = JsonParser.parseString(transport.takeRequest().body.readUtf8()).asJsonObject
+                    assertEquals(payload.getAsJsonObject("owner_context"), sent.getAsJsonObject("owner_context"))
+                    assertEquals("osm:way:fixture", sent["candidate_id"].asString)
+                }
+                scenario.onActivity { activity ->
+                    (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                        .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+                }
                 var scrollBefore = 0; var centerBefore: org.maplibre.android.geometry.LatLng? = null
                 scenario.onActivity { activity ->
                     scrollBefore = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<android.widget.ScrollView>().single().scrollY
@@ -152,10 +181,30 @@ class OwnerPlaceInstrumentedTest {
                 requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-map"))).pinchOpen(.6f)
                 android.os.SystemClock.sleep(400)
                 scenario.onActivity { assertTrue("pinch changes native zoom", map!!.cameraPosition.zoom > zoomBefore) }
+                map = null
                 scenario.recreate()
                 scenario.onActivity { activity ->
-                    assertEquals(1, descendants(activity.findViewById(android.R.id.content)).filterIsInstance<org.maplibre.android.maps.MapView>().count())
+                    val restoredMap = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<org.maplibre.android.maps.MapView>().single()
+                    restoredMap.getMapAsync { map = it }
                 }
+                val reopenDeadline = android.os.SystemClock.elapsedRealtime() + 12000
+                var reopenRendered = false
+                while (!reopenRendered && android.os.SystemClock.elapsedRealtime() < reopenDeadline) {
+                    scenario.onActivity {
+                        val current = map
+                        if (current?.style != null) {
+                            val point = current.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
+                            reopenRendered = current.queryRenderedFeatures(point, "owner-buildings-fill").isNotEmpty()
+                        }
+                    }
+                    if (!reopenRendered) android.os.SystemClock.sleep(100)
+                }
+                assertTrue("recreated native map must restore server contours", reopenRendered)
+                assertTrue("retain native map reopen screenshot", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-reopen.png")))
+                scenario.onActivity { activity ->
+                    descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-automatic" }.performClick()
+                }
+                assertEquals("recognition remains an explicit separate action", 1, store.pendingOperations(id).count { it.kind == "identity" })
             }
         } finally {
             store.deleteStory(id); research.clear(id); PhotoAssets.releaseTemporary(photo.path)

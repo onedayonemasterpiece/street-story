@@ -182,7 +182,7 @@ def fact_review_subject(identity, **scope):
     compact = compact_physical_identity(identity, **scope)
     result = {key: value for key, value in compact.items() if key in {
         'candidate_id', 'candidate_name', 'canonical_name', 'locality', 'country',
-        'physical_scope', 'physical_identity_accepted', 'search_anchor',
+        'physical_scope', 'physical_identity_accepted', 'search_anchor', 'candidate_name_provenance',
     }}
     selected = next((item for item in (identity.get('candidates') or [])
                      if isinstance(item, dict) and item.get('candidate_id') == identity.get('candidate_id')), {})
@@ -200,7 +200,8 @@ def compact_physical_identity(identity, *, photo_sha256=None, generation=None, c
         identity, photo_sha256=photo_sha256, generation=generation, control_revision=control_revision)
     result = {}
     for key in ('status', 'candidate_id', 'candidate_name', 'canonical_name', 'locality', 'country',
-            'proof_kind', 'photo_sha256', 'wikipedia_url', 'wikidata', 'osm_id', 'candidate_url'):
+            'proof_kind', 'photo_sha256', 'wikipedia_url', 'wikidata', 'osm_id', 'candidate_url',
+            'candidate_name_provenance'):
         value = identity.get(key)
         limit = 2000 if key.endswith('_url') else 300
         if isinstance(value, str) and len(value) <= limit:

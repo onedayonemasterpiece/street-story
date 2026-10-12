@@ -244,3 +244,71 @@ async def test_map_adapter_reuses_overpass_when_map_route_is_unavailable_and_rec
     assert second['buildings']['features'][0]['properties']['candidate_id'] == 'osm:relation:9'
     assert not second['partial']
     assert [q[1] for q in service.providers.osm.queries] == ['owner_map', 'owner_map_incomplete']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('observed_name,with_address', [(None, False), (None, True), ('Observed OSM House', True)])
+async def test_explicit_owner_name_replaces_only_unnamed_map_label(tmp_path, observed_name, with_address):
+    service, _ = make_service(tmp_path)
+    story = create(service)
+    class UnnamedOSM(MapOSM):
+        async def _map_nearby(self, *args):
+            raw = await super()._map_nearby(*args)
+            item = raw['elements'][0]
+            item['tags'] = {'building': 'yes'}
+            if observed_name:
+                item['tags']['name'] = observed_name
+            if with_address:
+                item['tags'].update({'addr:street': 'Житомирская', 'addr:housenumber': '22–24'})
+            return {'elements': [item]}
+    service.providers.osm = UnnamedOSM()
+    snapshot = await place_map(service, story['id'])
+    owner_name = 'Калининград, Житомирская, 22–24'
+    body = {**command(story, snapshot, 'osm:way:1', 'named-contour'),
+            'owner_context': {'name': owner_name, 'city': 'Калининград'}}
+    result = confirm_place(service, story['id'], 'named-contour', body)
+    identity = result['visual_identity']
+    expected = observed_name or owner_name
+    assert identity['candidate_name'] == result['place_name'] == expected
+    assert identity['candidates'][0]['name'] == result['place_selection']['candidate']['name'] == expected
+    assert identity['candidate_name_provenance'] == ('osm.tags.name' if observed_name else 'owner.explicit_selection_hint')
+    assert identity['candidate_id'] == 'osm:way:1'
+    assert owner_name in identity['search_anchor']['names']
+    assert identity['search_anchor']['owner_context_provenance'] == 'owner.explicit_selection_hint'
+    assert (identity['candidates'][0]['map_object']['tags'].get('name') or None) == observed_name
+    assert result['place_selection']['candidate']['map_geometry']['rings'][0]['closed']
+    assert service.story(story['id'])['visual_identity']['candidate_name'] == expected
+
+
+@pytest.mark.asyncio
+async def test_contour_without_city_accepts_same_object_and_explicit_context_enriches_its_anchor(tmp_path):
+    service, _ = make_service(tmp_path)
+    story = create(service)
+    class StreetWithoutCity(MapOSM):
+        async def _map_nearby(self, *args):
+            raw = await super()._map_nearby(*args)
+            tags = raw['elements'][0]['tags']
+            tags.pop('addr:city')
+            tags.pop('name')
+            return {'elements': raw['elements'][:1]}
+    service.providers.osm = StreetWithoutCity()
+    snapshot = await place_map(service, story['id'])
+    feature = snapshot['buildings']['features'][0]
+    assert feature['properties']['search_anchor']['city'] == ''
+    assert feature['properties']['tags']['addr:street'] == 'Street'
+    first = confirm_place(service, story['id'], 'without-owner-hint', command(story, snapshot, 'osm:way:1', 'without-owner-hint'))
+    assert first['visual_identity']['candidate_id'] == 'osm:way:1'
+    assert first['visual_identity']['search_anchor']['city'] == ''
+    assert first['visual_identity']['status'] == 'owner_confirmed'
+    snapshot2 = await place_map(service, story['id'])
+    explicit = {**command(first, snapshot2, 'osm:way:1', 'with-owner-hint'),
+        'owner_context': {'city': 'Owner City', 'address': 'Owner City, Street 1', 'name': 'Owner City, Street 1'}}
+    enriched = confirm_place(service, story['id'], 'with-owner-hint', explicit)
+    chosen = enriched['visual_identity']['candidates'][0]
+    assert enriched['visual_identity']['candidate_id'] == 'osm:way:1'
+    assert enriched['visual_identity']['candidate_name'] == 'Owner City, Street 1'
+    assert chosen['search_anchor']['city'] == 'Owner City'
+    assert chosen['search_anchor']['owner_context_provenance'] == 'owner.explicit_selection_hint'
+    assert chosen['map_address'] == first['visual_identity']['candidates'][0]['map_address']
+    assert chosen['map_address']['provenance'] == 'osm.tags'
+    assert chosen['map_geometry'] == first['visual_identity']['candidates'][0]['map_geometry']

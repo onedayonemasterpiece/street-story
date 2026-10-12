@@ -53,7 +53,8 @@ def _candidate(item):
     address = candidate.get('map_address') or {}
     name = str(tags.get('name') or ' '.join(str(address.get(k) or '') for k in ('street', 'house_number')).strip()
                or 'Здание ' + str(candidate.get('candidate_id') or ''))[:300]
-    candidate.update(name=name, url=(candidate.get('map_object') or {}).get('source_url'),
+    candidate.update(name=name, name_provenance='osm.tags.name' if tags.get('name') else (
+        'osm.tags.address' if address else 'map.placeholder'), url=(candidate.get('map_object') or {}).get('source_url'),
                      type='building', osm_id=candidate.get('candidate_id'))
     candidate['search_anchor'] = {'city': str(tags.get('addr:city') or '')[:180],
         'street': address.get('street', ''), 'house_number': address.get('house_number', ''),
@@ -141,7 +142,11 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
                 candidates.append(candidate)
                 buildings.append({'type': 'Feature', 'id': cid, 'geometry': geometry,
                     'properties': {'candidate_id': cid, 'poi_id': cid, 'name': candidate['name'],
-                                   'label': candidate['name'], 'address': candidate.get('map_address') or {}}})
+                                   'label': candidate['name'], 'address': candidate.get('map_address') or {},
+                                   'search_anchor': candidate['search_anchor'],
+                                   'tags': {key: str(tags[key])[:180] for key in
+                                            ('name', 'building', 'addr:city', 'addr:street', 'addr:housenumber')
+                                            if tags.get(key)}}})
         elif tags.get('highway') and len(streets) < 150:
             lines = (candidate.get('map_geometry') or {}).get('lines') or []
             if lines and all(len(line) <= 1500 for line in lines):
@@ -224,6 +229,14 @@ def confirm_place(service, story_id, key, body):
                     anchor[field] = owner_context[field]
             if owner_context.get('name'):
                 anchor['names'] = list(dict.fromkeys([*anchor.get('names', []), owner_context['name']]))
+            observed_name = ((chosen.get('map_object') or {}).get('tags') or {}).get('name')
+            owner_label = owner_context.get('name') or owner_context.get('address')
+            if cid.startswith('osm:') and not observed_name and owner_label:
+                # An author's literal label replaces only navigation context.
+                # The selected ID, observed tags and geometry stay unchanged.
+                chosen['map_label'] = chosen['name']
+                chosen['name'] = owner_label
+                chosen['name_provenance'] = 'owner.explicit_selection_hint'
             anchor['owner_context'] = owner_context
             anchor['owner_context_provenance'] = 'owner.explicit_selection_hint'
         return transition_owner_selection(service, db, row, research, chosen, command,
@@ -280,7 +293,8 @@ def transition_owner_selection(service, db, row, research, chosen, command, *, b
     research['fact_research_cancelled'] = False
     research['identity_research_cancelled'] = False
     confirmed = {'status': 'owner_confirmed', 'selection_basis': selection_basis, 'owner_selected': True,
-        'candidate_id': cid, 'candidate_name': chosen['name'], 'candidate_url': chosen.get('url'),
+        'candidate_id': cid, 'candidate_name': chosen['name'], 'candidate_name_provenance': chosen.get('name_provenance'),
+        'candidate_url': chosen.get('url'),
         'photo_sha256': row['photo_sha256'], 'generation': generation, 'confidence': None,
         'search_anchor': chosen['search_anchor'], 'candidates': [chosen],
         'approval_evidence': approval or {'kind': 'owner_map_ui', 'command_id': command, 'confirmed_at': now},

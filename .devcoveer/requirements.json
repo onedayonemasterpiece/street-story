@@ -4,11 +4,12 @@
   "requirements": [
     {
       "id": "CORE-PHOTO-IDENTITY",
-      "statement": "After the owner selects a source photo, Street Story automatically identifies the depicted place or object through product automation/Mira; manual identification by the owner is not a required normal-path step.",
+      "statement": "Street Story retains automatic identification of the depicted place or object through product automation/Mira. In the owner-requested exact map-selection path authorized on 2026-10-12, the owner may instead select and confirm one building or an explicit point with address/name; this selection is final and does not require model re-identification. This limited path does not replace the automatic product or authorize reducing the voice, visual or publication requirements.",
       "critical": true,
       "acceptance": [
-        "The source photo is evaluated before research and publication work depends on its identity.",
-        "Uncertain identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity."
+        "The automatic path evaluates the source photo before research and publication work depends on its identity.",
+        "Uncertain automatic identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity.",
+        "The exact owner path preserves the photo, selected physical object and literal address provenance; fact evidence must still belong to that object. The owner can change A to B without old facts, drafts or late results entering B."
       ]
     },
     {
