@@ -67,6 +67,49 @@ async def test_completed_original_live_reused_after_target_policy_and_qualificat
     assert not adapter.client.calls and not adapter.giga.calls and not extra.calls
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', [False, True])
+async def test_addressed_pending_owner_readback_has_separate_moderate_wait(tmp_path, owner):
+    adapter, extra, live, story, _ = prepared(tmp_path, owner=owner)
+    adapter.order_fact_routes = lambda routes, ordinal=0, **kwargs: sorted(routes, key=lambda r: r['role'] != 'facts')
+    adapter.client.mode = 'submitted'
+    now = adapter.service.store.now()
+    with pytest.raises(RetryableProviderError) as first:
+        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Original'})
+    assert first.value.retry_at == pytest.approx(now + (30 if owner else 300), abs=1)
+    original = adapter.client.calls[0]
+    receipt = adapter._fact_pool_receipts(story, 'page-0')['facts']
+    paid_retry_at = receipt['route_failure']['retry_at']
+    assert paid_retry_at >= now + 299
+    with pytest.raises(RetryableProviderError) as pending:
+        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Original'})
+    assert pending.value.retry_at == pytest.approx(adapter.service.store.now() + (30 if owner else 300), abs=1)
+    assert all(call['attempt_id'] == original['attempt_id'] for call in adapter.client.calls)
+    assert adapter.client.calls[-1]['session_id'] == 'ses_existing'
+    assert adapter.client.calls[-1]['message_id'] == 'msg_existing'
+    assert adapter._fact_pool_receipts(story, 'page-0')['facts']['route_failure']['retry_at'] >= paid_retry_at
+    assert not live.calls and not adapter.giga.calls and not extra.calls
+
+
+@pytest.mark.asyncio
+async def test_addressed_readback_binding_failure_retains_original_guard(tmp_path):
+    from street_story.opencode_research import ResearchUnavailable
+
+    adapter, extra, live, story, _ = prepared(tmp_path)
+    adapter.client.mode = 'submitted'
+    with pytest.raises(RetryableProviderError, match='unit_outcome_unknown'):
+        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Original'})
+    original = adapter._fact_pool_receipts(story, 'page-0')['facts']
+    async def changed(capsule, binding):
+        raise ResearchUnavailable('research_attempt_binding_changed', original)
+    adapter.client.extract_facts = changed
+    with pytest.raises(RetryableProviderError, match='binding_changed') as guarded:
+        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Original'})
+    assert guarded.value.retry_at >= adapter.service.store.now() + 3599
+    assert adapter.fact_unit_readback_at(story, 'page-0') is None
+    assert not live.calls and not adapter.giga.calls and not extra.calls
+
+
 @pytest.mark.parametrize('identity', [None, {'status': 'match', 'selection_basis': 'owner_exact'},
     {'status': 'owner_confirmed', 'selection_basis': 'owner_live'}])
 @pytest.mark.asyncio

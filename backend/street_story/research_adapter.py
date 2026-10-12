@@ -1195,6 +1195,19 @@ class ProductResearchAdapter:
         return (receipt.get('phase') not in {'created', 'failed', 'completed', 'aborted'}
                 or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
 
+    def fact_unit_readback_at(self, story, unit):
+        """A read-only observation has a separate deadline from paid retry."""
+        if not ProductResearchAdapter._owner_exact_fact_scope(story):
+            return None
+        receipts = ProductResearchAdapter._fact_pool_receipts(self, story, unit)
+        if any(ProductResearchAdapter._fact_pool_unknown(receipt)
+               and receipt.get('provider_id') == 'opencode'
+               and receipt.get('session_id') and receipt.get('message_id')
+               and not (receipt.get('route_failure') or {}).get('requires_binding_change')
+               for receipt in receipts.values()):
+            return self.service.store.now() + 30
+        return None
+
     async def _extract_fact_route(self, route, capsule, page, story, context):
         if route['role'] == 'facts_gigachat':
             return await self._extract_giga_page(page, story, context, allow_fallback=False)
@@ -1239,8 +1252,26 @@ class ProductResearchAdapter:
                           and r['model_id'] == receipt.get('model_id', r['model_id'])), None)
             if route is None:
                 raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
-            return await self._extract_fact_route(route, fact_page_capsule(page, context), page,
-                {**story, '_fact_pool_unit_id': unit}, context)
+            LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                     'route=%s state=started', story['id'], story.get('_identity_generation', 0), unit, role)
+            try:
+                observed = await self._extract_fact_route(route, fact_page_capsule(page, context), page,
+                    {**story, '_fact_pool_unit_id': unit}, context)
+                LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                         'route=%s state=closed phase=%s', story['id'], story.get('_identity_generation', 0),
+                         unit, role, (observed.get('receipt') or {}).get('phase'))
+                return observed
+            except Exception as exc:
+                if isinstance(exc, ConflictError) or _failure_code(exc).endswith('binding_changed'):
+                    raise
+                readback_at = self.fact_unit_readback_at(story, unit)
+                if readback_at is not None:
+                    LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                             'route=%s state=pending poll_seconds=30 readback_at=%s',
+                             story['id'], story.get('_identity_generation', 0), unit, role, readback_at)
+                    raise RetryableProviderError('research_fact_unit_outcome_unknown',
+                                                 retry_at=readback_at) from exc
+                raise
         if (not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None
                 and not self._owner_exact_fact_scope(story)):
             # Preserve legacy single-client installations until explicit rollout.
@@ -1297,8 +1328,13 @@ class ProductResearchAdapter:
             except Exception as exc:
                 current = self._fact_pool_receipts(story, unit).get(route['role']) or {}
                 if self._fact_pool_unknown(current):
+                    readback_at = self.fact_unit_readback_at(story, unit)
+                    if readback_at is not None:
+                        LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                                 'route=%s state=pending poll_seconds=30 readback_at=%s',
+                                 story['id'], story.get('_identity_generation', 0), unit, route['role'], readback_at)
                     raise RetryableProviderError('research_fact_unit_outcome_unknown',
-                                                 retry_at=self.service.store.now()+300) from exc
+                        retry_at=readback_at or self.service.store.now()+300) from exc
                 due = getattr(exc, 'retry_at', None)
                 if isinstance(due, (int, float)) and due > self.service.store.now():
                     deadlines.append(due)

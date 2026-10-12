@@ -331,10 +331,11 @@ class HeadlessFacts:
                                                   "AND status NOT IN ('extracted','no_claims')", (run_id,))}
             states = [json.loads(row[0]) for row in db.execute("SELECT value_json FROM research_checkpoints "
                 "WHERE job_id=? AND stage LIKE 'headless_fact_unit:%'", (job['id'],))]
-        due = [state['retry_at'] for state in states if state.get('chunk_id') in chunks
-               and isinstance(state.get('retry_at'), (int, float))
-               and not isinstance(state['retry_at'], bool) and math.isfinite(state['retry_at'])
-               and state['retry_at'] > self.service.store.now()]
+        deadlines = [state.get('readback_at', state.get('retry_at'))
+                     for state in states if state.get('chunk_id') in chunks]
+        due = [deadline for deadline in deadlines if isinstance(deadline, (int, float))
+               and not isinstance(deadline, bool) and math.isfinite(deadline)
+               and deadline > self.service.store.now()]
         return min(due) if due else None
 
     def _only_unobservable_live_work(self, job, run_id, story):
@@ -1097,11 +1098,14 @@ class HeadlessFacts:
             if not saved and old.get('owner') and old['owner'] != owner:
                 self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
                 continue  # A result-checkpoint crash cannot rebind old inference to edited inputs.
-            due = old.get('retry_at')
+            from .research_adapter import ProductResearchAdapter
+            readback_at = ProductResearchAdapter.fact_unit_readback_at(self, story, page['_unit_id'])
+            # Historical UNKNOWN checkpoints used the paid route's 5m wait.
+            # Addressed original observations need only their own polling fence.
+            due = old.get('readback_at') if readback_at is not None else old.get('retry_at')
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
-                from .research_adapter import ProductResearchAdapter
                 receipts = ProductResearchAdapter._fact_pool_receipts(self, story, page['_unit_id'])
                 addressed = any(ProductResearchAdapter._fact_pool_unknown(receipt)
                     and receipt.get('provider_id') == 'opencode'
@@ -1200,9 +1204,12 @@ class HeadlessFacts:
                 self._unit_phase(job, page['_unit_id'], 'exhausted', chunk_id=page['chunk_id'], error_code=str(exc))
                 return unit, None, exc
             known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
+            from .research_adapter import ProductResearchAdapter
+            readback_at = None if known else ProductResearchAdapter.fact_unit_readback_at(self, story, page['_unit_id'])
             self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
                              chunk_id=page['chunk_id'], error_type=type(exc).__name__,
                              error_code=type(exc).__name__,
+                             **({'readback_at': readback_at} if readback_at is not None else {}),
                              retry_at=getattr(exc, 'retry_at', None) or (None if known else self.service.store.now()+300))
             return unit, None, exc
         finally:
