@@ -75,11 +75,13 @@ class OwnerReviewUiInstrumentedTest {
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
                 .putString("active_story_id", storyId).commit()
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-conflict")
                 scenario.onActivity { activity ->
                     descendants(activity.findViewById(android.R.id.content)).filterIsInstance<TextView>()
                         .single { it.text.toString() == "Противоречия и решения" }.performClick()
                 }
-                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-conflict")
                 val quote = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(
                     androidx.test.uiautomator.By.textContains("left-version")), 3000))
                 assertTrue(quote.text.contains("Работы ещё не начались") && quote.text.contains("Страница 17"))
@@ -126,6 +128,8 @@ class OwnerReviewUiInstrumentedTest {
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
                 .putString("active_story_id", storyId).commit()
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-source")
                 scenario.onActivity { activity ->
                     val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
                     assertTrue(descendants(root).filterIsInstance<CheckBox>().none { it.isEnabled })
@@ -133,7 +137,7 @@ class OwnerReviewUiInstrumentedTest {
                     val spans = link.text as Spanned
                     spans.getSpans(0, spans.length, ClickableSpan::class.java).single().onClick(link)
                 }
-                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-source")
                 val content = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("version-A")), 3000))
                 assertTrue(content.text.contains("version-B") && content.text.contains("Страница 17"))
                 assertTrue(content.text.contains("планировали ремонт"))

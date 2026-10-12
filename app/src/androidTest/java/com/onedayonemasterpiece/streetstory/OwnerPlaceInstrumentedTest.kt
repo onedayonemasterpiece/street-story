@@ -49,6 +49,7 @@ class OwnerPlaceInstrumentedTest {
                 fun assertNoticeVisibleAndCapture(filename: String) {
                     try {
                         instrumentation.waitForIdleSync()
+                        EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-empty-facts")
                         scenario.onActivity { activity ->
                             val views = descendants(activity.findViewById(android.R.id.content)).toList()
                             val notice = views.filterIsInstance<android.widget.TextView>()
@@ -61,6 +62,7 @@ class OwnerPlaceInstrumentedTest {
                             notice.requestRectangleOnScreen(android.graphics.Rect(0, 0, notice.width, notice.height), true)
                         }
                         instrumentation.waitForIdleSync(); device.waitForIdle()
+                        EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-empty-facts")
                         val rendered = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("facts-research-outcome")))
                         assertTrue("the empty-facts status must be visible on screen", !rendered.visibleBounds.isEmpty)
                         assertTrue("retain unfinished-research UI evidence", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), filename)))
@@ -225,6 +227,7 @@ class OwnerPlaceInstrumentedTest {
                 assertTrue("native contour must render on a stable visible map before touch", rendered)
                 androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 device.waitForIdle()
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
                 device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-map-before-tap.xml"))
                 scenario.onActivity { activity ->
                     val currentViews = descendants(activity.findViewById(android.R.id.content)).toList()
@@ -245,6 +248,7 @@ class OwnerPlaceInstrumentedTest {
                 scenario.onActivity { activity ->
                     descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-confirm" }.performClick()
                 }
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
                 val cityInput = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.desc("owner-place-city")), 3000))
                 assertTrue("city must not be guessed from EXIF", cityInput.text.isNullOrBlank() || cityInput.text == "Город")
                 cityInput.text = "Калининград"
