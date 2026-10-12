@@ -721,7 +721,11 @@ def observed_address_context(story, candidates=()):
         research.get('visual_identity') or {}).get('observed_candidates') or []
     entries = {item['candidate_id']: item for item in [*observed, *candidates]
         if isinstance(item, dict) and item.get('candidate_id')}
-    for item in (research.get('osm') or {}).get('observed_pool') or []:
+    # During cold discovery the current OSM input is available before the
+    # caller's serialized story is refreshed. Use that same scoped snapshot
+    # as the scene/proof builders; durable reopen has the persisted fallback.
+    osm = (story or {}).get('_identity_map_snapshot') or research.get('osm') or {}
+    for item in osm.get('observed_pool') or []:
         if item.get('type') not in {'node', 'way', 'relation'} or item.get('id') is None:
             continue
         cid = f"osm:{item['type']}:{item['id']}"
