@@ -1732,13 +1732,15 @@ class MainActivity : Activity() {
         val facts = store.facts(storyId)
         val liveState = live.snapshot()
         val projection = research.get(storyId)
-        val durableActive = FactPresentation.researchActive(projection, store.story(storyId)?.photoSha256.orEmpty())
+        val photoSha = store.story(storyId)?.photoSha256.orEmpty()
+        val durableActive = FactPresentation.researchActive(projection, photoSha)
+        val outcomeNotice = FactPresentation.researchOutcomeNotice(projection, photoSha)
         val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId && it.active &&
             projection?.researchControls?.get("facts")?.stopped != true }
             ?: if (durableActive) LiveResearchProgress(true, "", "", projection?.sourceCount ?: 0,
                 facts.size, 0, emptyList()) else liveState.researchProgress?.takeIf { liveState.storyId == storyId }
                     ?.copy(active = false)
-        if (facts.isEmpty() && progress == null) {
+        if (facts.isEmpty() && progress == null && outcomeNotice == null) {
             host.visibility = View.GONE
             return
         }
@@ -1751,6 +1753,12 @@ class MainActivity : Activity() {
         }
         val factsHeading = label(title, 15, INK, Typeface.DEFAULT_BOLD)
         host.addView(factsHeading)
+        if (outcomeNotice != null) {
+            host.addView(label(outcomeNotice, 13, INK, Typeface.DEFAULT).apply {
+                contentDescription = "facts-research-outcome"
+                setPadding(0, dp(7), 0, dp(7))
+            })
+        }
         host.addView(secondaryButton("Противоречия и решения") { showConflictJournal(storyId) })
         if (progress != null) {
             val row = LinearLayout(this).apply {

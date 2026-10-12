@@ -58,6 +58,7 @@ class StoryWire {
     @SerializedName("identity_generation") var identityGeneration: Int? = null
     @SerializedName("research_controls") var researchControls: Map<String, ResearchControlWire> = emptyMap()
     @SerializedName("research_pending") var researchPending: Map<String, Boolean> = emptyMap()
+    @SerializedName("research_outcome") var researchOutcome: ResearchOutcomeWire? = null
     @SerializedName("identity_progress") var identityProgress: IdentityProgressWire? = null
     @SerializedName("publication_concept") var publicationConcept: String? = null
     var publication: PublicationWire? = null
@@ -81,6 +82,16 @@ class StoryWire {
     @SerializedName("source_count") var sourceCount: Int = 0
     @SerializedName("research_revision") var researchRevision: String? = null
     @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
+}
+
+class ResearchOutcomeWire {
+    var outcome: String? = null
+    var reason: String? = null
+    var purpose: String? = null
+    @SerializedName("coverage_complete") var coverageComplete: Boolean? = null
+    @SerializedName("eligible_count") var eligibleCount: Int? = null
+    @SerializedName("photo_sha256") var photoSha256: String? = null
+    @SerializedName("identity_generation") var identityGeneration: Int? = null
 }
 
 class ResearchControlWire {

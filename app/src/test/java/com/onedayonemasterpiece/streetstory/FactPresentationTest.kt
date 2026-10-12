@@ -5,6 +5,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FactPresentationTest {
+    @Test fun unfinished_outcome_requires_current_photo_generation_and_facts_purpose() {
+        val wire = com.google.gson.Gson().fromJson("""{"photo_sha256":"source","identity_generation":3,
+            "research_outcome":{"outcome":"resource_blocked","reason":"source_selection_unavailable",
+            "coverage_complete":false,"eligible_count":0,"purpose":"facts",
+            "photo_sha256":"source","identity_generation":3}}""", StoryWire::class.java)
+        val projection = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(),
+            0, null, emptyList(), photoSha256 = wire.photoSha256, identityGeneration = wire.identityGeneration,
+            researchOutcome = wire.researchOutcome)
+        assertEquals("Исследование не завершено · временная проблема с выбором источников",
+            FactPresentation.researchOutcomeNotice(projection, "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "other-source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection.copy(identityGeneration = 4), "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection.copy(researchPending = mapOf("facts" to true)), "source"))
+        wire.researchOutcome!!.purpose = "identity"
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+        wire.researchOutcome!!.purpose = "facts"
+        wire.researchOutcome!!.photoSha256 = "other-source"
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+        wire.researchOutcome!!.photoSha256 = "source"
+        wire.researchOutcome!!.coverageComplete = true
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+    }
+
     @Test fun provenance_preserves_same_url_versions_and_does_not_infer_rkb_truth() {
         val gson = com.google.gson.Gson()
         val wire = gson.fromJson("""{"type":"web","url":"https://archive.example/article","title":"Архив",

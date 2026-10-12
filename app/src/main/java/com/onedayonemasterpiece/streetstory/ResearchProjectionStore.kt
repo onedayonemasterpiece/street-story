@@ -40,7 +40,7 @@ data class ResearchProjectionSnapshot(
     val placeSelection: com.google.gson.JsonObject? = null,
     val cameraPoint: PlaceCameraWire? = null,
     val identityMode: String? = null,
-
+    val researchOutcome: ResearchOutcomeWire? = null,
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -80,6 +80,11 @@ class ResearchProjectionStore(context: Context) {
             identityGeneration = wire.identityGeneration,
             researchControls = wire.researchControls,
             researchPending = wire.researchPending,
+            researchOutcome = wire.researchOutcome?.takeIf {
+                it.purpose == "facts" && !wire.photoSha256.isNullOrBlank() &&
+                    it.photoSha256 == wire.photoSha256 && wire.identityGeneration != null &&
+                    it.identityGeneration == wire.identityGeneration
+            },
         )
         check(prefs.edit().putString(key(storyId), gson.toJson(snapshot)).commit()) {
             "research projection was not persisted"

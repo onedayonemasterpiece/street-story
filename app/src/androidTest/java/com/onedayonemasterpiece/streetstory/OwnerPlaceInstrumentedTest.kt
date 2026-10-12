@@ -20,6 +20,85 @@ import java.util.concurrent.CopyOnWriteArrayList
 class OwnerPlaceInstrumentedTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
+    @Test fun emptyFactsShowUnfinishedResearchAfterReopenAndClearForAnotherBuilding() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val photo = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = photo.clientStoryId
+        val store = AppGraph.store(context)
+        val research = ResearchProjectionStore(context)
+        val topics = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val priorActive = topics.getString("active_story_id", null)
+        // Controlled backend readback, not real-provider or physical-phone evidence.
+        val wire = Gson().fromJson("""{"id":"server-$id","photo_sha256":"${photo.sha256}",
+            "identity_mode":"manual","identity_generation":1,"revision":2,
+            "visual_identity":{"status":"owner_confirmed","candidate_id":"osm:way:A","candidate_name":"Дом A"},
+            "research_pending":{"facts":false},"facts":[],
+            "research_outcome":{"outcome":"resource_blocked","reason":"source_selection_unavailable",
+              "coverage_complete":false,"eligible_count":0,"purpose":"facts",
+              "photo_sha256":"${photo.sha256}","identity_generation":1}}""", StoryWire::class.java)
+        try {
+            store.createStory(photo); store.setServerIdentity(id, wire.id)
+            research.replace(id, wire)
+            topics.edit().putString("active_story_id", id).commit()
+            assertTrue(store.facts(id).isEmpty())
+            androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+                val device = androidx.test.uiautomator.UiDevice.getInstance(instrumentation)
+                fun assertNoticeVisibleAndCapture(filename: String) {
+                    try {
+                        instrumentation.waitForIdleSync()
+                        scenario.onActivity { activity ->
+                            val views = descendants(activity.findViewById(android.R.id.content)).toList()
+                            val notice = views.filterIsInstance<android.widget.TextView>()
+                                .single { it.contentDescription?.toString() == "facts-research-outcome" }
+                            assertEquals("Исследование не завершено · временная проблема с выбором источников", notice.text.toString())
+                            assertEquals(android.view.View.VISIBLE, notice.visibility)
+                            assertEquals(android.view.View.VISIBLE, (notice.parent as android.view.View).visibility)
+                            assertTrue("manual terminal facts must not show automatic recognition stages",
+                                views.none { it.contentDescription?.toString() == "identity-progress" && it.visibility == android.view.View.VISIBLE })
+                            notice.requestRectangleOnScreen(android.graphics.Rect(0, 0, notice.width, notice.height), true)
+                        }
+                        instrumentation.waitForIdleSync(); device.waitForIdle()
+                        val rendered = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("facts-research-outcome")))
+                        assertTrue("the empty-facts status must be visible on screen", !rendered.visibleBounds.isEmpty)
+                        assertTrue("retain unfinished-research UI evidence", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), filename)))
+                    } catch (failure: Throwable) {
+                        runCatching { device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-empty-facts-failure.png")) }
+                        runCatching { device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-empty-facts-failure.xml")) }
+                        throw failure
+                    }
+                }
+                assertNoticeVisibleAndCapture("owner-place-empty-facts-ui.png")
+                assertEquals("resource_blocked", ResearchProjectionStore(context).get(id)?.researchOutcome?.outcome)
+                scenario.recreate()
+                assertNoticeVisibleAndCapture("owner-place-empty-facts-reopen.png")
+                // Even a late A outcome attached to the B readback must be discarded.
+                wire.identityGeneration = 2; wire.revision = 3
+                wire.visualIdentity = VisualIdentityWire().apply { status = "owner_confirmed"; candidateId = "osm:way:B"; candidateName = "Дом B" }
+                research.replace(id, wire)
+                assertNull(ResearchProjectionStore(context).get(id)?.researchOutcome)
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    val views = descendants(activity.findViewById(android.R.id.content)).toList()
+                    assertTrue("A outcome must disappear after selecting B",
+                        views.none { it.contentDescription?.toString() == "facts-research-outcome" })
+                    assertEquals(android.view.View.GONE,
+                        views.single { it.contentDescription?.toString() == "facts-island-expanded" }.visibility)
+                }
+                wire.identityGeneration = 1; wire.revision = 99
+                research.replace(id, wire)
+                assertEquals(2, ResearchProjectionStore(context).get(id)?.identityGeneration)
+                assertNull(research.get(id)?.researchOutcome)
+            }
+        } finally {
+            store.deleteStory(id); research.clear(id); PhotoAssets.releaseTemporary(photo.path)
+            topics.edit().putString("active_story_id", priorActive).commit()
+            config.backendUrl = previousBackend
+        }
+    }
+
     @Test fun manualSyncSkipsIdentificationAndPlaceChangeDetachesDraftAndLateFacts() {
         val config = AppGraph.config(context)
         val previousBackend = config.backendUrl
