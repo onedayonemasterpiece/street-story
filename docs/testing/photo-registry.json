@@ -6220,15 +6220,23 @@
         }
       },
       "owner_hint": {
-        "status": "not_documented",
-        "reason": "No sourced owner hint found"
+        "status": "owner_supplied_address",
+        "address": "Носова 22, Калининград",
+        "text": "Носова 22, Калининград",
+        "source": "https://t.me/c/4488229487/2/139",
+        "telegram_message_id": 139,
+        "source_kind": "original_document_caption",
+        "checked_at": "2026-10-12",
+        "verification": "exact Telegram caption read; independent physical-object verification not performed"
       },
       "expected": {
-        "status": "unresolved",
-        "object_or_address": null,
+        "status": "owner_supplied_address_not_independently_verified",
+        "object_or_address": "Носова 22, Калининград",
         "physical_ids": [],
-        "source": null,
-        "reason": "Original acquired and EXIF checked; no owner answer or independently reviewed physical object supplied. No recognition run authorized."
+        "source": "https://t.me/c/4488229487/2/139",
+        "source_kind": "original_document_caption",
+        "verification": "owner label preserved; independent verification and exact OSM ID unresolved",
+        "reason": "Owner explicitly supplied the address in the original Telegram DOCUMENT caption. No paid recognition run performed."
       },
       "restore": {
         "procedure": "backend/tools/owner_topic_corpus.py via /home/dev/.local/bin/telegram-e2e-run; exact-message adaptation for targeted restoration; verify channel/topic, DOCUMENT size and SHA before accepting",
@@ -6327,15 +6335,23 @@
         }
       },
       "owner_hint": {
-        "status": "not_documented",
-        "reason": "No sourced owner hint found"
+        "status": "owner_supplied_address",
+        "address": "Комсомольская 3",
+        "text": "Комсомольская 3",
+        "source": "https://t.me/c/4488229487/2/140",
+        "telegram_message_id": 140,
+        "source_kind": "original_document_caption",
+        "checked_at": "2026-10-12",
+        "verification": "exact Telegram caption read; independent physical-object verification not performed"
       },
       "expected": {
-        "status": "unresolved",
-        "object_or_address": null,
+        "status": "owner_supplied_address_not_independently_verified",
+        "object_or_address": "Комсомольская 3",
         "physical_ids": [],
-        "source": null,
-        "reason": "Original acquired and EXIF checked; no owner answer or independently reviewed physical object supplied. No recognition run authorized."
+        "source": "https://t.me/c/4488229487/2/140",
+        "source_kind": "original_document_caption",
+        "verification": "owner label preserved; independent verification and exact OSM ID unresolved",
+        "reason": "Owner explicitly supplied the address in the original Telegram DOCUMENT caption. No paid recognition run performed."
       },
       "restore": {
         "procedure": "backend/tools/owner_topic_corpus.py via /home/dev/.local/bin/telegram-e2e-run; exact-message adaptation for targeted restoration; verify channel/topic, DOCUMENT size and SHA before accepting",
@@ -6434,15 +6450,23 @@
         }
       },
       "owner_hint": {
-        "status": "not_documented",
-        "reason": "No sourced owner hint found"
+        "status": "owner_supplied_address",
+        "address": "Комсомольская 3, Калининград",
+        "text": "Комсомольская 3, Калининград",
+        "source": "https://t.me/c/4488229487/2/143",
+        "telegram_message_id": 143,
+        "source_kind": "original_document_caption",
+        "checked_at": "2026-10-12",
+        "verification": "exact Telegram caption read; independent physical-object verification not performed"
       },
       "expected": {
-        "status": "unresolved",
-        "object_or_address": null,
+        "status": "owner_supplied_address_not_independently_verified",
+        "object_or_address": "Комсомольская 3, Калининград",
         "physical_ids": [],
-        "source": null,
-        "reason": "Original acquired and EXIF checked; no owner answer or independently reviewed physical object supplied. No recognition run authorized."
+        "source": "https://t.me/c/4488229487/2/143",
+        "source_kind": "original_document_caption",
+        "verification": "owner label preserved; independent verification and exact OSM ID unresolved",
+        "reason": "Owner explicitly supplied the address in the original Telegram DOCUMENT caption. No paid recognition run performed."
       },
       "restore": {
         "procedure": "backend/tools/owner_topic_corpus.py via /home/dev/.local/bin/telegram-e2e-run; exact-message adaptation for targeted restoration; verify channel/topic, DOCUMENT size and SHA before accepting",
@@ -6541,15 +6565,23 @@
         }
       },
       "owner_hint": {
-        "status": "not_documented",
-        "reason": "No sourced owner hint found"
+        "status": "owner_supplied_address",
+        "address": "Шиллера 2, Калининград",
+        "text": "Шиллера 2, Калининград",
+        "source": "https://t.me/c/4488229487/2/144",
+        "telegram_message_id": 144,
+        "source_kind": "original_document_caption",
+        "checked_at": "2026-10-12",
+        "verification": "exact Telegram caption read; independent physical-object verification not performed"
       },
       "expected": {
-        "status": "unresolved",
-        "object_or_address": null,
+        "status": "owner_supplied_address_not_independently_verified",
+        "object_or_address": "Шиллера 2, Калининград",
         "physical_ids": [],
-        "source": null,
-        "reason": "Original acquired and EXIF checked; no owner answer or independently reviewed physical object supplied. No recognition run authorized."
+        "source": "https://t.me/c/4488229487/2/144",
+        "source_kind": "original_document_caption",
+        "verification": "owner label preserved; independent verification and exact OSM ID unresolved",
+        "reason": "Owner explicitly supplied the address in the original Telegram DOCUMENT caption. No paid recognition run performed."
       },
       "restore": {
         "procedure": "backend/tools/owner_topic_corpus.py via /home/dev/.local/bin/telegram-e2e-run; exact-message adaptation for targeted restoration; verify channel/topic, DOCUMENT size and SHA before accepting",
