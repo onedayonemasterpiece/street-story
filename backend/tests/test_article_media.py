@@ -1,4 +1,5 @@
 import json
+import shutil
 from types import SimpleNamespace
 
 import httpx
@@ -10,6 +11,53 @@ from street_story.live import StreetStoryLiveAdapter
 from street_story.service import ConflictError
 from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('dev-artifacts') is None,
+                    reason='Devserver profile lifecycle integration requires dev-artifacts CLI')
+@pytest.mark.parametrize('ending', ['complete', 'startup_failure', 'cancelled'])
+async def test_disposable_browser_profile_is_removed_after_every_exit(monkeypatch, ending):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+    import sys
+    import street_story.article_media as media
+    profiles, closed = [], []
+    class Context:
+        async def route(self, *args):
+            pass
+        async def new_page(self):
+            return object()
+        async def close(self):
+            closed.append(True)
+    class Chromium:
+        executable_path = 'fixture'
+        async def launch_persistent_context(self, profile, **kwargs):
+            profiles.append(Path(profile))
+            assert (Path(profile).parent / '.artifact.json').is_file()
+            if ending == 'startup_failure':
+                raise RuntimeError('fixture startup failure')
+            return Context()
+    @asynccontextmanager
+    async def playwright():
+        yield SimpleNamespace(chromium=Chromium())
+    async def resolve(host):
+        return '93.184.216.34'
+    monkeypatch.setitem(sys.modules, 'playwright.async_api', SimpleNamespace(async_playwright=playwright))
+    monkeypatch.setattr(media, 'resolve_public', resolve)
+    monkeypatch.setattr(media, 'browser_executable', lambda path: path)
+    async def use():
+        async with media._article_browser('https://example.org/article'):
+            if ending == 'cancelled':
+                raise asyncio.CancelledError
+    if ending == 'complete':
+        await use()
+    else:
+        with pytest.raises(RuntimeError if ending == 'startup_failure' else asyncio.CancelledError):
+            await use()
+    assert len(profiles) == 1 and not profiles[0].parent.exists()
+    assert closed == ([] if ending == 'startup_failure' else [True])
 
 
 def test_legacy_table_content_keeps_photo_and_logon_is_not_logo():
@@ -82,6 +130,42 @@ async def test_missing_article_closes_acquisition_without_browser_or_false_misma
     assert candidates == []
     assert receipts == [{'url': 'https://example.com/deleted', 'final_url': 'https://example.com/deleted',
         'status': 'completed', 'image_count': 0, 'http_status': status}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [403, 429])
+async def test_refused_page_cools_down_across_waves_while_independent_source_proceeds(tmp_path, status):
+    from street_story.article_media import article_candidates
+    from street_story.identity_discovery import _retain_article_discovery
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='cooldown', client_story_id='cooldown', photo_sha256='cooldown',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    sources = [{'url': 'https://example.com/refused'}, {'url': 'https://example.com/ready'}]
+    requests, browser_calls = [], []
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(url):
+        browser_calls.append(url)
+        raise AssertionError('Refusal must not be repeated through Chromium')
+    def response(request):
+        requests.append(request.url.path)
+        if request.url.path == '/refused':
+            return httpx.Response(status, headers={'Retry-After': '120'})
+        return httpx.Response(200, headers={'Content-Type': 'text/html'},
+            text='<article><img src="/facade.jpg" alt="Facade"></article>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        receipts = []
+        found = await article_candidates(svc, story, sources, set(), http=client,
+            resolver=resolver, browser=browser, receipts=receipts)
+        _retain_article_discovery(svc, story, sources, receipts=receipts, articles=found)
+        assert len(found) == 1 and found[0]['url'].endswith('/ready')
+        refused = next(r for r in receipts if r['url'].endswith('/refused'))
+        assert refused['http_status'] == status and refused['retry_at'] >= svc.store.now() + 119
+        second = []
+        await article_candidates(svc, story, [sources[0]], set(), http=client,
+            resolver=resolver, browser=browser, receipts=second)
+        assert second[0]['reason'] == 'article_cooldown'
+    assert requests.count('/refused') == 1 and browser_calls == []
 
 
 def test_article_gallery_keeps_later_views_but_excludes_other_objects_and_ads():

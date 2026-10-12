@@ -30,6 +30,20 @@ belong there. Product repositories keep only authorization, tools/context and UI
 Current photo GPS recovery, identity/correction and immediate Stop contract:
 [Photo identity and Stop](photo-identity-and-stop.md).
 
+## Accepted work and client lifetime
+
+Live socket close and microphone Stop end the interactive transport. Accepted
+research remains a durable backend task under the same SOURCE/generation/control
+fence and original operation IDs. Editing or selecting facts does not pause it.
+Only explicit scoped research Stop or material input change revokes that work.
+A valid late identity hint is saved before opening a bounded follow-up wave;
+UNKNOWN provider receipts remain tied to their original readback.
+
+Saved fact rows arrive through the existing REST snapshot/polling path. WSS voice
+events are not a separate stream of durable fact rows. Android retains selection,
+review readiness and drafts after reopen; local pending upload remains distinct
+from server acceptance.
+
 ## What changed
 
 Android consumes the shared Java WSS transport from the immutable archive named

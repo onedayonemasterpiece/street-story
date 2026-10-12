@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 from contextvars import ContextVar
 
 import pytest
@@ -80,6 +81,43 @@ def setup(tmp_path):
 
 def page(ordinal, unit=None):
     return {**PAGE, '_unit_id': unit or f'page-{ordinal}', '_extractor_ordinal': ordinal}
+
+
+def test_exact_receipts_preserve_old_unknown_and_legacy_binding_without_history_payloads(tmp_path):
+    from street_story.fact_unit_receipts import unit_attempt_rows
+    from street_story.headless_facts import HeadlessFacts
+    from street_story.service import canonical
+
+    adapter, _, story, _ = setup(tmp_path)
+    story['_identity_generation'] = 0
+    unit = 'old-uncertain-unit'
+    role = 'facts_review_historical-model'
+    logical = hashlib.sha256(canonical(
+        [story['id'], story['photo_sha256'], 0, role, unit]).encode()).hexdigest()
+    with adapter.service.store.tx() as db:
+        rows = [('old-unknown', logical, role, {'phase': 'submitted'}, 0),
+                ('legacy', 'legacy-logical-id', 'facts_live', {'phase': 'unknown', 'binding': {
+                    'fact_unit_id': unit, 'photo_sha256': story['photo_sha256'], 'generation': 0}}, 1)]
+        rows += [(f'noise-{i}', f'unrelated-{i}', 'facts', {
+            'phase': 'completed', 'result': {'text': 'unrelated' * 1000}}, i + 2) for i in range(128)]
+        db.executemany('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+            [(aid, lid, story['id'], r, canonical(receipt), at, at)
+             for aid, lid, r, receipt, at in rows])
+    exact = unit_attempt_rows(adapter.service.store, story, unit)
+    assert len(exact) == 1 and exact[0]['logical_id'] == logical
+    # Historical model roles remain visible even when no longer configured.
+    assert not HeadlessFacts(adapter.service)._boundary_closed(story, unit)
+    pool = adapter._fact_pool_receipts(story, unit)
+    assert set(pool) == {'facts_live'} and pool['facts_live']['phase'] == 'unknown'
+    assert not unit_attempt_rows(adapter.service.store,
+        {**story, '_identity_generation': 1}, unit, roles=('facts_live',), legacy_binding=True)
+    assert not unit_attempt_rows(adapter.service.store,
+        {**story, 'photo_sha256': 'different-source'}, unit, roles=('facts_live',), legacy_binding=True)
+    # Exact lookup uses the existing logical index, rather than a recent-N cap.
+    with adapter.service.store.connection() as db:
+        plan = db.execute('EXPLAIN QUERY PLAN SELECT receipt_json FROM research_provider_attempts '
+                          'WHERE logical_id=?', (logical,)).fetchall()
+    assert any('idx_research_provider_logical' in row[3] for row in plan)
 
 
 @pytest.mark.asyncio
@@ -176,7 +214,8 @@ def test_nemotron_transport_clones_same_server_without_any_request_or_profile_wr
     extra = primary.fact_extractor('nemotron-3-ultra-free')
     assert extra.directory == primary.directory and extra.endpoint == primary.endpoint
     assert extra.shared_backend is backend and extra.admission is admission and extra.checkpoint is checkpoint
-    assert extra.limits.max_output_tokens == 8192
+    assert extra.limits.max_output_tokens is None
+    assert primary.limits.max_output_tokens is None
     assert not list(tmp_path.iterdir())
     with pytest.raises(ValueError, match='not_approved'):
         primary.fact_extractor('unqualified-model')

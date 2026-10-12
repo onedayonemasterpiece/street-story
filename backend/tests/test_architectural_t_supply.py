@@ -28,7 +28,7 @@ def catalogue_card(sid, address):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body'])
+@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body', 'incomplete_cache'])
 async def test_t_uses_verified_cached_article_photo_without_extra_model_or_required_acquisition(monkeypatch, acquisition):
     from street_story.identity_architectural_comparison import ready_article_references
     from street_story import native_vision, identity_telemetry
@@ -37,6 +37,8 @@ async def test_t_uses_verified_cached_article_photo_without_extra_model_or_requi
                'source_sha256': hashlib.sha256(body).hexdigest()}
     cached = {'sha256': article['source_sha256'], 'final_url': article['url'],
               'body': base64.b64encode(body if acquisition != 'changed_cached_body' else b'changed').decode()}
+    if acquisition == 'incomplete_cache':
+        cached.pop('final_url')
     service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
     events, loads = [], []
     monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: events.append(args))
@@ -55,7 +57,7 @@ async def test_t_uses_verified_cached_article_photo_without_extra_model_or_requi
         assert receipt[0]['model_image_sha256'] == hashlib.sha256(images[0][2]).hexdigest()
     else:
         assert images == receipt == []
-    assert loads == ([] if acquisition == 'changed_cached_body' else ['https://example.org/facade.jpg'])
+    assert loads == ([] if acquisition in {'changed_cached_body', 'incomplete_cache'} else ['https://example.org/facade.jpg'])
 
 
 @pytest.mark.asyncio
@@ -148,10 +150,11 @@ async def test_larger_partial_catalogue_preserves_all_records_for_model_selectio
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, lookup = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [body], query)
-    assert calls == [] and articles == []
+    assert set(calls) == {card['canonical_url'] for card in received}
+    assert len(articles) == len(received)
     assert lookup['results'] == received
     assert lookup['inventory_complete'] is False
-    assert 'requires model source selection' in lookup['limitation']
+    assert lookup['source_acquisition_selection']['identity_inferred'] is False
 
 
 def test_compound_address_and_suffixes_remain_distinct():
@@ -208,7 +211,7 @@ def _issued_span_decision(decision, packet, receipt):
     return result
 
 
-@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match'])
+@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match', 'complex_only_positive'])
 @pytest.mark.parametrize('article_count', [2, 3])
 def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage, article_count):
     from street_story.identity_architectural_evidence import literal_evidence_inventory
@@ -247,6 +250,15 @@ def test_declined_article_is_context_without_vetoing_or_proving_the_supported_bo
     elif damage == 'only_declined_match':
         decision['correspondences'][0]['status'] = 'not_observable'
         decision['correspondences'][1]['status'] = 'stable_match'
+    elif damage == 'complex_only_positive':
+        inventory = receipt['physical_link_inventory']
+        decision['article_bindings'][1].update(candidate_id=candidates[0]['candidate_id'],
+            physical_binding_resolved=True)
+        decision['physical_link_evidence'].append({**decision['physical_link_evidence'][0],
+            'article_id': unrelated['article_id'], 'subject_scope': 'historical_complex_only',
+            'relationship': 'documented_complex_component',
+            'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
+                if row['article_id'] == unrelated['article_id'])})
     packet = prepare_architectural_comparison(story, candidates, receipt)
     issued = _issued_span_decision(decision, packet, receipt)
     proof = freeze_architectural_text_proof(story, issued, receipt, candidates)
@@ -276,7 +288,7 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     transmitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])
     hypotheses = transmitted['previous_model_hypotheses_not_evidence']['geometry_hypotheses_not_evidence']
     assert hypotheses['status'] == 'unconfirmed' and 'decision' not in hypotheses
-    assert 'Coverage may be incomplete' in transmitted['coverage_limit']
+    assert 'remain unexamined' in transmitted['coverage_limit']
     assert 'accepted_architectural_text' in packet['schema']['properties']['decision']['enum']
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
@@ -291,6 +303,73 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert plan['first_wave_hypotheses'] == [{'subject_id': 'unreceived-search-pointer'}]
     assert adopted['first_wave_hypotheses'] == []
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
+
+
+def test_compact_t_keeps_measured_neighbor_relations_without_nominating_neighbor():
+    from test_identity_spatial_features import building, story as spatial_story
+    from street_story.identity_spatial_features import geometry_feature, supplied_relation_options
+    source, candidates, _, receipt = _comparison_fixture()
+    source.update(spatial_story([building(7, 10, 20), building(88, 50, 25), building(99, 1000, 40)]))
+    receipt['conditional_initial_decision']['candidate_ids'] = [candidates[0]['candidate_id']]
+    options = supplied_relation_options(source, candidates, active_ids=[candidates[0]['candidate_id']])
+    assert options
+    # Issue an exact addressed pair for this fixture, rather than expecting
+    # every unrelated map relation to re-expand the compact comparison.
+    options.append({'id': 'R-addressed', 'kind': 'observed_side_pair', 'map_features': [
+        {'candidate_id': candidates[0]['candidate_id'], 'kind': 'segment', 'ring_index': 0, 'segment_index': 0},
+        {'candidate_id': 'osm:way:88', 'kind': 'segment', 'ring_index': 0, 'segment_index': 0}]})
+    receipt.setdefault('manifest', {})['relation_options'] = options
+    original = copy.deepcopy(receipt)
+    prepared = prepare_architectural_comparison(source, candidates, receipt)
+    packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
+    assert all(option in options for option in packet['observed_map_relations'])
+    assert prepared['candidate_ids'] == [candidates[0]['candidate_id']]
+    assert any(row['candidate_id'] == 'osm:way:88' for row in packet['candidate_scope']['context_only_expansions'])
+    for item in packet['relation_feature_geometry']:
+        assert item['observed_geometry'] == geometry_feature(source, candidates, item['reference'])
+    assert any(item['reference']['candidate_id'] == 'osm:way:88' and item['observed_geometry']
+        for item in packet['relation_feature_geometry'])
+    assert receipt == original
+
+
+@pytest.mark.parametrize('comparison', ['omitted', 'addressed', 'uncertain', 'no_map_pair'])
+def test_t_addressed_map_side_pair_cannot_disappear_from_positive_body_decision(comparison):
+    from jsonschema import Draft202012Validator
+    from test_identity_spatial_features import building, story as spatial_story
+    from street_story.identity_spatial_features import supplied_relation_options
+    source, candidates, decision, receipt = _comparison_fixture()
+    source.update(spatial_story([building(7, 10, 20), building(88, 50, 25)]))
+    receipt['conditional_initial_decision']['candidate_ids'] = ['osm:way:7']
+    if comparison != 'no_map_pair':
+        receipt['manifest'] = {'relation_options': supplied_relation_options(
+            source, candidates, active_ids=['osm:way:7'])}
+    packet = prepare_architectural_comparison(source, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
+    decision['material_alternatives'] = []
+    if comparison == 'addressed':
+        decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
+            'reason': 'The model distinguishes the other received facade in this MAP side pair.'}]
+    elif comparison == 'uncertain':
+        decision['decision'] = 'uncertain'
+    assert Draft202012Validator(packet['schema']).is_valid(decision) is (comparison != 'omitted')
+    receipt['physical_link_inventory'] = packet['physical_link_inventory']
+    receipt['required_map_counterpoints'] = packet['required_map_counterpoints']
+    proof = freeze_architectural_text_proof(source, decision, receipt, candidates)
+    assert (proof is not None) is (comparison in {'addressed', 'no_map_pair'})
+    if comparison == 'addressed':
+        receipt['required_map_counterpoints'] = {}
+        assert freeze_architectural_text_proof(source, decision, receipt, candidates) is None
+
+
+def test_compact_t_missing_neighbor_primitive_stays_unknown_without_fabrication():
+    source, candidates, _, receipt = _comparison_fixture()
+    reference = {'candidate_id':'osm:way:not-received','kind':'segment','ring_index':0,'segment_index':0}
+    receipt.setdefault('manifest', {})['relation_options'] = [{'id':'R1','map_features':[reference]}]
+    prepared = prepare_architectural_comparison(source, candidates, receipt)
+    packet = json.loads(prepared['prompt'].rsplit('\n', 1)[-1])
+    assert packet['relation_feature_geometry'] == []
+    assert receipt['manifest']['relation_options'][0]['map_features'] == [reference]
+    assert 'osm:way:not-received' not in prepared['candidate_ids']
 
 
 def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
@@ -394,9 +473,26 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     prepared = prepare_architectural_comparison(story, candidates, receipt)
     assert len(prepared['candidate_ids']) == 12
     packet = json.loads(prepared['prompt'].split('\n', 1)[1])
-    assert ''.join(span['literal_text'] for span in packet['literal_source_passages'][0]['passages']) == article['text']
+    portion = packet['literal_source_passages'][0]
+    assert article['text'].startswith(''.join(span['literal_text'] for span in portion['passages']))
+    assert portion['full_text_sha256'] == article['text_sha256']
+    assert portion['next_cursor'] is not None
     assert 'text' not in packet['articles'][0]
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
+
+
+def test_t_packet_preserves_literal_owner_hint_without_treating_it_as_evidence():
+    story, candidates, _, receipt = _comparison_fixture()
+    hint = {'text': 'Это корпус у реки, а не главный корпус учреждения',
+        'provenance': 'owner_live_text_or_voice', 'scope': 'search_context_only',
+        'independently_verified': False, 'generation': 1, 'control_revision': 0}
+    story['_identity_owner_hint'] = hint
+    prepared = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
+    packet = json.loads(prepared['prompt'].split('\n', 1)[1])
+    assert packet['owner_hint_not_identity_evidence'] == hint
+    assert all('owner_live_text_or_voice' not in json.dumps(span)
+        for article in packet['literal_source_passages'] for span in article['passages'])
+    assert 'physical_identity_accepted' not in packet['owner_hint_not_identity_evidence']
 
 
 def test_reserve_pointers_do_not_expand_positive_bindings_or_force_reserve_enumeration():
@@ -408,9 +504,9 @@ def test_reserve_pointers_do_not_expand_positive_bindings_or_force_reserve_enume
     assert properties['candidate_id']['enum'] == [*prepared['candidate_ids'], '']
     assert properties['article_bindings']['items']['properties']['candidate_id']['enum'] == properties['candidate_id']['enum']
     alternatives = properties['material_alternatives']
-    assert 'osm:way:299' in alternatives['items']['properties']['candidate_id']['enum']
+    assert 'osm:way:299' not in alternatives['items']['properties']['candidate_id']['enum']
     assert alternatives['maxItems'] == 8
-    assert len(json.loads(prepared['prompt'].rsplit('\n', 1)[-1])['physical_reserve']['rows']) == 200
+    assert json.loads(prepared['prompt'].rsplit('\n', 1)[-1])['physical_reserve']['count'] == 200
 
 
 def test_t_never_makes_up_missing_source_or_discards_material_candidates():
@@ -800,6 +896,36 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
         {'candidate_id': 'osm:way:88', 'reason': 'Earlier nominated neighboring wing differs.'},
         {'candidate_id': 'osm:way:89', 'reason': 'Another received body is material despite no acquired article.'}]
     validator = Draft202012Validator(packet['schema'])
-    assert not list(validator.iter_errors(decision))
+    # Unissued reserve bodies must be requested, not silently compared.
+    assert list(validator.iter_errors(decision))
     decision['material_alternatives'][1]['candidate_id'] = 'osm:way:999'
     assert list(validator.iter_errors(decision))
+
+
+def test_tail_only_text_reaches_t_and_new_evidence_is_not_lifetime_capped(tmp_path):
+    from dataclasses import replace
+    from street_story.research_budget import reserve_work
+    from street_story.service import digest
+    from test_visual_search_continuation import prepared
+    from test_architectural_text_identity import TEXT, with_received_physical_links
+    svc, _, uploaded, _ = prepared(tmp_path)
+    svc.settings = replace(svc.settings, identity_max_planner_calls=2)
+    story, candidates, decision, receipt = text_inputs(photo=uploaded['photo_sha256'], generation=0)
+    story['id'] = uploaded['id']
+    receipt['articles'][0]['lookup_candidate_ids'] = [candidates[0]['candidate_id']]
+    body = ('Unrelated context. '.ljust(420) * 40) + TEXT
+    receipt['articles'][0].update(text=body, text_sha256=hashlib.sha256(body.encode()).hexdigest())
+    reserve_work(svc, story['id'], 'planner_calls', ['initial-SOURCE-MAP'])
+    packet = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
+    reserve_work(svc, story['id'], 'planner_calls', [digest([story['photo_sha256'], packet['prompt'], packet['schema']])])
+    emitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])['literal_source_passages'][0]
+    assert ''.join(span['literal_text'] for span in emitted['passages']) == body
+    assert emitted['all_passages_displayed'] and emitted['next_cursor'] is None
+    assert max(part['end'] - part['start'] for part in emitted['displayed_portions']) <= 12000
+    assert packet['text_delivery']['portion_count'] == 2
+    receipt.update(physical_link_inventory=packet['physical_link_inventory'], source_span_refs=packet['source_span_refs'])
+    answer = with_received_physical_links(decision, [packet['prompt']])
+    assert freeze_architectural_text_proof(story, answer, receipt, candidates)
+    reserve_work(svc, story['id'], 'planner_calls', ['new-distinct-source-portion'])
+    _, research = svc._identity_snapshot(story['id'])
+    assert len(research['research_budget']['work_units']['planner_calls']) == 3

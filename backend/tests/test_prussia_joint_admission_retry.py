@@ -72,7 +72,8 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         if len(requests) == 2 or repeated:
             raise error  # Proven admission denial: no SDK send.
         sdk_sends.append('useful-text')
-        return SimpleNamespace(text=json.dumps(with_received_physical_links(text_decision, contents)),
+        return SimpleNamespace(text=json.dumps(with_received_physical_links(
+            text_decision, contents, address_map_counterpoints=True)),
             response_id='useful-text-closed')
 
     async def wait(delay):
@@ -198,8 +199,8 @@ async def test_unbounded_or_invalid_retry_delay_preserves_closed_initial_without
     assert len(requests) == 2 and sends == ['initial'] and not waits
     assert '_identity_geometry_result' not in story
     receipt = story['_identity_search_plan_payload']['source_text_receipt']
-    assert receipt['source_image_input'] is True  # Early text was actually sent in initial.
-    assert receipt['optional_followup_send_state'] == 'not_sent'
+    assert receipt['source_image_input'] is False  # Cold body was acquired after initial and joint2 was unsent.
+    assert receipt['provider_send_state'] == 'not_sent'
 
 
 @pytest.mark.asyncio
@@ -234,16 +235,17 @@ async def test_restart_during_admission_wait_does_not_resume_optional_retry(tmp_
 
 
 @pytest.mark.asyncio
-async def test_delayed_wake_rechecks_operation_headroom_before_reacquiring_key(tmp_path, monkeypatch):
+async def test_delayed_wake_after_twenty_minutes_reacquires_same_unsent_request(tmp_path, monkeypatch):
     def delayed(service, story, clock):
         budget = service._identity_snapshot(story['id'])[1]['research_budget']
-        clock[0] = budget['identity_deadline_at'] - .05
+        clock[0] = budget['started_at'] + 1200
     service, story, active, requests, _, sends, waits, pool = setup(
         tmp_path, monkeypatch, denial(), wake=delayed)
     await identity_discovery.suggest(service, story, '', active)
-    assert len(requests) == 2 and sends == ['initial'] and waits == [47.462]
+    assert len(requests) == 3 and sends == ['initial', 'useful-text'] and waits == [47.462]
+    assert requests[1] == requests[2]
     assert sum(pool._in_flight.values()) == 0
-    assert joint_followup_marker(service, story)['phase'] == 'not_sent'
+    assert joint_followup_marker(service, story)['phase'] == 'response_closed'
 
 
 @pytest.mark.asyncio
@@ -261,13 +263,14 @@ async def test_unknown_or_closed_provider_failure_never_uses_unsent_retry(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_retry_delay_plus_operation_timeout_must_fit_original_upload_deadline(tmp_path, monkeypatch):
+async def test_retry_delay_after_old_upload_deadline_preserves_same_request(tmp_path, monkeypatch):
     service, story, active, requests, _, sends, waits, _ = setup(tmp_path, monkeypatch, denial())
     with service.store.tx() as db:
         db.execute('UPDATE stories SET created_at=? WHERE id=?', (service.store.now() - 179, story['id']))
     await identity_discovery.suggest(service, story, '', active)
-    assert len(requests) == 2 and sends == ['initial'] and not waits
-    assert joint_followup_marker(service, story)['phase'] == 'not_sent'
+    assert len(requests) == 3 and sends == ['initial', 'useful-text'] and waits == [47.462]
+    assert requests[1] == requests[2]
+    assert joint_followup_marker(service, story)['phase'] == 'response_closed'
 
 
 @pytest.mark.asyncio
@@ -305,12 +308,11 @@ async def test_scoped_or_frozen_request_change_during_wait_cannot_dispatch(tmp_p
 async def test_accepted_initial_geometry_never_acquires_body_or_waits_for_text_admission(tmp_path, monkeypatch):
     service, story, active, requests, bodies, sends, waits, _ = setup(tmp_path, monkeypatch, denial(), geometry=True)
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(requests) == 1 and sends == ['initial'] and len(bodies) == 1 and not waits
+    assert len(requests) == 1 and sends == ['initial'] and not bodies and not waits
     from street_story.identity_source_selection import expand_planner_packet
     encoded = json.loads(requests[0][0][-1].split('Данные ниже — только контекст:\n', 1)[1])
-    supplied = expand_planner_packet(encoded)['acquired_architectural_text']
-    literal = ' '.join(p['literal_text'] for article in supplied['literal_source_passages'] for p in article['passages'])
-    assert ' '.join(TEXT.split()) in ' '.join(literal.split())  # Complete ready text, without duplicate article prose.
+    assert not expand_planner_packet(encoded).get('acquired_architectural_text')
+    # Cold article acquisition must not delay an independently accepted G.
     assert story['_identity_geometry_result']['proof_kind'] == 'geometry'
 
 

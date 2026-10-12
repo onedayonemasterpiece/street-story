@@ -172,10 +172,17 @@ def parse_address(soup, page_url):
     container = marker.find_parent(['td', 'section', 'article', 'div']) or soup.body
     if container is None:
         raise ValueError('address_results_section_missing')
-    total_match = re.search(r'всего совпадений\s*:\s*(\d+)', container.get_text(' ', strip=True), re.I)
+    result_text = container.get_text(' ', strip=True)
+    total_match = re.search(r'всего совпадений\s*:\s*(\d+)', result_text, re.I)
     if total_match is None:
-        raise ValueError('address_total_missing')
-    total = int(total_match.group(1))
+        # Observed publisher empty-results format has no numeric count.
+        # Keep missing/failed pages distinct; contradictory card rows below
+        # still fail the zero-count consistency check.
+        if not re.search(r'По Вашему запросу ничего не найдено', result_text, re.I):
+            raise ValueError('address_total_missing')
+        total = 0
+    else:
+        total = int(total_match.group(1))
     results, seen, pages = [], set(), []
     after_marker = False
     for node in container.descendants:
@@ -522,6 +529,8 @@ class Prussia39Adapter:
                 receipt.update(url=final, http_status=200, source_sha256=hashlib.sha256(raw).hexdigest(),
                                raw_content_sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
                                fetched_at=(cached or {}).get('acquired_at', self.store.now()))
+                if raw and _cached_body(self.store, key):
+                    receipt['raw_body_cache_key'] = key
                 origin = urlsplit(final)
                 if origin.hostname not in {'www.prussia39.ru', 'prussia39.ru'}:
                     raise ValueError('publisher_redirect_unavailable')

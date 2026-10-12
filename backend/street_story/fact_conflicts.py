@@ -246,7 +246,7 @@ def _current_review_bundle(db, story_id: str) -> dict[str, str]:
     return {
         str(row["assertion_id"]): str(row["revision_digest"] or "")
         for row in db.execute(
-            "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
+            "SELECT a.assertion_id,COALESCE(a.accepted_revision_digest,a.revision_digest) AS revision_digest FROM fact_assertions a "
             "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
             "WHERE a.story_id=? AND f.evidence_supported=1 ORDER BY a.assertion_id",
             (story_id,),
@@ -456,7 +456,7 @@ def persist_fact_conflicts(
             revisions = {
                 str(item["assertion_id"]): str(item["revision_digest"] or "")
                 for item in db.execute(
-                    f"SELECT assertion_id,revision_digest FROM fact_assertions "
+                    f"SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions "
                     f"WHERE story_id=? AND assertion_id IN ({placeholders})",
                     (story_id, *sorted(revision_ids)),
                 )
@@ -625,7 +625,7 @@ def stamp_fact_conflict_revisions(
         revisions = {
             str(row["assertion_id"]): str(row["revision_digest"] or "")
             for row in db.execute(
-                f"SELECT assertion_id,revision_digest FROM fact_assertions "
+                f"SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions "
                 f"WHERE story_id=? AND assertion_id IN ({fact_placeholders})",
                 (story_id, *sorted(assertion_ids)),
             )
@@ -765,7 +765,7 @@ def resolve_fact_conflict(
         revisions = {
             str(item["assertion_id"]): str(item["revision_digest"] or "")
             for item in db.execute(
-                "SELECT assertion_id,revision_digest FROM fact_assertions "
+                "SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions "
                 "WHERE story_id=? AND assertion_id IN (?,?)",
                 (story_id, row["left_fact_id"], row["right_fact_id"]),
             )
@@ -807,6 +807,13 @@ def resolve_fact_conflict(
                 "left_revision_digest": left_revision,
                 "right_revision_digest": right_revision,
                 "evidence_digest": evidence_digest,
+                # A→B→A is a new addressed assessment, not resurrection of the
+                # first superseded A receipt. Adjacent identical calls remain
+                # idempotent through the current-resolution comparison above.
+                "previous_event_id": next((event[0] for event in db.execute(
+                    "SELECT event_id FROM fact_arbitration_events WHERE story_id=? AND conflict_id=? "
+                    "AND state='active' ORDER BY created_at DESC,event_id DESC LIMIT 1",
+                    (story_id, conflict_id))), None),
             }
             event_id = "arbitration_" + hashlib.sha256(
                 json.dumps(

@@ -270,7 +270,7 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
 
 
 @pytest.mark.asyncio
-async def test_blocked_wikipedia_uses_quiet_article_reader_and_keeps_candidate_identity(tmp_path):
+async def test_unavailable_wikipedia_uses_quiet_article_reader_and_keeps_candidate_identity(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     page = 'https://ru.wikipedia.org/wiki/Gate'
     calls = []
@@ -283,7 +283,7 @@ async def test_blocked_wikipedia_uses_quiet_article_reader_and_keeps_candidate_i
             {'image_url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/rear.jpg/800px-rear.jpg', 'article_url': url},
             {'image_url': 'https://example.com/unrelated.jpg', 'article_url': url}], 12, True)
     receipts = []
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))) as http:
         result = await article_media.article_candidates(svc, story, [
             {'url': page, 'candidate_id': 'wiki:381537'}], set(), http=http, resolver=resolver,
             browser=browser, receipts=receipts)

@@ -110,23 +110,24 @@ async def test_pending_operation_continues_same_lease_bounded_and_author_stop_wi
     assert not written
     session.awaiting_audio = False  # Actual model response/playback arrived.
     adapter.on_event(session, {'type': 'turn_complete'})
-    assert len(written) == 1 and written[0][0] == session.id
-    assert run_id in written[0][1]['text'] and 'get_research_chunk' in written[0][1]['text']
+    assert written == []
+    with svc.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE json_extract(payload_json,'$.resume_run_id')=?", (run_id,)).fetchone()[0] == 1
     adapter.on_event(session, {'type': 'turn_complete'})
-    assert len(written) == 1  # No repeat while the continuation is queued.
+    assert written == []  # No repeat while the continuation is queued.
     adapter.input(session, {'text': 'Другой вопрос автора'})
     session.state['research_continuation_queued'] = False
     adapter.on_event(session, {'type': 'turn_complete'})
-    assert len(written) == 1  # New author input preempts automatic continuation.
+    assert written == []  # New author input preempts automatic continuation.
     session.state['research_author_interrupted'] = False
     adapter.on_event(session, {'type': 'turn_complete'})
-    assert len(written) == 2
+    assert written == []
     session.state['research_continuation_queued'] = False
     adapter.on_event(session, {'type': 'turn_complete'})
     with svc.store.connection() as db:
-        assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0] == 'partial'
+        assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0] == 'verifying'
         assert db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0] == 1
     adapter.on_stopped(session)
     adapter.on_event(session, {'type': 'turn_complete'})
-    assert len(written) == 2
+    assert written == []
     await reader.search_http.aclose()

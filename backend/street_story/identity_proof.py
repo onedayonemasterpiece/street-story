@@ -12,6 +12,7 @@ import math
 import re
 
 POLICY = 'spatial_identity_v1'
+IDENTITY_CONTINUATION_CONTRACT = 'closed-individual-body-query-v1'
 
 
 def _digest(value):
@@ -31,7 +32,7 @@ def _scope(story):
         'control_revision': int(story.get('_identity_research_control_revision', control.get('revision') or 0))}
 
 
-def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
+def freeze_geometry_proof(story, decision, source_map_receipt, candidates, *, rejection=None):
     """Accept a semantic verdict only when its supplied evidence really exists."""
     from jsonschema import Draft202012Validator
     from .identity_candidate_policy import candidate_identity_eligible
@@ -39,16 +40,23 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
     from .identity_scene import scene_camera_context
     from .identity_source_selection import geometry_decision_schema
     from .identity_spatial_features import geometry_feature
-    from .identity_geometry_contract import CONTRACT, measured_correspondence
+    from .identity_geometry_contract import CONTRACT, INDEXED_CONTRACT, LEGACY_CONTRACT, measured_correspondence
     from .identity_subject_binding import article_candidate
+    def reject(code, **details):
+        if rejection is not None:
+            rejection.append({'code': code, **details})
+        return None
     entries = scene_entries(story, candidates)
     catalog = {entry['candidate_id']: entry for entry in entries}
     receipt = source_map_receipt or {}
-    structured = receipt.get('geometry_contract') == CONTRACT
+    from .identity_subject_resolution import resolution_supports
+    if not resolution_supports(receipt, decision or {}, 'G'):
+        return reject('geometry_final_subject_not_accepted')
+    structured = receipt.get('geometry_contract') in {CONTRACT, INDEXED_CONTRACT, LEGACY_CONTRACT}
     if not isinstance(decision, dict) or not Draft202012Validator(
-            geometry_decision_schema(list(catalog), structured=structured or
+            geometry_decision_schema(list(catalog), geometry_contract=receipt.get('geometry_contract') or INDEXED_CONTRACT, structured=structured or
                 isinstance(decision, dict) and 'spatial_correspondence' in decision)).is_valid(decision):
-        return None
+        return reject('geometry_decision_schema_invalid')
     cid = decision.get('candidate_id')
     observed = story.get('_identity_observed_candidates') or []
     candidate = next((item for item in [*observed, *candidates]
@@ -65,45 +73,60 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
             or story.get('_identity_original_source_sha256') is not None
                 and story['_identity_original_source_sha256'] != receipt.get('original_source_sha256')
             or not _hash(receipt.get('map_image_sha256'))):
-        return None
+        failed = []
+        for field, valid in {
+            'accepted_decision': decision['decision'] == 'accepted_geometry',
+            'no_pending_action': decision.get('next_action', {}).get('kind', 'none') == 'none',
+            'eligible_physical_candidate': bool(candidate and candidate_identity_eligible(candidate) and not article_candidate(candidate)),
+            'joint_image_input': receipt.get('joint_image_input') is True,
+            'source_photo_binding': receipt.get('source_photo_sha256') == scope['photo_sha256'],
+            'original_source_hash': _hash(receipt.get('original_source_sha256')) and
+                (story.get('_identity_original_source_sha256') is None or
+                 story['_identity_original_source_sha256'] == receipt.get('original_source_sha256')),
+            'model_source_hash': _hash(receipt.get('model_source_sha256')),
+            'map_image_hash': _hash(receipt.get('map_image_sha256')),
+        }.items():
+            if not valid:
+                failed.append(field)
+        return reject('geometry_scope_or_transport_invalid', failed_fields=failed)
     manifest = receipt.get('manifest') or {}
     table = manifest.get('objects') or {}
     columns = table.get('columns') or []
     received = {dict(zip(columns, row)).get('candidate_id') for row in table.get('rows') or []}
     if cid not in received or manifest.get('image_sha256') != receipt['map_image_sha256']:
-        return None
+        return reject('geometry_map_subject_unbound')
     labels = {dict(zip(columns, row)).get('label'): dict(zip(columns, row)).get('candidate_id')
         for row in table.get('rows') or []}
     if (receipt.get('map_identity_labels_required') is True or 'candidate_label' in decision) and (
             labels.get(decision.get('candidate_label')) != cid):
-        return None
+        return reject('geometry_map_label_mismatch')
     coverage = decision['bounded_coverage']
     if (coverage['material_alternatives_resolved'] is not True
             or not decision['scope'].strip() or not coverage['scope'].strip()
             or any(not value.strip() for value in decision['camera_pose'].values())
             or not decision['decisive_relations']):
-        return None
+        return reject('geometry_coverage_or_pose_incomplete')
     features = []
     selected_feature = False
-    for relation in decision['decisive_relations']:
+    for index, relation in enumerate(decision['decisive_relations']):
         if (not relation['source_observation'].strip() or not relation['correspondence'].strip()
                 or not relation['map_features']):
-            return None
+            return reject('geometry_relation_incomplete', relation_index=index)
         for reference in relation['map_features']:
             if reference['candidate_id'] not in received:
-                return None
+                return reject('geometry_relation_subject_unreceived', relation_index=index)
             feature = geometry_feature(story, candidates, reference)
             if not feature:
-                return None
+                return reject('geometry_primitive_unresolved', relation_index=index, reference=reference)
             selected_feature |= reference['candidate_id'] == cid
             features.append({'reference': reference, 'observed_feature': feature})
     if not selected_feature or any(not item['reason'].strip() or item['candidate_id'] == cid
             or item['candidate_id'] not in received
             for item in decision['rejected_alternatives']):
-        return None
+        return reject('geometry_selected_body_or_alternative_unbound')
     measurement = measured_correspondence(story, candidates, decision, receipt) if structured else None
     if structured and measurement is None:
-        return None
+        return reject('geometry_spatial_correspondence_unresolved', pattern_kind=(decision.get('spatial_correspondence') or {}).get('pattern_kind'))
     proof = {'validated': True, 'policy': POLICY, 'candidate_id': cid, **scope,
         'source_photo_sha256': scope['photo_sha256'], 'map_image_sha256': receipt['map_image_sha256'],
         'original_source_sha256': receipt['original_source_sha256'],
@@ -187,7 +210,7 @@ STRUCTURAL_FEATURES = {'levels', 'window_axes', 'bay', 'roof', 'openings', 'comp
 
 
 def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8, structural=False,
-        source_span_refs=None, physical_link_inventory=None):
+        source_span_refs=None, physical_link_inventory=None, closed_identity_continuation=False):
     """The joint SOURCE/text model decides sufficiency and physical scope."""
     text = {'type': 'string', 'maxLength': 600}
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
@@ -202,7 +225,11 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         'candidate_id': cid, 'scope': text, 'discriminating_combination': text,
         'article_bindings': {'type': 'array', 'maxItems': max(2, len(aid['enum'])), 'items': {'type': 'object', 'properties': {
             'article_id': aid, 'candidate_id': cid, 'scope': text, 'binding_basis': text,
-            'physical_binding_resolved': {'type': 'boolean'}},
+            'physical_binding_resolved': {'type': 'boolean',
+                'description': 'True only when this article resolves the chosen individual photographed '
+                    'OSM body and its physical_link_evidence has specific_photographed_OSM_body scope. '
+                    'An article about an unseen plaque, neighboring subject or historical complex is '
+                    'comparison context: use false, without a positive physical_link_evidence row.'}},
             'required': ['article_id', 'candidate_id', 'scope', 'binding_basis', 'physical_binding_resolved'],
             'additionalProperties': False}},
         'correspondences': {'type': 'array', 'maxItems': 12, 'items': {'type': 'object', 'properties': {
@@ -238,6 +265,23 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['required'].append('source_span_ref')
     from .identity_candidate_policy import research_priority_schema
     schema['properties']['research_priority'] = research_priority_schema(candidate_ids)
+    schema['properties']['source_text_requests'] = {'type': 'array', 'maxItems': max(1, len(aid['enum'])),
+        'items': {'type': 'object', 'properties': {'article_id': aid,
+            'start_char': {'type': 'integer', 'minimum': 0}, 'reason': {'type': 'string', 'minLength': 1, 'maxLength': 300}},
+            'required': ['article_id', 'start_char', 'reason'], 'additionalProperties': False},
+        'description': 'Optional next bounded portion of the same retained verified full body. Use exact next_cursor or a specific unread start_char. No new fetch.'}
+    schema.setdefault('allOf', []).append({'if': {'properties': {'decision': {'const': 'accepted_architectural_text'}}},
+        'then': {'properties': {'source_text_requests': {'maxItems': 0}}}})
+    if closed_identity_continuation:
+        # A query about another physical candidate is still identity work.
+        # Optional questions about only the chosen body remain valid research.
+        for chosen in dict.fromkeys(candidate_ids):
+            schema['allOf'].append({'if': {'required': ['research_priority'], 'properties': {
+                'decision': {'const': 'accepted_architectural_text'}, 'candidate_id': {'const': chosen},
+                'research_priority': {'required': ['next_question'], 'properties': {
+                    'next_question': {'type': 'string', 'pattern': r'\S'}}}}},
+                'then': {'properties': {'research_priority': {'properties': {
+                    'candidate_ids': {'items': {'enum': [chosen]}}}}}}})
     return schema
 
 
@@ -280,6 +324,9 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     receipt = source_text_receipt or {}
     if not isinstance(receipt, dict):
         return None
+    from .identity_subject_resolution import resolution_supports
+    if not resolution_supports(receipt, decision or {}, 'T'):
+        return None
     articles = receipt.get('articles') or []
     if not isinstance(articles, list) or not articles:
         return None
@@ -307,7 +354,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     observed = story.get('_identity_observed_candidates') or []
     catalog = {item.get('candidate_id'): item for item in [*candidates, *observed] if isinstance(item, dict)}
     prior = receipt.get('conditional_initial_decision')
-    prior_ids = prior.get('candidate_ids') if isinstance(prior, dict) else None
+    prior_ids = prior.get('material_alternative_candidate_ids', prior.get('candidate_ids')) if isinstance(prior, dict) else None
     structural = receipt.get('text_contract') == TEXT_CONTRACT
     inventory = receipt.get('physical_link_inventory')
     link_proof = None
@@ -328,10 +375,35 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             return None
         if link_proof.get('supported') is not True:
             return None
+    alternative_limit = max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8
+    comparison_scope = receipt.get('comparison_scope')
+    if comparison_scope is not None:
+        from .identity_architectural_comparison import architectural_comparison_scope, received_map_counterpoints
+        from .identity_architectural_evidence import _physical
+        try:
+            expected_scope = architectural_comparison_scope(inventory['candidate_ids'],
+                [key for key, value in catalog.items() if _physical(value)],
+                received_map_counterpoints(story, list(catalog.values()), receipt),
+                (receipt.get('manifest') or {}).get('relation_options') or [])
+            # Unrelated additions to the retained reserve do not invalidate
+            # accepted evidence. The exact issued comparison pointers do.
+            for key in ('nominated_candidate_ids', 'comparison_candidate_ids',
+                        'context_only_expansions', 'observed_map_relations'):
+                if comparison_scope[key] != expected_scope[key]:
+                    return None
+            if decision.get('candidate_id') not in comparison_scope['nominated_candidate_ids']:
+                return None
+            if not {row.get('candidate_id') for row in decision.get('material_alternatives', [])} <= set(
+                    comparison_scope['comparison_candidate_ids']):
+                return None
+            alternative_limit = max(8, len(comparison_scope['comparison_candidate_ids']))
+        except (KeyError, TypeError, ValueError):
+            return None
     if not isinstance(decision, dict) or not Draft202012Validator(
             architectural_text_decision_schema(list(catalog), list(table),
-                material_alternative_limit=max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8,
+                material_alternative_limit=alternative_limit,
                 physical_link_inventory=inventory,
+                closed_identity_continuation=receipt.get('identity_continuation_contract') == IDENTITY_CONTINUATION_CONTRACT,
                 structural=structural or isinstance(decision, dict) and any('feature_kind' in item
                     for item in decision.get('correspondences') or [] if isinstance(item, dict)))).is_valid(decision):
         return None
@@ -346,7 +418,8 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
                 and story['_identity_original_source_sha256'] != receipt['original_source_sha256']
             or not decision['scope'].strip() or not decision['discriminating_combination'].strip()
             or decision['material_alternatives_resolved'] is not True or decision['unresolved_contradictions']
-            or not decision['article_bindings'] or not decision['correspondences']):
+            or not decision['article_bindings'] or not decision['correspondences']
+            or decision.get('source_text_requests')):
         return None
     bound = set()
     for binding in decision['article_bindings']:
@@ -367,6 +440,13 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     if not stable or any(item['candidate_id'] in {'', cid} or not item['reason'].strip()
             for item in decision['material_alternatives']):
         return None
+    if 'required_map_counterpoints' in receipt:
+        from .identity_architectural_comparison import received_map_counterpoints
+        counterpoints = received_map_counterpoints(story, list(catalog.values()), receipt)
+        if (receipt['required_map_counterpoints'] != counterpoints
+                or not set(counterpoints.get(cid, [])) <= {
+                    item['candidate_id'] for item in decision['material_alternatives']}):
+            return None
     if prior is not None:
         if (not isinstance(prior, dict) or prior.get('policy') != 'conditional-initial-joint-v1'
                 or prior.get('input_kind') != 'model_hypothesis_not_evidence'
@@ -377,7 +457,18 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             return None
         # This checks pointer coverage only. A previous model rejection is
         # conditional context, never proof of architectural discrimination.
-        required = set(prior['candidate_ids']) - {cid}
+        if 'material_alternative_candidate_ids' in prior:
+            material = prior['material_alternative_candidate_ids']
+            exclusions = prior.get('previous_model_exclusions_not_identity_proof')
+            if (not isinstance(material, list) or any(not isinstance(value, str) for value in material)
+                    or len(set(material)) != len(material) or not set(material) <= set(prior['candidate_ids'])
+                    or not isinstance(exclusions, list)
+                    or any(not isinstance(item, dict) or not isinstance(item.get('candidate_id'), str)
+                           or item.get('support_status') != 'contradicted'
+                           or not item.get('counterevidence') for item in exclusions)
+                    or set(prior['candidate_ids']) - set(material) != {item.get('candidate_id') for item in exclusions}):
+                return None
+        required = set(prior_ids) - {cid}
         addressed = {item['candidate_id'] for item in decision['material_alternatives']}
         if not required <= addressed:
             return None

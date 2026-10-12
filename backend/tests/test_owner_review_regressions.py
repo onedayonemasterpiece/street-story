@@ -21,6 +21,7 @@ from street_story.identity_visual import identify_nearest
 async def test_false_or_ambiguous_speech_never_confirms_model_candidate(tmp_path, utterance):
     svc, adapter, session, _ = make_service(tmp_path)
     await adapter.execute_tool(session, {'id':'resolve-1','name':'resolve_place','args':{}})
+    assert await svc.run_once(claim_kind='identity', claim_story_id=session.resource_id)
     adapter.on_event(session, {'type':'input_transcript','text':utterance})
     with pytest.raises(ConflictError) as error:
         await adapter.execute_tool(session, {'id':'bad-confirm','name':'confirm_place', 'args':{'candidate_id':'wiki:77','candidate_name':'Бранденбургские ворота'}})
@@ -34,6 +35,7 @@ async def test_false_or_ambiguous_speech_never_confirms_model_candidate(tmp_path
 async def test_named_fresh_consent_persists_evidence_and_cannot_authorize_another_command(tmp_path):
     svc, adapter, session, _ = make_service(tmp_path)
     await adapter.execute_tool(session, {'id':'r','name':'resolve_place','args':{}})
+    assert await svc.run_once(claim_kind='identity', claim_story_id=session.resource_id)
     adapter.input(session, {'text':'Да, подтверждаю: это Бранденбургские ворота.'})
     args = {'candidate_id':'wiki:77'}
     await adapter.execute_tool(session, {'id':'c','name':'confirm_place','args':args})
@@ -116,6 +118,7 @@ def test_short_foreign_noise_shape_is_narrow_and_russian_preferred():
 async def test_suspected_noise_turn_cannot_execute_product_mutation(tmp_path):
     svc, adapter, session, _ = make_service(tmp_path)
     await adapter.execute_tool(session, {"id": "r", "name": "resolve_place", "args": {}})
+    assert await svc.run_once(claim_kind='identity', claim_story_id=session.resource_id)
     adapter.input(session, {"activity_start": True})
     adapter.on_event(session, {"type": "input_timing", "audio_chunks": 84})
     adapter.on_event(session, {"type": "input_transcript", "text": "¿Qué tal?"})

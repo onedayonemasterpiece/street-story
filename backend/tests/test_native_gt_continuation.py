@@ -37,25 +37,62 @@ async def test_sufficient_native_primary_or_original_readback_needs_no_google_ex
 
 
 @pytest.mark.asyncio
-async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contract_update(tmp_path, monkeypatch):
+@pytest.mark.parametrize('legacy_addressed', [False, True])
+async def test_source_map_input_preserves_new_resolution_and_original_addressed_preparation(tmp_path, monkeypatch, legacy_addressed):
+    from io import BytesIO
+    from PIL import Image
+    from street_story.reference_image_codec import normalize_reference, normalize_source
+    from test_reference_image_codec import jpeg
+    svc, story, active = geometry_setup(tmp_path)
+    raw = jpeg((4000, 3000))
+    monkeypatch.setattr(svc, '_source_photo_bytes', lambda sid: raw)
+    source_receipt = {'phase': 'unknown', 'turn_id': 'original-G'} if legacy_addressed else None
+    async def readback(snapshot, prompt, schema, images, host_context):
+        assert images[0][0] == 'SOURCE'
+        expected = (normalize_reference if legacy_addressed else normalize_source)(raw)[1]
+        assert images[0][2] == expected
+        with Image.open(BytesIO(images[0][2])) as image:
+            assert image.size == ((1280, 960) if legacy_addressed else (4000, 3000))
+        proof = host_context['source_map_receipt']
+        assert proof['original_source_sha256'] == hashlib.sha256(raw).hexdigest()
+        assert proof['model_source_sha256'] == hashlib.sha256(expected).hexdigest()
+        return {'result': payload(geometry_decision()), 'receipt': {'phase': 'completed', 'turn_id': 'original-G'},
+            'host_context': host_context}
+    svc.providers.gemini = SimpleNamespace()
+    svc.providers.research = SimpleNamespace(source_map_receipt=lambda s: source_receipt,
+        source_map_available=True, native_vision=SimpleNamespace(available=True), plan_source_map=readback)
+    await identity_discovery.prepare_search_plan(svc, story, '', active)
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('joint_geometry', [False, True, 'without_text'])
+async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contract_update(tmp_path, monkeypatch, joint_geometry):
     from dataclasses import replace
     from street_story import identity_architectural_comparison, identity_architectural_context
     svc, story, active = geometry_setup(tmp_path)
     svc.settings = replace(svc.settings, gemini_api_key='offline-controlled-key')
     _, _, decision, receipt = text_inputs(candidate_id='osm:way:2')
     articles = receipt['articles']
+    from test_geometry_identity_plan import cache_ready_articles
+    cache_ready_articles(svc, articles)
     articles[0]['lookup_candidate_ids'] = ['osm:way:2']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:3', 'reason': 'Distinct neighboring body.'}]
     async def catalogue(*args, **kwargs):
+        if joint_geometry:
+            return {'results': [], 'status': 'completed_empty'}
         return {'results': [{'article_id': articles[0]['article_id'], 'canonical_url': articles[0]['url']}],
             'physical_prefetch_plan': {'prefetch_article_ids': [articles[0]['article_id']]}, 'status': 'completed'}
     async def acquire(*args, **kwargs):
+        if joint_geometry == 'without_text':
+            return [], {'status': 'completed_empty'}
         return articles, {'status': 'completed'}
     monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
     monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
+    monkeypatch.setattr(identity_architectural_context, 'acquire_active_regional_text', acquire)
     current_prepare = identity_architectural_comparison.prepare_architectural_comparison
-    def legacy_prepare(*args):
-        prepared = current_prepare(*args)
+    def legacy_prepare(*args, **kwargs):
+        prepared = current_prepare(*args, **kwargs)
         item = prepared['schema']['properties']['correspondences']['items']
         item['properties'].pop('source_span_ref')
         item['properties']['source_quote'] = {'type': 'string', 'maxLength': 600}
@@ -65,23 +102,28 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     monkeypatch.setattr(identity_architectural_comparison, 'prepare_architectural_comparison', legacy_prepare)
     initial = geometry_decision()
     initial.update(decision='uncertain', candidate_id='',
-        next_action={'kind': 'map_detail', 'target_candidate_ids': ['osm:way:2'],
+        next_action={'kind': 'address_text' if joint_geometry else 'map_detail', 'target_candidate_ids': ['osm:way:2'],
             'reason': 'Inspect the nominated return before deciding its individual body.'})
     saved, closed_G, calls = {}, {}, []
     async def native(s, prompt, schema, images, host_context):
         if not closed_G:
             first = payload(initial)
-            first['accepted_architectural_text'] = {**copy.deepcopy(decision), 'decision': 'uncertain',
-                'candidate_id': '', 'article_bindings': [], 'correspondences': [],
-                'material_alternatives': [], 'material_alternatives_resolved': False,
-                'physical_link_evidence': []}
+            if not joint_geometry:
+                first['accepted_architectural_text'] = {**copy.deepcopy(decision), 'decision': 'uncertain',
+                    'candidate_id': '', 'article_bindings': [], 'correspondences': [],
+                    'material_alternatives': [], 'material_alternatives_resolved': False,
+                    'physical_link_evidence': []}
+            if 'subject_resolution' in schema['properties']:
+                first['subject_resolution'] = {'decision': 'uncertain', 'basis_kind': 'none',
+                    'candidate_id': '', 'unresolved_counterevidence': ['Need the nominated body detail.'],
+                    'reason': 'Neither component has resolved the SOURCE subject.'}
             closed_G.update(phase='completed', turn_id='original-G', result=first,
                 frozen_source_map={'host_context': copy.deepcopy(host_context)})
         return {'result': closed_G['result'], 'receipt': closed_G,
             'host_context': closed_G['frozen_source_map']['host_context']}
     async def followup(s, prompt, schema, images, host_context):
         if not saved:
-            assert 'decision' in schema['properties'], list(schema['properties'])
+            assert ('accepted_geometry' if joint_geometry else 'decision') in schema['properties'], list(schema['properties'])
             calls.append('send_original')
             saved.update(phase='unknown', turn_id='original-T',
                 frozen_source_map={'host_context': copy.deepcopy(host_context)})
@@ -89,9 +131,20 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
         calls.append('read_original')
         original = saved['frozen_source_map']['host_context']
         assert schema == original['schema']
-        linked = with_received_physical_links(decision,
-            [json.dumps({'publisher_and_OSM_literal_records_NOT_prejoined':
-                original['source_text_receipt']['physical_link_inventory']})])
+        if joint_geometry == 'without_text':
+            linked = {'accepted_geometry': geometry_decision()}
+        else:
+            linked = with_received_physical_links(decision,
+                [json.dumps({'publisher_and_OSM_literal_records_NOT_prejoined':
+                    original['source_text_receipt']['physical_link_inventory']})])
+            if joint_geometry:
+                invalid_geometry = geometry_decision()
+                invalid_geometry.pop('bounded_coverage')
+                linked = {'accepted_geometry': invalid_geometry, 'accepted_architectural_text': linked}
+                if 'subject_resolution' in schema['properties']:
+                    linked['subject_resolution'] = {'decision': 'accepted', 'basis_kind': 'T',
+                        'candidate_id': 'osm:way:2', 'unresolved_counterevidence': [],
+                        'reason': 'Original own text resolves the individual body without the invalid geometry component.'}
         return {'result': linked, 'receipt': {'phase': 'completed', 'turn_id': 'original-T'},
             'host_context': original}
     async def forbidden(*args, **kwargs):
@@ -109,10 +162,21 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     # original followup observer when the worker resumes that addressed unit.
     await identity_discovery.suggest(svc, story, '', active)
     assert calls == ['send_original', 'read_original']
-    proof = story['_identity_geometry_result']['architectural_text_proof']
-    assert proof['source_text_receipt'] == saved['frozen_source_map']['host_context']['source_text_receipt']
+    proof_key, receipt_key = (('geometry_proof', 'source_map_receipt') if joint_geometry == 'without_text'
+        else ('architectural_text_proof', 'source_text_receipt'))
+    proof = story['_identity_geometry_result'][proof_key]
+    expected_receipt = saved['frozen_source_map']['host_context'][receipt_key]
+    if expected_receipt.get('subject_resolution_contract'):
+        from street_story.identity_subject_resolution import bind_subject_resolution
+        expected_receipt = bind_subject_resolution(expected_receipt, {
+            'subject_resolution': proof[receipt_key]['subject_resolution']})
+    assert proof[receipt_key] == expected_receipt
     assert joint_followup_marker(svc, story)['prepared_request'] == original_request
     assert svc._identity_snapshot(story['id'])[1]['research_budget']['work_units'] == original_units
+    if joint_geometry is True:
+        rejected = story['_identity_search_plan_payload']['rejected_geometry']
+        assert rejected['reason'] == 'identity_geometry_schema_invalid'
+        assert 'bounded_coverage' not in rejected['decision']
 
 
 @pytest.mark.asyncio
@@ -231,6 +295,10 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         assert retained['state'] == 'unconfirmed_physical_hypothesis' and not retained['identity_accepted']
         assert retained['initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
         assert retained['source_map_receipt']['model_id'] == 'gpt-6-luna'
+        from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS, received_comparison_scope
+        scope, _ = json.JSONDecoder().raw_decode(contents[-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+        frozen_receipt = joint_followup_marker(svc, snapshot)['prepared_request']['source_map_receipt']
+        assert scope == received_comparison_scope(frozen_receipt)
         if outcome == 'map_detail_text':
             assert retained['reason']['code'] == 'identity_geometry_uncertain'
         else:
@@ -310,8 +378,16 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                 assert joint_followup_marker(svc, fresh)['phase'] == 'unknown'
                 assert ref_calls == ['REF']  # Independent work; the unknown T is never resent.
             else:
+                history, _ = await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                assert history['search_plan']['payload']['closed_comparison_unusable'] == 'identity_architectural_comparison_invalid'
+                assert fresh['_identity_accepted_result']['status'] == 'uncertain'
+                assert fresh['_identity_accepted_result']['_comparison_deferred'] is True
+                assert '_identity_geometry_result' not in fresh
+                with svc.store.connection() as db:
+                    retained = json.loads(svc._story_row(db, sid)['research_json'])['identity_closed_invalid_followup_plan']
+                assert retained == diagnostic
                 with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
-                    await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                    await identity_discovery.suggest(svc, fresh, '', active)
             assert calls == expected_calls
             return
         identity = current['visual_identity']

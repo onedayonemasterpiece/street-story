@@ -78,7 +78,20 @@ class ResearchProjectionStore(context: Context) {
     }
 
     fun clear(storyId: String) {
-        prefs.edit().remove(key(storyId)).apply()
+        prefs.edit().remove(key(storyId)).remove("conflicts:$storyId").apply()
+    }
+
+    fun conflictJournal(storyId: String): ConflictJournalWire? =
+        prefs.getString("conflicts:$storyId", null)?.let { raw -> runCatching { gson.fromJson(raw, ConflictJournalWire::class.java) }.getOrNull() }
+
+    fun replaceConflictJournal(storyId: String, journal: ConflictJournalWire, append: Boolean = false) {
+        val prior = if (append) conflictJournal(storyId) else null
+        if (prior?.photoSha256 == journal.photoSha256 && prior.identityGeneration == journal.identityGeneration) {
+            journal.items = ArrayList((prior.items + journal.items).distinctBy { it.conflictId })
+        }
+        check(prefs.edit().putString("conflicts:$storyId", gson.toJson(journal)).commit()) {
+            "conflict journal was not persisted"
+        }
     }
 
     private fun key(storyId: String) = "story:$storyId"

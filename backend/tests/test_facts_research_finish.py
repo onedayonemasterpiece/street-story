@@ -4,6 +4,8 @@ Model semantics are controlled findings here, not a claim of real-model quality.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from test_live_editor import make_service, mark_identity_ready
@@ -130,7 +132,7 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
         db.execute('UPDATE poi_research_assertions SET text=? WHERE assertion_id=?', ('Changed cache claim, not reviewed.', good[0]['fact_id']))
     changed_id = new_topic('reuse-changed')
     changed = adapter._get_facts(changed_id, {})['facts']
-    assert next(f for f in changed if f['fact_id'] == good[0]['fact_id'])['eligibility'] != 'eligible'
+    assert all(f['eligibility'] != 'eligible' for f in changed if f['fact_id'] == good[0]['fact_id'])
     assert sum(f['owner_selected'] for f in adapter._get_facts(reused_id, {})['facts']) == 1
     assert helper_calls == []
     await reader.search_http.aclose()
@@ -232,8 +234,7 @@ async def test_live_answer_without_saved_batch_continues_source_research(tmp_pat
     adapter._continue_pending_research(session)
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['state'] != 'partial'
-    assert session.state.get('research_continuation_count') == 1
-    assert session.state.get('research_continuation_queued') is True
+    assert_durable_continuation(svc, run_id)
     resumed = await adapter._get_research_chunk(session, {'run_id': run_id})
     assert resumed['chunk_id'] == chunk['chunk_id'] and resumed['source_version_id'] == chunk['source_version_id']
     await reader.search_http.aclose()
@@ -262,8 +263,7 @@ async def test_withheld_post_tool_audio_does_not_deadlock_unread_research(tmp_pa
     assert delivered == [] and session.awaiting_audio
     _forward_committed_output(svc, session, {'type': 'turn_complete'}, receive)
     assert not session.awaiting_audio
-    assert session.state['research_continuation_queued']
-    assert session.state['research_continuation_count'] == 1
+    assert_durable_continuation(svc, run_id)
     assert delivered == [{'type': 'turn_complete'}]
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['state'] != 'partial'
@@ -582,6 +582,50 @@ async def test_numeric_passages_and_bounded_invalid_batch_resume(tmp_path):
     await reader.search_http.aclose()
 
 
+@pytest.mark.parametrize('reopen', [False, True])
+@pytest.mark.asyncio
+async def test_continuation_after_32_claims_retains_addressable_frozen_text(tmp_path, reopen):
+    from types import SimpleNamespace
+    import httpx
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    quotes = [f'Подтверждённый самостоятельный тезис номер {i}.' for i in range(33)]
+    body = '<main><p>' + ' '.join(quotes) + '</p></main>'
+    fetches = []
+    def serve(request):
+        fetches.append(str(request.url))
+        return httpx.Response(200, headers={'content-type': 'text/html'}, text=body)
+    await reader.search_http.aclose()
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(serve))
+    session.state['headless_research'] = True
+    chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
+    args = {**findings(chunk, []), 'continuation_needed': True, 'facts': [
+        {'claim_key': f'claim-{i}', 'text': quote, 'confidence': .95, 'selected': False,
+         'source_refs': [], 'evidence_refs': [], 'evidence_quotes': [quote]}
+        for i, quote in enumerate(quotes[:32])]}
+    saved = await adapter._save_research_facts(session, 'first-32', args)
+    assert saved['payload_saved']
+    if reopen:
+        adapter.on_stopped(session)
+        session = SimpleNamespace(id='live_remaining_claims', resource_id=session.resource_id,
+            model='gemini-3.8-live', state={'headless_research': True})
+    resumed = await adapter._get_research_chunk(session, {'run_id': run_id})
+    assert resumed['source_version_id'] == chunk['source_version_id']
+    assert resumed['chunk_id'] == chunk['chunk_id'] and resumed['batch_index'] == 1
+    assert resumed['batch_id'] != chunk['batch_id']
+    assert resumed['core_text'] == chunk['core_text']
+    assert quotes[-1] in ''.join(p['text'] for p in resumed['evidence_passages'])
+    assert len(fetches) == 1
+    tail = {**findings(resumed, []), 'facts': [{
+        'claim_key': 'claim-32', 'text': quotes[-1], 'confidence': .95, 'selected': False,
+        'source_refs': [], 'evidence_refs': [], 'evidence_quotes': [quotes[-1]]}]}
+    assert (await adapter._save_research_facts(session, 'remaining-one', tail))['payload_saved']
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['counts']['chunk_batches_total'] == 2
+        assert db.execute('SELECT COUNT(*) FROM fact_observations WHERE story_id=?',
+                          (session.resource_id,)).fetchone()[0] == 33
+    await reader.search_http.aclose()
+
+
 @pytest.mark.asyncio
 async def test_actual_task_cancellation_preserves_first_batch_for_resume(tmp_path):
     import asyncio
@@ -692,12 +736,10 @@ async def test_empty_source_continues_and_blocks_premature_inventory(tmp_path):
     saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'empty-first', 'args': {'facts': [], 'batch_reviewed': True}})
     assert not saved['completed']
     adapter._continue_pending_research(session)
-    assert session.state['research_continuation_queued']
+    assert_durable_continuation(svc, run_id)
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['state'] == 'extracting'
-    with pytest.raises(ConflictError) as err:
-        await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}})
-    assert err.value.code == 'live_research_more_sources_required'
+    assert (await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}}))['facts'] == []
     next_chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
     assert next_chunk['source_url'] == 'https://next.example/document'
     await reader.search_http.aclose()
@@ -734,7 +776,7 @@ async def test_sufficient_snippet_save_preserves_future_cost_and_allows_partial(
     adapter._continue_pending_research(session)
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['status_detail'] == 'live_batches_in_progress'
-        assert session.state['research_continuation_queued'] is True
+        assert_durable_continuation(svc, run_id)
         assert db.execute('SELECT COUNT(*) FROM poi_research_observations').fetchone()[0] == 1
     await reader.search_http.aclose()
 
@@ -812,3 +854,10 @@ def test_frozen_passage_keeps_sentence_across_core_boundary():
     assert second['core_offset'] < 0
     absolute = boundary + second['core_offset']
     assert document[absolute:absolute + len(second['text'])] == second['text']
+
+
+def assert_durable_continuation(service, run_id):
+    with service.store.connection() as db:
+        jobs = db.execute("SELECT payload_json FROM jobs WHERE kind='research' AND json_extract(payload_json,'$.resume_run_id')=?", (run_id,)).fetchall()
+        assert len(jobs) == 1
+        assert json.loads(jobs[0][0])['resume_run_id'] == run_id

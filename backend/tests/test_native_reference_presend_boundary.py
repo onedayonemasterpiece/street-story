@@ -22,6 +22,7 @@ async def test_reference_network_error_before_inference_closes_only_unsent_refer
     assert saved['phase'] == 'failed' and saved['provider_send_state'] == 'not_sent'
     assert saved['retry_safe'] is True and saved['error_type'] == 'PermanentProviderError'
     assert saved['reference_error_type'] == error.__name__
+    assert saved['reference_error_code'] == error.__name__
     assert saved['error_code'] == 'native_vision:reference_unavailable'
     assert 'submitted=False' in caplog.text and f'error_type={error.__name__}' in caplog.text
     assert 'private.invalid' not in caplog.text and 'token=secret' not in str(receipts)
@@ -40,6 +41,20 @@ async def test_non_image_and_bad_source_close_only_the_unsent_reference(tmp_path
     with pytest.raises(PermanentProviderError, match='native_vision:reference_unavailable'):
         await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id':'bad-image'})
     assert receipts[-1]['phase'] == 'failed' and receipts[-1]['provider_send_state'] == 'not_sent'
+    assert not client.calls and not sends and not finalized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code', ['reference_resolution_insufficient', 'reference_pixel_limit', 'article_media_not_extracted'])
+async def test_unsent_reference_preserves_safe_local_failure_code(tmp_path, caplog, code):
+    provider, client, _, story, context, receipts, sends, finalized = setup(tmp_path)
+    async def loader(url):
+        raise PermanentProviderError(code)
+    provider.public_image_loader = loader
+    with pytest.raises(PermanentProviderError, match='native_vision:reference_unavailable'):
+        await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'typed-ref-failure'})
+    assert receipts[-1]['reference_error_code'] == code
+    assert f'reference_code={code}' in caplog.text
     assert not client.calls and not sends and not finalized
 
 

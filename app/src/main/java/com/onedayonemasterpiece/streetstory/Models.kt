@@ -93,7 +93,10 @@ data class StorySnapshot(
     val publishedAt: String?,
     val lastError: String?,
     val backendRevision: Int,
-)
+    val processedImageBytesUrl: String? = null,
+) {
+    val previewOutdated: Boolean get() = processedImagePath != null && processedImageBytesUrl != processedImageUrl
+}
 
 data class VoiceSessionSnapshot(
     val sessionId: String,
@@ -139,6 +142,8 @@ data class FactSnapshot(
     val evidenceSupported: Boolean,
     val selected: Boolean,
     val sourcesJson: String,
+    val reviewStatus: String = if (evidenceSupported) "eligible" else "unreviewed",
+    val eligibilityReason: String? = null,
 )
 
 data class DestinationSnapshot(

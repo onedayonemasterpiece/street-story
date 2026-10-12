@@ -1,8 +1,15 @@
 # Photo search: concrete target methods
 
-Target dated 2026-10-08, amended 2026-10-09 after the failed canaries. The [complete unified brief](prompts/street-story-unified-photo-search-20261008.md)
-is authoritative. This document makes the method boundaries and acquisition steps
-explicit; it is not a claim that the complete product has passed acceptance.
+Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
+This docs-only synchronization does not update product code or prove deployment.
+Target changes are identified separately and tracked in the [recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
+
+The method history began with the 8 October target and 9 October canary amendments
+in the [unified brief](prompts/street-story-unified-photo-search-20261008.md).
+The [current recovery brief](prompts/street-story-universal-product-recovery-20261010.md)
+has precedence where it amends that history; unchanged contracts remain in force.
+This document makes method boundaries and acquisition steps explicit, not a claim
+that the complete product has passed acceptance.
 
 ## One product contract
 
@@ -51,21 +58,23 @@ short footprint in depth; missing height remains unknown. Pixel aspect ratio is
 not a map measurement, and shape agreement alone never accepts identity. This
 generic comparison adds no control address, expected ID or building-specific rule.
 
-The initial MAP keeps the full overview and every physical body row. Indexed side
-excerpts are limited to the displayed area and explicitly state omissions; this
-is a presentation limit, not a candidate shortlist. An uncertain joint decision
-may request `map_detail` for up to three exact received physical IDs. The existing
-single followup then receives the unchanged SOURCE and a MAP with the same full
-overview/neutral labels plus the nominated detail panel. All observed sides of
-those bodies become available, including short setbacks. The new MAP hash is
-bound to that followup; conditional initial alternatives remain hypotheses to
-resolve. If admission proves it was not sent, reuse restores the original MAP
-and schema. UNKNOWN never authorizes another send. Selected TEXT and detail share
-this same followup; its system instruction contains one current contract.
+The initial MAP keeps the overview and received physical pool reachable. Indexed
+side excerpts explicitly state omissions; a presentation portion is not a
+candidate whitelist. Model-nominated `map_detail` uses unchanged SOURCE and
+neutral labels, with a new MAP hash bound to the addressed operation. Selected
+TEXT and detail reuse existing acquisition and operation records.
+
+**As-is limitation at e40:** detail is nominated in portions of up to three IDs,
+and selected TEXT/MAP repair share a single followup. **Target:** remove that
+shared global followup ceiling; a genuinely changed frozen evidence input may
+receive another bounded unit within the same research budget. Keep unexamined
+material reachable, reuse unchanged closed results and observe the original
+UNKNOWN operation without resend. This is not an unlimited loop or a requirement
+to exhaust the pool. An admission result proving no send permits compatible reuse.
 
 | Method | Evidence the model must actually receive | Sufficient result | Subsequent work |
 |---|---|---|---|
-| `geometry` | SOURCE + neutral map + available measurements/provenance | A compatible pose and spatial pattern distinguish one physical object from material local alternatives | Accept immediately; start facts without waiting for text or REF |
+| `geometry` | SOURCE + neutral map + available measurements/provenance | The observed combination of volumes/spatial relations distinguishes one physical body under relevant camera uncertainty; exact numeric pose and a fixed pattern family are not universal prerequisites | Accept immediately; start facts without waiting for text or REF |
 | `architectural_text` | SOURCE + actually acquired architectural passages, article ID/hash and resolved physical binding; map if available | An individual visible combination distinguishes the bound object; structural contradictions and plausible neighbours are addressed | Accept without REF; reuse the acquired article in the ordinary fact reader |
 | `visual_reference` | Full SOURCE + a full external REF whose actual bytes and source are bound to the same physical object | Observed visual agreement satisfies the existing strict pair-proof contract | Accept; reuse properly bound source pages for facts |
 | `combined` | Actual evidence from sufficient compatible methods above | One object and scope, with no unresolved decisive conflict | Accept once; do not rerun another method for confirmation alone |
@@ -76,6 +85,14 @@ REF comparison. An address lead, model confidence, generic style, unavailable
 neighbour article or institution name cannot by itself establish a physical object.
 An accepted complex retains complex scope; an entrance or tenant is not silently
 promoted to a building. A crop or changed paint is not a structural contradiction.
+
+## G target: preserve the complete spatial task
+
+The owner-approved [G vision and requirement history](design/street-story-spatial-geometry-vision-20261010.md) governs this method together with the recovery brief. Preserve SOURCE group morphology (relative heights/widths, floors/roofs, setbacks, attachments and end-on/tele/crop explanations), actual camera provenance and the reachable full physical reserve. A building can be a complex body with parts; an entrance/address is not another body. Missing height is unknown, not zero. Current e40 already expresses much of this in its prompt; the remaining work is a coherent input/prompt/admission contract, not merely appending the same words.
+
+Reuse existing geometry to supply compact selectable relation IDs for the model-proposed local group before comparison. The model selects actual relations; the host does not silently substitute a different wall. Conditional mathematical checks retain IDs/hashes/fences and claimed-relation integrity. Do not demand one of three patterns or invented numeric pose for every sufficient G. A generic L-shaped match is insufficient when the photographed combination concerns several offset volumes. Independent G can accept; uncertain G preserves the active/reserve and specific T/REF question. Existing G-v3 failures show that removing the old certificate alone does not establish correctness.
+
+Current-versus-target details and negative evidence are in the linked vision. The historical 26-image G applicability obligation and the 15-image product corpus are distinct; follow the current [acceptance procedure](testing/street-story-product-acceptance-20261010.md), with explicitly bounded authorized executions rather than silently replaying old jobs.
 
 ## Prussia39 discovery and architectural text
 
@@ -96,12 +113,14 @@ a required step after sufficient geometry. The target route is:
    covers the publisher's observed local window, not an arbitrary-radius database.
    For a supported distant target, use its candidate area rather than retrying the
    camera point. An external web search remains a possible independent fallback.
-3. Present the returned card titles, addresses, short annotations, points, actual
-   article IDs, total count and pagination to the model. The model selects 1–2
-   relevant descriptions and their intended scope. Do not select the first two
-   cards automatically. If the first page is incomplete, permit one useful actual
-   pagination link or one more specific literal query within the same budget;
-   do not crawl a street or claim that 20 of 35 cards exhaust the catalogue.
+3. Present returned card IDs, titles, addresses, annotations, points, total count
+   and actual pagination. The model selects a small relevant working portion and
+   its intended scope; do not automatically choose the first cards. The old
+   1–2-card / one-pagination setup is a portion size, not a global availability
+   ceiling. Preserve an explicit next page/query and unread reserve for a useful
+   bounded continuation; do not crawl the whole publisher or claim that 20 of 35
+   cards exhaust the catalogue. Optional selection failure does not erase already
+   acquired URLs of an active physical hypothesis.
 4. Read only selected actual card bodies through the existing bounded fetch/cache,
    checking encoding, readable content and original byte hash. Deduplicate by
    canonical article ID. Preserve lookup provenance, fetched time and full source
@@ -127,18 +146,42 @@ not proof that a card is absent. No publisher-wide crawler, address-to-answer
 rules, new database or automatic domain scoring is introduced.
 
 Wiki is complementary: receive lightweight direct/nearby leads early, read only
-explicitly selected and bound pages, and use actual architecture text if useful.
+explicitly selected received pages as hypotheses, and use actual architecture text if useful.
+Do not require resolved physical binding before reading a nominated Wiki body;
+require it for positive identity admission, using the same safe reader and budget.
 Wiki metadata/snippets are not acquired article bodies. Its lack of an article
 does not cancel a sufficient map or Prussia39 proof. Architecture text from any
 source must obey the same proof and physical-scope contract.
 
+### T target amendment: individual architecture and complete source reachability
+
+The [G/T evidence audit](reports/street-story-identity-methods-audit-20261010.md)
+separates working T from remaining defects. Preserve one actual SOURCE+TEXT
+semantic comparison of distinctive bay/axis/opening/portal/gable/risalit/floor/roof
+combinations. Unseen features are not contradictions; facade changes require
+sourced temporal context, not an invented renovation. Body binding uses literal
+article/physical records in the same decision. MAP resolves genuine remaining
+ambiguity; it is not a mandatory preliminary G result. Sufficient T needs no REF.
+Keep SOURCE-to-architecture, article-to-complex and SOURCE-to-exact-body relations distinct in that same decision. Article dimensions are not automatically SOURCE observations. If a response relies on publisher images, record that reliance; a pure-text claim requires verified actual input modalities, not just the proof label.
+
+Keep complete acquired material in the existing cache/source version. Compact
+T carries the selected ranges, their coverage and a reachable unread continuation;
+the current 12K prefix is not the whole article. `all_passages_displayed` describes
+the supplied portion only. Size the physical-link contract to the selected
+positive bindings instead of a fixed maximum of two; exact references and body
+scope remain required, while negative/unrelated articles need no fabricated link.
+Ready text may run early; preserve reserve and later distinguishing passages.
+A scoped mismatch does not blacklist every body, era or source of a complex.
+
 ## Adaptive execution and truthful outcomes
 
 Select the cheapest ready evidence that answers the current uncertainty. Preserve
-one joint SOURCE + context decision and at most one meaningful replanning, rather
-than add mandatory observation, catalogue-selection, geometry and text judges.
-Catalog metadata and selected-body acquisition must be arranged within that
-operation budget; simply adding a third mandatory judge is not the target.
+one joint SOURCE + context semantic decision per meaningful frozen input, rather
+than adding mandatory observation, catalogue-selection, geometry and text judges.
+The e40 single-followup/third-joint ceiling is an as-is limitation, superseded by
+bounded evidence-driven continuation above. Acquisition, MAP detail and format
+repair must not spend a single shared permission that blocks newly useful T.
+No additional judge or inference is mandatory merely to report narrowing.
 Ready SOURCE/MAP does not wait for a cold street catalogue. An owned optional
 read may complete during the joint operation; its source cache and scoped receipt
 remain available to the existing continuation. Late metadata does not mutate an
@@ -182,7 +225,8 @@ If the shared controller definitively refused it before send,
 one finite Retry-After of at most 60 seconds may be observed outside the key lease,
 only when both waiting and an ordinary call still fit the identity deadline.
 The retry preserves the exact SOURCE/MAP/TEXT, prompt, schema and configuration;
-it re-enters the same route's admission without refund or a third joint operation.
+it re-enters the same addressed operation's admission without refund or creating
+a duplicate logical operation; this retry rule is not a global cap on later new evidence.
 UNKNOWN and closed provider failures do not qualify. An interrupted wait retains
 the original plan for conservative restart reuse and does not automatically resend.
 After a closed initial contract failure, the existing second joint may use the
@@ -248,6 +292,13 @@ and physical subject. Private quote labels address literal slices of the exact
 frozen packet and selected own evidence; they do not supply a support verdict.
 Paraphrased quotes remain invalid. Original responses and UNKNOWN operations stay
 immutable and are observed under their original contract after restart.
+The following extraction/reviewer qualification rules describe the current e40
+implementation, not a requirement for a second model call forever. The current
+recovery target combines the necessary semantic decision with the existing
+source-reading/commit path where supported, retaining exact provenance and
+negative controls. Until that change is implemented and verified, raw candidates
+must not be relabeled eligible and existing reviewer qualification remains active.
+
 Live-first extraction does not qualify its model as a semantic reviewer. Every
 automatic review route must have matching verified schema, own-passage, qualifier
 negative, nearby-duplicate and nearby-conflict checks. Only the existing matching
@@ -268,15 +319,23 @@ manifest with no remaining actions can finish honestly even with unresolved
 candidates; deferred source pages, UNKNOWN requests and joined continuations
 still block that conclusion. Exhaustion never establishes support for a fact.
 
-First replay saved evidence and negative controls, including the wrong dormitory,
-house 21 versus 22, water tower versus 121 and unresolved 6/6A. Then use one frozen
-candidate/configuration/manifest with at most five live cases: 102,104,111,130,132;
-122 is a reserve, 121 a separate retained holdout. Cases 130/132 must establish geometry
-before any external REF. Rich cases 102/104/132 require at least 3 substantive reviewed
-facts; ordinary 111/130 at least 1. Verify sources and canonical POI readback, the
-3/5/8 caps and at least one actual Live-first send. Run one emulator E2E only after
-backend PASS. A mixed-SHA recovery, isolated identity, raw claims or manual research
-does not pass this gate.
+### Acceptance cohorts and independent methods
+
+The former five-case protocol (102,104,111,130,132;122 reserve) is historical,
+not the current universal release gate. Use the current recovery brief's named,
+frozen cohort and report each run's SHA, configuration, manifest, usable-result
+and terminal times. Do not mix versions or count retained continuations as cold
+uploads. The later 15-photo run was interrupted; its partial results are not a
+completed release acceptance.
+
+A sufficiently supported correct physical object may be accepted by G, T or REF
+independently. Requiring geometry before REF for 130/132 is a geometry-method
+control only, not a product precondition. Keep wrong-body and uncertain negative
+controls, own-source semantic validation, ordinary POI/API readback, scoped Stop,
+UNKNOWN and real resource limits. Fact-count labels alone do not establish useful
+or correct content. Physical-phone, emulator, prepared-audio and isolated-backend
+evidence remain separately identified; no historical status proves current release
+or deployment. See the current recovery brief for the next authorized checks.
 
 ## Implementation status and remaining gate
 
@@ -298,8 +357,8 @@ observable and real provider errors are handled by the existing operation contra
 The former three-second preparation cutoff repeatedly lost cold cards. Aligning
 it with the reader envelope preserves responses slower than three seconds; a
 response exceeding the ordinary reader limit can still be unavailable.
-A complete literal address lookup with 1–2 results can supply their actual bodies
-for the second joint call. A late broad or partial catalogue cannot currently
+**As-is e40 limitation, not the continuation target:** a complete literal address
+lookup with 1–2 results can supply their actual bodies for the second joint call. A late broad or partial catalogue cannot currently
 produce that text proof within the same two-call budget. Preserve its inventory
 and continue useful independent work; do not invent first-two selection or a third
 mandatory judge. This is a material limitation of the prepared text path.
@@ -384,9 +443,10 @@ Its focused identity, repair, admission and original-readback checks passed
 about the previous pointer wording/schema were updated to the current exact-ID
 contract; host membership checks remain strict.
 
-There is no accepted release, final five-building PASS, deployment or Android
-acceptance yet. Per-version failures, tests, usage bounds and remaining gates
-are recorded in the [validation report](reports/product-recovery-validation-20261009.md).
+The preceding historical cases did not establish release, deployment or Android
+acceptance. They do not define the current acceptance cohort or current deployment status.
+For the latest measured scope and interrupted run, use the [day audit](reports/street-story-measured-day-audit-20261010.md). Per-version failures, tests, usage bounds and remaining gates
+are recorded in the [validation report](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/docs/reports/product-recovery-validation-20261009.md).
 Release acceptance must supply the same SHA for code/backend/evidence, independently
 checked facts and canonical POI readback, first useful fact and full times,
 actual sends/usage and measured costs where available. Billing totals currently

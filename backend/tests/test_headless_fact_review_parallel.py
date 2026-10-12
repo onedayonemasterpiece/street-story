@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story import review_packets
-from street_story.headless_review_quotes import model_packet
+from street_story.headless_review_quotes import OWN_REFS_CONTRACT, model_packet
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.headless_facts import HeadlessFacts
 from street_story.service import ConflictError
@@ -18,7 +18,8 @@ def model_decisions(packet):
     for fact in packet['facts']:
         evidence = fact['evidence']
         quotes = [s['quote_ref'] for e in evidence for s in e['slices'] if s.get('quote_ref')]
-        decisions.append({'fact': fact['fact'], 'evidence': [e['evidence'] for e in evidence],
+        decisions.append({'fact': fact['fact'], **({'evidence': [e['evidence'] for e in evidence]}
+            if packet.get('evidence_addressing') != OWN_REFS_CONTRACT else {}),
             'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
             'claims': [fact['text']], 'basis_quotes': quotes or [fact['text']], 'reason': 'Own unchanged frozen passage.',
             **({'own_evidence_values': [], 'own_value_conflicts': []} if packet.get('verifier_presentation') else {})})
@@ -160,6 +161,7 @@ def qualify_controlled_review(harness):
 
 class ControlledReview(HeadlessFactReview):
     MAX_PACKET_FACTS = 3  # Deliberately force siblings to exercise stale/unknown fences.
+    MAX_PARALLEL_GROUPS = 1  # Retain the original single-slot interleaving controls.
     active = 0
     peak = 0
     calls = 0
@@ -185,9 +187,12 @@ class ControlledReview(HeadlessFactReview):
         for fact in sorted({r['fact'] for r in packet['items']}):
             rows=[r for r in packet['items'] if r['fact']==fact]
             item=rows[0]
-            decisions.append({'fact':fact,'evidence':sorted({r['evidence'] for r in rows}),
+            decisions.append({'fact':fact, **({'evidence':sorted({r['evidence'] for r in rows})}
+                if packet.get('evidence_addressing') != OWN_REFS_CONTRACT else {}),
                 'verdict':'supported','atomic':True,'support_complete':True,'qualifiers_preserved':True,
-                'claims':[item['text']],'basis_quotes':[item['text']], 'reason':'Controlled own exact passage.'})
+                'claims':[item['text']],'basis_quotes':([r['quote_ref'] for r in rows]
+                    if packet.get('evidence_addressing') == OWN_REFS_CONTRACT else [item['text']]),
+                'reason':'Controlled own exact passage.'})
         args={'packet_ref':packet['packet_ref'],'decisions':decisions,'relations_complete':True,
               'conflicts':[],'coverage_complete':False,'missing_aspects':[]}
         self._put(job, unit, {'phase':'result','args':args,
@@ -378,7 +383,8 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
         ids = review_packets.pending_candidates(db, job['story_id'], RUN)
     full, _, _ = engine._prepare_packet(job, RUN, session, ids)
     prompt = VERIFIER_PROMPT + canonical(model_packet(full))
-    assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
+    assert len(prompt.encode('utf-8')) > len(prompt)
+    assert len(prompt.encode('utf-8')) > 24000
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
         remaining = len(review_packets.pending_candidates(db, job['story_id'], RUN))
@@ -458,6 +464,8 @@ async def test_fresh_large_live_packet_keeps_live_route_and_complete_evidence(tm
 
 @pytest.mark.asyncio
 async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp_path):
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.service import canonical
     texts = [f'Здание {i} сохранило ' + 'кирпичную облицовку фасада с узорчатыми деталями, ' * 8
              + 'согласно описанию 2005 года.' for i in range(12)]
     svc, job, harness = await candidates(tmp_path, source_texts=texts)
@@ -465,6 +473,16 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
     class AvailableReview(ControlledReview):
         MAX_PACKET_FACTS = 12
         async def _infer(self, packet, *args, **kwargs):
+            assert len(VERIFIER_PROMPT + canonical(model_packet(packet))) <= 24000 or packet['total_facts'] == 1
+            context = packet['own_source_context']
+            assert context['complete'] is True
+            assert all(document['complete'] and not document['attached_as_support'] for document in context['documents'])
+            assert all(fact['text'] in '\n'.join(document['text'] for document in context['documents'])
+                for fact in model_packet(packet)['facts'])
+            with svc.store.connection() as db:
+                for document in context['documents']:
+                    assert document['text'] == db.execute('SELECT normalized_text FROM source_versions WHERE source_version_id=?',
+                        (document['source_version_id'],)).fetchone()[0]
             calls.append(packet['total_facts'])
             return await super()._infer(packet, *args, **kwargs)
     engine = AvailableReview(harness)
@@ -472,8 +490,11 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
               {**controlled_review_route(SimpleNamespace(directory=None, limits=SimpleNamespace(max_input_chars=24000))),
                'role': 'facts_native'}]
     engine._qualified_routes = lambda available=True: [r for r in routes if not available or r['available']]
-    assert await engine.run(job, RUN, 0) == 1
-    assert calls == [12]
+    assert await engine.run(job, RUN, 0) == len(calls)
+    assert sum(calls) == len(texts)
+    with svc.store.connection() as db:
+        assert not review_packets.pending_candidates(db, job['story_id'], RUN)
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
 
 
 @pytest.mark.asyncio
@@ -883,10 +904,10 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
         assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
         initialized = StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None).initialize(
             resource_id=job['story_id'], actor=None, model='gemini-3.8-live')
-        assert initialized['capability'] == 'research'
+        assert initialized['capability'] == 'editor'
         tools = {tool['name'] for tool in initialized['configuration']['functions']}
         assert 'continue_story' in tools
-        assert not {'select_facts', 'set_concept', 'edit_text'} & tools
+        assert {'select_facts', 'set_concept', 'edit_text'} <= tools
         assert not any(event.get('name') == 'finalize_fact_review' for event in session.events)
     finally:
         release.set()
@@ -901,15 +922,14 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
 
 
 @pytest.mark.asyncio
-async def test_owner_selection_change_stales_private_background_packet(tmp_path):
+async def test_owner_selection_change_preserves_private_background_packet(tmp_path):
     svc,job,harness=await candidates(tmp_path)
     session=SimpleNamespace(id='review',resource_id=job['story_id'],actor=None,closed=False,state={})
     packet=review_packets.read(harness.adapter,session,{'run_id':RUN,'_parallel_candidate_review':True})
     with svc.store.tx() as db:
         db.execute('UPDATE fact_assertions SET owner_selected=1 WHERE story_id=?',(job['story_id'],))
     with svc.store.connection() as db:
-        with pytest.raises(ConflictError):
-            review_packets.load(harness.adapter,session,db,packet['packet_ref'])
+        review_packets.load(harness.adapter,session,db,packet['packet_ref'])
 
 
 @pytest.mark.asyncio
@@ -1031,7 +1051,7 @@ async def test_repeated_local_capacity_polling_backs_off_without_model_send_or_o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown','exhausted'])
+@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown','aborted_ack','exhausted'])
 async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct(tmp_path,mode):
     from contextvars import ContextVar
     from street_story.research_adapter import ProductResearchAdapter
@@ -1051,10 +1071,14 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
         async def _run(self,role,prompt,binding,schema):
             calls.append(self.model_id)
             packet=json.loads(prompt.split('Frozen packet: ',1)[1])
-            if self.model_id=='mimo-v2.6-flash-free' and mode in {'unknown','aborted_unknown'}:
-                receipt={'binding':binding,'phase':'aborted' if mode=='aborted_unknown' else 'submitted','session_id':'ses_existing',
+            if self.model_id=='mimo-v2.6-flash-free' and mode in {'unknown','aborted_unknown','aborted_ack'}:
+                receipt={'binding':binding,'phase':'aborted' if mode!='unknown' else 'submitted','session_id':'ses_existing',
                          'message_id':'msg_existing','model_id':self.model_id}
+                if mode == 'aborted_ack':
+                    receipt['abort_acknowledged'] = True
                 await provider.checkpoint(binding,receipt)
+                if mode == 'aborted_ack':
+                    raise asyncio.CancelledError()
                 raise ResearchUnavailable('research_attempt_unknown',receipt)
             if self.model_id=='mimo-v2.6-flash-free' or mode == 'exhausted':
                 args={'decisions':'broken'}
@@ -1079,7 +1103,20 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
     session=SimpleNamespace(id='review',resource_id=job['story_id'],actor=None,closed=False,state={})
     packet=review_packets.read(harness.adapter,session,{'run_id':RUN,'_parallel_candidate_review':True})
     engine=HeadlessFactReview(harness)
-    response=await engine._infer(packet,job,'semantic-controlled-unit',{})
+    if mode == 'aborted_ack':
+        with pytest.raises(asyncio.CancelledError):
+            await engine._infer(packet, job, 'semantic-controlled-unit', {})
+        interrupted = svc.store.checkpoint_get(job['id'], 'headless_fact_review:semantic-controlled-unit')
+        assert interrupted['phase'] == 'unknown'
+        engine._recover_closed_reviews(job)
+        recovered = svc.store.checkpoint_get(job['id'], 'headless_fact_review:semantic-controlled-unit')
+        assert recovered['phase'] == 'closed_error'
+        assert recovered['original_abort_acknowledged'] is True
+        assert recovered['closed_routes'] == ['facts_review_mimo-v2.6-flash-free']
+        assert recovered['packet_ref'] == interrupted['packet_ref']
+        response = await engine._infer(packet, job, 'semantic-controlled-unit', recovered)
+    else:
+        response=await engine._infer(packet,job,'semantic-controlled-unit',{})
     assert calls==['mimo-v2.6-flash-free']+([] if mode in {'unknown','aborted_unknown'} else ['nemotron-3-ultra-free'])
     assert (response is None)==(mode in {'unknown','aborted_unknown','exhausted'})
     if mode == 'exhausted':

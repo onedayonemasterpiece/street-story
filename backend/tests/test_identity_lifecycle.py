@@ -178,6 +178,8 @@ async def test_same_poi_hydrates_only_reviewed_eligible_facts_before_new_search(
     assert first_ready["facts"] == []
     assert gemini.research_calls == 0
 
+
+
     with service.store.tx() as db:
         db.execute(
             "UPDATE poi_research_assertions SET review_status='eligible',eligibility='eligible',"
@@ -243,8 +245,23 @@ async def test_identity_without_exif_coordinates_requires_review(tmp_path):
 
     result = service.story(story["id"])
     assert result["state"] == "needs_review"
-    assert result["error"]["code"] == "identity_location_missing"
+    assert result["error"]["code"] == "identity_clarification_required"
     assert result["facts"] == []
+    assert gemini.identity_calls == []
+    with service.store.connection() as db:
+        import json
+        research = json.loads(service._story_row(db, story["id"])["research_json"])
+        question = research["identity_clarification"]
+        assert question["photo_sha256"] == PHOTO_SHA
+        assert question["generation"] == question["control_revision"] == 0
+        assert question["question"] == result["error"]["message"]
+        assert research["automatic_research_outcome"]["outcome"] == "clarification_required"
+        budget = research["research_budget"]
+    service.ensure_identity(story["id"])
+    with service.store.connection() as db:
+        reopened = json.loads(service._story_row(db, story["id"])["research_json"])
+        assert reopened["research_budget"] == budget
+        assert reopened["identity_clarification"] == question
     assert gemini.identity_calls == []
 
 
@@ -303,3 +320,35 @@ def test_candidate_catalog_prioritizes_nearby_visible_objects():
         "Средний объект",
         "Дальний памятник",
     ]
+
+
+@pytest.mark.asyncio
+async def test_new_identity_subject_is_bound_before_first_canonical_basis_refresh(tmp_path):
+    import json
+    from test_fact_ledger import fact, persist
+    from street_story.fact_ledger import accept_fact_basis, refresh_review_status, accepted_basis_valid
+    from street_story.poi_memory import sync_poi_review_from_story
+    service, gemini = make_service(tmp_path)
+    first = create(service, client='canonical-first')
+    service.ensure_identity(first['id'])
+    await service.run_once()
+    identity = service.story(first['id'])['visual_identity']
+    claim = fact('figures', 'Три фигуры.', 'https://own.example', 'Три фигуры.')
+    fid = persist(service.store, first['id'], [claim], 'own-run', 'own-batch')[0]
+    with service.store.tx() as db:
+        ids = [r[0] for r in db.execute('SELECT evidence_id FROM fact_evidence_spans')]
+        accept_fact_basis(db, first['id'], fid, ids, operation={'receipt_id': 'own-assessment'}, now=service.store.now())
+        refresh_review_status(db, first['id'], service.store.now())
+        persist_research_memory(db, identity, [{**claim, 'fact_id': fid}], claim['sources'], 'own', service.store.now())
+        sync_poi_review_from_story(db, first['id'], service.store.now())
+        proof = db.execute('SELECT review_proof_json FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0]
+    second = create(service, client='canonical-second')
+    service.ensure_identity(second['id'])
+    await service.run_once()
+    with service.store.tx() as db:
+        assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?', (second['id'], fid)).fetchone()
+        assert assertion['eligibility'] == 'eligible' and accepted_basis_valid(db, second['id'], assertion)
+        assert json.loads(assertion['accepted_basis_json'])['operation']['canonical_admission'] == json.loads(proof)
+        sync_poi_review_from_story(db, second['id'], service.store.now())
+        assert json.loads(db.execute('SELECT review_proof_json FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0]) == json.loads(proof)
+    assert gemini.research_calls == 0

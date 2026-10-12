@@ -147,6 +147,14 @@ class IdentityLifecycleMixin:
             # foreground refresh. Recovery or explicit correction creates a generation.
             if research.get('identity_attempted_generation') == generation:
                 return self._story_repr(db, row)
+            # Accepted hints and ordinary upload share the same durable owner.
+            # Foreground refresh must not create a second job for its generation.
+            for pending in db.execute("SELECT payload_json FROM jobs WHERE story_id=? AND kind='identity' "
+                                      "AND state IN ('ready','retry','running')", (story_id,)):
+                payload = json.loads(pending['payload_json'] or '{}')
+                if (int(payload.get('identity_generation') or 0) == generation
+                        and payload.get('photo_sha256', row['photo_sha256']) == row['photo_sha256']):
+                    return self._story_repr(db, row)
             semantic = 'identity:' + digest({'story_id': story_id, 'photo_sha256': row['photo_sha256'],
                                             'generation': generation, 'lat': row['latitude'], 'lon': row['longitude']})
             job_id = self._enqueue_job(db, story_id, 'identity', semantic,
@@ -159,9 +167,97 @@ class IdentityLifecycleMixin:
         record_identity_event(self, story_id, 'identity_requested', {'generation': generation, 'job_id': job_id})
         return result
 
+    def accept_identity_hint(self, story_id, key, text, transcript=''):
+        """Durably accept a current clarification reply before any HTTP/model work."""
+        from .research_control import research_stopped
+        from .research_budget import archive_attempt, ensure_budget, ResearchTerminated
+        if not text.strip() or len(text) > 500:
+            raise ConflictError('identity_hint_invalid', 'Нужен короткий буквальный ответ владельца.')
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            if self._idem(db, key, 'identity_hint', digest({'story_id': story_id, 'text': text}), 'story', story_id):
+                return self._story_repr(db, row)
+            research = json.loads(row['research_json'] or '{}')
+            generation = int(research.get('identity_generation') or 0)
+            epoch = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+            if research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation):
+                raise ResearchTerminated('owner_stopped', 'identity_owner_stopped')
+            if row['state'] in PROTECTED or (research.get('visual_identity') or {}).get('status') in ACCEPTED:
+                return self._story_repr(db, row)
+            question = research.get('identity_clarification') or {}
+            current_question = (question.get('photo_sha256') == row['photo_sha256']
+                and question.get('generation') == generation and question.get('control_revision') == epoch)
+            legacy_question = not question and epoch == 0 and row['latitude'] is None and row['longitude'] is None
+            finished = research.get('automatic_research_outcome') or {}
+            answering = ((not finished or finished.get('outcome') == 'clarification_required')
+                         and not question.get('answered') and (current_question
+                         or finished.get('outcome') == 'clarification_required' and legacy_question))
+            if finished and not answering:
+                raise ResearchTerminated(finished['outcome'], 'research_attempt_already_finished')
+            budget = research.get('research_budget') or ensure_budget(self, story_id, db=db)
+            research['research_budget'] = budget
+            archive_attempt(research, self.store.now())
+            generation += 1
+            research['identity_generation'] = generation
+            research['identity_owner_hint'] = {'text': text[:500], 'provenance': 'owner_live_text_or_voice',
+                'independently_verified': False, 'scope': 'search_context_only', 'request_key': key,
+                'photo_sha256': row['photo_sha256'], 'generation': generation, 'control_revision': epoch}
+            if answering:
+                research['identity_clarification'] = {**question, 'answered': True, 'answered_by': key}
+            research.pop('automatic_research_outcome', None)
+            research.pop('identity_attempt_outcome', None)
+            # Carry existing Stop states into this SOURCE's new generation.
+            for control in (research.get('research_controls') or {}).values():
+                if control.get('photo_sha256') == row['photo_sha256'] and control.get('identity_generation') == generation - 1:
+                    control['identity_generation'] = generation
+            late_reply = answering and finished.get('outcome') == 'clarification_required'
+            # An owner reply changes input generation, never SOURCE lifetime.
+            # Archive the closed question while keeping the original work journal.
+            research['research_budget'] = {**budget, 'identity_generation': generation,
+                'identity_deadline_at': None, 'deadline_at': None}
+            db.execute("UPDATE stories SET research_json=?,state='identifying',error_code=NULL,error_message=NULL,"
+                       'revision=revision+1,updated_at=? WHERE id=?', (canonical(research), self.store.now(), story_id))
+            jid = self._enqueue_job(db, story_id, 'identity', 'identity-hint:' + digest([story_id, key]),
+                {'identity_generation': generation, 'photo_sha256': row['photo_sha256'],
+                 'control_revision': epoch, 'owner_hint': text[:500], 'transcript': transcript[:12000],
+                 'queue_priority': 'interactive', 'accepted_owner_request_key': key})
+            result = self._story_repr(db, self._story_row(db, story_id))
+        record_identity_event(self, story_id, 'identity_hint_accepted', {'generation': generation,
+            'job_id': jid, 'control_revision': epoch, 'late_reply': late_reply, 'identity_established': False})
+        return result
+
     async def _run_identity(self, job: dict[str, Any]) -> None:
-        generation = json.loads(job.get('payload_json') or '{}').get('identity_generation', 0)
-        await self.resolve_identity(job['story_id'], expected_generation=generation, job_id=job['id'], job_attempt=job['attempts'])
+        payload = json.loads(job.get('payload_json') or '{}')
+        generation = payload.get('identity_generation', 0)
+        hint = str(payload.get('owner_hint') or '')
+        if hint:
+            from .research_budget import require_remaining
+            from .research_control import research_stopped
+            row, research = self._identity_snapshot(job['story_id'])
+            def current(row, research):
+                return (row['photo_sha256'] == payload.get('photo_sha256')
+                    and int(research.get('identity_generation') or 0) == generation
+                    and int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) == payload.get('control_revision')
+                    and not research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation))
+            if not current(row, research):
+                return
+            if row.get('latitude') is None or row.get('longitude') is None:
+                require_remaining(self, job['story_id'], 'identity')
+                resolver = getattr(self, '_resolve_place_query', None)
+                location = await resolver(hint) if callable(resolver) else None
+                if location:
+                    require_remaining(self, job['story_id'], 'identity')
+                    with self.store.tx() as db:
+                        row = self._story_row(db, job['story_id'])
+                        research = json.loads(row['research_json'] or '{}')
+                        if not current(row, research):
+                            return
+                        research['location_provenance'] = {'kind': 'owner_live_place_query', 'query': hint,
+                            'not_device_current_location': True, 'independently_verified': False}
+                        db.execute('UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?',
+                            (float(location['lat']), float(location['lon']), canonical(research), job['story_id']))
+        await self.resolve_identity(job['story_id'], payload.get('transcript') or '', expected_generation=generation,
+            job_id=job['id'], job_attempt=job['attempts'], owner_hint=hint)
 
     async def resolve_identity(self, story_id: str, transcript: str = '', *, expected_generation=None, job_id=None, job_attempt=None, owner_hint=''):
         if not hasattr(self, '_identity_locks'):
@@ -222,8 +318,13 @@ class IdentityLifecycleMixin:
             story['_camera_position_verified'] = position_verified
             story['latitude'], story['longitude'] = (lat, lon) if valid else (None, None)
             if owner_hint.strip():
-                story['_identity_owner_hint'] = {'text': owner_hint.strip()[:500],
-                    'provenance': 'same_conversation_owner_hint', 'scope': 'search_context_only'}
+                saved_hint = prior.get('identity_owner_hint') or {}
+                story['_identity_owner_hint'] = ({**saved_hint}
+                    if saved_hint.get('text') == owner_hint.strip()[:500]
+                    and saved_hint.get('photo_sha256') == story['photo_sha256']
+                    and saved_hint.get('generation') == generation else
+                    {'text': owner_hint.strip()[:500], 'provenance': 'same_conversation_owner_hint',
+                     'scope': 'search_context_only', 'independently_verified': False})
             osm, wikipedia, candidates, observed_candidates = {}, [], [], []
             rejected = set(prior.get('identity_rejected_ids') or [])
             source_waits = []
@@ -363,6 +464,7 @@ class IdentityLifecycleMixin:
                 self._schedule_identity_visual()
                 record_identity_event(self, story_id, 'identity_shortlist_ready', {'generation': generation,
                     'candidate_count': len(candidates), 'discovery_may_continue': True})
+            reference_work_pending = bool(raw.get('_comparison_deferred') and candidates)
             if not (visual_match(raw, candidates) or non_reference_result_valid(raw, candidates, story)):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
@@ -372,7 +474,11 @@ class IdentityLifecycleMixin:
                     with self.store.connection() as db:
                         known_sources = [*candidate_reference_images(db, candidates),
                                          *candidate_article_sources(db, candidates)]
-                if known_sources and not owner_hint.strip():
+                from .identity_discovery import alternative_acquisition_due
+                saved_plan = story.get('_identity_search_plan_payload') or (
+                    (json.loads(self._identity_snapshot(story_id)[0]['research_json'] or '{}')
+                     .get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload') or {}
+                if known_sources and not owner_hint.strip() and not alternative_acquisition_due(saved_plan):
                     # New photos still require a new comparison. Deliver the
                     # existing queue first; searching is not a prerequisite for
                     # addressing an already accumulated physical POI reference.
@@ -420,6 +526,7 @@ class IdentityLifecycleMixin:
                         # Retaining references does not replace the current verdict.
                         ids = {item['candidate_id'] for item in discovered}
                         candidates = ([item for item in candidates if item['candidate_id'] not in ids] + discovered)[:36]
+                        reference_work_pending = bool(discovered)
                     if recovery_is_better:
                         raw = recovered_raw
                         ids = {item['candidate_id'] for item in discovered}
@@ -493,6 +600,7 @@ class IdentityLifecycleMixin:
                     else 'visual_reference' if reference_verified else None,
                 **({'geometry_proof': raw['geometry_proof']} if geometry_verified else {}),
                 **({'architectural_text_proof': raw['architectural_text_proof']} if text_verified else {})}
+            deferred_location_question = False
             with self.store.tx() as db:
                 current = self._story_row(db, story_id)
                 latest = json.loads(current['research_json'] or '{}')
@@ -508,10 +616,19 @@ class IdentityLifecycleMixin:
                 latest.update({'visual_identity': identity, 'osm': osm, 'photo_camera_hints': binding})
                 latest['wikipedia_metadata_complete'] = story.get('_wikipedia_metadata_complete', True)
                 question = ((latest.get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload', {}).get('clarification_question')
+                pending_visual = reference_work_pending and bool(
+                    getattr(getattr(self.providers, 'research', None), 'vision_available', False))
+                if not valid and not (isinstance(question, str) and question.strip()):
+                    # Missing coordinates are an observed input limitation,
+                    # independent of semantic identity or provider availability.
+                    question = 'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.'
                 if not valid and isinstance(question, str) and question.strip():
                     latest['identity_clarification'] = {'question': question.strip()[:200],
                         'reason': 'geographic_context_missing', 'photo_sha256': story['photo_sha256'],
-                        'generation': generation, 'control_revision': control_revision}
+                        'generation': generation, 'control_revision': control_revision,
+                        'background_continuation_pending': pending_visual}
+                    # Show the current question without sealing acquired work.
+                    deferred_location_question = pending_visual
                 # Keep successful discovery available to the SAME visual queue,
                 # but do not seal a generation while providers are unavailable.
                 if waiting:
@@ -526,6 +643,10 @@ class IdentityLifecycleMixin:
                     latest.pop('identity_sources_waiting', None)
                 if matched:
                     from .poi_memory import ensure_poi_identity, hydrate_story_facts
+                    # Hydration validates its basis against the committed subject.
+                    # Bind that subject inside this same transaction before its
+                    # first ledger refresh; an old uncertain snapshot is no veto.
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
                     now = self.store.now()
                     poi_id = ensure_poi_identity(
                         db,
@@ -549,6 +670,10 @@ class IdentityLifecycleMixin:
                                "AND json_extract(payload_json,'$.identity_generation')=?",
                                (self.store.now(), self.store.now(), story_id, generation))
                 result = self._story_repr(db, self._story_row(db, story_id))
+            if deferred_location_question:
+                record_identity_event(self, story_id, 'identity_location_question_deferred', {
+                    'generation': generation, 'candidate_count': len(candidates),
+                    'reason': 'pending_reference_comparison', 'identity_established': False})
             if waiting:
                 # Revisit independent work, not the slowest provider's cooldown.
                 # Each provider keeps its own admission/cooldown; this cannot

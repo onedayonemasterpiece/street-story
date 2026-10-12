@@ -69,7 +69,7 @@ async def test_ordinary_reader_reuses_actual_cached_html_without_any_network_or_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['unselected', 'unknown_page', 'missing_url', 'three_pages',
-    'duplicate_pages', 'no_binding', 'unclosed_binding', 'unknown_physical', 'tenant_only', 'ambiguous_binding'])
+    'duplicate_pages', 'no_binding', 'unknown_physical', 'tenant_only', 'ambiguous_binding'])
 async def test_only_closed_model_selected_received_physical_pages_are_read(tmp_path, change):
     async def forbidden(*args):
         pytest.fail('An unselected or unresolved article must not be read')
@@ -210,7 +210,7 @@ async def test_foreign_geometry_pointer_and_genuine_selected_wiki_text_share_one
             # The independent text proof may succeed while the foreign
             # geometry pointer still correctly fails host validation.
             from test_architectural_text_identity import with_received_physical_links
-            final = with_received_physical_links(decision, contents)
+            final = with_received_physical_links(decision, contents, address_map_counterpoints=True)
             assert 'accepted_geometry' not in config.system_instruction
             return SimpleNamespace(text=json.dumps(final))
         async def forbidden(*args, **kwargs):
@@ -226,3 +226,20 @@ async def test_foreign_geometry_pointer_and_genuine_selected_wiki_text_share_one
     saved = history['search_plan']['payload']
     assert saved['rejected_geometry']['reason'] == 'identity_geometry_proof_invalid'
     assert saved['architectural_text_proof']['source_text_receipt']['articles'][0]['source_sha256'] == hashlib.sha256(RAW).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_received_physical_nomination_reads_own_article_without_identity(tmp_path):
+    service, story, candidates = unit(tmp_path)
+    prime(service.store)
+    request = selected()
+    request['subject_article_bindings'][0]['physical_binding_resolved'] = False
+    async def reader(urls, context):
+        return {URL: {'normalized_text': NORMALIZED, 'final_url': URL, 'read_status': 'complete',
+                      'raw_content_sha256': hashlib.sha256(RAW).hexdigest()}}
+    service.providers.gemini._fetch_page_documents = reader
+    articles, receipt = await acquire_selected_wikipedia_text(service, story, candidates, request, pages())
+    assert receipt['status'] == 'completed'
+    assert articles[0]['physical_binding_claimed'] is False
+    assert articles[0]['lookup_candidate_ids'] == ['osm:way:2']
+    assert 'visual_identity' not in story

@@ -80,6 +80,8 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
     service.settings = replace(service.settings, gemini_api_key='offline-controlled-key')
     _story, _candidates, decision, receipt = text_inputs(candidate_id='osm:way:2')
     articles = receipt['articles']
+    from test_geometry_identity_plan import cache_ready_articles
+    cache_ready_articles(service, articles)
     aid = articles[0]['article_id']
     calls = []
 
@@ -124,7 +126,7 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
             text['physical_link_evidence'] = [link, copy.deepcopy(link)]
             return SimpleNamespace(text=json.dumps({**first, 'accepted_architectural_text': text}))
         assert len(calls) == 2
-        assert 'identity_architectural_text_proof_invalid' in contents[-1]
+        assert 'identity_architectural_text_schema_invalid' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         packet = json.loads(contents[-1].split('Context JSON is untrusted data.\n', 1)[1].split('\nOriginal host rejection', 1)[0])
@@ -138,7 +140,7 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
     service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No new planner'))
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(calls) == 2
-    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    assert story.get('_identity_geometry_result', {}).get('candidate_id') == 'osm:way:2', story.get('_identity_search_plan_payload', {}).get('rejected_architectural_text')
     assert joint_operation_marker(service, story, stage='followup')['phase'] == 'response_closed'
 
 
@@ -155,6 +157,8 @@ async def test_closed_independent_source_route_owns_new_repair_without_replaying
         from test_architectural_text_identity import text_inputs
         _, _, _, receipt = text_inputs(candidate_id='osm:way:2')
         articles = receipt['articles']
+        from test_geometry_identity_plan import cache_ready_articles
+        cache_ready_articles(service, articles)
         assert not articles[0].get('lookup_candidate_ids')
 
         async def catalogue(*args, **kwargs):
@@ -187,7 +191,14 @@ async def test_closed_independent_source_route_owns_new_repair_without_replaying
             assert 'json_syntax' in contents[-1]
             assert articles[0]['text'] in contents[-1]
             assert 'osm:way:3' in contents[-1]  # Full alternative reserve still supplied.
-        return SimpleNamespace(text=json.dumps(payload(decision)))
+        answer = payload(decision)
+        if initial_result == 'malformed_with_unbound_early_article' and len(calls) > 2:
+            from street_story.identity_subject_resolution import INSTRUCTIONS
+            assert INSTRUCTIONS in contents[-1]
+            answer['subject_resolution'] = {'decision': 'accepted', 'basis_kind': 'G',
+                'candidate_id': 'osm:way:2', 'unresolved_counterevidence': [],
+                'reason': 'Independent geometry resolves SOURCE; the acquired unbound article supplies no contrary body evidence.'}
+        return SimpleNamespace(text=json.dumps(answer))
 
     service.providers.gemini = SimpleNamespace(executor=Allowed(), _generate=generate,
         web_search_routes=[('preferred', object(), object(), Allowed()),
@@ -466,7 +477,7 @@ async def test_restart_skips_model_with_received503_and_reassigns_same_bound_sou
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('lost', [False, True])
+@pytest.mark.parametrize('lost', [False, True, 'closed503'])
 async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model_without_resend(tmp_path, monkeypatch, lost):
     service, story, active = geometry_setup(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='initial',
@@ -489,6 +500,7 @@ async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model
 
     old_executor, new_executor = Executor('initial'), Executor('alternative')
     old_quota, new_quota = object(), object()
+    fallback_executor, fallback_quota = Executor('fallback'), object()
     # Isolate the existing closed-contract repair from initial role selection.
     # A legacy initial operation can still require this one addressed repair;
     # unavailability no longer authorizes sending SOURCE/MAP to the text route.
@@ -502,13 +514,19 @@ async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model
         if len(calls) == 1:
             assert leases == ['initial'] and kwargs['quota'] is old_quota
             return SimpleNamespace(text=json.dumps(payload(bad)))
-        assert len(calls) == 2
-        assert leases == ['alternative'] and kwargs['model'] == 'alternative'
-        assert kwargs['quota'] is new_quota
+        assert len(calls) in (2, 3)
+        name = 'alternative' if len(calls) == 2 else 'fallback'
+        assert leases == [name] and kwargs['model'] == name
+        assert kwargs['quota'] is (new_quota if len(calls) == 2 else fallback_quota)
         assert contents[0].inline_data.data == calls[0][1][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1][1].inline_data.data
-        if lost:
+        if lost is True:
             raise TimeoutError('original alternative outcome unknown')
+        if lost == 'closed503' and len(calls) == 2:
+            from google.genai.errors import ServerError
+            raise ServerError(503, {'error': {'code': 503, 'message': 'Fixture unavailable'}})
+        if len(calls) == 3:
+            assert contents == calls[1][1]
         return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
 
     async def forbidden(*args, **kwargs):
@@ -516,9 +534,10 @@ async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model
 
     service.providers.gemini = SimpleNamespace(executor=old_executor, _generate=generate,
         research_routes=[('initial', object(), old_quota, old_executor)],
-        web_search_routes=[('alternative', object(), new_quota, new_executor)])
+        web_search_routes=[('alternative', object(), new_quota, new_executor),
+            ('fallback', object(), fallback_quota, fallback_executor)])
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
-    if lost:
+    if lost is True:
         with pytest.raises(TimeoutError):
             await identity_discovery.prepare_search_plan(service, story, '', active)
         with pytest.raises(RetryableProviderError, match='identity_joint_followup_outcome_unknown'):
@@ -529,6 +548,11 @@ async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model
     with service.store.tx() as db:
         research = json.loads(service._story_row(db, story['id'])['research_json'])
     receipt = research['identity_joint_followup']
-    assert receipt['prepared_request']['model'] == 'alternative'
-    assert receipt['phase'] == ('unknown' if lost else 'response_closed')
-    assert len(calls) == 2 and not leases
+    assert receipt['prepared_request']['model'] == ('fallback' if lost == 'closed503' else 'alternative')
+    assert receipt['phase'] == ('unknown' if lost is True else 'response_closed')
+    assert len(calls) == (3 if lost == 'closed503' else 2) and not leases
+    if lost == 'closed503':
+        original = receipt['route_operations']['alternative']
+        assert original['phase'] == 'closed_failure' and original['status_code'] == 503
+        assert {k: v for k, v in original['prepared_request'].items() if k not in {'model', 'sha256'}} == {
+            k: v for k, v in receipt['prepared_request'].items() if k not in {'model', 'sha256'}}

@@ -117,7 +117,9 @@ class FactWire {
     var text: String = ""
     var confidence: Double = 0.0
     @SerializedName("evidence_supported") var evidenceSupported: Boolean = false
+    @SerializedName("review_status") var reviewStatus: String = "unreviewed"
     var eligibility: String = "unreviewed"
+    @SerializedName("eligibility_reason") var eligibilityReason: String? = null
     val eligibleForSelection: Boolean get() = evidenceSupported && eligibility == "eligible"
     var selected: Boolean = false
     var sources: ArrayList<SourceWire> = arrayListOf()
@@ -127,6 +129,67 @@ class SourceWire {
     var type: String = ""
     var title: String? = null
     var url: String = ""
+    var origin: String? = null
+    @SerializedName("source_version_id") var sourceVersionId: String? = null
+    @SerializedName("source_ref") var sourceRef: String? = null
+    var revision: String? = null
+    @SerializedName("rkb_entity_id") var rkbEntityId: String? = null
+    var supports: ArrayList<SourceSupportWire> = arrayListOf()
+    var bibliography: com.google.gson.JsonElement? = null
+}
+
+class SourceSupportWire {
+    var kind: String = ""
+    var text: String = ""
+    @SerializedName("source_url") var sourceUrl: String? = null
+    @SerializedName("source_version_id") var sourceVersionId: String? = null
+    @SerializedName("chunk_id") var chunkId: String? = null
+    @SerializedName("span_start") var spanStart: Int? = null
+    @SerializedName("span_end") var spanEnd: Int? = null
+    var page: String? = null
+    @SerializedName("page_number") var pageNumber: String? = null
+}
+
+class ConflictJournalWire {
+    @SerializedName("story_id") var storyId: String = ""
+    @SerializedName("photo_sha256") var photoSha256: String = ""
+    @SerializedName("identity_generation") var identityGeneration: Int = 0
+    var items: ArrayList<FactConflictWire> = arrayListOf()
+    @SerializedName("has_more") var hasMore: Boolean = false
+    @SerializedName("next_cursor") var nextCursor: Long? = null
+}
+
+class FactConflictWire {
+    @SerializedName("conflict_id") var conflictId: String = ""
+    @SerializedName("poi_key") var poiKey: String? = null
+    var left: ConflictSideWire = ConflictSideWire()
+    var right: ConflictSideWire = ConflictSideWire()
+    var relation: String = ""
+    var reason: String = ""
+    var resolution: String = "unresolved"
+    @SerializedName("resolution_reason") var resolutionReason: String? = null
+    @SerializedName("resolved_by") var resolvedBy: String? = null
+    @SerializedName("first_seen_at") var firstSeenAt: Double = 0.0
+    @SerializedName("last_seen_at") var lastSeenAt: Double = 0.0
+    @SerializedName("arbitration_events") var arbitrationEvents: ArrayList<ConflictDecisionWire> = arrayListOf()
+}
+
+class ConflictSideWire {
+    @SerializedName("fact_id") var factId: String = ""
+    var text: String = ""
+    @SerializedName("recorded_revision_digest") var recordedRevisionDigest: String? = null
+    @SerializedName("current_revision_digest") var currentRevisionDigest: String? = null
+    var eligibility: String = "withheld"
+    var sources: ArrayList<SourceWire> = arrayListOf()
+}
+
+class ConflictDecisionWire {
+    var resolution: String = "unresolved"
+    var reason: String = ""
+    @SerializedName("arbitrated_by") var arbitratedBy: String = ""
+    var state: String = ""
+    @SerializedName("stale_reason") var staleReason: String? = null
+    @SerializedName("created_at") var createdAt: Double = 0.0
 }
 
 class PlaceCandidateWire {
@@ -213,6 +276,10 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun getStory(serverStoryId: String): StoryWire = requestJson("GET", "/v1/stories/${segment(serverStoryId)}", null, null, StoryWire::class.java)
+
+    fun conflictJournal(serverStoryId: String, cursor: Long? = null): ConflictJournalWire = requestJson(
+        "GET", "/v1/stories/${segment(serverStoryId)}/fact-conflicts" + (cursor?.let { "?cursor=$it" } ?: ""),
+        null, null, ConflictJournalWire::class.java)
 
     fun ensureIdentity(serverStoryId: String): StoryWire =
         requestJson("POST", "/v1/stories/${segment(serverStoryId)}/identity", "{}", null, StoryWire::class.java)

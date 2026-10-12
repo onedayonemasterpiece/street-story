@@ -128,24 +128,25 @@ async def test_broad_partial_catalogue_remains_for_model_selection_without_posta
 
         async def article(self, url):
             calls.append(('body', url))
-            assert url == received[2]['canonical_url']
+            assert url in {row['canonical_url'] for row in received}
             return {'status': 'completed', 'text': body,
-                'article_id': 'prussia39:sid:23', 'canonical_url': url,
+                'article_id': next(row['article_id'] for row in received if row['canonical_url'] == url), 'canonical_url': url,
                 'raw_content_sha256': hashlib.sha256(body.encode('cp1251')).hexdigest(),
                 'raw_body_sha256_verified': True}
 
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, receipt = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [physical], request)
-    assert calls == [('catalogue', 'Город', 'Тестовая улица, 22А')]
+    assert calls[0] == ('catalogue', 'Город', 'Тестовая улица, 22А')
+    assert {url for kind, url in calls[1:]} == {row['canonical_url'] for row in received}
     assert len(receipt['results']) == 4 and receipt['inventory_complete'] is False
     assert 'literal_address_selection' not in receipt
-    assert articles == []
-    assert 'model source selection' in receipt['limitation']
+    assert len(articles) == 4
+    assert receipt['source_acquisition_selection']['host_address_parser_used'] is False
 
 
 @pytest.mark.asyncio
-async def test_multiple_exact_addresses_remain_unselected_if_more_than_two(monkeypatch):
+async def test_multiple_address_articles_remain_available_without_inferred_identity(monkeypatch):
     story, physical, request = inputs()
     cards = [card(sid, 'Город, Тестовая, 22А') for sid in range(10, 14)]
 
@@ -156,10 +157,13 @@ async def test_multiple_exact_addresses_remain_unselected_if_more_than_two(monke
             return {'status': 'completed', 'results': cards, 'inventory_complete': True}
 
         async def article(self, url):
-            pytest.fail('Ambiguous publisher selection cannot acquire a body')
+            body = 'Приобретённая статья описывает собственный фасад.'
+            return {'status': 'completed', 'article_id': next(row['article_id'] for row in cards if row['canonical_url'] == url),
+                'canonical_url': url, 'text': body, 'raw_content_sha256': hashlib.sha256(body.encode()).hexdigest(),
+                'raw_body_sha256_verified': True}
 
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, receipt = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [physical], request)
-    assert not articles and len(receipt['results']) == 4
-    assert 'limitation' in receipt
+    assert len(articles) == len(receipt['results']) == 4
+    assert receipt['source_acquisition_selection']['identity_inferred'] is False

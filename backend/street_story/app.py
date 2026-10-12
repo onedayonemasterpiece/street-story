@@ -7,7 +7,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -120,11 +120,21 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
                 task.cancel()
             await asyncio.gather(*active.values(), return_exceptions=True)
 
+    async def maintenance_loop():
+        while True:
+            try:
+                await service.maintenance_tick()
+            except Exception as exc:
+                logging.getLogger('uvicorn.error').warning(
+                    'street_story_maintenance_deferred error_type=%s', type(exc).__name__)
+            await asyncio.sleep(max(1, settings.worker_poll_seconds))
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         task = asyncio.create_task(worker_loop(), name="street-story-worker")
         visual_task = asyncio.create_task(worker_loop(visual_only=True), name="street-story-identity-visual-worker")
         identity_task = asyncio.create_task(worker_loop(identity_only=True), name="street-story-identity-discovery-worker")
+        maintenance_task = asyncio.create_task(maintenance_loop(), name="street-story-maintenance")
         try:
             yield
         finally:
@@ -132,7 +142,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             task.cancel()
             visual_task.cancel()
             identity_task.cancel()
-            await asyncio.gather(task, visual_task, identity_task, return_exceptions=True)
+            maintenance_task.cancel()
+            await asyncio.gather(task, visual_task, identity_task, maintenance_task, return_exceptions=True)
             await service.close()
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)
@@ -246,6 +257,21 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         if not callable(ensure_identity):
             raise ConflictError("identity_unavailable", "Automatic identity is unavailable")
         return ensure_identity(story_id)
+
+    @app.post('/v1/stories/{story_id}/identity-hint', dependencies=[Depends(auth)])
+    async def identity_hint(story_id: str, request: Request,
+                            idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {'text'} or not isinstance(body['text'], str):
+            raise ConflictError('identity_hint_invalid', 'Нужен короткий буквальный ответ владельца.')
+        accept = getattr(service, 'accept_identity_hint', None)
+        if not callable(accept):
+            raise ConflictError('identity_unavailable', 'Automatic identity is unavailable')
+        from .research_budget import ResearchTerminated
+        try:
+            return accept(story_id, idem(idempotency_key), body['text'])
+        except ResearchTerminated as exc:
+            raise ConflictError(exc.reason, 'Исследование остановлено; подсказка не принята.') from exc
 
     @app.post("/v1/stories/{story_id}/photo-location", dependencies=[Depends(auth)])
     async def recover_photo_location(story_id: str, request: Request):
@@ -383,6 +409,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post("/v1/stories/{story_id}/facts", dependencies=[Depends(auth)])
     async def facts(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "facts", idempotency_key)
+
+    @app.get('/v1/stories/{story_id}/fact-conflicts', dependencies=[Depends(auth)])
+    async def fact_conflict_journal(story_id: str, cursor: int | None = Query(default=None, ge=1)):
+        from .conflict_journal import conflict_journal
+        return conflict_journal(service, story_id, cursor)
 
     @app.post('/v1/stories/{story_id}/research-control', dependencies=[Depends(auth)])
     async def research_control(story_id: str, request: Request,

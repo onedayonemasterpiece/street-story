@@ -133,11 +133,11 @@ async def test_all_failed_frozen_units_preserve_cooldown_not_ten_second_unvisite
     svc.providers.research = SimpleNamespace(client=None, extract_fact_page=refused)
     with pytest.raises(RetryableProviderError) as error:
         await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
-    assert error.value.retry_at == due and len(calls) == 3
+    assert error.value.retry_at == due and len(calls) == count
     with svc.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (job['story_id'],)).fetchone()[0] == 0
         phases = [json.loads(row[0]) for row in db.execute("SELECT value_json FROM research_checkpoints WHERE stage LIKE 'headless_fact_unit:%'")]
-        assert len(phases) == 3 and all(phase['retry_at'] == due and phase['phase'] == 'closed_error' for phase in phases)
+        assert len(phases) == count and all(phase['retry_at'] == due and phase['phase'] == 'closed_error' for phase in phases)
     if count == 3:
         with pytest.raises(RetryableProviderError) as replay:
             await HeadlessFacts(svc).run(job, RUN, 'History', 'history')

@@ -98,7 +98,9 @@ async def test_closed_refusal_reopens_only_changed_current_review_recipe(tmp_pat
                 db.execute('UPDATE fact_assertions SET revision_digest=? WHERE story_id=? AND assertion_id=?',
                            ('repaired-revision', job['story_id'], ids[0]))
             elif mutation == 'owner_context':
-                db.execute('UPDATE stories SET draft_text=? WHERE id=?', ('New owner context', job['story_id']))
+                research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (job['story_id'],)).fetchone()[0])
+                research['input_revision'] = 'Changed source question'
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
             else:
                 db.execute("UPDATE fact_assertions SET eligibility='eligible' WHERE story_id=? AND assertion_id=?",
                            (job['story_id'], ids[0]))
@@ -168,7 +170,7 @@ async def test_unknown_review_scope_allows_other_candidates_without_resending_or
 
 
 @pytest.mark.asyncio
-async def test_only_closed_empty_live_review_finishes_without_replacing_unknown(tmp_path, monkeypatch):
+async def test_only_closed_empty_live_review_waits_without_replacing_unknown(tmp_path, monkeypatch):
     from street_story.service import canonical
     svc, job, harness = await candidates(tmp_path, count=1)
     engine = HeadlessFactReview(harness)
@@ -187,13 +189,16 @@ async def test_only_closed_empty_live_review_finishes_without_replacing_unknown(
     async def no_replacement(*args):
         return 0
     monkeypatch.setattr(harness, '_review_candidates', no_replacement)
-    outcome = await harness.run(job, RUN, 'History', 'history')
-    assert outcome['outcome'] == 'resource_blocked'
-    assert outcome['reason'] == 'live_research_original_outcome_unavailable'
-    assert not outcome['coverage_complete']
+    before = svc.store.now()
+    with pytest.raises(RetryableProviderError, match='live_research_original_outcome_unavailable') as waiting:
+        await harness.run(job, RUN, 'History', 'history')
+    assert waiting.value.retry_at >= before + 300
     with svc.store.connection() as db:
         assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0]) == receipt
         assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'unreviewed'
+        assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (RUN,)).fetchone()[0] == 'partial'
+        assert 'automatic_research_outcome' not in json.loads(
+            svc._story_row(db, job['story_id'])['research_json'])
     assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) == original
 
 
@@ -226,7 +231,7 @@ async def test_closed_reviews_do_not_finish_deferred_source_or_unknown_page(tmp_
                 state['phase'] = 'unknown'
                 db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
                            (json.dumps(state), job['id'], row['stage']))
-    async def no_new_pages(*args):
+    async def no_new_pages(*args, **kwargs):
         return []  # Reproduce the retry branch while the existing read/UNKNOWN remains pending.
     monkeypatch.setattr(harness, '_prepare_units', no_new_pages)
     with svc.store.connection() as db:

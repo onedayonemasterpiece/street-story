@@ -1,4 +1,5 @@
 import hashlib
+import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -13,6 +14,42 @@ from test_mvp_research import service
 
 SCHEMA = {'type': 'object', 'properties': {'facts': {'type': 'array', 'items': {'type': 'string'}}},
           'required': ['facts'], 'additionalProperties': False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('attempt_cap,wave_cap,completed',[(.2,.5,True),(.02,.5,False),(.2,.02,True)])
+async def test_live_completion_uses_existing_configured_attempt_and_original_wave_bounds(tmp_path,attempt_cap,wave_cap,completed):
+    svc,_,story=service(tmp_path)
+    svc.settings=replace(svc.settings,gemini_attempt_timeout_seconds=attempt_cap,research_timeout_seconds=wave_cap)
+    now=svc.store.now()
+    svc.store.now=lambda:now
+    ensure_budget(svc,story['id'],explicit=True)
+    provider,calls=client(svc,'pending')
+    factory=provider.host_factory
+    def delayed_factory(*args,**kwargs):
+        host=factory(*args,**kwargs)
+        original=host.input
+        async def delayed_input(**input_args):
+            await original(**input_args)
+            await asyncio.sleep(.05)
+            await host.adapter.execute_tool(host.session,{'name':RESULT_TOOL,'id':'original-delayed-result',
+                'args':{'facts':['Own original result']}})
+        host.input=delayed_input
+        return host
+    provider.host_factory=delayed_factory
+    owned=binding(svc,story)
+    if completed:
+        result=await provider._run('facts','Frozen own evidence',owned,SCHEMA)
+        assert result['result']=={'facts':['Own original result']}
+        assert 0 < result['receipt']['operation_timeout_seconds'] <= attempt_cap
+    else:
+        with pytest.raises(ResearchUnavailable) as caught:
+            await provider._run('facts','Frozen own evidence',owned,SCHEMA)
+        assert caught.value.receipt['phase']=='unknown'
+        assert 0 < caught.value.receipt['operation_timeout_seconds'] <= attempt_cap
+        with pytest.raises(ResearchUnavailable,match='original_outcome_unknown'):
+            await provider._run('facts','Frozen own evidence',{**owned,'phase':'unknown'},SCHEMA)
+    assert [name for name,_ in calls]==['start','input','stop']
 
 
 def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=(), cleanup_events=()):
@@ -71,6 +108,70 @@ def binding(svc, story):
             ('live-original', 'one-unit', story['id'], 'facts_live', '{}', svc.store.now(), svc.store.now()))
     return {'attempt_id': 'live-original', 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
             'generation': 0, 'control_revision': 0, 'purpose': 'facts'}
+
+
+@pytest.mark.asyncio
+async def test_saved_live_result_delivered_while_original_cleanup_and_permit_remain_pending(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, calls = client(svc, 'valid')
+    factory = provider.host_factory
+    release = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    finalized = []
+    def held_factory(*args, **kwargs):
+        host = factory(*args, **kwargs)
+        original = host.stop_all
+        async def held_stop():
+            cleanup_started.set()
+            await release.wait()
+            await original()
+            finalized.append('original_permit_released')
+        host.stop_all = held_stop
+        return host
+    provider.host_factory = held_factory
+    operation = asyncio.create_task(provider._run('facts', 'Own SOURCE', binding(svc, story), SCHEMA))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(operation), .1)
+        await asyncio.wait_for(cleanup_started.wait(), .1)
+        assert result['result'] == {'facts': ['Evidence-backed result']}
+        assert result['receipt']['phase'] == 'completed'
+        assert finalized == [] and result['receipt']['resource_finalization'] == 'pending'
+        with svc.store.connection() as db:
+            saved = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id='live-original'").fetchone()[0])
+        assert saved['phase'] == 'completed' and saved['result'] == result['result']
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(.01)
+        assert not closing.done() and finalized == []
+        release.set()
+        await closing
+        assert finalized == ['original_permit_released']
+        assert result['receipt']['resource_finalization'] == 'completed'
+        assert result['receipt']['cleanup_elapsed_ms'] >= 0
+        assert [name for name, _ in calls] == ['start', 'input', 'stop']
+    finally:
+        release.set()
+        await asyncio.gather(operation, return_exceptions=True)
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_exception_cannot_revoke_saved_live_result_or_confirm_release(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, _ = client(svc, 'valid')
+    factory = provider.host_factory
+    def failing_factory(*args, **kwargs):
+        host = factory(*args, **kwargs)
+        async def failing_stop():
+            raise OSError('test-only failed cleanup')
+        host.stop_all = failing_stop
+        return host
+    provider.host_factory = failing_factory
+    result = await provider._run('facts', 'Own SOURCE', binding(svc, story), SCHEMA)
+    await provider.close()
+    assert result['result'] == {'facts': ['Evidence-backed result']}
+    assert result['receipt']['phase'] == 'completed'
+    assert result['receipt']['resource_finalization'] == 'unconfirmed'
+    assert result['receipt']['cleanup_error_code'] == 'OSError'
 
 
 @pytest.mark.asyncio
@@ -149,6 +250,25 @@ def test_private_json_schema_is_preserved_in_shared_live_wire(tmp_path):
     assert measured['input_utf8_bytes'] == len(json.dumps(setup).encode()) + len(json.dumps(trigger).encode())
 
 
+def test_source_assessment_obligations_precede_untrusted_live_context(tmp_path):
+    from live_interaction.provider import setup_config
+    from street_story.research_adapter import FACT_PAGE_SCHEMA
+    from street_story.source_assessment import CHECKS, CONTRACT, LEGACY_CONTRACT, response_schema
+    svc, _, _ = service(tmp_path)
+    provider, _ = client(svc, 'valid')
+    prompt = 'Known prior compound claim labelled eligible; exact own SOURCE follows.'
+    for contract in (CONTRACT, LEGACY_CONTRACT):
+        schema = response_schema(FACT_PAGE_SCHEMA, contract)
+        context, configuration, trigger, measured = provider._prepared_input('facts', prompt, schema)
+        setup = setup_config(provider.model_id, context, configuration=configuration, search=False)
+        system = setup['setup']['systemInstruction']['parts'][0]['text']
+        trusted, untrusted = system.split(configuration['context_instruction'], 1)
+        assert (CHECKS in trusted) is (contract == CONTRACT)
+        assert prompt not in trusted and prompt in untrusted
+        assert setup['setup']['tools'][0]['functionDeclarations'][0]['parametersJsonSchema'] == schema
+        assert measured['input_utf8_bytes'] == len(json.dumps(setup).encode()) + len(json.dumps(trigger).encode())
+
+
 @pytest.mark.asyncio
 async def test_setup_close_retains_reason_and_definitive_unsent_state(tmp_path):
     svc, _, story = service(tmp_path)
@@ -177,7 +297,7 @@ async def test_live_setup_quota_is_exact_not_sent_blocker(tmp_path):
 @pytest.mark.asyncio
 async def test_live_timeout_preserves_unknown_and_will_not_restart(tmp_path):
     svc, _, story = service(tmp_path)
-    svc.settings = replace(svc.settings, research_timeout_seconds=.5)
+    svc.settings = replace(svc.settings, gemini_attempt_timeout_seconds=.5)
     ensure_budget(svc, story['id'], explicit=True)
     provider, calls = client(svc, 'pending')
     original = binding(svc, story)

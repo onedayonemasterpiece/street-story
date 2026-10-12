@@ -1,5 +1,5 @@
 from test_reference_image_codec import jpeg
-from street_story.reference_image_codec import normalize_reference
+from street_story.reference_image_codec import normalize_source
 import copy
 import json
 from types import SimpleNamespace
@@ -51,7 +51,7 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         assert 'article_queries' in contract['required']
         assert 'современными внешними фотографиями' in prompt
         assert 'содержательно разные запросы' in prompt
-        assert contents[0].inline_data.data == normalize_reference(jpeg())[1]
+        assert contents[0].inline_data.data == normalize_source(jpeg())[1]
         return SimpleNamespace(text=json.dumps({'entity_name': 'Hypothesis', 'wikipedia_queries': [],
             'visual_query': feature, 'commons_query': '', 'article_queries': plan,
             'first_wave_hypotheses': [{'kind': 'address', 'subject_id': item['candidate_id'],

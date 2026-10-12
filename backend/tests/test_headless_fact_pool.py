@@ -199,7 +199,7 @@ async def test_closed_malformed_core_can_take_new_available_route_without_blocki
 
 
 @pytest.mark.asyncio
-async def test_owner_edit_defers_durable_results_without_new_model_send(tmp_path):
+async def test_owner_edit_preserves_durable_results_without_new_model_send(tmp_path):
     svc, job = fixture(tmp_path)
     calls = []
 
@@ -216,9 +216,9 @@ async def test_owner_edit_defers_durable_results_without_new_model_send(tmp_path
 
     svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
     await partial(HeadlessFacts(svc), job)
-    assert count_facts(svc, job['story_id']) == 0
+    assert count_facts(svc, job['story_id']) == 3
     await partial(HeadlessFacts(svc), job)
-    assert len(calls) == 3 and count_facts(svc, job['story_id']) == 0
+    assert len(calls) == 3 and count_facts(svc, job['story_id']) == 3
     assert svc.story(job['story_id'])['draft_text'] == 'New owner draft'
 
 
@@ -237,9 +237,9 @@ async def test_worker_loses_job_fence_results_remain_durable_but_never_commit(tm
     await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
     assert count_facts(svc, job['story_id']) == 0
     with svc.store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM research_checkpoints WHERE stage LIKE 'headless_fact_result:%'").fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM research_checkpoints WHERE stage LIKE 'headless_fact_result:%'").fetchone()[0] == len(calls)
     await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
-    assert len(calls) == 3
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -252,10 +252,6 @@ async def test_more_than_three_sources_accumulate_with_bounded_pool_not_a_source
         return result(page)
 
     svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
-    with pytest.raises(RetryableProviderError, match='research_fact_next_page') as wait:
-        await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
-    assert wait.value.retry_at <= svc.store.now() + 11
-    assert len(calls) == 3 and count_facts(svc, job['story_id']) == 3
     await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
     assert len(calls) == 5 and count_facts(svc, job['story_id']) == 5
     with svc.store.connection() as db:
@@ -295,3 +291,26 @@ async def test_exhausted_article_ends_automatic_run_without_suppressing_other_su
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE status='failed'").fetchone()[0] == 1
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] in {0, None}
+
+
+@pytest.mark.asyncio
+async def test_assessed_source_page_enters_ledger_without_second_model_and_reopens(tmp_path):
+    svc, job = fixture(tmp_path, count=1)
+    calls = []
+    async def extract(page, story, context):
+        calls.append(page['chunk_id'])
+        response = result(page)
+        response['receipt']['binding'] = {'semantic_contract': 'source-reading-assessment-v2'}
+        return response
+    svc.providers.research = SimpleNamespace(client=SimpleNamespace(model_id='controlled-model'), extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    await partial(harness, job)
+    reopened = type(svc)(svc.settings, providers=svc.providers)
+    current = reopened.story(job['story_id'])
+    assert len(calls) == 1
+    assert len(current['facts']) == 1 and current['facts'][0]['eligibility'] == 'eligible'
+    assert not current['facts'][0]['selected']
+    with reopened.store.connection() as db:
+        assert db.execute('SELECT accepted_basis_json FROM fact_assertions').fetchone()[0]
+        assert db.execute('SELECT count(*) FROM live_review_packets').fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM live_commands WHERE tool_name='finalize_fact_review'").fetchone()[0] == 0

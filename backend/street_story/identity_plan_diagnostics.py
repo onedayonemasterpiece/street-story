@@ -64,7 +64,7 @@ def joint_route_reassignable(marker, model_id=None):
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
         response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
         admission_retry=None, retry_not_sent=False, retry_unsent_key=False, model_id=None,
-        retry_unsent_route=False):
+        retry_unsent_route=False, retry_closed_route=False):
     """Keep each initial route's original binding/outcome across independent failover."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -85,15 +85,19 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
         route_operations = dict(previous.get('route_operations') or {})
         route_fields = {'route_operations', 'closed_route_failures'}
         old_model = previous.get('model_id') or (previous.get('prepared_request') or {}).get('model')
-        route_retry = (stage == 'followup' and retry_unsent_route and phase == 'send_intent'
-            and previous.get('phase') == 'not_sent' and old_model and model_id != old_model
-            and model_id and not route_operations and previous.get('binding') == binding
+        closed_technical_failure = (previous.get('phase') == 'closed_failure'
+            and previous.get('status_code') in {401, 403, 404, 408, 429, 500, 502, 503, 504})
+        route_retry = (stage == 'followup' and phase == 'send_intent'
+            and (retry_unsent_route and previous.get('phase') == 'not_sent'
+                or retry_closed_route and closed_technical_failure)
+            and old_model and model_id != old_model and model_id not in route_operations
+            and model_id and len(route_operations) < 2 and previous.get('binding') == binding
             and prepared_request is not None)
-        if retry_unsent_route and not route_retry:
+        if (retry_unsent_route or retry_closed_route) and not route_retry:
             raise RetryableProviderError('identity_joint_followup_route_retry_denied')
         if route_retry:
-            # Only the executor changes after authoritative NotSent. Preserve
-            # both exact request envelopes; never reassign a possibly sent unit.
+            # Only the executor changes after authoritative NotSent or a closed
+            # technical failure. Preserve all envelopes; UNKNOWN is fenced.
             old_content = {k: v for k, v in previous['prepared_request'].items() if k not in {'model', 'sha256'}}
             new_content = {k: v for k, v in prepared_request.items() if k not in {'model', 'sha256'}}
             if old_content != new_content:
@@ -184,7 +188,7 @@ def joint_followup_marker(service, story, **kwargs):
 
 
 def retain_closed_initial_plan(service, story, binding, payload, schema, raw_json, prompt,
-        provider_response_id=None, resolutions=None, source_text_receipt=None):
+        provider_response_id=None, resolutions=None, source_text_receipt=None, configuration=None):
     """Retain a host-validated original answer before an optional TEXT send.
 
     Full JSON is required for reuse; oversized responses are never reconstructed
@@ -203,6 +207,8 @@ def retain_closed_initial_plan(service, story, binding, payload, schema, raw_jso
         'identity_response_id_resolutions': resolutions or []}
     if source_text_receipt:
         saved['source_text_receipt'] = source_text_receipt
+    if configuration is not None:
+        saved['configuration'] = configuration
     saved['sha256'] = hashlib.sha256(canonical(saved).encode()).hexdigest()
     return joint_operation_marker(service, story, stage='initial', binding=binding,
         phase='response_closed', closed_plan=saved)
@@ -225,7 +231,7 @@ def reusable_closed_initial_plan(marker, binding):
 
 
 def retain_physical_hypothesis(service, story, payload, source_map_receipt, candidates, *, reason,
-        raw_json, provider_response_id=None):
+        raw_json, provider_response_id=None, original_input=None):
     """A closed nomination survives rejection without granting any identity authority."""
     import copy
     from .identity_discovery import _conditional_text_prior
@@ -246,6 +252,7 @@ def retain_physical_hypothesis(service, story, payload, source_map_receipt, cand
         'closed_payload': copy.deepcopy(payload), 'raw_json': raw_json,
         'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest(),
         'provider_response_id': provider_response_id,
+        'original_input': copy.deepcopy(original_input),
         'source_map_receipt': copy.deepcopy(source_map_receipt),
         'physical_candidates': [copy.deepcopy(catalog[cid]) for cid in prior['candidate_ids']],
         'address_memberships': {cid: _subject_addresses(address_context, catalog[cid])

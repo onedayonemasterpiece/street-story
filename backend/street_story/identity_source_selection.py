@@ -445,6 +445,22 @@ def first_wave_catalog(story, candidates=()):
     return {'options': options, 'required_grounded_count': min(2, len(groups)), 'locality_context': locality}
 
 
+def freeze_identity_response_context(packet):
+    """Freeze only the issued transport pointers for later UNKNOWN readback."""
+    import copy
+    if not isinstance(packet, dict):
+        raise ValueError('identity_response_context_required')
+    encoded = packet.get('encoding') == 'lossless-literals-and-map-labels-v1'
+    plain = expand_planner_packet(packet) if encoded else packet
+    table = (plain.get('map_scene') or {}).get('objects') or {}
+    columns = table.get('columns') or []
+    rows = [dict(zip(columns, row)) for row in table.get('rows') or []]
+    return {'encoding': 'frozen-id-pointers-v1',
+        'map_scene': {'objects': {'columns': ['label', 'candidate_id'],
+            'rows': [[copy.deepcopy(row.get('label')), copy.deepcopy(row.get('candidate_id'))] for row in rows]}},
+        'literals': copy.deepcopy(packet.get('literals') or []) if encoded else []}
+
+
 def resolve_identity_response_ids(payload, packet):
     """Dereference exact frozen transport pointers; host schemas still decide validity.
 
@@ -464,7 +480,7 @@ def resolve_identity_response_ids(payload, packet):
     labels = {str(row['label']): row['candidate_id'] for row in rows
         if type(row.get('label')) is int and isinstance(row.get('candidate_id'), str)
         and counts[row['label']] == 1}
-    literals = (packet.get('literals') or []) if encoded else []
+    literals = (packet.get('literals') or []) if encoded or packet.get('encoding') == 'frozen-id-pointers-v1' else []
     scalar_ids = {'candidate_id', 'subject_id', 'address_entry_id', 'physical_candidate_id', 'article_id'}
     list_ids = {'observed_candidate_ids', 'candidate_ids', 'target_candidate_ids',
         'selected_wikipedia_page_ids', 'alternative_candidate_ids'}
@@ -568,7 +584,7 @@ def identity_transport_schema(schema, *, map_label_references=False):
     return result
 
 
-def geometry_decision_schema(candidate_ids, *, structured=False):
+def geometry_decision_schema(candidate_ids, *, structured=False, geometry_contract=None):
     """Evidence from the existing joint call, rather than a second judge."""
     text = {'type': 'string', 'maxLength': 300}
     # The exact ID dictionary is already in the map packet. The common proof
@@ -581,7 +597,10 @@ def geometry_decision_schema(candidate_ids, *, structured=False):
         'ring_index': {'type': 'integer', 'minimum': 0},
         'line_index': {'type': 'integer', 'minimum': 0},
         'segment_index': {'type': 'integer', 'minimum': 0},
-        'key': {'type': 'string', 'maxLength': 60}},
+        'key': {'type': 'string', 'maxLength': 60,
+            'description': 'For attribute: exact received OSM tag key, or the own mapped-entry address '
+                'field city/street/house_number. A field=value reference must copy its literal received '
+                'value exactly; an inferred address or another building/complex address is not evidence.'}},
         'required': ['candidate_id', 'kind'], 'additionalProperties': False}
     relation = {'type': 'object', 'properties': {
         'source_observation': text, 'map_features': {'type': 'array', 'maxItems': 6, 'items': feature},
@@ -614,7 +633,7 @@ def geometry_decision_schema(candidate_ids, *, structured=False):
             'assumptions', 'bounded_coverage', 'camera_pose'], 'additionalProperties': False}
     if structured:
         from .identity_geometry_contract import correspondence_schema
-        correspondence = correspondence_schema(feature)
+        correspondence = correspondence_schema(feature, contract=geometry_contract)
         schema['properties']['spatial_correspondence'] = {'anyOf': [correspondence, {'type': 'null'}]}
         # Uncertain answers may ask for a new view without inventing a pose.
         schema['allOf'] = [{'if': {'properties': {'decision': {'const': 'accepted_geometry'}}},
@@ -702,7 +721,11 @@ def observed_address_context(story, candidates=()):
         research.get('visual_identity') or {}).get('observed_candidates') or []
     entries = {item['candidate_id']: item for item in [*observed, *candidates]
         if isinstance(item, dict) and item.get('candidate_id')}
-    for item in (research.get('osm') or {}).get('observed_pool') or []:
+    # During cold discovery the current OSM input is available before the
+    # caller's serialized story is refreshed. Use that same scoped snapshot
+    # as the scene/proof builders; durable reopen has the persisted fallback.
+    osm = (story or {}).get('_identity_map_snapshot') or research.get('osm') or {}
+    for item in osm.get('observed_pool') or []:
         if item.get('type') not in {'node', 'way', 'relation'} or item.get('id') is None:
             continue
         cid = f"osm:{item['type']}:{item['id']}"

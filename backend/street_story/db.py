@@ -269,6 +269,9 @@ CREATE TABLE IF NOT EXISTS fact_assertions(
   eligibility TEXT NOT NULL DEFAULT 'unreviewed'
     CHECK(eligibility IN ('unreviewed','eligible','withheld')),
   revision_digest TEXT NOT NULL DEFAULT '',
+  accepted_revision_digest TEXT,
+  accepted_basis_json TEXT,
+  eligibility_reason TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   PRIMARY KEY(story_id,assertion_id)
@@ -347,6 +350,10 @@ CREATE TABLE IF NOT EXISTS research_provider_attempts(
 );
 CREATE INDEX IF NOT EXISTS idx_research_provider_logical ON research_provider_attempts(logical_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_research_provider_role_time ON research_provider_attempts(role,updated_at);
+CREATE INDEX IF NOT EXISTS idx_research_provider_story_role ON research_provider_attempts(story_id,role);
+CREATE INDEX IF NOT EXISTS idx_research_provider_fact_binding ON research_provider_attempts(
+ story_id,role,json_extract(receipt_json,'$.binding.fact_unit_id'),
+ json_extract(receipt_json,'$.binding.photo_sha256'),json_extract(receipt_json,'$.binding.generation'));
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,
@@ -819,6 +826,10 @@ class Store:
             ):
                 if name not in evidence_columns:
                     db.execute(f"ALTER TABLE fact_evidence_spans ADD COLUMN {name} {sql_type}")
+            assertion_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_assertions)")}
+            for name in ("accepted_revision_digest", "accepted_basis_json", "eligibility_reason"):
+                if name not in assertion_columns:
+                    db.execute(f"ALTER TABLE fact_assertions ADD COLUMN {name} TEXT")
             from .fact_ledger import (
                 backfill_legacy_fact_ledger,
                 repair_missing_evidence_edges,

@@ -11,6 +11,31 @@ MAX_PIXELS = 40_000_000
 MAX_EDGE = 1280
 MIN_REFERENCE_EDGE = 160
 MODEL_PREPARATION = 'exif_rgb_longedge1280_v1'
+SOURCE_MODEL_PREPARATION = 'exif_rgb_original_resolution_v1'
+
+
+def normalize_source(data: bytes) -> tuple[str, bytes]:
+    """Orient SOURCE without discarding small facade/address details.
+
+    Original uploads remain unchanged. Bound pixels and transport bytes, but
+    never apply the Live illustration thumbnail to a SOURCE/MAP decision.
+    """
+    reference_mime(data)
+    try:
+        with Image.open(BytesIO(data)) as source:
+            if source.width * source.height > MAX_PIXELS:
+                raise ValueError('source_pixel_limit')
+            image = ImageOps.exif_transpose(source).convert('RGB')
+    except (Image.DecompressionBombError, OSError) as exc:
+        raise ValueError('source_format') from exc
+    output = BytesIO()
+    for quality in (90, 82, 70, 58, 46, 34):
+        output.seek(0)
+        output.truncate()
+        image.save(output, format='JPEG', quality=quality, optimize=True)
+        if output.tell() <= MAX_MODEL_BYTES:
+            return 'image/jpeg', output.getvalue()
+    raise ValueError('source_model_size')
 
 
 def validate_reference_resolution(data: bytes) -> None:

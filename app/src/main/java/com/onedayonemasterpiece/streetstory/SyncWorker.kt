@@ -88,11 +88,34 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         capabilities: CapabilitiesWire?,
     ): Boolean {
         var story = store.story(initial.clientStoryId) ?: return false
+        var needsFinalReadback = story.serverStoryId.isNullOrBlank()
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
         applyRemote(store, feed, research, story.clientStoryId, remote)
+        story = requireNotNull(store.story(story.clientStoryId))
+        val serverId = remote.id
+        // Durable research controls precede archive uploads and unrelated edits.
+        // A failed voice chunk cannot prevent Stop reaching the accepted job.
+        for (operation in store.pendingOperations(story.clientStoryId).filter { it.kind == "research-control" }) {
+            try {
+                remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
+                validateStoryIdentity(story, remote)
+                applyRemote(store, feed, research, story.clientStoryId, remote)
+                needsFinalReadback = true
+                store.markOperationDone(operation.id)
+            } catch (exc: ApiException) {
+                if (exc.retryable) {
+                    store.markOperationRetry(operation.id, exc.message)
+                    return true
+                }
+                store.markOperationDone(operation.id)
+                store.setStage(story.clientStoryId, StoryStage.NEEDS_REVIEW, exc.message)
+            }
+        }
+
         var sourceUnavailable = false
+        var sourceProjectionChanged = false
         val needsSource = remote.state in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING, StoryStage.VISUAL_PROCESSING) ||
             remote.researchPending["identity"] == true ||
             store.pendingOperations(story.clientStoryId).any { it.kind == "visual" }
@@ -102,6 +125,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             try {
                 remote = api.createStory(story)
                 validateStoryIdentity(story, remote)
+                sourceProjectionChanged = true
+                needsFinalReadback = true
             } catch (exc: SourceUnavailableException) {
                 sourceUnavailable = true
                 android.util.Log.i("StreetStorySync", "source_unavailable story_id=${story.clientStoryId} state=${remote.state}")
@@ -117,22 +142,24 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         if (identityBackfillEligible && !sourceUnavailable) {
             remote = api.ensureIdentity(remote.id)
             validateStoryIdentity(story, remote)
+            sourceProjectionChanged = true
+            needsFinalReadback = true
         }
-        if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
-        applyRemote(store, feed, research, story.clientStoryId, remote)
+        if (sourceProjectionChanged) applyRemote(store, feed, research, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
-        val serverId = requireNotNull(story.serverStoryId)
         PhotoImportTelemetry.pending(applicationContext, story.clientStoryId)?.let { payload ->
             runCatching { api.photoDiagnostic(serverId, payload) }.onSuccess {
+                needsFinalReadback = true
                 PhotoImportTelemetry.acknowledge(applicationContext, story.clientStoryId, payload)
             }
         }
 
         for (session in store.finishedVoiceSessions().filter { it.storyId == story.clientStoryId }) {
             syncVoice(store, api, serverId, session)
+            needsFinalReadback = true
         }
 
-        for (operation in store.pendingOperations(story.clientStoryId)) {
+        for (operation in store.pendingOperations(story.clientStoryId).filter { it.kind != "research-control" }) {
             // Only an unsent visual depends on SOURCE. Preserve its request ID
             // and continue selection/text/voice sync while access is restored.
             if (sourceUnavailable && operation.kind == "visual") continue
@@ -140,6 +167,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                 remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
                 validateStoryIdentity(story, remote)
                 applyRemote(store, feed, research, story.clientStoryId, remote)
+                needsFinalReadback = true
                 store.markOperationDone(operation.id)
             } catch (exc: ApiException) {
                 if (exc.retryable) {
@@ -152,18 +180,18 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             }
         }
 
-        remote = api.getStory(serverId)
-        validateStoryIdentity(story, remote)
-        val previousUrl = store.story(story.clientStoryId)?.processedImageUrl
-        applyRemote(store, feed, research, story.clientStoryId, remote)
+        if (needsFinalReadback) {
+            remote = api.getStory(serverId)
+            validateStoryIdentity(story, remote)
+            applyRemote(store, feed, research, story.clientStoryId, remote)
+        }
         if (remote.destinations.isEmpty() && capabilities != null && capabilities.destinations.isNotEmpty()) {
             store.replaceDestinations(story.clientStoryId, capabilities.destinations.map { it.local() })
         }
         val current = requireNotNull(store.story(story.clientStoryId))
         val assetUrl = current.processedImageUrl
-        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || previousUrl != assetUrl || !PhotoAssets.available(current.processedImagePath))) {
-            current.processedImagePath?.let(PhotoAssets::releaseTemporary)
-            store.setProcessedImagePath(story.clientStoryId, PhotoAssets.retainTemporary(api.readAsset(assetUrl)))
+        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || current.processedImageBytesUrl != assetUrl || !PhotoAssets.available(current.processedImagePath))) {
+            store.setProcessedImagePath(story.clientStoryId, PhotoAssets.retainTemporary(api.readAsset(assetUrl)), assetUrl)
         }
         // The visual queue can remain active in needs_review after an uncertain
         // first result. Its authoritative job projection, not a microphone, keeps
@@ -256,6 +284,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     it.eligibleForSelection,
                     it.selected && it.eligibleForSelection,
                     gson.toJson(it.sources),
+                    it.reviewStatus,
+                    it.eligibilityReason,
                 )
             },
         )

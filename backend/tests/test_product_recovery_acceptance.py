@@ -25,6 +25,33 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
+def test_retained_scope_has_no_elapsed_product_deadline():
+    job = {'payload_json': json.dumps({'research_started_at': 100, 'research_deadline_at': 580})}
+    for now in (300, 579, 600, 1300):
+        assert harness.retained_review_remaining(job, now) is None
+    assert harness.retained_review_remaining({'payload_json': '{}'}, 1300) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unrelated_pending', [False, True])
+async def test_retained_review_continues_only_current_run_children_of_requested_claims(tmp_path, unrelated_pending):
+    from test_headless_review_repairs import ReplacingReview
+    from test_headless_fact_review_parallel import candidates
+    from test_headless_fact_pool import RUN
+    svc, job, product = await candidates(tmp_path, count=2 if unrelated_pending else 1)
+    with svc.store.connection() as db:
+        fid = db.execute('SELECT assertion_id FROM fact_assertions ORDER BY rowid').fetchone()[0]
+    engine = ReplacingReview(product)
+    before_calls = ReplacingReview.calls
+    count = await harness.review_retained_scope(engine, job, RUN, 0, [fid])
+    assert count == (1 if unrelated_pending else 2)
+    assert ReplacingReview.calls-before_calls == count
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_fact_repairs').fetchone()[0] == 1
+        eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]
+        assert eligible == (0 if unrelated_pending else 1)
+
+
 def test_real_acceptance_storage_guard_rejects_unmanaged_external_paths():
     with pytest.raises(ValueError, match='under /home/dev/artifacts'):
         harness.managed(Path('/outside-artifact-root/source.jpg'))
@@ -86,8 +113,15 @@ def test_explicit_owner_approx_camera_is_input_but_truth_and_geometric_result_ar
 
 
 @pytest.mark.asyncio
-async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source():
+@pytest.mark.parametrize('mode', ['geometry_without_reference', 'physical_identity_G_or_T'])
+async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source(mode, monkeypatch):
     from street_story.errors import PermanentProviderError
+    from street_story import identity_architectural_comparison
+    calls = []
+    async def references(service, story, articles, **kwargs):
+        calls.append(story['photo_sha256'])
+        return [('actual reference', 'image/jpeg', b'original')], [{'label':'actual reference'}]
+    monkeypatch.setattr(identity_architectural_comparison, 'ready_article_references', references)
     class Service:
         async def _identify_photo(self, story, *args, **kwargs):
             return 'ordinary-reference-path'
@@ -95,14 +129,23 @@ async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected
             return 'ordinary-reference-batch'
     service = Service()
     restore = harness.block_directed_reference_inference(service, [{**item(),
-        'acceptance_mode': 'geometry_without_reference'}])
+        'acceptance_mode': mode}])
     try:
         with pytest.raises(PermanentProviderError, match='external_reference_disabled'):
             await service._identify_photo({'photo_sha256': item()['sha256']}, '', [])
+        with pytest.raises(PermanentProviderError, match='external_reference_disabled'):
+            await service._identify_photo_batch({'photo_sha256': item()['sha256']}, '', [])
         assert await service._identify_photo({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-path'
+        assert await service._identify_photo_batch({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-batch'
+        assert await identity_architectural_comparison.ready_article_references(
+            service, {'photo_sha256': item()['sha256']}, []) == ([], [])
+        assert (await identity_architectural_comparison.ready_article_references(
+            service, {'photo_sha256':'other'}, []))[0][0][0] == 'actual reference'
+        assert calls == ['other']
     finally:
         restore()
     assert await service._identify_photo({'photo_sha256': item()['sha256']}, '', []) == 'ordinary-reference-path'
+    assert identity_architectural_comparison.ready_article_references is references
 
 
 def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path, monkeypatch):
@@ -255,7 +298,7 @@ def readback_fixture(tmp_path):
     sources = canonical([{'url': 'https://official.example/history'}])
     text = 'A model reviewed building history claim.'
     proof = {'detector': 'backend_semantic_review', 'scan_id': 1, 'source_story_id': story['id'],
-        'snapshot': list(_review_snapshot(text, sources))}
+        'snapshot': list(_review_snapshot(text, sources)), 'reviewed_at': 390}
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET created_at=100,state=\'identity_ready\',research_json=? WHERE id=?',
             (canonical({'visual_identity': identity}), story['id']))
@@ -278,6 +321,46 @@ def readback_fixture(tmp_path):
     return svc, now, case
 
 
+def test_readback_validates_immutable_own_and_canonical_basis_without_scan(tmp_path):
+    from test_fact_ledger import fact
+    from street_story.fact_ledger import accept_fact_basis, persist_fact_candidates, refresh_review_status
+    from street_story.poi_memory import persist_research_memory, sync_poi_review_from_story
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    sid = case['story_id']
+    identity = {'candidate_id': 'osm:way:building', 'status': 'match'}
+    claim = fact('own', 'The building opened in 1900.', 'https://own.example', 'The building opened in 1900.')
+    with svc.store.tx() as db:
+        db.execute("DELETE FROM fact_assertions WHERE story_id=?", (sid,))
+        db.execute("DELETE FROM facts WHERE story_id=?", (sid,))
+        db.execute("DELETE FROM poi_research_assertions")
+        fid = persist_fact_candidates(db, story_id=sid, poi_key=identity['candidate_id'], facts=[claim],
+            run_id='own-run', batch_id='own-batch', model_name='controlled', prompt_version='v2', now=390)[0]
+        ids = [r[0] for r in db.execute('SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o '
+            'ON e.observation_id=o.observation_id WHERE o.story_id=? AND o.assertion_id=?', (sid, fid))]
+        accept_fact_basis(db, sid, fid, ids, operation={'receipt_id': 'own-assessment'}, now=380)
+        refresh_review_status(db, sid, 390)
+        claim['fact_id'] = fid
+        persist_research_memory(db, identity, [claim], claim['sources'], 'own', 390, research_run_id='own-run')
+        sync_poi_review_from_story(db, sid, 390)
+    result = harness.read_case(svc, case, item())
+    assert result['eligible_proved_count'] == 1
+    assert result['first_eligible_elapsed_s'] == 290
+    assert result['eligible_facts'][0]['admitted_at'] == 380
+    assert result['eligible_facts'][0]['available_at'] == 390
+    # A warm story uploaded after the original semantic admission cannot claim
+    # a zero-time result: its new local projection was created at 390.
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET created_at=385 WHERE id=?', (sid,))
+    fresh_case = {**harness.blank_result(item()), 'story_id': sid}
+    assert harness.read_case(svc, fresh_case, item())['first_eligible_elapsed_s'] == 5
+    with svc.store.tx() as db:
+        proof = json.loads(db.execute('SELECT review_proof_json FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0])
+        proof['subject'] = 'osm:way:foreign'
+        db.execute('UPDATE poi_research_assertions SET review_proof_json=? WHERE assertion_id=?', (canonical(proof), fid))
+    assert harness.read_case(svc, case, item())['eligible_proved_count'] == 0
+
+
 def test_first_fact_does_not_end_wait_and_caps_use_original_upload(tmp_path):
     svc, now, case = readback_fixture(tmp_path)
     now[0] = 390
@@ -294,7 +377,10 @@ def test_first_fact_does_not_end_wait_and_caps_use_original_upload(tmp_path):
     now[0] = 581
     result = harness.read_case(svc, case, item())
     assert result['terminal'] and result['total_elapsed_s'] == 481
-    assert result['gates']['terminal_in_480s'] is False and result['status'] == 'FAIL'
+    assert 'terminal_in_480s' not in result['gates']
+    assert result['total_elapsed_s'] == 481
+    assert result['gates']['identity_proof'] is True
+    assert result['status'] == 'PASS_CANDIDATE'
     assert result['first_eligible_elapsed_s'] == 290
 
 
@@ -318,6 +404,13 @@ def test_report_only_equivalent_identifiers_do_not_accept_neighbor_or_complex(tm
     assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is True
     entry['expected_physical_ids'] = ['wiki:neighbor', 'osm:relation:multi-building-complex']
     assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is False
+
+
+def test_directed_G_or_T_does_not_count_reference_identity(tmp_path):
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    entry = {**item(), 'acceptance_mode': 'physical_identity_G_or_T'}
+    assert harness.read_case(svc, case, entry)['gates']['physical_identity_G_or_T'] is False
     assert 'expected_physical_ids' not in harness.upload_story(
         type('Service', (), {'create_story': lambda self, **kwargs: kwargs})(),
         entry, b'original-source', 'frozen-manifest')
@@ -440,3 +533,68 @@ def test_question_and_conditional_source_discussion_are_not_automatic_pass():
         'conditional_identity_context': {'joint_visual_input_verified': False,
             'hypotheses': [{'support_status': 'spatially_supported'}],
             'article_sources': [{'canonical_eligible': False}]}}) == 'FAIL'
+
+
+def test_observation_upload_form_excludes_all_evaluator_knowledge():
+    entry = {**item(), 'expected_physical_ids': ['report-only-id'],
+             'owner_approx_camera': {'latitude': 54.7, 'longitude': 20.5}}
+    key, form = harness.upload_form(entry, 'manifest')
+    assert form == {'client_story_id': key, 'photo_sha256': entry['sha256'],
+        'voice_protocol': 'voice-chunks-v2', 'lat': '54.7', 'lon': '20.5',
+        'camera_coordinate_source': 'owner_approx_camera'}
+
+
+def test_harness_restart_rejects_runtime_or_config_change():
+    previous = {'policy': 'product-recovery-continuation-v2', 'source_sha': 'old',
+        'harness_sha256': 'old', 'source_hashes': {'service.py': 'same'},
+        'effective_settings_sha256': 'same', 'manifest_sha256': 'same'}
+    current = {**previous, 'source_sha': 'new', 'harness_sha256': 'new'}
+    with pytest.raises(ValueError):
+        harness.verify_observation_resume(previous, current)
+    harness.verify_observation_resume(previous, current, allow_harness_change=True)
+    for key in ('source_hashes', 'effective_settings_sha256', 'manifest_sha256'):
+        with pytest.raises(ValueError):
+            harness.verify_observation_resume(previous, {**current, key: 'changed'}, allow_harness_change=True)
+
+
+@pytest.mark.asyncio
+async def test_lost_upload_response_retries_identical_source_key(tmp_path):
+    import httpx
+    calls = []
+    response = object()
+    class Client:
+        async def post(self, path, **kwargs):
+            calls.append((path, kwargs))
+            if len(calls) == 1:
+                raise httpx.ReadError('Response lost after intake')
+            return response
+    case = {}
+    report = {'cases': [case]}
+    result = await harness.upload_http_source(Client(), item(), b'original-source', 'same-key',
+        {'client_story_id': 'same-key'}, case, report, tmp_path/'report.json')
+    assert result is response and len(calls) == 2 and calls[0] == calls[1]
+    assert calls[0][1]['headers']['Idempotency-Key'] == 'same-key'
+    assert calls[0][1]['files']['photo'][1] == b'original-source'
+    assert case['upload_transport_failures'] == ['ReadError']
+
+
+@pytest.mark.asyncio
+async def test_tcp_observation_ends_without_stopping_pending_product_job(tmp_path):
+    from street_story.app import create_app
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 1300  # Fast control of an unfinished 20-minute-old job, not wall-time evidence.
+    with svc.store.tx() as db:
+        db.execute('UPDATE jobs SET lease_until=5000 WHERE id=\'facts\'')
+    app = create_app(svc.settings, svc)
+    report = {'cases': [case]}
+    async with app.router.lifespan_context(app):
+        await harness.observe_continuation(app, svc, [item()], {102: case}, report,
+            tmp_path, tmp_path/'results.json', 'manifest', 'fixture', .05, tmp_path/'sdk.jsonl')
+        with svc.store.connection() as db:
+            assert db.execute('SELECT state FROM jobs WHERE id=\'facts\'').fetchone()[0] == 'running'
+            research = json.loads(svc._story_row(db, case['story_id'])['research_json'])
+    assert 'automatic_research_outcome' not in research
+    assert not case['terminal'] and case['status'] == 'RUNNING'
+    assert report['continuation_observation']['pending_story_ids'] == [case['story_id']]
+    returned = report['continuation_observation']['client_returns'][0]['cases'][0]
+    assert returned['story_id'] == case['story_id'] and not returned['terminal']

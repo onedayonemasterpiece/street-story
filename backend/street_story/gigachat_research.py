@@ -23,6 +23,11 @@ from .review_packets import SUFFICIENCY_BASIS_SCHEMA, SUFFICIENCY_CHECKS
 
 
 MODEL = 'GigaChat-2'
+# Documented total context upper bound for this fixed approved model, not an
+# advertised output limit or a request max_tokens default. Used conservatively
+# for admission when the request inherits the provider's output setting.
+# https://developers.sber.ru/docs/ru/gigachat/models/gigachat-2-lite
+MODEL_CONTEXT_TOKENS = 128000
 ACCOUNT_SCOPE = 'street-story-gigachat-shared-account'
 AUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
 CHAT_URL = 'https://api.giga.chat/v1/chat/completions'
@@ -180,14 +185,15 @@ class GigaChatResearchClient:
             self._token, self._expires = token, expires
             return token
 
-    async def _completion(self, lease, body, receipts, purpose, before_inference=None):
+    async def _completion(self, lease, body, receipts, purpose, output_allowance, before_inference=None):
         for auth_attempt in range(2):
             token = await self._access_token()
-            estimate = len(_json(body).encode('utf-8')) + int(body['max_tokens'])
+            estimate = len(_json(body).encode('utf-8')) + output_allowance
             attempt_id = 'giga_' + uuid.uuid4().hex
             metadata = {**self.binding, 'operation': 'text_research', 'purpose': purpose, 'attempt_id': attempt_id,
-                        'estimated_input_tokens': estimate - int(body['max_tokens']),
-                        'output_allowance': body['max_tokens'], 'estimated_tokens': estimate, 'images': 0,
+                        'estimated_input_tokens': estimate - output_allowance,
+                        'output_allowance': output_allowance, 'estimated_tokens': estimate, 'images': 0,
+                        'output_allowance_basis': 'explicit_request' if 'max_tokens' in body else 'model_context_upper_bound',
                         'request_body_sha256': hashlib.sha256(_json(body).encode('utf-8')).hexdigest()}
             if before_inference is not None:
                 await before_inference(metadata)
@@ -235,13 +241,16 @@ class GigaChatResearchClient:
             return message, payload['choices'][0].get('finish_reason')
 
     async def research(self, query: str, *, capsule: dict, purpose='fact_research',
-                       modality='text', max_output_tokens=1500, max_tool_calls=2,
+                       modality='text', max_output_tokens=None, max_tool_calls=2,
                        before_inference=None) -> dict[str, Any]:
         if modality != 'text' or purpose not in {'fact_research', 'query_formulation', 'evidence_extraction'}:
             raise PermanentProviderError('gigachat:text_only_route')
         _text_only(capsule)
-        if not isinstance(query, str) or not query.strip() or not 1 <= max_output_tokens <= 4096 or not 1 <= max_tool_calls <= 3:
+        if (not isinstance(query, str) or not query.strip()
+                or max_output_tokens is not None and (type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 2147483647)
+                or type(max_tool_calls) is not int or not 1 <= max_tool_calls <= 3):
             raise ValueError('gigachat:bounded_request_required')
+        output_allowance = MODEL_CONTEXT_TOKENS if max_output_tokens is None else max_output_tokens
         full_inventory = capsule.get('_known_fact_inventory', capsule.get('known_fact_inventory', []))
         if not isinstance(full_inventory, list):
             raise ValueError('gigachat:inventory_invalid')
@@ -267,25 +276,44 @@ class GigaChatResearchClient:
         inventory = [{**{key: source.get(key) for key in ('source_version_id', 'url', 'title')},
                       'available_passage_ids': [p['passage_id'] for p in source.get('passages', [])]}
                      for source in sources.values()]
-        messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': _json({
+        from .source_assessment import CONTRACT, VALUE_CONTRACT, checks_for_contract, reading_source, response_schema, source_first_input
+        checks = checks_for_contract(capsule.get('semantic_contract'))
+        system = SYSTEM + (' ' + checks if checks else '')
+        if capsule.get('semantic_contract') in {CONTRACT, VALUE_CONTRACT}:
+            system = (checks + ' ' + SUFFICIENCY_CHECKS
+                + ' Read all authorized source passage IDs with get_evidence before findings. '
+                'Only get_evidence and get_known_facts exist. Additional prior inventory is a matching index. '
+                'Return the schema-bound JSON; fact.text must be Russian, with exact source_version_id, '
+                'own passage_ids, literal evidence_quotes and exact existing host IDs. '
+                'For text with passage_spans, unchanged passages are text[start:end] using zero-based '
+                'Unicode character offsets, end exclusive. Read the whole text including references. '
+                'source_matches_poi concerns the confirmed physical subject. Menus/challenges are invalid '
+                'source content; navigation/photo metadata is not building history. '
+                'continuation_needed concerns unread evidence, separately from research sufficiency. '
+                'No selection, draft edits, images, new URLs or publication.')
+            public_capsule = source_first_input(public_capsule)
+        schema = response_schema(FINDINGS_SCHEMA, capsule.get('semantic_contract'))
+        messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json({
             'query': query, 'sources': inventory, 'context': capsule.get('context', {}),
             'known_fact_inventory': capsule.get('known_fact_inventory', [])})}]
         receipts, read_passages, status, tool_roundtrips = [], {}, 'failed', 0
         strict_final_required = False
         workload = {'purpose': purpose, 'modalities': ['text'], 'images': 0,
-                    'estimated_input_tokens': len(_json(public_capsule).encode('utf-8')) + len(SYSTEM.encode('utf-8'))
+                    'estimated_input_tokens': len(_json(public_capsule).encode('utf-8')) + len(system.encode('utf-8'))
                         + (12000 if len(full_inventory) > len(capsule.get('known_fact_inventory', [])) else 0),
-                    'output_allowance': max_output_tokens, 'max_provider_sends': min(4, max_tool_calls + 2)}
+                    'output_allowance': output_allowance, 'max_provider_sends': min(4, max_tool_calls + 2)}
         async with self.admission(self.binding, workload) as lease:
             try:
                 for turn in range(max_tool_calls + 1):
                     final_turn = strict_final_required or turn == max_tool_calls
-                    body = {'model': MODEL, 'messages': messages, 'max_tokens': max_output_tokens,
+                    body = {'model': MODEL, 'messages': messages,
                             'stream': False, 'functions': [FUNCTION, INVENTORY_FUNCTION],
                             'function_call': {'name': 'get_evidence'} if turn == 0 else 'none' if final_turn else 'auto'}
                     if final_turn:
-                        body['response_format'] = {'type': 'json_schema', 'schema': FINDINGS_SCHEMA, 'strict': True}
-                    message, reason = await self._completion(lease, body, receipts, purpose, before_inference)
+                        body['response_format'] = {'type': 'json_schema', 'schema': schema, 'strict': True}
+                    if max_output_tokens is not None:
+                        body['max_tokens'] = max_output_tokens
+                    message, reason = await self._completion(lease, body, receipts, purpose, output_allowance, before_inference)
                     call = message.get('function_call')
                     if call:
                         if reason != 'function_call' or final_turn or call.get('name') not in {'get_evidence', 'get_known_facts'}:
@@ -331,9 +359,11 @@ class GigaChatResearchClient:
                         receipts[-1].update(tool='get_evidence', source_version_id=args['source_version_id'], passage_ids=ids)
                         for passage in selected:
                             read_passages[(args['source_version_id'], passage['passage_id'])] = passage
+                        evidence = {'source_version_id': args['source_version_id'], 'url': source['url'], 'passages': selected}
+                        if capsule.get('semantic_contract') in {CONTRACT, VALUE_CONTRACT}:
+                            evidence = reading_source({**evidence, 'reading_text': source.get('reading_text')})
                         messages.extend([{key: message[key] for key in ('role', 'content', 'function_call', 'functions_state_id') if key in message},
-                                         {'role': 'function', 'name': 'get_evidence', 'content': _json({
-                                             'source_version_id': args['source_version_id'], 'url': source['url'], 'passages': selected})}])
+                                         {'role': 'function', 'name': 'get_evidence', 'content': _json(evidence)}])
                         continue
                     if read_passages and reason == 'length' and not final_turn and turn < max_tool_calls:
                         content = message.get('content')

@@ -19,6 +19,97 @@ import java.util.concurrent.CopyOnWriteArrayList
 class SourceRecoveryInstrumentedTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
+    @Test fun unchangedSyncReadsOnceWhileMutationKeepsAuthoritativeReadback() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val feed = FeedProjectionStore(context)
+        val research = ResearchProjectionStore(context)
+        val imported = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = imported.clientStoryId
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        var mutated = false
+        val wire = StoryWire().apply {
+            this.id = "server-$id"
+            clientStoryId = id
+            photoSha256 = imported.sha256
+            state = StoryStage.REVIEW
+            sourceAvailable = true
+            revision = 17
+            draftText = "Сохранённый черновик"
+            visualIdentity = VisualIdentityWire().apply { status = "match"; candidateId = "fixture-poi" }
+            facts = arrayListOf(FactWire().apply {
+                factId = "fixture-supported"
+                text = "Собственный подтверждённый факт"
+                confidence = .9
+                evidenceSupported = true
+                eligibility = "eligible"
+                selected = true
+                sources = arrayListOf(Gson().fromJson("""{"type":"web","url":"https://archive.example/history",
+                    "title":"Собственный архив","origin":"rkb","revision":"rev-17","rkb_entity_id":"record-17",
+                    "source_ref":"knowledge://chunks/own","supports":[{"kind":"verified_page_span",
+                    "source_version_id":"version-17","page_number":17,"text":"Ремонт только планировался в 2009 году."}],
+                    "bibliography":[{"author":"Автор описания","title":"Каталог","year":2005,"pages":"17"}]}""", SourceWire::class.java))
+            })
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    if (request.method == "POST" && request.path.orEmpty().endsWith("/facts")) {
+                        mutated = true
+                        wire.revision = 18
+                        wire.facts.single().selected = false
+                        wire.summary = "Mutation response"
+                    } else if (request.method == "GET" && mutated) {
+                        wire.revision = 19
+                        wire.summary = "Authoritative readback"
+                    }
+                    return MockResponse().setHeader("Content-Type", "application/json").setBody(Gson().toJson(wire))
+                }
+            }
+            start()
+        }
+        try {
+            store.createStory(imported)
+            store.setServerIdentity(id, wire.id)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only") { PhotoAssets.open(context, it) }
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            assertFalse(worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
+            assertEquals(1, calls.size)
+            assertEquals("GET", calls.single().method)
+            assertTrue(store.facts(id).single().selected)
+            assertEquals("Сохранённый черновик", store.story(id)?.draftText)
+            StoryStore(context).use { reopened ->
+                val own = Gson().fromJson(reopened.facts(id).single().sourcesJson, Array<SourceWire>::class.java).toList()
+                val detail = FactPresentation.sourceDetails(own)
+                listOf("version-17", "Страница 17", "только планировался", "rev-17", "record-17", "Автор описания").forEach {
+                    assertTrue(detail.contains(it))
+                }
+                assertTrue(FactPresentation.rkbOrigin(own.single()))
+            }
+            val operation = store.enqueueOperation(id, "facts", "select-$id", "{\"selected_fact_ids\":[]}")
+            assertFalse(worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
+            assertEquals(3, calls.count { it.method == "GET" })
+            val mutation = calls.single { it.method == "POST" }
+            assertEquals(operation.requestKey, mutation.getHeader("Idempotency-Key"))
+            assertEquals("Authoritative readback", store.story(id)?.summary)
+            assertFalse(store.facts(id).single().selected)
+            assertTrue(store.pendingOperations(id).isEmpty())
+            assertEquals("Сохранённый черновик", store.story(id)?.draftText)
+        } finally {
+            feed.close()
+            store.deleteStory(id)
+            research.clear(id)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            PhotoAssets.releaseTemporary(imported.path)
+            server.shutdown()
+            config.backendUrl = priorBackend
+        }
+    }
+
     @Test fun revokedProviderUsesRamOnlyUntilExpiryAndThenReportsRecoverableSourceAccess() {
         val revoked = "content://com.onedayonemasterpiece.streetstory.test.photo-intake/revoked"
         PhotoAssets.retainSelectedUri(revoked, PhotoGpsFixture.bytes())
@@ -31,6 +122,63 @@ class SourceRecoveryInstrumentedTest {
             assertTrue(failure.cause is SecurityException)
             assertEquals(SOURCE_UNAVAILABLE_MESSAGE, failure.message)
         } finally { PhotoAssets.releaseTemporary(revoked) }
+    }
+
+    @Test fun durableStopReachesServerBeforeFailedVoiceArchive() {
+        val store = AppGraph.store(context)
+        val feed = FeedProjectionStore(context)
+        val research = ResearchProjectionStore(context)
+        val imported = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = imported.clientStoryId
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        val wire = StoryWire().apply {
+            this.id = "server-$id"
+            clientStoryId = id
+            photoSha256 = imported.sha256
+            state = StoryStage.REVIEW
+            sourceAvailable = true
+            visualIdentity = VisualIdentityWire().apply { status = "match"; candidateId = "fixture-poi" }
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    if (request.path.orEmpty().contains("voice-sessions")) {
+                        return MockResponse().setResponseCode(503).setBody("{\"error\":{\"code\":\"archive_unavailable\",\"message\":\"Archive temporarily unavailable\"}}")
+                    }
+                    if (request.path.orEmpty().endsWith("/research-control")) {
+                        return MockResponse().setHeader("Content-Type", "application/json")
+                            .setBody(Gson().toJson(mapOf("action" to "stop", "purposes" to listOf("facts"), "story" to wire)))
+                    }
+                    return MockResponse().setHeader("Content-Type", "application/json").setBody(Gson().toJson(wire))
+                }
+            }
+            start()
+        }
+        try {
+            store.createStory(imported)
+            store.setServerIdentity(id, wire.id)
+            val voice = store.createVoiceSession(id, RecordingKind.REFINEMENT, "controlled-emulator")
+            store.finishVoiceSession(voice.sessionId, "2026-10-10T22:00:00Z", 0, 0)
+            val stop = store.enqueueOperation(id, "research-control", "stop-$id", "{\"purpose\":\"facts\",\"action\":\"stop\"}")
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only") { PhotoAssets.open(context, it) }
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            assertThrows(ApiException::class.java) {
+                worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null)
+            }
+            val stopIndex = calls.indexOfFirst { it.path.orEmpty().endsWith("/research-control") }
+            val archiveIndex = calls.indexOfFirst { it.path.orEmpty().contains("voice-sessions") }
+            assertTrue(stopIndex >= 0 && archiveIndex > stopIndex)
+            assertEquals(stop.requestKey, calls[stopIndex].getHeader("Idempotency-Key"))
+            assertFalse(store.pendingOperations(id).any { it.id == stop.id })
+            assertTrue(store.finishedVoiceSessions().any { it.sessionId == voice.sessionId })
+        } finally {
+            feed.close()
+            store.deleteStory(id)
+            research.clear(id)
+            PhotoAssets.releaseTemporary(imported.path)
+            server.shutdown()
+        }
     }
 
     @Test fun missingSharedSourcePreservesProductStateAndSyncsSelectionUntilSameStoryReopensOriginal() {

@@ -2387,3 +2387,126 @@ The T model claimed a specific bent-body/article correspondence. The actual arti
 The automatic rich-source goal now explicitly asks the model for at least three substantively different claims when its sources support them, and forbids inflating the choice by splitting an address/date/event. This implements the requested author-choice intent in model instructions, without a host fact-count completion threshold or extra judge.
 
 Installed-SDK affected checks v101:100 passed; assembled joint/T pointer paths v102:71 passed. Ruff and diff checks passed. The actual saved130 article cache/body hashes were verified, and optional public photo preparation produced a62,385-byte JPEG from a received detail link (model SHA ee70827fac5c41f75e1b1dcf95ee91436e482031513e551f05e60bda245ab251). The image was viewed. This preparation is not paid inference or new SOURCE recognition credit. Fresh normal changed130 and different102 must verify the correction before corpus expansion or release.
+
+
+### Recall/useful-result follow-up, 2026-10-10
+
+The authoritative owner task is `street-story-recall-and-useful-result-20261010`
+at484a9bf7. This candidate starts from deployeda6df303, preserving SOURCE/MAP
+and the existing proof/POI/Stop/UNKNOWN contracts. Original frozen7a15 outcomes
+remain unchanged (4 supported correct identities, not a model-accuracy score).
+
+Retained106 and119 actually requested text for two active bodies. Their reader
+receipts closed respectively with `one_lookup_requires_one_literal_address` and
+`address_entry_not_bound_to_nominated_footprint`; no separate initial T was sent.
+The caller now validates physical priority independently, admits selected text
+for active unconfirmed bodies, and reads each active address independently after
+an unusable shared request. Ready acquired versions reach the existing compact T
+without the stale two-article/pending-only branch. Foreign identities remain
+ineligible and uncertain T remains unconfirmed.
+
+Prepared follow-up requests may use one other registered executor after an
+HTTP-closed technical failure when remaining time permits its ordinary admission
+and the REF reserve. Exact inputs and original route receipts survive; UNKNOWN,
+changed inputs, semantic responses and already-addressed routes cannot authorize
+this reassignment. Article403/429 respects Retry-After and never triggers a
+browser bypass. Page/browser cooldown and the existing two browser slots are
+retained across discovery waves; independent ready URLs still progress.
+
+Committed model sufficiency is checked on resume, after a no-new-unit review and
+after the final review as well as inside the parallel loop. Offline in-memory
+replay of original102/104 completed in0.255/0.238s with9/6 eligible claims, zero
+provider dispatches and unchanged original provider receipts. This is completion
+orchestration evidence with synthetic reopened execution state, not cold/client
+acceptance; the retained DB was read-only and no identity/facts were imported.
+
+The frozen evaluation manifest now includes the physically inspected132 Wiki/OSM
+equivalents and the owner's approximate camera hints for125/126, after verifying
+original SOURCE hashes. Aliases are evaluation-only; historical Stop and4/15
+remain unchanged. Minimum3 and180/300/480s metrics remain. The existing Live E2E
+runner now also supports a fresh ordinary photo API upload and automatic workers
+in an empty candidate DB before the same selection/concept/draft/voice/visual
+and reopen flow. Fresh product and fixed15 measurements are still pending.
+
+Focused acquisition, provider routing, UNKNOWN/input fences, article transport,
+completion and runner checks passed. Evidence root remains
+`/home/dev/artifacts/street-story/20261009T214809Z-overnight-product-finish-20261009`;
+`retained-102-104-completion-recall.json` records the offline completion segment.
+
+Frozen1c4725b installed-SDK verification completed with2845 passed,2 skipped and
+one obsolete HTTP403-to-browser expectation. The fixture now exercises an
+HTTP503 transient failure; the existing403/429 no-bypass/cooldown tests remain.
+Actual changed106 reached compact T with SOURCE, MAP, acquired regional text
+and publisher photos. Native follow-up was authoritatively NotSent at admission;
+the Google fallback stayed UNKNOWN. Independent REF continued, but the case
+ended at the unchanged identity deadline. This is acquisition/dispatch evidence,
+not a successful recognition or a semantic uncertain-T answer.
+
+Fresh ordinary photo API104 createdstory_437619b9adeebd5c967f7434. Both actual
+Native SOURCE and T responses closed, accepting relation3665416; three eligible
+claims were available at276.6734s. Live then announced three chosen facts while
+durable owner selection remained empty: its initial research capability lacked
+select_facts. The failure and stopped session remain in
+`fresh-client-recall-1c4725b/e2e.json`. Ready eligible material now starts in the
+editor bundle, while unresolved identity, prepared publication and an actual
+pending author-requested review retain their existing priority. The model still
+chooses facts semantically and must persist them using select_facts before
+claiming success; initialization never selects or changes evidence eligibility.
+Continuation of this newly created story, fresh fixed15 and release readback
+remain pending; no retained historical story is credited as cold acceptance.
+
+The new104 continuation on017c713 passed the ordinary selection/concept/draft,
+30.077s prepared-PCM concept edit, draft refinement, VibePublish visual and
+Stop/reopen path. The model chose the namesake,42casemates/two rings and WWI
+hospital claims. The visual and original SOURCE were inspected: the same tower
+is recognizable, annotations are readable and supported by those three claims,
+and the evening treatment matches the author request. Historical draft claims
+match selection. The mechanical report remains REVIEW_REQUIRED; this explicit
+inspection is recorded in the existing incident timeline. No social dispatch
+or physical microphone acceptance is claimed.
+
+The017c713 first-five series is preserved.102 and104 accepted correct objects
+but stopped with only two eligible claims at130.2/181.6s: FAIL minimum3. Saved
+committed review checkpoints actually declared sufficiency on two claims while
+own-source candidates remained pending. New automatic fact tasks now carry
+the requested numeric minimum3; an affirmative model decision must include at
+least that many distinct independently eligible own claims in its saved basis.
+The count cannot declare semantic sufficiency, promote a pending claim or split
+an event. Existing tasks without a numeric minimum retain their old contract.
+Affected headless/review/automatic-request tests:118 passed.017c713 full SDK
+verification had2845 pass/2 skips and two stale editor-capability expectations
+of the same shared pending-review scenario, now corrected. This next candidate
+needs new frozen measurements; earlier reports are not repainted.
+
+The7265246 first-ten frozen cases remain archived.102 reached three eligible
+claims through the ordinary API at188.7s and ended at212.5s;106 accepted the
+expected photographed body through real REF and ended with three claims at
+237.9s.119 accepted a specific photographed clinic component through real T
+with publisher photographs and three claims at147.9s; SOURCE, MAP and the
+publisher facade were inspected separately.107 remains evaluation-unresolved
+until its individual footprint is inspected.104 failed in this corpus, while a
+separate NEW ordinary API104 story reached three claims at213.1s and completed
+selection, concept, draft,30.077s prepared-PCM voice and a generated visual.
+The original visual wait failure is preserved; observation of the same
+VibePublish operation closed without another generation. Its inspected SOURCE
+and visual show the same tower with readable source-backed annotations.
+
+The new story's draft correction twice stopped before a tool mutation with
+RESOURCE_TOKEN_BUDGET after the publication-to-editor transition. The actual
+setup was26,134bytes. A read-only counterfactual measured26.3→17.1KB when
+unselected discovery inventory and research-job context were omitted. Editorial,
+dictation and publication setup now use that smaller projection while keeping
+selected facts, subject, author controls, concept and draft. Research retains
+its complete inventory; ordinary read tools still expose saved material. No
+provider limits, semantic classifier, SOURCE transport or shared framework were
+changed. This is a measured mitigation, not yet a proved complete runtime fix.
+
+Canonical93a0878 (PR255, the independent RKB POI bridge) was deployed during the
+series and has been merged into this branch without conflicts. Rewriting its
+service.env changed the raw-file digest, although the effective frozen settings,
+credentials and qualification still matched. The final-five resume stopped at
+that guard before uploads/provider sends. Original run.json and cases remain
+unchanged. A final coherent candidate will run the fixed15 in one process;
+older recognitions will not be credited as new cold results.726's installed-SDK
+full test command timed out at1,800s with no printed failure near85%; hosted CI
+passed. The remaining research-control subset passed134 tests in28.7s.

@@ -62,7 +62,7 @@ async def test_explicit_controls_preserve_queues_and_resume_current_epoch(tmp_pa
         assert after[key] == before[key]
     if purpose in {'facts', 'all'}:
         assert session.state['fact_research_control_revision'] == resumed['research_controls']['facts']['revision'] > 0
-        assert not session.state['research_cancelled']
+        assert not session.state.get('research_cancelled')
         assert 'research_chunk_receipts' not in session.state
         assert 'research_pending_page' not in session.state
         with svc.store.connection() as db:
@@ -122,7 +122,11 @@ def test_microphone_stop_does_not_cancel_background_research(tmp_path):
     svc, adapter, session, _ = prepared(tmp_path)
     before = rows(svc, session.resource_id)
     adapter.on_stopped(session)
-    assert rows(svc, session.resource_id) == before
+    after = rows(svc, session.resource_id)
+    assert all(after[key] == value for key, value in before.items())
+    assert after['research-resume:partial-run']['state'] == 'ready'
+    adapter.on_stopped(session)
+    assert rows(svc, session.resource_id) == after
     current = svc.story(session.resource_id)
     assert not any(v['stopped'] for v in current['research_controls'].values())
 
@@ -169,7 +173,36 @@ def test_review_setup_keeps_subject_and_run_without_resending_whole_inventory():
     assert result['publication_concept'] == 'Saved author angle'
     assert 'known_fact_inventory' not in result and 'draft_text' not in result
     assert 'observations' not in result['visual_identity']
-    assert StreetStoryLiveAdapter._capability_context(context, 'editor') == original
+    assert StreetStoryLiveAdapter._capability_context(context, 'research') == original
+
+
+@pytest.mark.parametrize('capability', ['editor', 'dictation', 'publication'])
+def test_editorial_setup_preserves_selected_content_without_discovery_inventory(capability):
+    import copy
+
+    context = {
+        'story_id': 'same-story', 'photo_sha256': 'a' * 64,
+        'physical_identity_accepted': True,
+        'visual_identity': {'candidate_id': 'osm:way:91'},
+        'selected_fact_ids': ['selected'],
+        'facts': [{'id': 'selected', 'text': 'Verified claim', 'eligible': True}],
+        'publication_concept': 'Saved evening angle', 'draft_text': 'Saved draft',
+        'research_controls': {'facts': {'state': 'stopped', 'revision': 3}},
+        'known_fact_inventory': [['unselected', 'Unverified claim' * 1000]],
+        'known_fact_inventory_fields': ['id', 'text'],
+        'known_fact_inventory_truncated': False, 'facts_instruction': 'Research policy',
+        'research_run': {'run_id': 'old-run'}, 'jobs': [{'state': 'completed'}],
+        'identity_research_context': {'candidates': ['old-candidate']},
+    }
+    original = copy.deepcopy(context)
+    result = StreetStoryLiveAdapter._capability_context(context, capability)
+    assert context == original
+    assert result == {key: value for key, value in original.items() if key in {
+        'story_id', 'photo_sha256', 'physical_identity_accepted', 'visual_identity',
+        'selected_fact_ids', 'facts', 'publication_concept', 'draft_text', 'research_controls',
+    }}
+    assert StreetStoryLiveAdapter._capability_context(context, 'research') == original
+    assert StreetStoryLiveAdapter._capability_context(context, 'identity') == original
 
 
 async def shared_editor_session(adapter, previous, intent):
@@ -262,19 +295,18 @@ async def test_more_after_editing_reads_saved_document_and_preserves_draft(tmp_p
     begin_turn(session, 'Сохрани концепцию', origin='text')
     await adapter.execute_tool(session, {'name': 'set_concept', 'id': 'concept-before-more',
                                        'args': {'concept': 'История ворот'}})
-    with pytest.raises(ConflictError, match='paused'):
-        await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    page = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    assert page['evidence_passages']
 
     begin_turn(session, 'Найди ещё факты, сохрани текущий текст', origin='text')
-    page = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    adapter._enter_requested_research(session)
     assert page['research_run_id'] == 'partial-run'
-    assert page['evidence_passages']
     assert service.story(session.resource_id)['draft_text'] == 'Owner draft'
     assert service.story(session.resource_id)['publication_concept'] == 'История ворот'
-    assert not session.state['research_cancelled']
+    assert not session.state.get('research_cancelled')
     assert not session.state['research_author_interrupted']
     with service.store.connection() as db:
-        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'extracting'
+        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'planned'
 
 
 @pytest.mark.asyncio
@@ -306,7 +338,7 @@ def test_more_keeps_completed_run_immutable(tmp_path):
     adapter._pause_research(session, 'live_owner_switched_to_editing')
     begin_turn(session, 'Найди ещё факты', origin='text')
     adapter._enter_requested_research(session)
-    assert not session.state['research_cancelled']
+    assert not session.state.get('research_cancelled')
     assert 'research_run_id' not in session.state
     with service.store.connection() as db:
         assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'completed'

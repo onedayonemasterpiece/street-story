@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
-from .model_facts import normalized_claim_key, validated_model_fact_text
+from .model_facts import (
+    merge_source_payloads, normalized_claim_key, source_version_id as _source_version_id,
+    validated_model_fact_text,
+)
 
 REVIEW_STATUSES = {"unreviewed", "eligible", "disputed", "withheld", "quarantined"}
 ELIGIBILITY = {"unreviewed", "eligible", "withheld"}
@@ -34,88 +38,6 @@ def candidate_assertion_id(claim_key: Any, text: Any) -> str:
         # selections and clients keep stable references during migration.
         return _sha("fact_", value.casefold(), 20)
     return _sha("claim_", key + "\n" + value.casefold(), 20)
-
-
-def _source_key(source: dict[str, Any]) -> str:
-    url = str(source.get("url") or "").rstrip("/")
-    if url:
-        return "url:" + url
-    ref = str(source.get("ref") or source.get("evidence_ref") or "").strip()
-    return "ref:" + ref if ref else ""
-
-
-def _support_key(source_url: str, support: dict[str, Any]) -> str:
-    return _canonical(
-        {
-            "kind": str(support.get("kind") or "support"),
-            "source_url": str(support.get("source_url") or source_url).rstrip("/"),
-            "text": str(support.get("text") or "").strip(),
-        }
-    )
-
-
-def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Mechanical union that never replaces passages merely because URL matches."""
-    merged: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for group in groups:
-        for raw in group or []:
-            if not isinstance(raw, dict):
-                continue
-            key = _source_key(raw)
-            if not key:
-                continue
-            current = merged.get(key)
-            if current is None:
-                current = {**raw}
-                current["supports"] = []
-                merged[key] = current
-                order.append(key)
-            else:
-                for field in ("title", "type", "ref", "evidence_ref"):
-                    if not current.get(field) and raw.get(field):
-                        current[field] = raw.get(field)
-            source_url = str(raw.get("url") or "").rstrip("/")
-            supports: dict[str, dict[str, Any]] = {
-                _support_key(source_url, item): item
-                for item in current.get("supports") or []
-                if isinstance(item, dict) and str(item.get("text") or "").strip()
-            }
-            for support in raw.get("supports") or []:
-                if not isinstance(support, dict):
-                    continue
-                text = str(support.get("text") or "").strip()
-                if not text:
-                    continue
-                supports[_support_key(source_url, support)] = {
-                    **support,
-                    "source_url": str(support.get("source_url") or source_url).rstrip("/"),
-                    "text": text,
-                }
-            current["supports"] = list(supports.values())
-    return [merged[key] for key in order]
-
-
-def _source_version_id(source: dict[str, Any]) -> str:
-    """Return the durable fetched document version when available."""
-    durable = str(source.get("source_version_id") or "").strip()
-    if durable:
-        return durable
-    payload = {
-        "url": str(source.get("url") or "").rstrip("/"),
-        "type": str(source.get("type") or ""),
-        "title": str(source.get("title") or ""),
-        "supports": [
-            {
-                "kind": str(item.get("kind") or "support"),
-                "source_url": str(item.get("source_url") or source.get("url") or "").rstrip("/"),
-                "text": str(item.get("text") or "").strip(),
-            }
-            for item in source.get("supports") or []
-            if isinstance(item, dict) and str(item.get("text") or "").strip()
-        ],
-    }
-    return _sha("srcv_", _canonical(payload), 24)
 
 
 def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -208,6 +130,71 @@ def _assertion_exists(db, story_id: str, assertion_id: str) -> bool:
             (story_id, assertion_id),
         ).fetchone()
     )
+
+
+def accept_fact_basis(db, story_id, assertion_id, evidence_ids, *, operation, now, reassessment=False):
+    """Freeze the already assessed claim and its own selected immutable spans.
+
+    Caller owns semantic assessment and the transactional Stop/run/lease fences.
+    Inventory growth is independent of this admission; no inference occurs here.
+    Only an explicit new positive assessment may renew a withdrawn admission;
+    hydration and refresh retain their default readback authority.
+    """
+    assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                           (story_id, assertion_id)).fetchone()
+    story = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
+    if not assertion or not story or not evidence_ids:
+        raise ValueError('fact_basis_missing')
+    if accepted_basis_valid(db, story_id, assertion) and not (reassessment and assertion['review_status'] == 'withheld'):
+        return  # Compatible support cannot rewrite the original admission.
+    research = json.loads(story['research_json'] or '{}')
+    identity = research.get('visual_identity') or {}
+    own = {row['evidence_id']: dict(row) for row in db.execute(
+        "SELECT e.* FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+        "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (story_id, assertion_id))}
+    if not set(evidence_ids).issubset(own):
+        raise ValueError('fact_basis_foreign_evidence')
+    basis = {'version': 1, 'claim': assertion['display_text'],
+             'subject': identity.get('candidate_id'), 'generation': research.get('identity_generation'),
+             'operation': operation, 'accepted_at': now,
+             'evidence': [{key: own[eid][key] for key in
+                          ('evidence_id', 'source_url', 'source_version_id', 'span_sha256', 'relation')}
+                          for eid in dict.fromkeys(evidence_ids)]}
+    db.execute('UPDATE fact_assertions SET accepted_revision_digest=revision_digest,accepted_basis_json=? '
+               'WHERE story_id=? AND assertion_id=?', (_canonical(basis), story_id, assertion_id))
+    if reassessment and assertion['review_status'] == 'withheld':
+        # A new guarded positive assessment may renew an explicitly withdrawn
+        # admission. Ordinary refresh/growth never calls this semantic boundary.
+        db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' "
+                   "WHERE story_id=? AND assertion_id=?", (story_id, assertion_id))
+        logging.getLogger(__name__).info(
+            'street_story_fact_reassessment component=fact_ledger state=prepared story_id=%s assertion_id=%s contract=%s packet_ref=%s run_id=%s own_span_count=%s',
+            story_id, assertion_id, operation.get('contract'), operation.get('packet_ref'),
+            operation.get('run_id'), len(basis['evidence']))
+
+
+def accepted_basis_valid(db, story_id, assertion):
+    try:
+        basis = json.loads(assertion['accepted_basis_json'] or '{}')
+    except (ValueError, TypeError):
+        return False
+    if (not isinstance(basis, dict) or basis.get('version') != 1
+            or basis.get('claim') != assertion['display_text']
+            or not isinstance(basis.get('evidence'), list) or not basis['evidence']
+            or any(not isinstance(ev, dict) for ev in basis['evidence'])):
+        return False
+    story = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
+    if not story:
+        return False
+    identity = json.loads(story['research_json'] or '{}').get('visual_identity') or {}
+    from .poi_memory import memory_keys
+    if basis.get('subject') not in memory_keys(db, identity):
+        return False
+    own = {row['evidence_id']: dict(row) for row in db.execute(
+        "SELECT e.evidence_id,e.source_url,e.source_version_id,e.span_sha256,e.relation "
+        "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+        "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (story_id, assertion['assertion_id']))}
+    return all(own.get(ev.get('evidence_id')) == ev for ev in basis['evidence'])
 
 
 def _recompute_assertion_digest(db, story_id: str, assertion_id: str) -> str:
@@ -361,7 +348,8 @@ def persist_fact_candidates(
         sources = merge_source_payloads(
             [source for source in (item.get("sources") or []) if isinstance(source, dict)]
         )
-        observation_id = _observation_id(story_id, run_id, batch_id, assertion_id, text, sources)
+        observation_text = validated_model_fact_text(item.get('observation_text')) or text
+        observation_id = _observation_id(story_id, run_id, batch_id, assertion_id, observation_text, sources)
         evidence_rows = _evidence_rows(observation_id, sources)
         status = "accepted" if evidence_rows else "candidate"
         structural_error = None if evidence_rows else "evidence_span_missing"
@@ -410,7 +398,7 @@ def persist_fact_candidates(
                 batch_id,
                 assertion_id,
                 claim_key,
-                text,
+                observation_text,
                 max(0.0, min(1.0, float(item.get("confidence") or 0.0))),
                 status,
                 structural_error,
@@ -470,6 +458,15 @@ def persist_fact_candidates(
                 ),
             )
 
+        if current_assertion and existing_fact_id and text != current_assertion['display_text']:
+            # An explicit replacement is a different claim revision, even under
+            # the same model identity; it cannot inherit the old admission.
+            db.execute('UPDATE fact_assertions SET display_text=?,accepted_basis_json=NULL,accepted_revision_digest=NULL '
+                       'WHERE story_id=? AND assertion_id=?', (text, story_id, assertion_id))
+            db.execute('UPDATE facts SET text=? WHERE story_id=? AND fact_id=?', (text, story_id, assertion_id))
+            current_assertion = dict(current_assertion)
+            current_assertion.update(display_text=text, accepted_basis_json=None)
+
         previous_digest = ""
         row = db.execute(
             "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
@@ -478,9 +475,11 @@ def persist_fact_candidates(
         if row:
             previous_digest = str(row["revision_digest"] or "")
         new_digest = _recompute_assertion_digest(db, story_id, assertion_id)
-        if previous_digest and previous_digest != new_digest:
+        if previous_digest and previous_digest != new_digest and (
+            current_assertion is None or not accepted_basis_valid(db, story_id, current_assertion)
+        ):
             db.execute(
-                "UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed',updated_at=? "
+                "UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed',accepted_revision_digest=NULL,accepted_basis_json=NULL,updated_at=? "
                 "WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'",
                 (now, story_id, assertion_id),
             )
@@ -724,7 +723,7 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
     assertions = {
         str(row["assertion_id"]): dict(row)
         for row in db.execute(
-            "SELECT assertion_id,review_status,eligibility,revision_digest "
+            "SELECT * "
             "FROM fact_assertions WHERE story_id=?",
             (story_id,),
         )
@@ -791,7 +790,7 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
             bundle = scan["bundle"]
             if all(fact_id in assertions for fact_id in fact_ids) and all(
                 bundle.get(fact_id)
-                == str(assertions[fact_id]["revision_digest"] or "")
+                == str(assertions[fact_id].get("accepted_revision_digest") or assertions[fact_id]["revision_digest"] or "")
                 for fact_id in fact_ids
             ):
                 return scan
@@ -806,8 +805,8 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
         right = str(conflict["right_fact_id"])
         if left not in assertions or right not in assertions:
             continue
-        left_revision = str(assertions[left]["revision_digest"] or "")
-        right_revision = str(assertions[right]["revision_digest"] or "")
+        left_revision = str(assertions[left].get("accepted_revision_digest") or assertions[left]["revision_digest"] or "")
+        right_revision = str(assertions[right].get("accepted_revision_digest") or assertions[right]["revision_digest"] or "")
         reviewed_pair = latest_scan_for(left, right)
         conflict_id = str(conflict["conflict_id"])
         conflict_seen_at = float(conflict["last_seen_at"] or 0.0)
@@ -871,30 +870,52 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
     for fact_id, assertion in assertions.items():
         current_status = str(assertion["review_status"] or "")
         if current_status == "quarantined":
+            reason = 'quarantined'
             review_status = "quarantined"
             eligibility = "withheld"
-        elif fact_id in pending_review:
+        elif assertion.get('accepted_basis_json') and not accepted_basis_valid(db, story_id, assertion):
+            reason = 'accepted_basis_invalid'
+            review_status = "withheld"
+            eligibility = "withheld"
+        elif fact_id in pending_review and not accepted_basis_valid(db, story_id, assertion):
+            reason = 'assessment_pending'
             review_status = "unreviewed"
             eligibility = "unreviewed"
         elif current_status == "withheld":
+            reason = 'assessment_withheld' if fact_id in evidence_supported else 'own_evidence_missing'
             review_status = "withheld"
             eligibility = "withheld"
         elif fact_id not in evidence_supported:
+            reason = 'own_evidence_missing'
             review_status = "withheld"
             eligibility = "withheld"
         elif blocked[fact_id]:
+            reason = ','.join(sorted(blocked[fact_id]))
             review_status = "disputed"
             eligibility = "withheld"
-        elif latest_scan_for(fact_id) is None:
+        elif not accepted_basis_valid(db, story_id, assertion) and latest_scan_for(fact_id) is None:
+            reason = 'assessment_missing'
             review_status = "unreviewed"
             eligibility = "unreviewed"
         else:
+            reason = 'accepted_basis' if assertion.get('accepted_basis_json') else 'accepted_legacy_scan'
             review_status = "eligible"
             eligibility = "eligible"
+            if not assertion.get('accepted_basis_json'):
+                # Dual-read: retain a real legacy scan, never manufacture a verdict.
+                scan = latest_scan_for(fact_id)
+                legacy_story = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
+                legacy_subject = (json.loads(legacy_story[0] or '{}').get('visual_identity') or {}).get('candidate_id')
+                if scan and legacy_subject:
+                    ids = [row[0] for row in db.execute(
+                        "SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o "
+                        "ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'",
+                        (story_id, fact_id))]
+                    accept_fact_basis(db, story_id, fact_id, ids, operation={'legacy_scan_id': scan['id']}, now=now)
         db.execute(
-            "UPDATE fact_assertions SET review_status=?,eligibility=?,updated_at=? "
+            "UPDATE fact_assertions SET review_status=?,eligibility=?,eligibility_reason=?,updated_at=? "
             "WHERE story_id=? AND assertion_id=?",
-            (review_status, eligibility, now, story_id, fact_id),
+            (review_status, eligibility, reason, now, story_id, fact_id),
         )
 
     from .poi_memory import sync_poi_review_from_story
@@ -1052,7 +1073,7 @@ def fact_revision_bundle(
     backfill_legacy_fact_ledger(db, 0.0)
     if fact_ids is None:
         rows = db.execute(
-            "SELECT assertion_id,revision_digest FROM fact_assertions "
+            "SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions "
             "WHERE story_id=? AND owner_selected=1 AND eligibility='eligible' "
             "ORDER BY assertion_id",
             (story_id,),
@@ -1069,7 +1090,7 @@ def fact_revision_bundle(
     rows = {
         str(row["assertion_id"]): str(row["revision_digest"] or "")
         for row in db.execute(
-            f"SELECT assertion_id,revision_digest FROM fact_assertions "
+            f"SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions "
             f"WHERE story_id=? AND assertion_id IN ({placeholders})",
             (story_id, *ids),
         )

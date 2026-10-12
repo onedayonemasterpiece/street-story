@@ -79,7 +79,7 @@ def selected_candidates(candidates, observed, pages, payload):
     """Keep selected Wiki REF bytes reachable without nearest-page promotion."""
     if 'selected_wikipedia_page_ids' not in payload:
         return candidates  # Existing frozen plans retain their exact semantics.
-    chosen = list(dict.fromkeys([*payload['selected_wikipedia_page_ids'], *(payload.get('late_mapped_wikipedia_page_ids') or [])]))[:3]
+    chosen = list(dict.fromkeys([*payload['selected_wikipedia_page_ids'], *(payload.get('late_mapped_wikipedia_page_ids') or [])]))
     allowed_refs = {url for page in pages if str(page['pageid']) in chosen
         for url in (page.get('image_url'), page.get('thumbnail_url')) if url}
     full = {item['candidate_id']: item for item in [*observed, *candidates]}
@@ -106,4 +106,4 @@ def late_linked_page_ids(pages, payload):
         if item.get('support_status') in {'plausible', 'spatially_supported'})
     return [str(page['pageid']) for page in pages if any(
         link.get('candidate_id') in selected for link in page.get('mapped_wikipedia_sources') or [])
-        and (page.get('image_url') or page.get('thumbnail_url'))][:3]
+        and (page.get('image_url') or page.get('thumbnail_url'))]

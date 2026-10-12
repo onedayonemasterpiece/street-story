@@ -70,10 +70,10 @@ def real_native(adapter, story, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_native_active_lane_below_three_percent_never_sends_turn(tmp_path, monkeypatch):
+async def test_native_active_lane_exhausted_provider_quota_never_sends_turn(tmp_path, monkeypatch):
     adapter, story, _ = ready(tmp_path)
     provider, client, original, context, sends = real_native(adapter, story, tmp_path, monkeypatch)
-    client.used = 98
+    client.used = 100
     assert 'native' in adapter.parallel_visual_routes()  # Capability is not a quota grant.
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await adapter.visual_pair_route('native', None, original, VERDICT_SCHEMA, canonical(context))

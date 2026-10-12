@@ -37,7 +37,8 @@ def geometry_feature(story, candidates, reference):
 
     Contour indices refer to map_geometry.rings and the transmitted contour_roles.
     A segment uses consecutive observed vertices; closure is never fabricated.
-    Attribute references require an actual literal OSM tag, not missing values.
+    Attribute references require an actual literal OSM tag or its own normalized
+    mapped-entry address, not missing/inferred values.
     """
     if not isinstance(reference, dict):
         return None
@@ -54,10 +55,30 @@ def geometry_feature(story, candidates, reference):
         'source_url': (entry.get('map_object') or {}).get('source_url') or entry.get('source_url')}
     if kind == 'attribute':
         key = reference.get('key') or reference.get('tag_key')
-        if not isinstance(key, str) or key not in tags or tags[key] is None or tags[key] == '':
+        if not isinstance(key, str):
             return None
-        return {**result, 'key': key, 'value': tags[key], 'provenance':
-            (entry.get('map_object') or {}).get('provenance') or 'osm.tags'}
+        if key in tags and tags[key] is not None and tags[key] != '':
+            # Preserve the established exact-tag representation/digest.
+            return {**result, 'key': key, 'value': tags[key], 'provenance':
+                (entry.get('map_object') or {}).get('provenance') or 'osm.tags'}
+        field, separator, literal = key.partition('=')
+        address_tags = {'city': 'addr:city', 'street': 'addr:street', 'house_number': 'addr:housenumber'}
+        tag = address_tags.get(field, field)
+        address_field = next((name for name, value in address_tags.items() if value == tag), None)
+        values = [tags[tag]] if tags.get(tag) is not None and tags.get(tag) != '' else []
+        address = entry.get('map_address') or {}
+        own_url = (entry.get('map_object') or {}).get('source_url') or entry.get('source_url')
+        own_address = (address.get('provenance') == 'osm.tags'
+            and address.get('scope') == 'mapped_entry_only'
+            and (not own_url or address.get('source_url') == own_url))
+        if own_address and address_field and address.get(address_field) is not None and address.get(address_field) != '':
+            values.append(address[address_field])
+        if (not values or len({str(value) for value in values}) != 1
+                or separator and str(values[0]) != literal):
+            return None
+        # Resolve an exact received field/value alias without altering the raw
+        # model reference or inferring its physical/semantic correspondence.
+        return {**result, 'key': tag, 'value': values[0], 'provenance': 'osm.tags'}
     if kind == 'point':
         if requested_kind == 'entry' and (not cid.startswith('osm:node:') or not (
                 tags.get('entrance') not in {None,'','no'} or tags.get('addr:housenumber') or
@@ -124,6 +145,80 @@ def _intersection(a, b, c, d):
         return None
     p, q = c[0]-a[0], c[1]-a[1]
     return ((p*v-q*u)/cross, (p*y-q*x)/cross)
+
+
+def observed_boundary_view(entry, origin, *, pose=None):
+    """Conditional plan projection of received walls, never facade recognition.
+
+    Midpoint rays describe self-occlusion in the received 2D outline only.
+    They cannot establish visibility of a whole wall, height or other bodies.
+    The original anchor and explicit offsets remain unverified scenarios.
+    """
+    origin = _point(origin)
+    if pose is not None and not isinstance(pose, dict):
+        return None
+    pose = pose or {}
+    east, north = pose.get('east_m', 0), pose.get('north_m', 0)
+    if origin is None or any(isinstance(v, bool) or not isinstance(v, (int, float))
+            or not math.isfinite(v) for v in (east, north)):
+        return None
+    camera = (east, north)
+    geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+    rings, walls, rows, incomplete = [], [], [], False
+    for ri, ring in enumerate(geometry.get('rings') or []):
+        points = [_point(p) for p in ring.get('points') or []]
+        if len(points) < 2 or any(p is None for p in points):
+            incomplete = True
+            continue
+        points = [_local(p, origin) for p in points]
+        closed = ring.get('closed') is True and len(points) >= 4 and points[0] == points[-1]
+        rings.append((points, ring.get('role'), closed))
+        for si, (a, b) in enumerate(zip(points, points[1:])):
+            if a != b:
+                walls.append((ri, si, a, b))
+    if not walls:
+        return None
+    # Ray crossing uses only observed closure. A missing outer/inner ring is
+    # unknown, never an inferred exterior view or an identity exclusion.
+    complete = bool(rings) and not incomplete and all(closed and role in {'outer', 'inner'}
+                                  for _, role, closed in rings)
+    inside_outer = inside_inner = on_boundary = False
+    if complete:
+        for points, role, _ in rings:
+            inside = False
+            for a, b in zip(points, points[1:]):
+                on_boundary |= _distance(camera, a, b) <= 1e-8
+                if (a[1] > north) != (b[1] > north):
+                    crossing = a[0] + (north-a[1]) * (b[0]-a[0]) / (b[1]-a[1])
+                    if east < crossing:
+                        inside = not inside
+            if role == 'outer':
+                inside_outer |= inside
+            else:
+                inside_inner |= inside
+    anchor_relation = ('unknown' if not complete else 'on_boundary' if on_boundary else
+                       'inside' if inside_outer and not inside_inner else 'outside')
+    for ri, si, a, b in walls:
+        start, end = (_bearing((p[0]-east, p[1]-north)) if p != camera else None for p in (a, b))
+        span = abs((end-start+180) % 360-180) if start is not None and end is not None else None
+        midpoint = ((a[0]+b[0])/2, (a[1]+b[1])/2)
+        occluded = None
+        if anchor_relation == 'outside' and midpoint != camera:
+            occluded = any(hit is not None and 1e-9 < hit[0] < 1-1e-9
+                and -1e-9 <= hit[1] <= 1+1e-9
+                for rj, sj, c, d in walls if (rj, sj) != (ri, si)
+                for hit in [_intersection(camera, midpoint, c, d)])
+        rows.append([ri, si, *(round(value, 2) if value is not None else None
+                              for value in (start, end, span)), occluded])
+    return {'anchor_relation': anchor_relation, 'pose_scenario': {
+        'east_m': east, 'north_m': north, 'is_measured_camera_pose': False},
+        'side_columns': ['ring_index', 'segment_index', 'start_bearing_degrees',
+            'end_bearing_degrees', 'angular_span_degrees', 'midpoint_self_occluded'],
+        'sides': rows,
+        'policy': 'Conditional 2D rays from the supplied anchor plus explicit offsets. '
+            'Inside/on-boundary is relative to received OSM contours, not verified camera position. '
+            'Midpoint self-occlusion is not whole-wall visibility; other buildings, height, yaw, '
+            'photo crop and actual facade correspondence remain unknown. No body is ranked or excluded.'}
 
 
 def measure_spatial_relations(story, candidates, candidate_ids, *, pose=None, front_segments=(), street_axis=None):
@@ -250,3 +345,75 @@ def measure_spatial_relations(story, candidates, candidate_ids, *, pose=None, fr
             'not GPS accuracy. Relative bearings define left/right only within the chosen front view; '
             'ray hits are conditional on the chosen axis/pose and received map coverage. '
             'Missing geometry never excludes an alternative; small OSM gaps do not verify physical passages.'}
+
+
+def supplied_relation_options(story, candidates, *, active_ids=()):
+    """A small catalogue of adjacent observed sides, never an identity ranking.
+
+    At most six bodies supply five adjacent map-bearing pairs. The longest
+    observed segment is a reproducible side option, not a claimed frontage.
+    All other bodies and primitives remain in the scene's ordinary inventory.
+    """
+    origin = _point(story)
+    if not origin:
+        return []
+    entries = _entries(story, candidates)
+    bodies, roads = [], []
+    for cid, entry in entries.items():
+        tags = {**(entry.get('tags') or {}), **(entry.get('map_object') or {}).get('tags', {})}
+        geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+        position = _point(entry.get('map_coordinates') or entry.get('center') or entry)
+        if not position:
+            continue
+        local = _local(position, origin)
+        if tags.get('building') not in {None, '', 'no'} or tags.get('building:part'):
+            sides = []
+            for ring_index, ring in enumerate(geometry.get('rings') or []):
+                points = [_point(p) for p in ring.get('points') or []]
+                if not points or any(p is None for p in points):
+                    continue
+                for segment_index, (a, b) in enumerate(zip(points, points[1:])):
+                    length = math.dist(_local(a, origin), _local(b, origin))
+                    if length > 0:
+                        sides.append((length, ring_index, segment_index))
+            if sides:
+                _, ring_index, segment_index = max(sides)
+                bodies.append({'candidate_id': cid, 'distance': math.hypot(*local), 'bearing': _bearing(local),
+                    'reference': {'candidate_id': cid, 'kind': 'segment', 'ring_index': ring_index,
+                        'segment_index': segment_index}})
+        elif tags.get('highway'):
+            for line_index, line in enumerate(geometry.get('lines') or []):
+                points = [_point(p) for p in line]
+                for segment_index, (a, b) in enumerate(zip(points, points[1:])):
+                    if a is None or b is None:
+                        continue
+                    a, b = _local(a, origin), _local(b, origin)
+                    if a == b:
+                        continue
+                    roads.append((_distance((0, 0), a, b), cid, line_index, segment_index,
+                        _bearing((b[0]-a[0], b[1]-a[1]))))
+    chosen = sorted(bodies, key=lambda b: (b['candidate_id'] not in active_ids, b['distance'], b['candidate_id']))[:6]
+    chosen.sort(key=lambda b: (b['bearing'], b['candidate_id']))
+    options = []
+    for first, second in zip(chosen, chosen[1:]):
+        refs = [first['reference'], second['reference']]
+        measured = measure_spatial_relations(story, candidates, [r['candidate_id'] for r in refs],
+            front_segments=[{'first': refs[0], 'second': refs[1]}])
+        if measured:
+            options.append({'id': 'R' + str(len(options)+1), 'kind': 'observed_side_pair',
+                'map_features': refs, 'map_clockwise_order': [first['candidate_id'], second['candidate_id']],
+                'boundary_gap': measured['boundary_gaps'][0], 'side_relation': measured['front_segments'][0],
+                'policy': 'Map-bearing order around the nominal anchor, not SOURCE left/right. '
+                    'Selected longest segments are side hypotheses, not identified frontages.'})
+    if chosen and roads:
+        _, cid, line_index, segment_index, bearing = min(roads)
+        axis = {'candidate_id': cid, 'kind': 'road_axis', 'line_index': line_index, 'segment_index': segment_index}
+        for direction in (bearing, (bearing + 180) % 360):
+            measured = measure_spatial_relations(story, candidates, [chosen[0]['candidate_id']],
+                pose={'heading_degrees': direction}, street_axis=axis)
+            if measured:
+                options.append({'id': 'R' + str(len(options)+1), 'kind': 'observed_axis_scenario',
+                    'map_features': [axis], 'axis': measured['street_axis_scenario'],
+                    'pose_scenario': measured['pose_scenario'],
+                    'policy': 'Along-road or opposite-road scenario, not measured shooting heading.'})
+    return options

@@ -63,6 +63,44 @@ class StoryLifecycleTest {
     }
 
     @Test
+    fun visualRevisionRejectsOldBytesAndFactReadinessSurvivesReopen() {
+        val storyId = "visual-binding-${System.nanoTime()}"
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(
+            Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")), "image/png", storyId)
+        val oldBytes = PhotoAssets.retainTemporary(byteArrayOf(1, 2, 3))
+        StoryStore(context).use { store ->
+            store.createStory(imported)
+            store.setServerSnapshot(storyId, StoryStage.REVIEW, null, null, null, "https://example.test/A", null, null, null, 1)
+            store.setProcessedImagePath(storyId, oldBytes, "https://example.test/A")
+            store.setServerSnapshot(storyId, StoryStage.REVIEW, null, null, null, "https://example.test/B", null, null, null, 2)
+            assertEquals(oldBytes, store.story(storyId)!!.processedImagePath)
+            assertEquals("https://example.test/A", store.story(storyId)!!.processedImageBytesUrl)
+            assertTrue(store.story(storyId)!!.previewOutdated)
+            assertTrue(PhotoAssets.available(oldBytes))
+            val lateA = PhotoAssets.retainTemporary(byteArrayOf(4, 5, 6))
+            store.setProcessedImagePath(storyId, lateA, "https://example.test/A")
+            assertFalse(PhotoAssets.available(lateA))
+            store.replaceFacts(storyId, listOf(
+                FactSnapshot("ready", "Ready", .9, true, false, "[]", "eligible"),
+                FactSnapshot("pending", "Pending", .9, false, false, "[]", "unreviewed"),
+                FactSnapshot("disputed", "Disputed", .9, false, false, "[]", "disputed")))
+        }
+        StoryStore(context).use { store ->
+            assertEquals("https://example.test/B", store.story(storyId)!!.processedImageUrl)
+            assertEquals(oldBytes, store.story(storyId)!!.processedImagePath)
+            assertTrue(store.story(storyId)!!.previewOutdated)
+            val newBytes = PhotoAssets.retainTemporary(byteArrayOf(7, 8, 9))
+            store.setProcessedImagePath(storyId, newBytes, "https://example.test/B")
+            assertFalse(PhotoAssets.available(oldBytes))
+            assertFalse(store.story(storyId)!!.previewOutdated)
+            assertEquals("https://example.test/B", store.story(storyId)!!.processedImageBytesUrl)
+            assertEquals(listOf("Готов к выбору", "Ожидает проверки", "Есть противоречие"),
+                store.facts(storyId).map(FactPresentation::statusLabel))
+            store.deleteStory(storyId)
+        }
+    }
+
+    @Test
     fun photoDraftChunksChoicesAndCrashRecoverySurviveReopen() {
         val storyId = "story-test-${System.nanoTime()}"
         val png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")

@@ -19,6 +19,7 @@ from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
 from .service import ConflictError, canonical
 from .config import reveal
+from .source_assessment import DISPATCH_CONTRACT as FACT_READING_CONTRACT, response_schema as assessment_schema
 
 LOG = logging.getLogger(__name__)
 
@@ -113,7 +114,9 @@ FACT_PAGE_SCHEMA = {'type':'object','properties':{
             # batch/index; semantic equivalence is decided by the reviewer.
             # An advisory model key must not discard otherwise complete claims.
             'claim_key':{'type':'string','description':'Optional advisory key; the backend assigns candidate IDs. Semantic equivalence requires review.'},
-            'existing_fact_id':{'type':'string'},'confidence':{'type':'number','minimum':0,'maximum':1},
+            'existing_fact_id':{'type':'string'},
+            'conflicts_with_existing':{'type':'array','items':{'type':'string'}},
+            'confidence':{'type':'number','minimum':0,'maximum':1},
             'source_refs':{'type':'array','items':{'type':'string'}},
             'passage_ids':{'type':'array','minItems':1,'items':{'type':'integer'}},
             'verdict':{'enum':['supported','insufficient','contradicted','possible_conflict']},
@@ -172,7 +175,9 @@ def fact_page_capsule(page, context):
                   known_inventory_total=total, known_inventory_next_offset=len(first),
                   known_inventory_omitted_count=total - len(first))
     return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
+            'semantic_contract': FACT_READING_CONTRACT,
             'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
+                         'reading_text': page.get('core_text'),
                          'title': page.get('source_title', ''), 'passages': [
                              {'passage_id': p['passage_id'], 'text': p['text']} for p in page['evidence_passages']]}]}
 
@@ -196,11 +201,12 @@ class ProductResearchAdapter:
             if client is not None:
                 self.client = OpenCodeResearch(service.settings.research_endpoint,
                     model_id=service.settings.research_model, admission=self.fenced_admission(admission),
-                    checkpoint=self.checkpoint, client=client)
+                    checkpoint=self.checkpoint, client=client, scope_guard=self.transport_scope_guard)
             elif service.settings.research_directory:
                 from .shared_devcoveer_research import SharedDevCoveerResearch
                 self.client = SharedDevCoveerResearch(str(service.settings.research_directory),
-                    model_id=service.settings.research_model, admission=self.fenced_admission(admission), checkpoint=self.checkpoint)
+                    model_id=service.settings.research_model, admission=self.fenced_admission(admission),
+                    checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
         from .headless_vision import HeadlessVisionProvider
         self.primary_vision = HeadlessVisionProvider(service)
         self.native_vision = None
@@ -208,7 +214,7 @@ class ProductResearchAdapter:
             from ai_resource_control.workload import WorkloadAdmission
             from .native_vision import NativeVisionProvider, ACCOUNT_SCOPE
             self.native_vision = NativeVisionProvider(service, admission=self.fenced_admission(WorkloadAdmission(self.control, ACCOUNT_SCOPE)),
-                checkpoint=self.checkpoint)
+                checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
         self.giga = None
         if reveal(service.settings.research_gigachat_key):
             from ai_resource_control.workload import WorkloadAdmission
@@ -268,10 +274,14 @@ class ProductResearchAdapter:
         if getattr(self, 'control', None) is None:
             return
         from ai_resource_control.workload import WorkloadLease
+        authority = self._accounting_authority(self.control)
+        now = self.service.store.now()
         with self.service.store.connection() as db:
             rows = list(db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
                 "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
-                "ORDER BY updated_at LIMIT ?", (limit,)))
+                "AND COALESCE(json_extract(receipt_json,'$.accounting_finalization.retry_at'),0)<=? "
+                "AND json_extract(receipt_json,'$.accounting_finalization.authority_sha256')=? "
+                "ORDER BY updated_at,attempt_id LIMIT ?", (now, authority, limit)))
         for row in rows:
             record = json.loads(row['receipt_json'])['accounting_finalization']
             if record.get('retry_at', 0) > self.service.store.now():
@@ -323,6 +333,12 @@ class ProductResearchAdapter:
             if binding.get('job_id') and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
                                                        (binding['job_id'], binding.get('job_attempt'))).fetchone():
                 raise ConflictError('research_worker_superseded', 'Этот запуск исследования больше не владеет задачей.')
+
+    def transport_scope_guard(self, binding):
+        # A queued readback belongs to the original SOURCE/control operation,
+        # even though its old worker has yielded. run() separately fences the
+        # current job before and after invocation; that job's turnover is not Stop.
+        self.guard_binding({**binding, 'job_id': None})
 
     def fenced_admission(self, admission):
         adapter = self
@@ -408,7 +424,10 @@ class ProductResearchAdapter:
                     outcomes = done.result()
                 except asyncio.CancelledError:
                     return  # gather can carry cancellation without cancelled()=True.
-                for outcome in outcomes:
+                except Exception as exc:
+                    LOG.warning('street_story_research_search_observer error_type=%s', type(exc).__name__)
+                    return
+                for outcome in outcomes or ():
                     if isinstance(outcome, BaseException):
                         LOG.warning('street_story_research_search_observer error_type=%s', type(outcome).__name__)
         task.add_done_callback(settled)
@@ -457,7 +476,9 @@ class ProductResearchAdapter:
                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
             if story.get('_fact_pool_unit_id'):
                 binding.update(fact_unit_id=story['_fact_pool_unit_id'],
-                               fact_input_sha256=story.get('_fact_pool_input_sha256'))
+                               fact_input_sha256=story.get('_fact_pool_input_sha256'),
+                               **({'semantic_contract': story['_fact_semantic_contract']}
+                                  if story.get('_fact_semantic_contract') else {}))
             now = self.service.store.now()
             db.execute('INSERT OR IGNORE INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
                 (attempt, logical, story['id'], role, canonical({'binding': binding, 'phase': 'created'}), now, now))
@@ -646,8 +667,10 @@ class ProductResearchAdapter:
                 if isinstance(support, dict) and support.get('text')), ''))[:160]} for source in observed]
         if len(canonical(inventory)) > 16000:
             inventory = [{key: source[key] for key in ('url', 'title')} for source in inventory]
-        if len(canonical(inventory)) > 16000:
-            raise RetryableProviderError('identity_source_selection_inventory_too_large', retry_at=self.service.store.now()+30)
+        # Keep every observed URL reachable in this same bounded operation.
+        # Provider admission accounts for the actual compact input; a local
+        # character threshold must not silently strand its tail or retry the
+        # identical oversized inventory forever.
         unit = canonical([query, inventory])
         role = 'identity_source_selection'
         logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
@@ -959,7 +982,8 @@ class ProductResearchAdapter:
         # The bounded hints are sufficient for extraction. Mira later reconciles
         # candidates against the full ledger; omission does not imply completeness.
         return await self.run(story, 'facts', page['_unit_id'], lambda binding:
-                              self.client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding))
+                              self.client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding))
 
     def _fact_pool_routes(self):
         """Build only the configured primary and one approved extra transport.
@@ -1025,9 +1049,6 @@ class ProductResearchAdapter:
         """
         if not routes:
             return routes
-        live = [route for route in routes if route['role'] == 'facts_live']
-        if live:
-            return live + self.order_fact_routes([route for route in routes if route['role'] != 'facts_live'], ordinal, review=review)
         offset = ordinal % len(routes)
         rotated = routes[offset:] + routes[:offset]
         now = self.service.store.now()
@@ -1053,12 +1074,17 @@ class ProductResearchAdapter:
                     elapsed = receipt.get('elapsed_ms')
                     closed_timeout = (phase == 'aborted' and receipt.get('abort_acknowledged') is True
                                       and receipt.get('error_code') == 'research_worker_timeout')
+                    closed_response_failure = (phase == 'failed'
+                        and receipt.get('provider_send_state') != 'not_sent'
+                        and (receipt.get('provider_send_state') == 'response_closed'
+                             or receipt.get('error_code') == 'research_schema_invalid'
+                             and 'raw_result' in receipt))
                     if elapsed is None and closed_timeout:
                         # A controller-acknowledged timeout may have no client
                         # stopwatch field. Durable boundary timestamps still
                         # measure the time this assignment occupied the route.
                         elapsed = (row['updated_at'] - row['created_at']) * 1000
-                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout)
+                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout or closed_response_failure)
                             and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
                             and math.isfinite(elapsed) and elapsed > 0):
                         durations.append(elapsed / 1000)
@@ -1077,10 +1103,12 @@ class ProductResearchAdapter:
                         expected = elapsed / 1000
                 observations.append((route, expected, outstanding, len(durations)))
         measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
-        if not measured:
-            return rotated
-        neutral = median(measured)
-        ranked = sorted(observations, key=lambda item: (neutral if item[1] is None else item[1]) * (item[2] + 1))
+        # An unmeasured route gets the observed neutral duration. With no
+        # timings, compare outstanding units only; no latency is invented.
+        neutral = median(measured) if measured else 1
+        ranked = sorted(observations, key=lambda item: (
+            (neutral if item[1] is None else item[1]) * (item[2] + 1),
+            item[0]['role'] != 'facts_live'))
         basis = ('dispatch_receipts' if ranked[0][3] else
                  'qualification_receipt' if ranked[0][1] is not None else 'unmeasured')
         LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s latency_basis=%s',
@@ -1092,19 +1120,16 @@ class ProductResearchAdapter:
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
             story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
         latest = {}
-        with self.service.store.connection() as db:
-            rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                              "WHERE story_id=? AND role IN ('facts_live','facts_gigachat','facts','facts_opencode_nemotron') "
-                              "ORDER BY created_at DESC,rowid DESC", (story['id'],))
-            for row in rows:
-                receipt = json.loads(row['receipt_json'] or '{}')
-                binding = receipt.get('binding') or {}
-                if (row['logical_id'] not in logicals
-                        and not (binding.get('fact_unit_id') == unit
-                                 and binding.get('photo_sha256') == story['photo_sha256']
-                                 and binding.get('generation') == story.get('_identity_generation', 0))):
-                    continue
-                latest.setdefault(row['role'], receipt)
+        from .fact_unit_receipts import unit_attempt_rows
+        for row in unit_attempt_rows(self.service.store, story, unit, roles=roles, legacy_binding=True):
+            receipt = json.loads(row['receipt_json'] or '{}')
+            binding = receipt.get('binding') or {}
+            if (row['logical_id'] not in logicals
+                    and not (binding.get('fact_unit_id') == unit
+                             and binding.get('photo_sha256') == story['photo_sha256']
+                             and binding.get('generation') == story.get('_identity_generation', 0))):
+                continue
+            latest.setdefault(row['role'], receipt)
         return latest
 
     @staticmethod
@@ -1118,7 +1143,8 @@ class ProductResearchAdapter:
         client = route['client']
         public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
         return await self.run(story, route['role'], page['_unit_id'], lambda binding:
-                              client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding), client=client)
+                              client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding), client=client)
 
     async def extract_fact_page(self, page, story, context):
         """Serialize only duplicate units; independent chunks remain concurrent."""
@@ -1165,7 +1191,8 @@ class ProductResearchAdapter:
                 return {'result': receipt['result'], 'receipt': receipt}
         capsule = fact_page_capsule(page, context)
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
-        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
+        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest,
+                 '_fact_semantic_contract': FACT_READING_CONTRACT}
         all_routes = self._fact_pool_routes()
         qualified = [route for route in all_routes if route['qualified']]
         if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):
@@ -1191,7 +1218,14 @@ class ProductResearchAdapter:
                 continue  # A known closed unit is not paid for again unchanged.
             try:
                 result = await self._extract_fact_route(route, capsule, page, owned, context)
-                if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(result.get('result')):
+                from .fact_page_boundary import isolate_result
+                schema = assessment_schema(FACT_PAGE_SCHEMA, (result.get('receipt') or {}).get('binding', {}).get('semantic_contract'))
+                isolated = isolate_result(result, schema,
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                    passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+                if isolated is not None:
+                    result = isolated
+                if isolated is None or not Draft202012Validator(schema).is_valid(result.get('result')):
                     receipt = {**result['receipt'], 'phase': 'failed', 'provider_send_state': 'response_closed',
                                'retry_safe': True, 'error_type': 'MalformedProviderResponse'}
                     await self.checkpoint(receipt['binding'], receipt)
@@ -1228,6 +1262,8 @@ class ProductResearchAdapter:
         from .errors import MalformedProviderResponse
         from .research_budget import ResearchTerminated, require_remaining
         capsule = fact_page_capsule(page, context)
+        from .source_assessment import LEGACY_CONTRACT
+        capsule['semantic_contract'] = story.get('_fact_semantic_contract') or LEGACY_CONTRACT
         if self.giga is None:
             return await self._extract_opencode_page(capsule, page, story)
         input_sha256=hashlib.sha256(canonical({
@@ -1279,18 +1315,32 @@ class ProductResearchAdapter:
             finally:
                 self._active_binding.reset(token)
             payload=dict(result['payload'])
+            raw_payload = copy.deepcopy(payload)
             facts=[]
             for fact in payload['facts']:
+                if not isinstance(fact, dict):
+                    facts.append(fact)
+                    continue
                 facts.append({**{k:v for k,v in fact.items() if k not in {'source_version_id','evidence_quotes','selected'}},
                     'source_refs':[page['source_ref']],
-                    'verdict':{'unsupported':'contradicted','uncertain':'insufficient'}.get(fact['verdict'],fact['verdict'])})
+                    'verdict':{'unsupported':'contradicted','uncertain':'insufficient'}.get(fact.get('verdict'),fact.get('verdict'))})
             payload['facts']=facts
             receipt.update(receipts=result['receipts'],result=payload,actual_model=result.get('actual_model'),cost='unknown')
-            if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(payload):
+            receipt['raw_result'] = raw_payload
+            from .fact_page_boundary import isolate_result
+            schema = assessment_schema(FACT_PAGE_SCHEMA, binding.get('semantic_contract'))
+            isolated = isolate_result({'result': payload, 'receipt': receipt}, schema,
+                passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+            if isolated is None or not Draft202012Validator(schema).is_valid(isolated['result']):
                 raise MalformedProviderResponse('gigachat:fact_page_schema_invalid')
+            payload = isolated['result']
+            receipt['result'] = payload
+            if isolated.get('row_isolation'):
+                receipt['row_isolation'] = isolated['row_isolation']
             receipt.update(phase='completed',provider_send_state='response_closed')
             await self.checkpoint(binding,receipt)
-            return {'result':payload,'receipt':receipt}
+            return {**isolated, 'result':payload,'receipt':receipt}
         except Exception as exc:
             not_sent = receipt['phase']=='created'
             known_closed = not_sent or isinstance(exc,MalformedProviderResponse) or getattr(exc,'status',None) is not None or getattr(exc,'resource_failure',False)

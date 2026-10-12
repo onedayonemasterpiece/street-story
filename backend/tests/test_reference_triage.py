@@ -94,23 +94,48 @@ def provider_fixture(svc, monkeypatch, *, unknown=False, decide=None):
     return provider, downloads, sends
 
 
+async def prepare_closed_triage(svc, story):
+    """Supply an already addressed optional ranking before the worker resumes.
+
+    Ready pairs no longer request an atlas themselves. These controls still
+    verify that closed rankings and UNKNOWN receipts survive the real worker.
+    """
+    from street_story.headless_identity import HeadlessIdentity
+    worker = HeadlessIdentity(svc)
+    _, research = svc._identity_snapshot(story['id'])
+    session = SimpleNamespace(id='offline-ranking', resource_id=story['id'], state={})
+    lease = worker._visual_lease(session)
+    state = {**lease, 'generation': 0, 'photo_sha256': story['photo_sha256'], 'control_revision': 0,
+             'queue': [item for candidate in research['visual_identity']['candidates']
+                       for item in worker._image_entries(candidate)], 'sources': {}, 'searches': {},
+             'browser_budget': {'remaining': 2}, 'reviewed_reference_ids': [], 'web_searched': False,
+             'query': '', 'query_seed': ''}
+    await triage_queue(worker, session, state, story, svc._source_photo_bytes(story['id']),
+                      research['visual_identity'], generation=0, control_revision=0)
+    state['lease_until'] = 0
+    worker._save_visual_queue(session, state)
+
+
 @pytest.mark.asyncio
 async def test_contact_sheet_hook_orders_real_worker_pairs_without_using_tiles_as_proof(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare, response
     svc, story, _ = prepare(tmp_path, count=3)
     provider, downloads, sends = provider_fixture(svc, monkeypatch)
+    await prepare_closed_triage(svc, story)
     pairs = []
     async def verdict(snapshot, item, schema, context):
         pairs.append(item)
         assert len(item['_visual_image_parts']) == 2
         assert item['_visual_reference_mapping'][0]['candidate_id'] == 'gate:c'
-        assert base64.b64decode(item['_visual_image_parts'][1]['data']) == image('blue')
+        part = item['_visual_image_parts'][1]
+        pixels = base64.b64decode(part['data']) if 'data' in part else (await provider.primary_vision._load_public_reference(part['url']))[1]
+        assert pixels == image('blue')
         assert item['_visual_reference_mapping'][0]['source_url'] == 'https://example.com/c.jpg'
         assert 'CONTACT SHEET' not in json.dumps(item['_visual_image_parts'])
         return response(item, 'offline-full-pair', 'match')
     monkeypatch.setattr(provider, 'visual_verdict', verdict)
     assert await svc.run_once(claim_kind='identity_visual')
-    assert len(sends) == 1 and len(downloads) == 3 and len(pairs) == 1
+    assert len(sends) == 1 and len(downloads) == 4 and len(pairs) == 1
     assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:c'
     _, research = svc._identity_snapshot(story['id'])
     atlas = next(iter(research['visual_search_operation']['reference_triage_atlases'].values()))
@@ -179,7 +204,7 @@ async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_pr
 
 
 @pytest.mark.asyncio
-async def test_four_atlas_envelope_preserves_pairs_without_download_and_two_images_can_be_triaged(tmp_path, monkeypatch):
+async def test_new_atlas_after_four_closed_atlases_is_allowed_and_readback_is_reused(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare
     from street_story.headless_identity import HeadlessIdentity
     svc, story, source = prepare(tmp_path, count=3)
@@ -191,13 +216,12 @@ async def test_four_atlas_envelope_preserves_pairs_without_download_and_two_imag
     candidates = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
     state = {'queue': candidates.copy(), 'reference_triage_atlases': {str(i): {} for i in range(4)}}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    assert state['reference_triage_budget_exhausted'] and state['queue'] == candidates
+    assert not state.get('reference_triage_budget_exhausted')
     assert not state.get('reference_triage_deferred')
-    assert downloads == [] and sends == []
-    state = {'queue': candidates[:2]}
+    assert len(downloads) == 3 and len(sends) == 1
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    assert len(downloads) == 2 and len(sends) == 1
-    assert all(c['reference_triage']['applicability'] == 'unclear' for c in state['queue'])
+    assert len(downloads) == 3 and len(sends) == 1  # Original atlas readback.
+    assert {c['reference_triage']['applicability'] for c in state['queue']} == {'unclear', 'exterior_geometry'}
 
 
 @pytest.mark.asyncio
@@ -209,6 +233,7 @@ async def test_real_worker_defers_even_small_map_batches_without_exact_pairs(tmp
         return {'tiles': [{'tile_id': t['tile_id'], 'kind': 'map', 'applicability': 'not_comparable',
             'priority': 'unlikely', 'reason': 'Location map has no facade geometry'} for t in manifest['tiles']]}
     provider, downloads, sends = provider_fixture(svc, monkeypatch, decide=decision)
+    await prepare_closed_triage(svc, story)
     pairs = []
     async def pair(*args):
         pairs.append(args)
@@ -234,10 +259,13 @@ async def test_real_worker_accepts_model_applicable_architecture_render_after_ma
             'priority': 'promising' if i else 'unlikely', 'reason': 'Fixture applicability receipt'}
             for i, t in enumerate(manifest['tiles'])]}
     provider, _, sends = provider_fixture(svc, monkeypatch, decide=decision)
+    await prepare_closed_triage(svc, story)
     pairs = []
     async def pair(snapshot, item, schema, context):
         pairs.append(item['_visual_reference_mapping'][0]['candidate_id'])
-        assert base64.b64decode(item['_visual_image_parts'][1]['data']) == image('green')
+        part = item['_visual_image_parts'][1]
+        pixels = base64.b64decode(part['data']) if 'data' in part else (await provider.primary_vision._load_public_reference(part['url']))[1]
+        assert pixels == image('green')
         return response(item, 'offline-render-full-pair', 'match')
     monkeypatch.setattr(provider, 'visual_verdict', pair)
     assert await svc.run_once(claim_kind='identity_visual')
@@ -297,6 +325,7 @@ async def test_optional_triage_failure_preserves_pair_and_original_receipt(tmp_p
     from test_parallel_identity_pairs import prepare, response
     svc, story, _ = prepare(tmp_path, count=1)
     provider, _, sends = provider_fixture(svc, monkeypatch, unknown=unknown, decide=lambda manifest: {'tiles': []})
+    await prepare_closed_triage(svc, story)
     pairs = []
     async def compare(snapshot, item, schema, context):
         pairs.append(item)
@@ -317,25 +346,25 @@ async def test_optional_triage_failure_preserves_pair_and_original_receipt(tmp_p
 @pytest.mark.asyncio
 async def test_optional_atlas_allowance_does_not_block_full_pair(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare, response
-    import street_story.reference_triage as triage
     svc, story, _ = prepare(tmp_path, count=1)
     provider, _, sends = provider_fixture(svc, monkeypatch)
-    monkeypatch.setattr(triage, 'MAX_ATLASES', 0)
+    await prepare_closed_triage(svc, story)
     pairs = []
     async def compare(snapshot, item, schema, context):
         pairs.append(item)
         return response(item, 'independent-native-fixture', 'match')
     monkeypatch.setattr(provider, 'visual_verdict', compare)
     assert await svc.run_once(claim_kind='identity_visual')
-    assert sends == [] and len(pairs) == 1
+    assert len(sends) == 1 and len(pairs) == 1
     assert svc.story(story['id'])['visual_identity']['status'] == 'match'
     _, research = svc._identity_snapshot(story['id'])
-    assert research['visual_search_operation']['reference_triage_budget_exhausted']
+    assert not research['visual_search_operation'].get('reference_triage_budget_exhausted')
     assert len(research['visual_search_operation']['reviewed_reference_ids']) == 1
 
 
 @pytest.mark.asyncio
-async def test_unavailable_triage_restores_legacy_originals_without_resending_unknown(tmp_path, monkeypatch):
+@pytest.mark.parametrize('reason', ['triage_unknown', 'triage_image_unavailable'])
+async def test_unavailable_triage_restores_legacy_originals_without_resending_unknown(tmp_path, monkeypatch, reason):
     from test_parallel_identity_pairs import prepare
     from street_story.headless_identity import HeadlessIdentity
     svc, story, source = prepare(tmp_path, count=1)
@@ -347,7 +376,7 @@ async def test_unavailable_triage_restores_legacy_originals_without_resending_un
     candidate = {**research['visual_identity']['candidates'][0], 'reference_id': 'ref:0'}
     state = {'queue': [candidate]}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    state['reference_triage_deferred'] = [{**state['queue'].pop(), 'triage_deferral': 'triage_unknown'}]
+    state['reference_triage_deferred'] = [{**state['queue'].pop(), 'triage_deferral': reason}]
     monkeypatch.setattr(provider.primary_vision, '_verified_routes', lambda: [])
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
     assert state['queue'] == [candidate] and not state['reference_triage_deferred']

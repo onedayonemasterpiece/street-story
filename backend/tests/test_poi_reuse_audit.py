@@ -192,7 +192,9 @@ async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp
     continuation_messages = []
     adapter.write = lambda _, message: continuation_messages.append(message)
     adapter._continue_pending_research(session)
-    assert 'Continue get_research_chunk.' in continuation_messages[-1]['text']
+    assert continuation_messages == []
+    with svc.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE json_extract(payload_json,'$.resume_run_id')=?", (run,)).fetchone()[0] == 1
     session.state['research_passages_seen'] = {}
     session.state['research_pending_page'] = {}
     resumed = await adapter._get_research_chunk(session, {'run_id': run})

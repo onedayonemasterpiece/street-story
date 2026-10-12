@@ -63,7 +63,7 @@ async def test_provider_quota_error_invalidates_permission_before_expiry():
     permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
     grant = await permission.ensure(client)
     permission.invalidate(grant, 'provider_quota')
-    client.reply['rateLimits']['primary']['usedPercent'] = 98
+    client.reply['rateLimits']['primary']['usedPercent'] = 100
     with pytest.raises(RetryableProviderError, match='below_reserve') as exc:
         await permission.ensure(client)
     assert client.calls == 2 and exc.value.retry_at == 9000
@@ -78,14 +78,36 @@ async def test_unknown_invalid_quota_does_not_issue_permission(used):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('used', [98, 99, 99.9, 100])
+async def test_owner_three_percent_reserve_blocks_new_native_work(used):
+    permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'binding')
+    with pytest.raises(RetryableProviderError, match='below_reserve') as exc:
+        await permission.ensure(Client(used))
+    assert exc.value.retry_at == 9000
+
+
+@pytest.mark.asyncio
 async def test_exact_threshold_and_all_native_windows_are_checked():
     permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'binding')
     assert (await permission.ensure(Client(97)))['remaining_percent'] == 3
     permission = NativeQuotaPermission(Store(), binding_stamp=lambda: 'other')
     client = Client(20)
-    client.reply['rateLimits']['secondary'] = {'usedPercent': 99, 'resetsAt': 3000}
+    client.reply['rateLimits']['secondary'] = {'usedPercent': 100, 'resetsAt': 3000}
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await permission.ensure(client)
+
+
+@pytest.mark.asyncio
+async def test_cached_grant_below_restored_owner_reserve_is_rechecked():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    await permission.ensure(client)
+    for grant in store.cache.values():
+        grant['remaining_percent'] = 1
+    client.reply['rateLimits']['primary']['usedPercent'] = 99
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await permission.ensure(client)
+    assert client.calls == 2
 
 
 @pytest.mark.parametrize('change', ['reached', 'expired', 'invalid_reset', 'no_account'])

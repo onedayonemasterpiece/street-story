@@ -13,7 +13,7 @@ from pathlib import Path
 from .errors import RetryableProviderError
 
 GRANT_SECONDS = 15 * 60
-MIN_REMAINING_PERCENT = 3
+MIN_REMAINING_PERCENT = 3  # Owner reserve; independent of research lifetime and local work limits.
 
 
 def credential_stamp(home: Path = Path('/home/dev/.codex')) -> str:

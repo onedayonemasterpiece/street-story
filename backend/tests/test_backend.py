@@ -259,7 +259,7 @@ async def test_worker_restart_during_research_resumes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_worker_failure_budget_terminalizes_without_more_provider_work(tmp_path):
+async def test_worker_failure_restart_continues_original_research_without_attempt_ceiling(tmp_path):
     svc, _, vp = service(tmp_path)
     story = create(svc)
     open_voice(svc, story["id"])
@@ -275,13 +275,13 @@ async def test_worker_failure_budget_terminalizes_without_more_provider_work(tmp
                    (job_id, 'worker_non_wait_failures', json.dumps({'count': MAX_JOB_ATTEMPTS}), svc.store.now()))
     gemini = FakeGemini()
     restarted = StreetStoryService(config(tmp_path), ProviderBundle(FakeOSM(), FakeWikipedia(), gemini, vp))
-    assert restarted.recover_jobs() == 1
-    assert await restarted.run_once() is False
+    assert restarted.recover_jobs() == 0
+    assert await restarted.run_once() is True
     with restarted.store.connection() as db:
         job = db.execute("SELECT state,last_error FROM jobs WHERE kind='research'").fetchone()
-    assert (job["state"], job["last_error"]) == ("failed", "retry_budget_exhausted")
-    assert restarted.story(story["id"])["error"]["code"] == "provider_retry_exhausted"
-    assert gemini.transcribe_calls == 0
+    assert (job["state"], job["last_error"]) == ("done", None)
+    assert restarted.story(story["id"])["error"] is None
+    assert gemini.transcribe_calls == 1
 
 
 @pytest.mark.asyncio

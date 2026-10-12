@@ -143,6 +143,86 @@ async def test_actual_protocol_tool_roundtrip_usage_and_preserved_plan():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('requested', [None, 16384])
+async def test_provider_default_or_explicit_output_keeps_nonzero_admission(requested):
+    provider, admission = Provider(), Admission()
+    adapter = client(provider, admission)
+    try:
+        await adapter.research('Read the whole source', capsule=CAPSULE, max_output_tokens=requested)
+    finally:
+        await adapter.aclose()
+    chats = [json.loads(request.content) for request in provider.requests if request.url.path != '/api/v2/oauth']
+    assert len(chats) == 2
+    if requested is None:
+        assert all('max_tokens' not in body for body in chats)
+        assert admission.bindings[0][1]['output_allowance'] == 128000  # Documented context upper bound, not output limit.
+    else:
+        assert all(body['max_tokens'] == requested for body in chats)
+        assert admission.bindings[0][1]['output_allowance'] == requested
+    allowance = admission.bindings[0][1]['output_allowance']
+    assert all(send['output_allowance'] == allowance and send['estimated_tokens'] > allowance for send in admission.sends)
+    assert admission.finalized[0]['usage_known'] is True
+    assert admission.finalized[0]['output_tokens'] == 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested', [0, -1, True, 1.5, '16384', 2147483648])
+async def test_invalid_output_request_is_rejected_before_auth_or_admission(requested):
+    provider, admission = Provider(), Admission()
+    adapter = client(provider, admission)
+    try:
+        with pytest.raises(ValueError, match='bounded_request_required'):
+            await adapter.research('Read source', capsule=CAPSULE, max_output_tokens=requested)
+    finally:
+        await adapter.aclose()
+    assert not admission.bindings and not provider.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selected_ids',[[0,7],[0]])
+@pytest.mark.parametrize('contract_version', ['source-reading-assessment-v3', 'source-reading-assessment-v4'])
+async def test_current_source_reading_tool_projects_only_exact_fully_covered_text(selected_ids, contract_version):
+    import copy
+    from street_story.source_assessment import CHECKS
+    body='A dated account. A different account. References and authors.'
+    passages=[{'passage_id':0,'text':body[:32]},{'passage_id':7,'text':body[17:]}]
+    capsule={'semantic_contract':contract_version,'sources':[{'source_version_id':'srcv_frozen',
+        'url':'https://example.org/article','reading_text':body,'passages':passages}]}
+    original=copy.deepcopy(capsule)
+    provider,admission=Provider(),Admission()
+    async def handle(request):
+        if request.url.path=='/api/v2/oauth':
+            return await provider(request)
+        sent=json.loads(request.content)
+        assert sent['messages'][0]['content'].count(CHECKS)==1
+        if sent['function_call']=={'name':'get_evidence'}:
+            message={'role':'assistant','content':'','function_call':{'name':'get_evidence',
+                'arguments':{'source_version_id':'srcv_frozen','passage_ids':selected_ids}}}
+            reason='function_call'
+        else:
+            evidence=json.loads(sent['messages'][-1]['content'])
+            if len(selected_ids)==2:
+                assert evidence['text']==body
+                assert [{'passage_id':span['passage_id'],'text':body[span['start']:span['end']]}
+                    for span in evidence['passage_spans']]==passages
+                assert 'passages' not in evidence
+            else:
+                assert evidence['passages']==[passages[0]]
+                assert 'text' not in evidence and 'reading_text' not in evidence
+            message={'role':'assistant','content':json.dumps({'facts':[],'continuation_needed':False,
+                'source_matches_poi':True,'source_content_valid':True})}
+            reason='stop'
+        return httpx.Response(200,json={'model':'GigaChat-2','choices':[{'message':message,'finish_reason':reason}]})
+    adapter=client(handle,admission)
+    try:
+        result=await adapter.research('Read own source',capsule=capsule)
+    finally:
+        await adapter.aclose()
+    assert result['payload']['facts']==[] and capsule==original
+    assert result['tool_roundtrips']==1 and len(admission.sends)==2
+
+
+@pytest.mark.asyncio
 async def test_denied_shared_admission_sends_no_oauth_or_inference():
     provider, admission = Provider(), Admission(denied=True)
     adapter = client(provider, admission)

@@ -276,7 +276,7 @@ def catalogue_physical_address_links(story, candidates, received_cards):
         } for row in relations}
 
 
-def bounded_physically_linked_article_ids(catalogue, *, max_articles=2):
+def bounded_physically_linked_article_ids(catalogue, *, max_articles=8):
     """Admission-independent *source* shortlist, not guessed identity.
 
     If multiple publisher articles are linked to candidate bodies, do not
@@ -295,12 +295,13 @@ def bounded_physically_linked_article_ids(catalogue, *, max_articles=2):
     if not isinstance(max_articles, int) or isinstance(max_articles, bool) or max_articles < 1:
         raise ValueError('invalid_architectural_article_prefetch_limit')
     return {'candidate_article_ids':ids,
-        'prefetch_article_ids':unambiguous if len(unambiguous) <= max_articles else [],
+        'prefetch_article_ids':unambiguous[:max_articles],
+        'reserve_article_ids':unambiguous[max_articles:],
         'ambiguous_physical_article_ids':[aid for aid in ids if aid not in unambiguous],
         'ambiguous_excess_article_count':max(0, len(unambiguous)-max_articles),
         'physical_identity_inferred':False,
         'selection_policy':'Only publisher article-address to observed physical footprint links; '
-            'excess candidates require model discrimination, no first-two shortcut.'}
+            'bounded body acquisition retains all excess IDs in reserve; no identity is inferred.'}
 
 
 def catalogue_model_context(catalogue):
@@ -381,7 +382,6 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
             'physical_binding_claimed':selection['physical_binding_resolved'], 'identity_accepted':False})
         if page.get('status') != 'completed' or not text.strip() or page.get('raw_body_sha256_verified') is not True:
             continue
-        text = text[:12_000]
         articles.append({'article_id':page['article_id'], 'url':page['canonical_url'],
             'source_sha256':page['raw_content_sha256'], 'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
             'text':text, 'raw_body_sha256_verified':True, 'input_kind':'acquired_article_text',
@@ -449,7 +449,7 @@ async def acquire_architectural_pool_text(service, story, publisher_catalogue,
                 or page.get('raw_body_sha256_verified') is not True
                 or not (page.get('text') or '').strip()):
             continue
-        body=page['text'][:12_000]
+        body=page['text']
         result.append({'article_id':aid, 'url':page['canonical_url'],
             'source_sha256':page['raw_content_sha256'],
             'text_sha256':hashlib.sha256(body.encode()).hexdigest(),
@@ -509,7 +509,7 @@ async def acquire_selected_wikipedia_text(service, story, candidates, payload, w
         if (not candidate or not str(candidate.get('candidate_id') or '').startswith('osm:')
                 or not candidate_identity_eligible(candidate) or article_candidate(candidate)
                 or (candidate.get('map_object') or {}).get('tags', {}).get('entrance')
-                or binding.get('physical_binding_resolved') is not True
+                or type(binding.get('physical_binding_resolved')) is not bool
                 or not isinstance(binding.get('scope'), str) or not binding['scope'].strip()
                 or not isinstance(binding.get('binding_basis'), str) or not binding['binding_basis'].strip()):
             return [], dict(receipt, reason='closed_physical_nomination_required')
@@ -572,12 +572,12 @@ async def acquire_selected_wikipedia_text(service, story, candidates, payload, w
         if limited or actual_text != text:
             outcome['status'] = 'raw_cache_text_mismatch'
             continue
-        text = text[:12_000]
         article = {'article_id': 'wiki:' + pid, 'url': final, 'text': text,
             'source_sha256': raw_hash, 'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
             'raw_body_sha256_verified': True, 'input_kind': 'acquired_article_text',
             'title': pages[pid].get('title') or '', 'scope': binding['scope'],
             'lookup_candidate_ids': [binding['candidate_id']], 'fetched_at': entry.get('acquired_at'),
+            'physical_binding_claimed': binding['physical_binding_resolved'],
             'source_encoding': decoded.original_encoding, 'read_status': status}
         if document.get('source_version_id'):
             article['source_version_id'] = document['source_version_id']
@@ -707,22 +707,51 @@ async def acquire_active_regional_text(service, story, candidates, candidate_ids
     try:
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                articles, _lookup = task.result()
+            outcomes = await asyncio.gather(*done, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                articles, _lookup = outcome
                 ready.extend(articles)
             if ready:
                 break
             for _ in done:
                 launch()
-    finally:
-        if pending:
-            observer = getattr(getattr(getattr(service, 'providers', None), 'research', None), 'retain_search_observer', None)
-            dispatched = asyncio.gather(*pending, return_exceptions=True)
-            if callable(observer):
-                observer(dispatched)
-            else:
-                # Small fixture/non-background providers drain their own HTTP.
-                await dispatched
+    except BaseException:
+        # Stop/cancellation must not launch the unread reserve. Successful
+        # siblings already persisted their own bodies inside read().
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
+    else:
+        # Continue the received reserve without waiting to supply the first T
+        # input. Each successful body is retained by read(), not lost on drain.
+        async def drain():
+            nonlocal pending
+            outcomes = []
+            try:
+                while len(pending) < 2 and launch():
+                    pass
+                while pending:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    results = await asyncio.gather(*done, return_exceptions=True)
+                    outcomes.extend(results)
+                    if any(isinstance(result, ResearchTerminated) for result in results):
+                        break
+                    for _ in done:
+                        launch()
+            finally:
+                for task in pending:
+                    task.cancel()
+                outcomes.extend(await asyncio.gather(*pending, return_exceptions=True))
+            return outcomes
+        observer = getattr(getattr(getattr(service, 'providers', None), 'research', None), 'retain_search_observer', None)
+        dispatched = asyncio.create_task(drain())
+        if callable(observer):
+            observer(dispatched)
+        else:
+            await dispatched
     return merge_acquired_text_versions(ready), {'kind': 'active_physical_address_text', 'status': 'completed' if ready else 'unavailable',
         'candidate_ids': list(candidate_ids), 'lookups': dict(lookups),
         'first_ready': bool(ready), 'pending_reader_count': len(pending),
@@ -797,28 +826,29 @@ async def acquire_regional_text(service, story, candidates, request):
         results = lookup.get('results') or []
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),
-            'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
+            'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False),
+            'error_code': lookup.get('error_code'), 'raw_content_sha256': lookup.get('raw_content_sha256'),
+            'raw_body_cache_key': lookup.get('raw_body_cache_key')})
         # Read an entire small received inventory without interpreting postal
         # suffixes, ranges or historical addresses. A larger inventory remains
         # available for model selection, never silently reduced to its first rows.
-        chosen = []
-        if (lookup.get('status') == 'completed'
-                and 1 <= len({row['canonical_url'] for row in results}) <= 2):
-            chosen = results
-            lookup['source_acquisition_selection'] = {
-                'policy':'whole_small_received_inventory', 'host_address_parser_used':False,
-                'selected_urls':len({row['canonical_url'] for row in chosen}), 'identity_inferred':False}
-        if lookup.get('status') != 'completed' or not chosen:
-            if lookup.get('status') == 'completed' and results:
-                lookup['limitation'] = ('Received catalogue remains fully available; no first-two shortcut. '
-                    'This inventory requires model source selection before body reading.')
+        chosen = results if lookup.get('status') == 'completed' else []
+        lookup['source_acquisition_selection'] = {
+            'policy': 'received_inventory_with_existing_page_admission', 'host_address_parser_used': False,
+            'selected_urls': len({row['canonical_url'] for row in chosen}),
+            'identity_inferred': False}
+        if not chosen:
             return [], lookup
         if hasattr(service, 'settings'):
             from .research_budget import reserve_available_work
             allowed = reserve_available_work(service, story['id'], 'pages', [item['canonical_url'] for item in chosen])
             chosen = [item for item in chosen if item['canonical_url'] in allowed]
         urls = list(dict.fromkeys(item['canonical_url'] for item in chosen))
-        pages = await asyncio.gather(*(adapter.article(url) for url in urls))
+        gate = asyncio.Semaphore(2)
+        async def read_page(url):
+            async with gate:
+                return await adapter.article(url)
+        pages = await asyncio.gather(*(read_page(url) for url in urls))
     # Retain the publisher's *actual displayed modern addresses*. The article
     # reader may return only historical body prose and a blank address field.
     # Dropping this catalogue metadata previously concealed complex/single
@@ -833,7 +863,6 @@ async def acquire_regional_text(service, story, candidates, request):
             continue
         # The exact transmitted excerpt and complete frozen source version are
         # distinct. The full publisher body remains in the existing reader cache.
-        text = text[:12_000]
         articles.append({'article_id': page['article_id'], 'url': page['canonical_url'],
             'source_sha256': page['raw_content_sha256'],
             'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'text': text,

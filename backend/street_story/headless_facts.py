@@ -304,7 +304,7 @@ class HeadlessFacts:
     def _only_unobservable_live_work(self, job, run_id, story):
         """A closed Live socket has no remote readback; keep its send fenced.
 
-        End only when every remaining unit has that exact receipt and no unread
+        Wait without resending when every remaining unit has that exact receipt and no unread
         source, saved result or review can advance independently. Other providers'
         unknowns and Live sends without closure evidence retain normal waiting.
         """
@@ -554,6 +554,7 @@ class HeadlessFacts:
         if self._snapshot(job, run_id, control_revision) is None:
             return False
         with self.service.store.connection() as db:
+            minimum = json.loads(job.get('payload_json') or '{}').get('minimum_useful_facts', 0)
             reviews = [json.loads(row[0]) for row in db.execute('SELECT value_json FROM research_checkpoints '
                 "WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],))]
             decisions = [*results, *({'research_sufficient': r.get('research_sufficient'),
@@ -564,7 +565,8 @@ class HeadlessFacts:
                 basis = result.get('_committed_sufficiency_basis')
                 if (result.get('research_sufficient') is not True
                         or result.get('source_content_valid') is not True
-                        or result.get('source_matches_poi') is not True or not basis):
+                        or result.get('source_matches_poi') is not True or not basis
+                        or len({fid for fid, _text in basis}) < minimum):
                     continue
                 if all(db.execute("SELECT 1 FROM fact_assertions a JOIN facts f "
                     "ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
@@ -613,6 +615,8 @@ class HeadlessFacts:
             return self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
+        if self._model_sufficient(job, run_id, control_revision, []):
+            return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
         if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
             return
         provider = getattr(self.service.providers, 'research', None)
@@ -704,12 +708,14 @@ class HeadlessFacts:
             return
         story, research, _ = snapshot
         configured_model = getattr(getattr(provider, 'client', None), 'model_id', None) or 'unknown'
-        units = await self._prepare_units(job, run_id, configured_model, control_revision)
+        units = await self._prepare_units(job, run_id, configured_model, control_revision, limit=1)
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
         if not units:
             reviewed = await self._review_candidates(job, run_id, control_revision)
+            if self._model_sufficient(job, run_id, control_revision, []):
+                return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
             with self.service.store.connection() as db:
                 manifest = run_manifest(db, run_id)
                 complete = manifest_complete(manifest)
@@ -722,7 +728,8 @@ class HeadlessFacts:
                 return self._finish(job, run_id, control_revision,
                                     'source_manifest_exhausted' if not complete else 'fact_review_exhausted')
             if self._only_unobservable_live_work(job, run_id, story):
-                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
             if complete and unreviewed:
                 # Keep a durable retry while the backend verifier owns this
                 # scope. A closed client must never be required to resume it.
@@ -744,7 +751,8 @@ class HeadlessFacts:
                     return await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return self._finish(job, run_id, control_revision, 'source_batches_reviewed')
             if self._only_unobservable_live_work(job, run_id, story):
-                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
             self._partial(run_id, 'research_fact_source_coverage_partial',
                           retry_at=self._pending_retry_at(job, run_id))
         story, research, _ = snapshot
@@ -796,12 +804,36 @@ class HeadlessFacts:
         reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         pending_tasks = set(tasks)
+        prepared_chunks = {unit['page']['chunk_id'] for unit in units}
+        prepare_task = None
+        preparation_drained = False
         try:
-            while pending_tasks or review_task is not None:
+            while pending_tasks or review_task is not None or prepare_task is not None or not preparation_drained:
+                if (prepare_task is None and not preparation_drained and len(pending_tasks) < 3
+                        and self._snapshot(job, run_id, control_revision) is not None):
+                    prepare_task = asyncio.create_task(self._prepare_units(job, run_id, configured_model,
+                        control_revision, limit=1, exclude=prepared_chunks))
+                if not pending_tasks and review_task is None and prepare_task is None:
+                    break
                 waiting = pending_tasks | ({review_task} if review_task is not None else set())
                 if review_wake is not None:
                     waiting.add(review_wake)
+                if prepare_task is not None:
+                    waiting.add(prepare_task)
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if prepare_task in done:
+                    next_units = await prepare_task
+                    prepare_task = None
+                    if not next_units:
+                        preparation_drained = True
+                    for unit in next_units:
+                        prepared_chunks.add(unit['page']['chunk_id'])
+                        units.append(unit)
+                        unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
+                                                          if fact.get('eligibility') == 'eligible'}
+                        task = asyncio.create_task(self._extract_unit(unit, provider, story, context, job))
+                        tasks.append(task)
+                        pending_tasks.add(task)
                 if review_wake in done:
                     review_wake = None
                     if (pending_tasks and review_task is None
@@ -853,6 +885,9 @@ class HeadlessFacts:
                         LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
                                  story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
         finally:
+            if prepare_task is not None:
+                prepare_task.cancel()
+                await asyncio.gather(prepare_task, return_exceptions=True)
             if review_wake is not None:
                 review_wake.cancel()
                 await asyncio.gather(review_wake, return_exceptions=True)
@@ -863,6 +898,8 @@ class HeadlessFacts:
             if review_task is not None:
                 reviewed += await review_task
         reviewed += await self._review_candidates(job, run_id, control_revision)
+        if self._model_sufficient(job, run_id, control_revision, suggestions):
+            return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
         if self._snapshot(job, run_id, control_revision) is not None:
             if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
                 return
@@ -885,7 +922,8 @@ class HeadlessFacts:
                               now=self.service.store.now(), completed=False)
             if pending or unread:
                 if self._only_unobservable_live_work(job, run_id, story):
-                    return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
+                    return self._partial(run_id, 'live_research_original_outcome_unavailable',
+                                     retry_at=self.service.store.now() + 300)
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
                 due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
                 due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))
@@ -900,16 +938,13 @@ class HeadlessFacts:
 
     def _owner_fence(self, db, story, research):
         """Candidate additions may change revision, never these author inputs."""
-        selected = [row[0] for row in db.execute(
-            'SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 ORDER BY assertion_id',
-            (story['id'],))]
         voices = [list(row) for row in db.execute('SELECT session_id,recording_finished,transcript FROM voice_sessions '
                                                 'WHERE story_id=? ORDER BY session_id', (story['id'],))]
         return {'photo': story['photo_sha256'], 'generation': story['_identity_generation'],
                 'controls': research.get('research_controls'), 'input_revision': research.get('input_revision'),
-                'fact_request_revision': research.get('fact_request_revision'), 'transcript': research.get('transcript'),
-                'latitude': story['latitude'], 'longitude': story['longitude'], 'draft': story['draft_text'],
-                'concept': research.get('publication_concept'), 'selected': selected, 'voices': voices}
+                'transcript': research.get('transcript'),
+                'latitude': story['latitude'], 'longitude': story['longitude'],
+                'subject': (research.get('visual_identity') or {}).get('candidate_id'), 'voices': voices}
 
     def _unit_phase(self, job, unit_id, phase, **detail):
         with self.service.store.tx() as db:
@@ -925,10 +960,8 @@ class HeadlessFacts:
 
     def _boundary_closed(self, story, unit_id):
         """Provider attempt receipts are authoritative about a prior send."""
-        with self.service.store.connection() as db:
-            attempts = list(db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                                       "WHERE story_id=? AND role LIKE 'facts%' ORDER BY created_at DESC,rowid DESC",
-                                       (story['id'],)))
+        from .fact_unit_receipts import unit_attempt_rows
+        attempts = unit_attempt_rows(self.service.store, story, unit_id)
         latest = {}
         for row in attempts:
             expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
@@ -942,9 +975,9 @@ class HeadlessFacts:
             or receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
             for receipt in latest.values())
 
-    async def _prepare_units(self, job, run_id, model, control_revision):
-        units, visited, prepared = [], set(), set()
-        while len(units) < 3:
+    async def _prepare_units(self, job, run_id, model, control_revision, *, limit=3, exclude=()):
+        units, visited, prepared = [], set(exclude), set(exclude)
+        while len(units) < limit:
             # Frozen reads can complete without an async suspension. A backlog
             # of fenced pages must still let Live sockets receive/ACK speech
             # between page preparations, even when no model route is ready.
@@ -959,7 +992,8 @@ class HeadlessFacts:
                     "AND r.status NOT IN ('extracted','no_claims','failed','cancelled') ORDER BY c.ordinal,c.source_version_id", (run_id,)))
                 candidate = next((row for row in rows if row['chunk_id'] not in visited), None)
                 source = db.execute("SELECT url FROM research_run_sources WHERE run_id=? "
-                    "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url LIMIT 1", (run_id,)).fetchone()
+                    "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url", (run_id,)).fetchall()
+                source = next((row for row in source if row['url'] not in visited), None)
                 if candidate and (candidate['ordinal'] == 0 or not source):
                     source = None
                 elif source:
@@ -987,7 +1021,7 @@ class HeadlessFacts:
                 continue
             prepared.add(page['chunk_id'])
             visited.add(page['chunk_id'])
-            # The source is fetched serially, then its actual frozen core owns the task.
+            # The ready frozen core owns its task; other reads do not delay its dispatch.
             chunk_owner = f"headless-facts:{job['id']}:{page['chunk_id']}"
             if session.id != chunk_owner:
                 with self.service.store.tx() as db:
@@ -1009,9 +1043,20 @@ class HeadlessFacts:
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
-                self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
-                                 retry_at=self.service.store.now()+300)
-                continue
+                from .research_adapter import ProductResearchAdapter
+                receipts = ProductResearchAdapter._fact_pool_receipts(self, story, page['_unit_id'])
+                addressed = any(ProductResearchAdapter._fact_pool_unknown(receipt)
+                    and receipt.get('provider_id') == 'opencode'
+                    and receipt.get('session_id') and receipt.get('message_id')
+                    for receipt in receipts.values())
+                if not addressed:
+                    self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
+                                     retry_at=self.service.store.now()+300)
+                    continue
+                # The pool observes this exact original route; UNKNOWN forbids
+                # admission/fallback even when its qualification has expired.
+                LOG.info('street_story_headless_fact_readback story_id=%s run_id=%s unit_id=%s',
+                         story['id'], run_id, page['_unit_id'])
             if saved and saved['owner'] != owner:
                 old_owner = saved['owner']
                 current_control = (owner.get('controls') or {}).get('facts') or {}
@@ -1061,6 +1106,17 @@ class HeadlessFacts:
             extracted = await provider.extract_fact_page(page, dict(story), dict(context))
             if not isinstance(extracted, dict):
                 raise MalformedProviderResponse('research_fact_page_contract_invalid')
+            from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS, response_schema
+            if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') in ASSESSMENT_CONTRACTS:
+                from .fact_page_boundary import isolate_result
+                from .research_adapter import FACT_PAGE_SCHEMA
+                isolated = isolate_result(extracted, response_schema(FACT_PAGE_SCHEMA,
+                    (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract')),
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                    passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+                if isolated is None:
+                    raise MalformedProviderResponse('research_fact_page_claim_invalid')
+                extracted = isolated
             result = extracted.get('result')
             if (not isinstance(result, dict) or not isinstance(result.get('facts'), list)
                     or any(type(result.get(flag)) is not bool for flag in
@@ -1120,6 +1176,17 @@ class HeadlessFacts:
                 raise ConflictError('live_research_save_stale', 'Owner inputs or the extraction lease changed; saved result is deferred.')
         # Only candidate additions can rebase the frozen recipe while owner inputs remain identical.
         session.state['research_chunk_receipts'][page['chunk_id']]['expected_story_revision'] = int(story['revision'])
+        from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS, public_fact, response_schema
+        if (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract') in ASSESSMENT_CONTRACTS:
+            from .fact_page_boundary import isolate_result
+            from .research_adapter import FACT_PAGE_SCHEMA
+            isolated = isolate_result(extracted, response_schema(FACT_PAGE_SCHEMA,
+                (extracted.get('receipt') or {}).get('binding', {}).get('semantic_contract')),
+                passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+            if isolated is None:
+                raise MalformedProviderResponse('research_fact_page_claim_invalid')
+            extracted = isolated
         result = extracted['result']
         claims = result['facts'] if result['source_matches_poi'] and result['source_content_valid'] else []
         if any(not isinstance(fact, dict) for fact in claims):
@@ -1128,9 +1195,13 @@ class HeadlessFacts:
         actual_models = [usage.get('model_id') for usage in receipt.get('assistants') or []
                          if isinstance(usage, dict) and usage.get('model_id')]
         session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or session.model)
+        session.state['semantic_reading_contract'] = (receipt.get('binding') or {}).get('semantic_contract')
+        saved_claims = [public_fact(fact) for fact in claims] if session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS else claims
         committed = await self.adapter._save_research_facts(session, page['_unit_id'], {
-            'facts': [{**fact, 'selected': False} for fact in claims], 'batch_reviewed': False,
-            'extractor_candidates': True, 'inventory_reviewed': False,
+            'facts': [{**fact, 'selected': False} for fact in saved_claims],
+            'batch_reviewed': session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS,
+            'extractor_candidates': session.state['semantic_reading_contract'] not in ASSESSMENT_CONTRACTS,
+            'inventory_reviewed': session.state['semantic_reading_contract'] in ASSESSMENT_CONTRACTS,
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
         })
@@ -1139,22 +1210,34 @@ class HeadlessFacts:
         # their new claims; a single reviewed claim never represents that set.
         basis = result.get('research_sufficient_basis')
         indices = basis.get('candidate_indices', []) if isinstance(basis, dict) else list(range(len(claims)))
+        isolated_indices = (extracted.get('row_isolation') or {}).get('accepted_indices')
+        if isinstance(basis, dict) and isolated_indices is not None and isinstance(indices, list):
+            indices = [isolated_indices.index(index) if type(index) is int and index in isolated_indices else -1
+                       for index in indices]
         known_ids = basis.get('known_fact_ids', []) if isinstance(basis, dict) else []
         saved_facts = committed.get('facts') or []
         known = unit.get('sufficiency_known_facts') or {}
         valid = (len(saved_facts) == len(claims) and isinstance(indices, list) and isinstance(known_ids, list)
+                 and (isinstance(basis, dict) or not (extracted.get('row_isolation') or {}).get('rejected_indices'))
                  and all(type(index) is int and 0 <= index < len(saved_facts) for index in indices)
                  and all(isinstance(fid, str) and fid in known for fid in known_ids))
         bound_basis = ([(saved_facts[index]['fact_id'], saved_facts[index]['text']) for index in indices]
                        + [(fid, known[fid]) for fid in known_ids]) if valid else []
         self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'],
-                         sufficiency_basis=bound_basis)
+                         sufficiency_basis=bound_basis, row_isolation=extracted.get('row_isolation'))
+        if (extracted.get('row_isolation') or {}).get('rejected_indices') and self._snapshot(job, run_id, control_revision):
+            from .research_runs import mark_chunk
+            with self.service.store.tx() as db:
+                if self._snapshot(job, run_id, control_revision):
+                    mark_chunk(db, run_id=run_id, chunk_id=page['chunk_id'], status='failed',
+                        error_code='malformed_fact_rows', observation_count=len(saved_facts),
+                        model_name=session.model, prompt_version=session.state['semantic_reading_contract'], now=self.service.store.now())
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
             'model_id': session.model, 'provider_id': receipt.get('provider_id', 'unknown'),
             'backend': receipt.get('backend', 'unknown'), 'audit': committed.get('save_research_audit') or {},
-            'candidate_only': True,
+            'candidate_only': session.state.get('semantic_reading_contract') not in ASSESSMENT_CONTRACTS,
         }, source='fact_research')
         LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
                  story['id'], run_id, page['chunk_id'], page['batch_index'])

@@ -1,5 +1,10 @@
 # Selected-photo GPS, persistent identity and immediate Live Stop
 
+> Historical October1–2 implementation notes follow. Current G/T/REF and accepted-task
+> lifetime contracts are in [Photo search methods](photo-search-methods.md) and
+> [backend contract](backend-contract.md). Microphone Stop and explicit scoped
+> research Stop have distinct lifetimes; closing a client does not revoke accepted work.
+
 > The identity/candidate/reference sections below document the October1–2 implementation and retained incidents. They are historical, including shortlist16, 4/6/6 batches, regional default and mandatory external-reference acceptance. Current target methods, physical-pool coverage and3/5/8 caps are specified in [Photo search methods](photo-search-methods.md) and the [unified implementation brief](prompts/street-story-unified-photo-search-20261008.md). Original-byte recovery, Stop, cancellation and privacy requirements remain applicable.
 
 Date: 2026-10-01. Incident: `inc_181ca71615174ed50b347a31`.

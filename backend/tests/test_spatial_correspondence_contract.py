@@ -84,7 +84,10 @@ def test_current_architectural_proof_uses_individual_structure_not_three_style_o
 
 @pytest.mark.asyncio
 async def test_ready_source_map_does_not_wait_for_cold_catalogue_and_owned_read_is_drained(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from pydantic import SecretStr
     service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_api_key=SecretStr('offline-fixture'))
     started, drained = asyncio.Event(), asyncio.Event()
 
     async def cold(*args, **kwargs):
@@ -102,7 +105,9 @@ async def test_ready_source_map_does_not_wait_for_cold_catalogue_and_owned_read_
     monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', cold)
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     # Watchdog for the impossible catalogue barrier, not a CPU speed assertion.
-    await asyncio.wait_for(identity_discovery.suggest(service, story, '', active), 60)
+    # Trigger the real optional-catalogue branch; the previous no-key fixture
+    # skipped its twelve-second wait and could not detect the barrier.
+    await asyncio.wait_for(identity_discovery.suggest(service, story, '', active), 4)
     assert drained.is_set() and '_identity_regional_catalogue_task' not in story
     assert story['_identity_search_plan_payload']['geometry_proof']
 
@@ -200,7 +205,7 @@ async def test_closed_native_initial_uses_native_for_new_visual_detail_without_g
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase', ['not_sent', 'unknown', 'retry_admission', 'retry_then_reserve'])
+@pytest.mark.parametrize('phase', ['not_sent', 'unknown', 'retry_admission', 'retry_admission_with_reserve', 'retry_then_reserve'])
 async def test_native_followup_admission_uses_visual_reserve_only_when_definitely_unsent(tmp_path, monkeypatch, phase):
     from street_story.providers import RetryableProviderError
     service, story, active = geometry_setup(tmp_path)
@@ -226,7 +231,7 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
         return {'result': payload(initial), 'receipt': {'turn_id': 'initial-closed'}, 'host_context': host_context}
     async def followup(s, prompt, schema, images, host_context):
         calls.append('native-admission')
-        if phase == 'retry_admission' and calls.count('native-admission') == 2:
+        if phase in {'retry_admission', 'retry_admission_with_reserve'} and calls.count('native-admission') == 2:
             return {'result': payload(geometry_decision()), 'receipt': {'turn_id': 'native-after-admission'}, 'host_context': host_context}
         saved.update(phase='submitted' if phase == 'unknown' else 'created',
                      provider_send_state='unknown' if phase == 'unknown' else 'not_sent')
@@ -251,14 +256,15 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
     await identity_discovery.prepare_search_plan(service, story, '', active)
     marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
     if phase in {'not_sent', 'retry_then_reserve'}:
-        assert calls == ['initial', 'native-admission', 'google']
+        assert calls == (['initial', 'native-admission', 'native-admission', 'google']
+                         if phase == 'retry_then_reserve' else ['initial', 'native-admission', 'google'])
         assert story['_identity_search_plan_payload']['geometry_proof']
         old = marker['route_operations']['gpt-6-luna']
         assert old['phase'] == 'not_sent' and marker['phase'] == 'response_closed'
         assert old['binding'] == marker['binding']
         assert old['prepared_request']['prompt'] == marker['prepared_request']['prompt']
         assert marker['prepared_request']['model'] == 'fixture-visual'
-    elif phase == 'retry_admission':
+    elif phase in {'retry_admission', 'retry_admission_with_reserve'}:
         assert calls == ['initial', 'native-admission', 'native-admission']
         assert story['_identity_search_plan_payload']['geometry_proof']
         assert marker['admission_retry']['retry_count'] == 1

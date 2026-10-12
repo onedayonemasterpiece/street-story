@@ -15,10 +15,11 @@ URL = 'https://archive.example/physical-building'
 TEXT = 'The facade has a central bay with three vertical window axes and a semicircular cornice. The entrance is on the left.'
 
 
-def with_received_physical_links(decision, contents):
+def with_received_physical_links(decision, contents, *, address_map_counterpoints=False):
     """Fixture model links the literal records in the actual issued T packet."""
     inventory = None
     passages = []
+    counterpoints = {}
     for line in contents[-1].splitlines():
         try:
             packet = json.loads(line)
@@ -27,6 +28,7 @@ def with_received_physical_links(decision, contents):
         if not isinstance(packet, dict):
             continue
         context = packet.get('acquired_architectural_text') or packet
+        counterpoints.update(context.get('received_map_counterpoints_not_identity') or {})
         passages.extend(context.get('literal_source_passages') or [])
         found = (packet if packet.get('contract') == 'llm-first-literal-evidence-v1' else
             packet.get('publisher_and_OSM_literal_records_NOT_prejoined') or
@@ -35,6 +37,12 @@ def with_received_physical_links(decision, contents):
             inventory = found
     assert inventory, 'The actual issued model packet must include literal evidence.'
     answer = copy.deepcopy(decision)
+    if address_map_counterpoints:
+        addressed = {row['candidate_id'] for row in answer['material_alternatives']}
+        answer['material_alternatives'].extend(
+            {'candidate_id': cid,
+             'reason': 'Fixture model distinguishes this other received MAP body from the SOURCE bay and cornice.'}
+            for cid in counterpoints.get(answer['candidate_id'], []) if cid not in addressed)
     if passages:
         for relation in answer['correspondences']:
             relation['source_span_ref'] = next(span['span_ref'] for article in passages
@@ -91,6 +99,38 @@ def architectural_identity(**kwargs):
         'photo_sha256': story['photo_sha256'], 'generation': story['_identity_generation'],
         'control_revision': story['_identity_research_control_revision'],
         'architectural_text_proof': proof, 'candidates': candidates, 'reference_evidence': []}
+
+
+@pytest.mark.parametrize('query_scope', ['peer', 'chosen', 'passive'])
+def test_new_t_binding_cannot_close_an_explicit_peer_identity_query(query_scope):
+    from jsonschema import Draft202012Validator
+    from street_story.identity_proof import IDENTITY_CONTINUATION_CONTRACT, architectural_text_decision_schema
+    story, candidates, decision, receipt = text_inputs()
+    peer = {**copy.deepcopy(candidates[0]), 'candidate_id': 'osm:way:8'}
+    candidates = [*candidates, peer]
+    story['_identity_observed_candidates'] = candidates
+    decision['research_priority'] = {
+        'candidate_ids': ['osm:way:7'] if query_scope == 'chosen' else ['osm:way:8'],
+        'reason': 'Controlled addressed follow-up.', 'next_step': 'existing_images',
+        'next_question': '' if query_scope == 'passive' else 'Read the addressed body images.',
+        'contradictions': []}
+    original = copy.deepcopy(decision)
+    # Historic receipts retain their original contract, including frozen UNKNOWN
+    # input. No new flag is invented in or retroactively applied to that receipt.
+    assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
+    schema = architectural_text_decision_schema(['osm:way:7', 'osm:way:8'],
+        [receipt['articles'][0]['article_id']], structural=True, closed_identity_continuation=True)
+    receipt = {**receipt, 'identity_continuation_contract': IDENTITY_CONTINUATION_CONTRACT}
+    if query_scope == 'peer':
+        assert not Draft202012Validator(schema).is_valid(decision)
+        assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
+        uncertain = {**decision, 'decision': 'uncertain'}
+        assert Draft202012Validator(schema).is_valid(uncertain)
+        assert uncertain['research_priority'] == original['research_priority']
+    else:
+        assert Draft202012Validator(schema).is_valid(decision)
+        assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
+    assert decision == original  # No host rewriting of the model's verdict/query.
 
 
 def test_text_identity_has_actual_source_hash_and_exact_lead_without_fake_ref():
@@ -289,3 +329,57 @@ async def test_normal_identity_worker_commits_text_and_stops_before_reference_se
     assert gemini.identity_calls == [] and current['facts'] == []
     with service.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_requested_T_tail_uses_retained_full_body_and_existing_bounded_transport(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from street_story.identity_architectural_comparison import continue_requested_text
+    import street_story.identity_scene as scene_module
+    import street_story.identity_discovery as discovery
+    import street_story.research_budget as budget
+    import street_story.identity_telemetry as telemetry
+    stream = io.BytesIO()
+    Image.new('RGB', (16, 16)).save(stream, format='PNG')
+    source = stream.getvalue()
+    story, candidates, decision, receipt = text_inputs(photo=hashlib.sha256(source).hexdigest())
+    story['id'] = 'tail-story'
+    body = 'Unrelated historical context. ' * 800 + TEXT
+    start = body.index(TEXT)
+    article = receipt['articles'][0]
+    article.update(text=body, text_sha256=hashlib.sha256(body.encode()).hexdigest())
+    initial = copy.deepcopy(decision)
+    initial.update(decision='uncertain', source_text_requests=[{
+        'article_id': article['article_id'], 'start_char': start, 'reason': 'Need visible facade description.'}])
+    payload = {'accepted_architectural_text': initial, 'source_text_receipt': receipt}
+    calls, reservations = [], []
+    manifest = geometry_identity(photo=story['photo_sha256'])['geometry_proof']['source_map_receipt']['manifest']
+
+    async def scene(*args):
+        return {'manifest': manifest, 'bytes': source}
+
+    async def operation(story, prompt, schema, images, host_context, role):
+        current = host_context['source_text_receipt']
+        assert TEXT in prompt
+        assert body not in prompt
+        assert current['articles'][0]['text'] == body
+        assert current['articles'][0]['text_cursor'] == start
+        assert [label for label, _, _ in images] == ['SOURCE', 'MAP']
+        calls.append(role)
+        answer = with_received_physical_links(decision, [prompt])
+        return {'result': answer, 'host_context': host_context}
+
+    monkeypatch.setattr(scene_module, 'planner_scene', scene)
+    monkeypatch.setattr(budget, 'reserve_work', lambda *args: reservations.append(args[2:]))
+    monkeypatch.setattr(telemetry, 'record_identity_event', lambda *args: None)
+    monkeypatch.setattr(discovery, '_retain_article_discovery', lambda *args, **kwargs: {
+        'search_plan': kwargs['search_plan'], 'acquired_text_articles': kwargs['acquired_text_articles']})
+    service = SimpleNamespace(_source_photo_bytes=lambda sid: source,
+        providers=SimpleNamespace(research=SimpleNamespace(plan_source_map=operation)))
+    result, history = await continue_requested_text(service, story, candidates, payload, {})
+    assert len(calls) == 1 and calls[0].startswith('vision_native_text_portion:')
+    assert reservations[0][0] == 'planner_calls'
+    assert result['architectural_text_proof']['decision']['decision'] == 'accepted_architectural_text'
+    assert history['acquired_text_articles'][0]['text'] == body

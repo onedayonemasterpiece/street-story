@@ -3,8 +3,14 @@
 Date: 2026-10-02.
 
 Street Story accumulates a regional POI knowledge base as a by-product of editorial
-work. This is initially a logical view over the existing SQLite stories, accepted
-object identities and facts, not a new service or database.
+work. Existing persistent `poi_research_assertions`, `poi_research_observations` and
+POI/source associations hold web knowledge; stories are publication projections.
+Canonical admission retains the unchanged claim, accepted physical subject and own
+observation fingerprints independently of the first story. Compatible additional
+support does not revoke it. Warm hydration preserves the original admission and
+withholds missing or foreign evidence without inventing a new verdict. RKB keeps
+its existing historical graph and evidence/ACL references; no duplicate POI service
+or mandatory migration between the two existing domains is introduced.
 
 ## POIs sourced from books
 

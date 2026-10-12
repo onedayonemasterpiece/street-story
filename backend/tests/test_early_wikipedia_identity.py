@@ -139,6 +139,20 @@ def test_late_reference_only_follows_exact_already_model_selected_physical_id():
     assert late_linked_page_ids(pages, {}) == []
 
 
+def test_late_exact_wiki_links_after_third_keep_reference_bytes_reachable():
+    pages = [page(i, linked_id='osm:way:2') for i in range(1, 9)]
+    pages.append(page(99, linked_id='osm:way:99'))
+    plan = {'selected_wikipedia_page_ids': ['1', '2', '3'],
+        'first_wave_hypotheses': [{'subject_id': 'osm:way:2'}]}
+    late = late_linked_page_ids(pages, plan)
+    assert late == [str(i) for i in range(1, 9)]
+    selected = selected_candidates([], [wiki_candidate(p) for p in pages], pages,
+        {**plan, 'late_mapped_wikipedia_page_ids': late})
+    assert [p['candidate_id'] for p in selected] == ['wiki:' + str(i) for i in range(1, 9)]
+    assert selected[-1]['reference_image_urls'] == [pages[7]['image_url']]
+    assert all('wiki:99' != p['candidate_id'] for p in selected)
+
+
 @pytest.mark.asyncio
 async def test_ready_wiki_plan_joint_images_once_then_zero_paid_search(tmp_path, monkeypatch):
     svc, _adapter, story, _sessions = prepared(tmp_path)

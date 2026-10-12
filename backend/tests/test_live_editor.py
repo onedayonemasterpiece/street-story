@@ -285,7 +285,9 @@ def make_service(tmp_path: Path):
         id="live_1234567890abcdef",
         resource_id=story["id"],
         model="gemini-3.8-live",
-        state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
+        state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None,
+               'research_control_scope': {'expected_photo_sha256': story['photo_sha256'], 'expected_identity_generation': 0},
+               'fact_research_control_revision': 0},
     )
     return svc, adapter, session, events
 
@@ -518,6 +520,7 @@ async def test_live_search_persists_only_fact_bound_evidence_passages(tmp_path):
         "source_url": source_url,
         "text": "Слева изображён Оттокар II.",
         "evidence_ref": relevant_ref,
+        "source_version_id": "srcv_ff3a577bb35d582d483b1dc8",
     }]
     assert [item["text"] for item in stored["sources"][0]["supports"]] == [
         "Слева изображён Оттокар II.",
@@ -551,6 +554,9 @@ async def test_live_place_resolution_and_owner_confirmation_use_osm_wikipedia_co
             "args": {"owner_hint": "Бранденбургские ворота, Калининград"},
         },
     )
+    assert resolved['visual_identity'] is None  # ACK precedes job-owned inference.
+    assert await svc.run_once(claim_kind='identity', claim_story_id=session.resource_id)
+    resolved = await adapter._resolve_place_state(session, '')
     identity = resolved["visual_identity"]
     assert identity["status"] == "uncertain"
     assert identity["candidate_id"] == "wiki:77"
@@ -2146,7 +2152,7 @@ async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, 
     monkeypatch.setattr(adapter, '_execute_tool', edit)
     result = await adapter.execute_tool(session, {'name': 'edit_text'})
     assert result['text_revision'] == 2
-    assert paused == ['live_owner_switched_to_editing']
+    assert paused == []
     assert session.state['research_author_interrupted'] is True
     assert session.state['research_output_pending'] is False
     assert events[-1]['type'] == 'research_progress'
@@ -2158,4 +2164,4 @@ async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, 
     with pytest.raises(ConflictError):
         await adapter.execute_tool(session, {'name': 'edit_text'})
     assert session.state['research_output_pending'] is True
-    assert len(paused) == 1
+    assert len(paused) == 0

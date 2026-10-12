@@ -67,10 +67,12 @@ async def test_local_daily_wait_rechecks_policy_without_sixty_second_hot_loop(tm
         assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
         research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
         assert research['research_budget'] == original_budget
-        assert research['automatic_research_outcome']['outcome'] == 'resource_blocked'
-        assert db.execute('SELECT state FROM jobs WHERE id=?', (jid,)).fetchone()[0] == 'done'
+        assert 'automatic_research_outcome' not in research
+        assert db.execute('SELECT state FROM jobs WHERE id=?', (jid,)).fetchone()[0] == 'retry'
         assert 'pending_fact_request' in research
+    assert service.recover_jobs() == 0  # Original admission wait retains the joined intent.
     assert service.recover_jobs() == 0
+    assert calls == [jid, jid]  # Recovery schedules; it does not send an admission or model call.
 
 
 @pytest.mark.asyncio

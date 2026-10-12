@@ -20,7 +20,7 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
 from .identity_proof import accepted_identity, physical_scope
-from .research_budget import PAGE_UNITS, response_units, bounded_inventory, require_remaining, remaining_seconds, ResearchTerminated
+from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
@@ -871,7 +871,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'eligible inventory and get_evidence for each chosen claim\'s own passages. '
                 'Choose facts semantically according to the owner\'s request; one checkbox '
                 'chooses one independent substantive claim. Use select_facts only on an explicit '
-                'request to choose or change selection. Persist an owner\'s angle with set_concept '
+                'request to choose or change selection. Save that choice with select_facts before '
+                'saying facts are selected; only its successful durable receipt confirms selection. '
+                'Persist an owner\'s angle with set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
                 'change selection. For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
@@ -957,6 +959,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     @staticmethod
     def _capability_context(context, capability):
+        if capability in {'editor', 'dictation', 'publication'}:
+            # These stages work on the author's selection and saved draft.
+            # Discovery inventories stay durable and accessible through the
+            # ordinary read tools; resending them spends admission budget before
+            # even a small text correction can execute.
+            return {key: value for key, value in context.items() if key not in {
+                'known_fact_inventory', 'known_fact_inventory_fields',
+                'known_fact_inventory_truncated', 'facts_instruction',
+                'research_run', 'jobs', 'identity_research_context',
+            }}
         if capability != 'review':
             return context
         from .identity_model_context import fact_review_subject
@@ -1067,6 +1079,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     'expected_photo_sha256': state['story']['photo_sha256'],
                     'expected_identity_generation': state['story']['identity_generation'],
                 },
+                'fact_research_control_revision': state['story']['research_controls']['facts']['revision'],
             },
             "context": context,
             "configuration": {
@@ -1127,7 +1140,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             break
             capability = ('identity' if not context['physical_identity_accepted']
                           else 'publication' if publication_ready
-                          else 'review' if reviewing and (not eligible_available or requested_review) else 'research')
+                          else 'review' if reviewing and (not eligible_available or requested_review)
+                          else 'editor' if eligible_available else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
             initialized['context'] = self._capability_context(initialized['context'], capability)
@@ -1271,8 +1285,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._persist_live_message(session, "assistant", text)
 
         if kind in {"error", "closed"}:
-            self._cancel_identity_waiter(session)
-            self._pause_research(session, "live_" + kind + "_resume_required")
+            self.on_stopped(session)
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
         if kind == "turn_complete":
@@ -1395,7 +1408,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     def on_stopped(self, session) -> None:
         self._cancel_identity_waiter(session)
-        self._pause_research(session, "live_stopped_resume_required")
+        # Release only the closed client's local reading lock. Submitted/UNKNOWN
+        # provider operations retain their original addresses and readback guard.
+        with self.service.store.tx() as db:
+            db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session.id,))
+        self._handoff_research(session)
 
     @staticmethod
     def _live_research_progress(db, story_id, run_id):
@@ -1406,120 +1423,40 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'remaining': sum(not row['source_version_id'] and row['status'] != 'failed' for row in sources)}
 
     def _continue_pending_research(self, session):
+        # The server job owns continuation. Voice focus and turn count do not
+        # grant or revoke the lifetime of already accepted bounded research.
+        self._handoff_research(session)
+
+    def _handoff_research(self, session):
         run_id = str(session.state.get("research_run_id") or "")
-        if not run_id or getattr(session, "closed", False) or getattr(session, "awaiting_audio", False) or any(session.state.get(key) for key in (
-            "research_cancelled", "research_tool_busy", "research_provider_tool_pending",
-            "research_author_interrupted", "research_continuation_queued",
-        )):
+        if not run_id or session.state.get('headless_research'):
             return
-        with self.service.store.connection() as db:
-            run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
-            candidate_ids = review_packets.pending_candidates(db, session.resource_id, run_id) if run else []
-            if candidate_ids and run['state'] not in {'failed', 'cancelled', 'completed'}:
-                key = tuple(candidate_ids[:3])
-                if session.state.get('extractor_review_queued') != key:
-                    session.state['extractor_review_queued'] = key
-                    session.state['research_continuation_queued'] = True
-                    self.write(session, {'type': 'text', 'text':
-                        'Server context: saved source-backed extractor candidates are ready in run ' + run_id +
-                        '. Use continue_story(stage=review), then get_review_packet(run_id). Review only that small '
-                        'packet against its exact passages and nearby existing claims, then finalize_fact_review '
-                        'with partial coverage. Other research branches may continue. Preserve all owner choices, '
-                        'concept and draft; already eligible facts are sufficient for publication. No new search required.'})
+        with self.service.store.tx() as db:
+            story = self.service._story_row(db, session.resource_id)
+            research = json.loads(story['research_json'] or '{}')
+            run = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+                             (run_id, session.resource_id)).fetchone()
+            from .research_control import research_stopped
+            if (not run or run['state'] in {'completed', 'failed', 'cancelled'}
+                    or int(run['identity_generation']) != int(research.get('identity_generation') or 0)
+                    or research.get('automatic_research_outcome')
+                    or research_stopped(research, 'facts', photo_sha256=story['photo_sha256'],
+                                        identity_generation=run['identity_generation'])):
                 return
-            if not run or run["state"] in {"completed", "partial", "failed", "cancelled"}:
+            # Bind the existing run, budget and operations. Never reset a lease,
+            # input generation or a submitted provider request on transport close.
+            owner = db.execute("SELECT id FROM jobs WHERE story_id=? AND kind='research' "
+                               "AND state IN ('ready','retry','running') AND "
+                               "json_extract(payload_json,'$.resume_run_id')=?", (session.resource_id, run_id)).fetchone()
+            if owner:
                 return
-            pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
-            unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
-            saved_batches = db.execute(
-                "SELECT COUNT(*) FROM research_chunk_batches WHERE run_id=?",
-                (run_id,),
-            ).fetchone()[0]
-            facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
-            recipe = session.state.get('research_chunk_receipts', {}).get(session.state.get('research_current_chunk_id')) or {}
-            unread_save = bool(recipe.get('run_id') == run_id and recipe.get('batch_id') and not db.execute(
-                "SELECT 1 FROM live_commands WHERE story_id=? AND command_id=? AND tool_name='save_research_facts'",
-                (session.resource_id, recipe.get('batch_id'))).fetchone())
-        if session.state.get('live_first_research'):
-            with self.service.store.connection() as db:
-                progress = self._live_research_progress(db, session.resource_id, run_id)
-            if pending or progress['remaining']:
-                attempts = int(session.state.get("research_continuation_count") or 0)
-                if attempts < 12:
-                    next_tool = (
-                        "save_research_facts"
-                        if pending and unread_save
-                        else "get_research_chunk"
-                    )
-                    session.state["research_continuation_count"] = attempts + 1
-                    session.state["research_continuation_queued"] = True
-                    self.write(
-                        session,
-                        {
-                            "type": "text",
-                            "text": (
-                                "Server context for the author's current research request: "
-                                f"run {run_id} has unread evidence. Already saved supported findings remain usable. "
-                                "Save sufficient NEW discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Compare the known_fact_inventory; equivalent claims must reuse existing_fact_id and are not new findings. Never speak unsaved snippets as facts. Do not answer with remembered or "
-                                "search-snippet facts. Continue "
-                                f"{next_tool}. For get_research_chunk choose one competent "
-                                "source by title/provenance and copy its exact source_ref from "
-                                "the previous search result. For save_research_facts review "
-                                "the evidence already read and preserve every qualifier. "
-                                "After no_claims use get_research_chunk(run_id only) for the next unread source. "
-                                "If this work adds no new supported claim, report that honestly. Distinguish previously saved facts and added evidence from new eligible claims."
-                            ),
-                        },
-                    )
-                    record_live_diagnostic(
-                        self.service,
-                        session.resource_id,
-                        session.id,
-                        "backend",
-                        "research_continuation",
-                        {
-                            "run_id": run_id,
-                            "next_tool": next_tool,
-                            "attempt": attempts + 1,
-                            "pending_chunks": pending,
-                            "unfetched_sources": unfetched,
-                            "saved_batches": saved_batches,
-                            "reason": "unread_saved_source_work",
-                            **progress,
-                        },
-                    )
-                    logger.info('street_story_research_continue run=%s next=%s observations=%s sources_attempted=%s remaining=%s', run_id, next_tool, progress['observations'], progress['attempts'], progress['remaining'])
-                    return
-                self._pause_research(session, 'live_continuation_exhausted')
-                self._emit_research_progress(session, stage='partial', active=False, query='', source_count=0, fact_count=facts)
-                return
-            # A finished answer may offer useful partial findings. Do not inject
-            # another whole-inventory review request into the normal Live flow.
-            # Pending provider calls are excluded above; the saved cursor remains
-            # writable for an explicit continuation in this same conversation.
-            with self.service.store.tx() as db:
-                manifest = run_manifest(db, run_id)
-                unreviewed = db.execute("SELECT 1 FROM fact_assertions a JOIN fact_observations o ON o.story_id=a.story_id "
-                    "AND o.assertion_id=a.assertion_id WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
-                    (session.resource_id, run_id)).fetchone()
-                complete = manifest_complete(manifest) and not unreviewed
-                detail = ('live_batches_complete' if progress['observations'] else 'live_no_new_confirmed_facts') if complete else 'live_answer_partial'
-                set_run_state(db, run_id, 'completed' if complete else 'partial', detail=detail,
-                              now=self.service.store.now(), completed=complete)
-            self._emit_research_progress(session, stage='completed' if complete else 'partial', active=False, query='', source_count=len(manifest['sources']), fact_count=facts)
-            return
-        attempts = int(session.state.get("research_continuation_count") or 0)
-        if attempts >= 2:
-            self._pause_research(session, "model_review_continuation_exhausted")
-            self._emit_research_progress(session, stage="partial", active=False, query="", source_count=0, fact_count=facts)
-            return
-        tool = "get_research_chunk" if pending or unfetched else "get_review_packet"
-        session.state["research_continuation_count"] = attempts + 1
-        session.state["research_continuation_queued"] = True
-        # Scoped server context for the SAME authorized operation and lease.
-        # No accepted tool is rerun; only the model chooses/executes the next step.
-        self.write(session, {"type": "text", "text": "Server context for the author's already authorized research operation: run " + run_id + " is still incomplete, with " + str(facts) + " durable facts. Continue " + tool + " with run_id only and follow returned next_args/pages, then explicit semantic review. Preserve checkpoints; this context grants no new author consent or publication permission. Do not announce completion while the run is incomplete."})
-        record_live_diagnostic(self.service, session.resource_id, session.id, "backend", "research_continuation", {"run_id": run_id, "next_tool": tool, "attempt": attempts + 1, "pending_chunks": pending})
+            self.service._enqueue_job(db, session.resource_id, 'research', f'research-resume:{run_id}',
+                {'resume_run_id': run_id, 'input_revision': f'research-resume:{run_id}',
+                 'photo_sha256': story['photo_sha256'], 'identity_generation': int(run['identity_generation']),
+                 'coverage_goal': run['goal'], 'extraction_scope': run['extraction_scope'],
+                 'live_transcript': run['goal'] or 'Продолжи принятое исследование.'})
+            logger.info('street_story_research_handed_to_job story_id=%s run_id=%s generation=%s',
+                        session.resource_id, run_id, run['identity_generation'])
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         session.state["research_tool_busy"] = True
@@ -1542,10 +1479,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 session.state["research_output_pending"] = False
             if session.state.get("research_run_id") and name in {"select_facts", "set_concept", "edit_text", "generate_visual", "prepare_publication"}:
                 # A successful owner editing action ends research input focus.
-                # Keep pending documents/facts durable for an explicit resume.
+                # Durable jobs continue while the owner edits.
                 session.state["research_author_interrupted"] = True
                 session.state["research_output_pending"] = False
-                self._pause_research(session, "live_owner_switched_to_editing")
+                self._handoff_research(session)
                 topic = self._topic_state(session.resource_id)
                 completed = (topic.get("research_run") or {}).get("state") == "completed"
                 self._emit_research_progress(session, stage="completed" if completed else "partial", active=False,
@@ -1555,7 +1492,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 })
             return result
         except asyncio.CancelledError:
-            self._pause_research(session, 'live_task_cancelled_resume_required')
+            self._handoff_research(session)
             raise
         except ConflictError as exc:
             record_live_diagnostic(self.service, session.resource_id, getattr(session, "id", ""), "backend", "live_tool_rejected", {
@@ -1598,13 +1535,6 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self.emit(session, {"type": "product_state", "state": compact})
             return await self._next_visual_result(session, compact)
         if name == "get_facts":
-            run_id = session.state.get('research_run_id')
-            if session.state.get('live_first_research') and run_id:
-                with self.service.store.connection() as db:
-                    run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, story_id)).fetchone()
-                    progress = self._live_research_progress(db, story_id, run_id)
-                if run and run['state'] not in {'completed', 'failed', 'cancelled'} and not progress['observations'] and progress['remaining']:
-                    raise ConflictError('live_research_more_sources_required', 'Zero new durable observations. Next action: get_research_chunk with run_id only; save sufficient snippets before a factual answer.')
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
             packet = review_packets.read(self, session, args)
@@ -2526,56 +2456,24 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def _normalized_place_name(value: Any) -> str:
         return re.sub(r"\\s+", " ", str(value or "").strip()).casefold()
 
-    async def _resolve_place_state(self, session, owner_hint: str) -> dict[str, Any]:
+    async def _resolve_place_state(self, session, owner_hint: str, *, command_id=None) -> dict[str, Any]:
         story_id = session.resource_id
-        with self.service.store.connection() as db:
-            row = dict(self.service._story_row(db, story_id))
         if owner_hint.strip():
-            # A reply to our outstanding question continues the original clock.
-            # Other terminal outcomes need the existing explicit new-wave action.
-            with self.service.store.connection() as db:
-                prior = json.loads(self.service._story_row(db, story_id)['research_json'] or '{}')
-            if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
-                if remaining_seconds(self.service, story_id, 'identity') <= 0:
-                    raise ResearchTerminated(reason='identity_deadline_exceeded')
-                with self.service.store.tx() as db:
-                    fresh = self.service._story_row(db, story_id)
-                    prior = json.loads(fresh['research_json'] or '{}')
-                    if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
-                        prior.pop('automatic_research_outcome', None)
-                        if isinstance(prior.get('identity_clarification'), dict):
-                            prior['identity_clarification']['answered'] = True
-                        prior['identity_owner_hint'] = {'text': owner_hint[:500],
-                            'provenance': 'owner_live_text_or_voice', 'independently_verified': False}
-                        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
-            require_remaining(self.service, story_id, "identity")
-        if (row.get("latitude") is None or row.get("longitude") is None) and owner_hint.strip():
-            # Only the author's explicit address, never infer a geocode query
-            # from a clipped VAD fragment or substitute current device position.
-            resolver = getattr(self.service, "_resolve_place_query", None)
-            resolved = await resolver(owner_hint.strip()) if callable(resolver) else None
-            if resolved:
-                require_remaining(self.service, story_id, "identity")
-                with self.service.store.tx() as db:
-                    fresh = self.service._story_row(db, story_id)
-                    prior = json.loads(fresh["research_json"] or "{}")
-                    prior["identity_generation"] = int(prior.get("identity_generation") or 0) + 1
-                    # A city reply continues this wave, retaining its original clock/work.
-                    if prior.get("research_budget"):
-                        prior["research_budget"]["identity_generation"] = prior["identity_generation"]
-                    prior["identity_owner_hint"] = {"text": owner_hint[:500], "provenance": "owner_live_text_or_voice", "independently_verified": False}
-                    prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
-                    db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
-                               (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
-        if owner_hint.strip():
-            require_remaining(self.service, story_id, "identity")
-        story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint), owner_hint=owner_hint)
-        identity = story.get("visual_identity") or {}
+            snapshot, _ = self.service._identity_snapshot(story_id)
+            key = command_id or 'owner-hint:' + digest([story_id, snapshot['photo_sha256'], owner_hint])
+            story = self.service.accept_identity_hint(story_id, key, owner_hint,
+                self._recent_transcript(session, owner_hint))
+        else:
+            story = self.service.ensure_identity(story_id)
+        # Durable acceptance returns before geocoding/inference. Reopen and
+        # client close observe this same job through the existing watcher/API.
+        self._watch_identity_ready(session)
         with self.service.store.connection() as db:
-            saved = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
-        pages = [{"title": str(page.get("title") or ""), "url": str(page.get("url") or "")}
-                 for page in (saved.get("wikipedia") or [])[:12] if isinstance(page, dict)]
-        return {"visual_identity": identity, "wikipedia": pages, "story": story}
+            saved = json.loads(self.service._story_row(db, story_id)['research_json'] or '{}')
+        pages = [{'title': str(page.get('title') or ''), 'url': str(page.get('url') or '')}
+                 for page in (saved.get('wikipedia') or [])[:12] if isinstance(page, dict)]
+        return {'visual_identity': story.get('visual_identity') or {}, 'wikipedia': pages, 'story': story,
+                'identity_job_owned': True}
 
     async def _reject_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         candidate_id = _bounded_text(args.get("candidate_id"), 300, required=True)
@@ -2590,7 +2488,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     async def _resolve_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         owner_hint = _bounded_text(args.get("owner_hint"), 500)
-        result = await self._resolve_place_state(session, owner_hint)
+        result = await self._resolve_place_state(session, owner_hint, command_id=command_id)
         with self.service.store.tx() as db:
             self._store_command(db, session.resource_id, command_id, "resolve_place", args, result)
         return result
@@ -2676,6 +2574,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if current["photo_sha256"] != row["photo_sha256"] or int(current_research.get("identity_generation") or 0) != int(research.get("identity_generation") or 0):
                 raise ConflictError("identity_candidate_changed", "Объект изменился; проверьте актуальный вариант.")
             from .poi_memory import ensure_poi_identity, hydrate_story_facts
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
             now = self.service.store.now()
             poi_id = ensure_poi_identity(
                 db,
@@ -3338,41 +3237,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         with self.service.store.connection() as db:
             self._fact_research_control_guard(db, session)
         if session.state.get("research_cancelled"):
-            turn = session.state.get("author_turn") or {}
-            if (
-                session.state.get("research_pause_reason") != "live_owner_switched_to_editing"
-                or int(turn.get("serial") or 0) <= int(session.state.get("research_paused_turn_serial") or 0)
-                or not str(turn.get("text") or "").strip()
-                or turn.get("consumed") or turn.get("suspected_noise")
-                or session.state.get("literal") is not None
-                or not 0 <= time.monotonic() - float(turn.get("at") or 0) <= 50
-            ):
-                raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run explicitly.")
-            session.state["research_cancelled"] = False
-            run_id = str(session.state.get("research_run_id") or "")
-            try:
-                if run_id:
-                    with self.service.store.tx() as db:
-                        self._fact_research_control_guard(db, session)
-                        run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?",
-                                         (run_id, session.resource_id)).fetchone()
-                        if run is not None and run["state"] == "completed":
-                            # Keep the completed historical run immutable. A new
-                            # search may start another scope instead of reopening it.
-                            session.state.pop("research_run_id", None)
-                            session.state.pop("research_current_chunk_id", None)
-                        else:
-                            _, run = self._research_run_guard(db, session, run_id)
-                            if run["state"] == "partial":
-                                set_run_state(db, run_id, "extracting", detail="live_owner_requested_continuation",
-                                              now=self.service.store.now())
-            except Exception:
-                session.state["research_cancelled"] = True
-                raise
-            session.state["research_continuation_count"] = 0
-            session.state.pop("research_pause_reason", None)
-            record_live_diagnostic(self.service, session.resource_id, session.id, "backend",
-                                   "research_owner_resumed", {"run_id": run_id, "author_turn_serial": turn["serial"]})
+            # Dual-read an old session's editing pause. Explicit Stop and failed
+            # validation still require the existing owner resume control.
+            if session.state.get("research_pause_reason") != "live_owner_switched_to_editing":
+                raise ConflictError("live_research_partial", "Resume stopped or invalid research explicitly.")
+            run_id = session.state.get("research_run_id")
+            with self.service.store.connection() as db:
+                story, research = self._fact_research_control_guard(db, session)
+                run = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+                                 (run_id, session.resource_id)).fetchone()
+                if run and int(run['identity_generation']) != int(research.get('identity_generation') or 0):
+                    raise ConflictError("live_research_run_stale", "Object identity changed.")
+            if run and run['state'] in {'completed', 'cancelled', 'failed'}:
+                session.state.pop('research_run_id', None)
+            session.state['research_cancelled'] = False
+            session.state.pop('research_pause_reason', None)
         session.state["research_author_interrupted"] = False
 
     def _research_run_guard(self, db, session, run_id: str):
@@ -3548,7 +3427,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         recipe["run_id"] = run_id
         session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
         session.state['research_current_chunk_id'] = candidate['chunk_id']
-        if "passage_cursor" not in args and len(seen) == len(passages):
+        # Reading every passage does not mean extracting every claim. A saved
+        # nonterminal batch explicitly retains this frozen core for continuation;
+        # serve its ordinary addressable pages again without fetching the source.
+        if "passage_cursor" not in args and len(seen) == len(passages) and batch_index == 0:
             session.state.setdefault('research_page_passage_ids', {})[candidate['chunk_id']] = set(seen)
             return {**result, "core_text": "", "context_text": "", "evidence_passages": [], "context_before": "", "context_after": "",
                     "checkpoint": {"next_batch_index": batch_index, "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3]},
@@ -3660,7 +3542,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 expanded.append(group)  # Legacy receipts remain replayable.
         if len(expanded) > 32:
             raise ConflictError('live_research_facts_invalid', 'Save at most 32 claims per batch and continue the same core.')
-        extractor_candidates = bool(session.state.get('headless_research') or args.get('extractor_candidates'))
+        from .source_assessment import CONTRACTS as ASSESSMENT_CONTRACTS
+        consolidated = session.state.get('semantic_reading_contract') in ASSESSMENT_CONTRACTS
+        extractor_candidates = bool((session.state.get('headless_research') and not consolidated) or args.get('extractor_candidates'))
         extractor_existing_hints = [str(item.get('existing_fact_id') or '') for item in expanded if isinstance(item, dict)] if extractor_candidates else []
         if extractor_candidates:
             # Extractor equivalence is advice, never authority over an existing claim.
@@ -3840,8 +3724,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 addressed = {p["evidence_ref"]: p["text"] for p in passages}
                 numbered = {p["passage_id"]: p["text"] for p in passages}
                 current_passage_ids = session.state.get('research_page_passage_ids', {}).get(chunk_id, set(numbered))
-                quoted_facts = []
-                for raw in raw_facts:
+                def bind_page_fact(raw):
                     if not isinstance(raw, dict):
                         raise ConflictError("live_research_fact_invalid", "Each fact must be an object.")
                     quotes = raw.get("evidence_quotes")
@@ -3879,8 +3762,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         supports.append(support)
                         evidence_map[evidence_ref] = (source_ref, support)
                     source_map.setdefault(source_ref, {"url": url, "source_ref": source_ref, "type": "web", "supports": []})["supports"].extend(supports)
-                    quoted_facts.append({**raw, "source_refs": [source_ref], "evidence_refs": refs})
-                raw_facts = quoted_facts
+                    return {**raw, "source_refs": [source_ref], "evidence_refs": refs}
+                from .fact_page_boundary import partition_rows, fact_dependencies
+                original_rows = raw_facts
+                raw_facts, page_isolation = partition_rows(raw_facts, bind_page_fact, fact_dependencies)
 
             known_facts = [
                 {
@@ -3914,8 +3799,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if item["selected"] and item["evidence_supported"]
         }
 
-        normalized_candidates: list[dict[str, Any]] = []
-        for item in raw_facts:
+        def normalize_candidate(item):
             if not isinstance(item, dict):
                 raise ConflictError(
                     "live_research_fact_invalid",
@@ -4017,8 +3901,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     fact_text,
                 )
             )
-            normalized_candidates.append(
-                {
+            if args.get('batch_reviewed') is True and session.state.get('live_first_research'):
+                if (item.get('verdict') not in {'supported', 'insufficient', 'contradicted', 'possible_conflict'}
+                        or any(type(item.get(flag)) is not bool for flag in ('atomic', 'support_complete', 'qualifiers_preserved'))
+                        or not isinstance(item.get('review_reason'), str) or not 1 <= len(item['review_reason']) <= 500):
+                    raise ConflictError('live_research_review_invalid', 'Each finding needs its original scoped semantic assessment.')
+                from .fact_page_boundary import fact_dependencies
+                if fact_dependencies(item) is None or any(fid not in known_by_id for fid in item.get('conflicts_with_existing', [])):
+                    raise ConflictError('live_research_review_invalid', 'Conflicts must address own known claims.')
+            return {
                     "fact_id": provisional_fact_id,
                     "existing_fact_id": (
                         explicit_existing
@@ -4030,7 +3921,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "confidence": confidence,
                     "evidence_supported": True,
                     "live_review": {
-                        key: item.get(key) for key in ('verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason')
+                        key: item.get(key) for key in ('verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason', 'conflicts_with_existing')
                     } if args.get('batch_reviewed') is True else None,
                     "selected": bool(item.get("selected")),
                     "evidence_refs": selected_evidence_refs,
@@ -4041,8 +3932,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         }
                         for source_ref in refs
                     ],
-                }
-            )
+            }
+
+        from .fact_page_boundary import partition_rows, fact_dependencies
+        normalized_candidates, candidate_isolation = partition_rows(raw_facts, normalize_candidate, fact_dependencies)
+        row_isolation = {'page': page_isolation if chunk_row is not None else None, 'candidate': candidate_isolation}
+        isolated_rows = bool(candidate_isolation['rejected_indices'] or
+            (chunk_row is not None and page_isolation['rejected_indices']))
 
         save_audit: dict[str, Any] = {
             "raw_candidate_count": len(raw_facts),
@@ -4194,6 +4090,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             reconciled_candidates.append(
                 {
                     **candidate,
+                    # This is the model's explicit equivalence decision, not a
+                    # replacement command. Preserve the admitted wording/basis;
+                    # retain its new wording as an observation with own spans.
+                    "text": known_by_id[fact_id]['text'] if existing_fact_id else candidate['text'],
+                    "observation_text": candidate['text'],
                     "fact_id": fact_id,
                     "existing_fact_id": (
                         existing_fact_id or None
@@ -4338,17 +4239,55 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     review = fact.get('live_review') or {}
                     if review.get('verdict') not in {'supported', 'insufficient', 'contradicted', 'possible_conflict'} or any(type(review.get(flag)) is not bool for flag in ('atomic', 'support_complete', 'qualifiers_preserved')) or not isinstance(review.get('review_reason'), str) or not 1 <= len(review['review_reason']) <= 500:
                         raise ConflictError('live_research_review_invalid', 'Each finding needs a scoped model verdict, three boolean checks and a brief reason.')
-                    positive = review['verdict'] == 'supported' and all(review[flag] for flag in ('atomic', 'support_complete', 'qualifiers_preserved'))
+                    positive = not review.get('conflicts_with_existing') and review['verdict'] == 'supported' and all(review[flag] for flag in ('atomic', 'support_complete', 'qualifiers_preserved'))
                     if positive:
                         assertion = db.execute('SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?', (story_id, fact['fact_id'])).fetchone()
                         accepted_bundle[fact['fact_id']] = assertion['revision_digest']
+                        from .fact_ledger import accept_fact_basis
+                        own_ids = [ev[0] for ev in db.execute(
+                            "SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+                            "WHERE o.story_id=? AND o.assertion_id=? AND o.batch_id=? AND o.run_id=?",
+                            (story_id, fact['fact_id'], save_batch_id, run_id))]
+                        accept_fact_basis(db, story_id, fact['fact_id'], own_ids,
+                                          operation={'contract': session.state.get('semantic_reading_contract') or 'live-batch',
+                                                     'run_id': run_id, 'batch_id': save_batch_id}, now=now, reassessment=True)
                     else:
-                        db.execute("UPDATE fact_assertions SET eligibility='withheld',review_status='withheld',owner_selected=0 WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact['fact_id']))
-                        db.execute('UPDATE facts SET selected=0 WHERE story_id=? AND fact_id=?', (story_id, fact['fact_id']))
+                        from .fact_ledger import accepted_basis_valid
+                        admitted = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                              (story_id, fact['fact_id'])).fetchone()
+                        adverse = review['verdict'] in {'contradicted', 'possible_conflict'} or bool(review.get('conflicts_with_existing'))
+                        # A qualified assessment of this exact prior wording can
+                        # explicitly reject its shape. Merely opening recheck,
+                        # adding incomplete support, or rejecting a new equivalent
+                        # paraphrase must not revoke the immutable accepted claim.
+                        exact_shape_rejection = (consolidated
+                            and fact.get('existing_fact_id') == fact['fact_id']
+                            and fact.get('observation_text') == fact['text']
+                            and (review['atomic'] is False or review['qualifiers_preserved'] is False))
+                        adverse = adverse or exact_shape_rejection
+                        if adverse or not accepted_basis_valid(db, story_id, admitted):
+                            db.execute("UPDATE fact_assertions SET eligibility='withheld',review_status='withheld',accepted_basis_json=NULL,accepted_revision_digest=NULL WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact['fact_id']))
+                            if exact_shape_rejection:
+                                logger.info('street_story_fact_shape_withheld story_id=%s run_id=%s batch_id=%s fact_id=%s atomic=%s qualifiers_preserved=%s',
+                                            story_id, run_id, save_batch_id, fact['fact_id'],
+                                            review['atomic'], review['qualifiers_preserved'])
+                # The same semantic operation's declared contradictions enter
+                # the existing pair ledger, with each side's own evidence.
+                model_items = conflict_scan_items([{**dict(row), 'sources': json.loads(row['sources_json'])}
+                    for row in db.execute('SELECT * FROM facts WHERE story_id=? AND evidence_supported=1', (story_id,))])
+                declared = [{'left_fact_id': fact['fact_id'], 'right_fact_id': peer,
+                             'relation': 'contradiction', 'suggested_resolution': 'unresolved',
+                             'confidence': fact.get('confidence', 0),
+                             'rationale': (fact.get('live_review') or {}).get('review_reason', '')}
+                            for fact in normalized for peer in (fact.get('live_review') or {}).get('conflicts_with_existing') or []]
+                records = normalize_model_conflict_records(model_items, {'conflicts': declared})
+                if records:
+                    persist_fact_conflicts(self.service, story_id, str(identity.get('candidate_id') or '') or None,
+                                           records, detector='source_reading_assessment', connection=db)
                 if accepted_bundle:
                     record_fact_review_scan(self.service, story_id, str(identity.get('candidate_id') or '') or None,
                                             detector='mira_live_batch', run_id=run_id, revision_bundle=accepted_bundle,
-                                            conflict_ids=[], coverage_complete=True, missing_aspects=[], connection=db)
+                                            conflict_ids=[record['conflict_id'] for record in records], coverage_complete=True, missing_aspects=[], connection=db)
                 refresh_review_status(db, story_id, now)
             if chunk_id:
                 record_chunk_batch(db, run_id=run_id, chunk_id=chunk_id, batch_index=batch_index,
@@ -4356,15 +4295,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     accepted_fact_count=len(normalized), continuation_needed=continuation_needed,
                     continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    payload={"facts": normalized, "extractor_candidates": extractor_candidates, "extractor_existing_fact_ids": extractor_existing_hints, "no_claims": not normalized, "official_source_urls": [],
+                    payload={"facts": normalized, "raw_rows": original_rows if chunk_row is not None and isolated_rows else None,
+                             "row_isolation": row_isolation if isolated_rows else None, "extractor_candidates": extractor_candidates, "extractor_existing_fact_ids": extractor_existing_hints, "no_claims": not normalized, "official_source_urls": [],
                              "source_content_valid": args.get('source_content_valid') is not False,
                              "next_passage_cursor": session.state.get('research_pending_page', {}).get(chunk_id, 0) if continuation_needed else 0,
                              "read_passage_ids": sorted(session.state.get('research_passages_seen', {}).get(chunk_id, set()))})
                 mark_chunk(db, run_id=run_id, chunk_id=chunk_id,
-                    status="deferred" if continuation_needed else "extracted" if normalized else "no_claims",
+                    status="failed" if isolated_rows else "deferred" if continuation_needed else "extracted" if normalized else "no_claims",
                     observation_count=len(chunk_checkpoint(db, run_id, chunk_id)["facts"]),
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    error_code='not_article_text' if args.get('source_content_valid') is False else None)
+                    error_code='malformed_fact_rows' if isolated_rows else 'not_article_text' if args.get('source_content_valid') is False else None)
                 db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE run_id=? AND chunk_id=? AND lease_owner=? AND lease_fence=?',
                            (run_id,chunk_id,session.id,lease_fence))
                 if args.get('source_content_valid') is False:
@@ -4496,6 +4436,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "payload_saved": True,
                 "facts": normalized,
                 "selected_fact_ids": selected_ids,
+                "row_isolation": row_isolation if isolated_rows else None,
                 "save_research_audit": save_audit,
                 "fact_reconciliation": reconciliation_meta,
                 "story": self.service._story_repr(
@@ -4762,7 +4703,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 review_packets.load(self, session, db, str(args["packet_ref"]))
                 db.execute("UPDATE live_review_attempts SET state='finished' WHERE packet_ref=?", (str(args["packet_ref"]),))
                 for fact_id in packet_rejected:
-                    db.execute("UPDATE fact_assertions SET review_status='withheld',eligibility='withheld' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact_id))
+                    db.execute("UPDATE fact_assertions SET review_status='withheld',eligibility='withheld',accepted_basis_json=NULL,accepted_revision_digest=NULL WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact_id))
             poi_key = str(identity.get("candidate_id") or "") or None
             if records:
                 persist_fact_conflicts(
@@ -4806,6 +4747,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
             self._research_run_guard(db, session, run_id)
             now = self.service.store.now()
+            from .fact_ledger import accept_fact_basis
+            for fid, ids in supporting_ids.items():
+                if fid not in (packet_rejected or []):
+                    accept_fact_basis(db, story_id, fid, ids,
+                                      operation={'contract': review_detector, 'run_id': run_id,
+                                                 'packet_ref': args.get('packet_ref')}, now=now, reassessment=True)
             refresh_review_status(db, story_id, now)
             from .poi_memory import persist_research_memory, sync_poi_review_from_story
             # Repairs create new own assertions outside the extraction save path.
@@ -4909,6 +4856,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "reviewed_assertion_count": len(current_bundle),
                 "conflict_ids": conflict_ids,
                 "eligible_count": eligible_count,
+                "row_isolation": args.get('_row_isolation'),
                 "withheld_count": withheld_count,
                 "unreviewed_count": unreviewed_count,
                 "research_manifest": manifest,
@@ -5019,15 +4967,26 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "fact_conflict_confidence_invalid", "Confidence must be between 0 and 1"
             )
         try:
-            resolved = resolve_fact_conflict(
-                self.service,
-                story_id,
-                conflict_id,
-                resolution,
-                reason,
-                confidence,
-                arbitrated_by="mira",
-            )
+            with self.service.store.tx() as db:
+                story, research = self._fact_research_control_guard(db, session)
+                scope = session.state.get('research_control_scope') or {}
+                if (scope.get('expected_photo_sha256') != story['photo_sha256']
+                        or scope.get('expected_identity_generation') != int(research.get('identity_generation') or 0)):
+                    raise ConflictError('live_fact_conflict_scope_stale', 'Объект или исходное фото изменились; прочитайте текущие опоры заново.')
+                previous_events = db.execute('SELECT COUNT(*) FROM fact_arbitration_events WHERE story_id=? AND conflict_id=?',
+                                             (story_id, conflict_id)).fetchone()[0]
+                resolved = resolve_fact_conflict(
+                    self.service, story_id, conflict_id, resolution, reason, confidence,
+                    arbitrated_by="mira", connection=db)
+                result = {
+                    "conflict": resolved,
+                    "resolution": resolved.get("final_resolution"),
+                    "preferred_fact_id": resolved.get("final_fact_id"),
+                    "fact_conflicts": conflict_rows(db, story_id, limit=12),
+                }
+                self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
+                changed = db.execute('SELECT COUNT(*) FROM fact_arbitration_events WHERE story_id=? AND conflict_id=?',
+                                     (story_id, conflict_id)).fetchone()[0] > previous_events
         except KeyError:
             raise ConflictError(
                 "fact_conflict_unknown", "Conflict is not present in the current topic"
@@ -5036,16 +4995,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise ConflictError(
                 "fact_conflict_resolution_invalid", str(exc)
             ) from None
-        result = {
-            "conflict": resolved,
-            "resolution": resolved.get("final_resolution"),
-            "preferred_fact_id": resolved.get("final_fact_id"),
-            "fact_conflicts": self._topic_state(story_id).get("fact_conflicts", [])[:12],
-        }
-        with self.service.store.tx() as db:
-            self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
-        # The shared arbitration ledger emits the durable fact_conflict_arbitrated
-        # telemetry event exactly once. Avoid duplicating it in the Live adapter.
+        if changed:
+            from .identity_telemetry import record_identity_event
+            record_identity_event(self.service, story_id, 'fact_conflict_arbitrated', {
+                'conflict_id': conflict_id, 'resolution': resolution, 'confidence': confidence,
+                'final_fact_id': resolved.get('final_fact_id'), 'arbitrated_by': 'mira',
+            }, source='fact_conflict')
         return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:

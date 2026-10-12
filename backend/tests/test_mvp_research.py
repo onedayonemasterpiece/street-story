@@ -509,6 +509,7 @@ async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_pat
     assert supported[0]["sources"][0]["supports"] == [{
         "kind": "google_grounding",
         "source_url": WIKI_URL,
+        "source_version_id": "srcv_677a2da26fc21f0188b69fe0",
         "text": "Дом Советов расположен у центральной площади Калининграда.",
     }]
     assert unsupported[0]["selected"] is False

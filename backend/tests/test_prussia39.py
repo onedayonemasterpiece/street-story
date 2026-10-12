@@ -1,5 +1,6 @@
 """Offline publisher contracts; fixture names are unrelated to acceptance cases."""
 import asyncio
+import base64
 import hashlib
 import json
 
@@ -80,11 +81,15 @@ async def test_full_form_cp1251_literals_no_images_and_truthful_cards(tmp_path):
     (html('<div>Результаты поиска всего совпадений: 1</div>'), 'parse_failed', 'address_result_count_mismatch'),
 ])
 async def test_empty_parse_and_transport_are_distinct(tmp_path, body, status, error):
+    cache = Cache(tmp_path / 'cache')
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
-        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Улица')
+        value = await Prussia39Adapter(cache, http, resolver=resolver).address_search('Город', 'Улица')
     assert value['status'] == status and value.get('error_code') == error
     if body:
         assert value['source_sha256'] == hashlib.sha256(body).hexdigest()
+        retained = cache.cache_get(value['raw_body_cache_key'])
+        assert base64.b64decode(retained['body']) == body
+        assert retained['sha256'] == value['raw_content_sha256']
 
 
 @pytest.mark.asyncio
@@ -102,6 +107,34 @@ async def test_partial_inventory_requires_explicit_observed_pagination(tmp_path)
         assert denied['status'] == 'not_sent' and len(calls) == 1
         next_page = await adapter.search_page(first['pagination_urls'][0], previous_receipt=first)
     assert next_page['status'] == 'completed' and len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('content,status', [
+    ('<p>По Вашему запросу ничего не найдено</p>', 'completed_empty'),
+    ('<p>Сервис временно недоступен</p>', 'parse_failed'),
+    ('<p>По Вашему запросу ничего не найдено</p><table><tr><td>'
+     '<a href="index.php?sid=12">Дом</a></td></tr></table>', 'parse_failed'),
+])
+async def test_observed_address_empty_without_count_requires_explicit_results_marker(tmp_path, content, status):
+    # DOM shape retained in actual raw response SHA 262e8dd9395d610a:
+    # a results heading and explicit empty message in the same publisher cell.
+    body = html('<table><tr><td style="margin:5px;padding:5px;">'
+                '<p>Результаты поиска "Адрес: тестовый".</p>' + content + '</td></tr></table>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
+        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Тестовый')
+    assert value['status'] == status
+    if status == 'completed_empty':
+        assert value['total_count'] == 0 and value['inventory_complete'] and value['results'] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_message_outside_publisher_results_does_not_replace_missing_count(tmp_path):
+    body = html('<div>По Вашему запросу ничего не найдено</div>'
+                '<table><tr><td><p>Результаты поиска</p>Неизвестный ответ</td></tr></table>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response(body))) as http:
+        value = await Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver).address_search('Город', 'Тестовый')
+    assert value['status'] == 'parse_failed' and value['error_code'] == 'address_total_missing'
 
 
 @pytest.mark.asyncio

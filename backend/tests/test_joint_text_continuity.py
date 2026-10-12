@@ -67,6 +67,25 @@ def test_text_freeze_requires_reassessment_of_actual_prior_alternatives(resoluti
     assert (proof is not None) is (resolution in {'comparative', 'new_subject'})
 
 
+@pytest.mark.parametrize('historical', [False, True])
+def test_fresh_text_scope_retains_explicit_exclusion_and_historical_receipt_stays_required(historical):
+    story, candidates, decision, receipt = text_inputs(candidate_id='osm:way:2')
+    candidates.append({**copy.deepcopy(candidates[0]), 'candidate_id': 'osm:way:3'})
+    story['_identity_observed_candidates'] = candidates
+    initial = prior_for()
+    initial['spatial_hypotheses'] = [{'candidate_id': 'osm:way:3', 'support_status': 'contradicted',
+        'counterevidence': ['SOURCE shows the return behind the bay; this received neighbor has the reverse order.']}]
+    prior = identity_discovery._conditional_text_prior(initial, ['osm:way:2', 'osm:way:3'])
+    if historical:
+        prior.pop('material_alternative_candidate_ids')
+        prior.pop('previous_model_exclusions_not_identity_proof')
+    receipt['conditional_initial_decision'] = prior
+    decision['material_alternatives'] = []
+    original = copy.deepcopy(receipt)
+    assert (freeze_architectural_text_proof(story, decision, receipt, candidates) is not None) is not historical
+    assert receipt == original
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('comparative', [False, True])
 @pytest.mark.parametrize('malformed_g', [False, True])
@@ -141,9 +160,13 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         proof = story['_identity_geometry_result']['architectural_text_proof']
         assert proof['source_text_receipt']['conditional_initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
     else:
-        with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
-            await identity_discovery.prepare_search_plan(service, story, '', active)
+        history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+        assert history['search_plan']['payload']['closed_comparison_unusable'] == 'identity_architectural_comparison_invalid'
+        assert story['_identity_accepted_result']['status'] == 'uncertain'
+        assert story['_identity_accepted_result']['_comparison_deferred'] is True
         assert '_identity_geometry_result' not in story
+        # The raw semantic operation remains rejected and cannot be repeated;
+        # only the acquired-source queue has an independent continuation.
         with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
             await identity_discovery.suggest(service, story, '', active)
     assert len(calls) == 2 and reads == ['selected text']

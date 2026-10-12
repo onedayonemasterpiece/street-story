@@ -29,6 +29,165 @@ import java.util.Base64
 class OwnerReviewUiInstrumentedTest {
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun conflict_journal_reads_own_sides_and_keeps_decision_after_reopen() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val storyId = "conflict-journal-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
+        )), "image/png", storyId)
+        val server = okhttp3.mockwebserver.MockWebServer().apply { start() }
+        val serverId = "server-$storyId"
+        try {
+            val body = """{"story_id":"$serverId","photo_sha256":"${imported.sha256}","identity_generation":2,
+              "items":[{"conflict_id":"own-conflict","poi_key":"own-poi","reason":"Расхождение двух собственных источников",
+              "left":{"fact_id":"left","text":"В 2009 году планировали ремонт.","recorded_revision_digest":"left-rev",
+              "current_revision_digest":"left-rev","sources":[{"type":"web","url":"https://left.example/history",
+              "supports":[{"source_version_id":"left-version","page_number":17,"text":"Работы ещё не начались."}]}]},
+              "right":{"fact_id":"right","text":"В 2013 году ремонт завершён.","recorded_revision_digest":"right-rev",
+              "current_revision_digest":"right-rev","sources":[{"type":"web","url":"https://right.example/history",
+              "supports":[{"source_version_id":"right-version","page_number":23,"text":"Завершение описано отдельно."}]}]},
+              "resolution":"both_valid","resolution_reason":"Разные временные границы.","resolved_by":"mira",
+              "first_seen_at":1700000000,"last_seen_at":1700000001,"arbitration_events":[{"resolution":"both_valid",
+              "reason":"Разные временные границы.","arbitrated_by":"mira","state":"active","created_at":1700000001}]}],
+              "has_more":false,"read_only":true}"""
+            server.enqueue(okhttp3.mockwebserver.MockResponse().setHeader("Content-Type", "application/json").setBody(body))
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only")
+            val journal = api.conflictJournal(serverId)
+            assertEquals("/v1/stories/$serverId/fact-conflicts", server.takeRequest().path)
+            assertEquals(1, server.requestCount)
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.setServerIdentity(storyId, serverId)
+                store.setDraftText(storyId, "Сохранённый черновик")
+                store.replaceFacts(storyId, listOf(
+                    FactSnapshot("left", "В 2009 году планировали ремонт.", .9, false, false, "[]", "withheld"),
+                    FactSnapshot("right", "В 2013 году ремонт завершён.", .9, false, false, "[]", "withheld")))
+            }
+            ResearchProjectionStore(context).apply {
+                replace(storyId, StoryWire().apply { photoSha256 = imported.sha256; identityGeneration = 2 })
+                replaceConflictJournal(storyId, journal, false)
+            }
+            val reopened = requireNotNull(ResearchProjectionStore(context).conflictJournal(storyId))
+            assertEquals("both_valid", reopened.items.single().resolution)
+            assertEquals("left-version", reopened.items.single().left.sources.single().supports.single().sourceVersionId)
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+                .putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    descendants(activity.findViewById(android.R.id.content)).filterIsInstance<TextView>()
+                        .single { it.text.toString() == "Противоречия и решения" }.performClick()
+                }
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                val quote = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(
+                    androidx.test.uiautomator.By.textContains("left-version")), 3000))
+                assertTrue(quote.text.contains("Работы ещё не начались") && quote.text.contains("Страница 17"))
+                if (device.findObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")) == null) {
+                    requireNotNull(device.findObject(androidx.test.uiautomator.By.scrollable(true))).scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")))
+                }
+                val review = requireNotNull(device.findObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")))
+                assertTrue(!review.isEnabled)
+                assertNotNull(device.findObject(androidx.test.uiautomator.By.textContains("Разные временные границы")))
+                device.pressBack()
+            }
+            assertEquals(1, server.requestCount)
+            StoryStore(context).use { assertEquals("Сохранённый черновик", it.story(storyId)?.draftText) }
+        } finally {
+            StoryStore(context).use { it.deleteStory(storyId) }
+            ResearchProjectionStore(context).clear(storyId)
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            server.shutdown()
+            config.backendUrl = previousBackend
+        }
+    }
+
+    @Test fun own_source_dialog_keeps_versions_and_quotes_after_reopen() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val storyId = "own-source-dialog-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
+        )), "image/png", storyId)
+        try {
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.replaceFacts(storyId, listOf(FactSnapshot("own-fact", "В 2009 году планировали ремонт.", .9, false, false,
+                    """[{"type":"web","origin":"rkb","revision":"own-rev","url":"https://archive.example/history",
+                      "supports":[{"source_version_id":"version-A","page_number":17,"text":"В 2009 году планировали ремонт."}]},
+                      {"type":"web","url":"https://archive.example/history","supports":[{"source_version_id":"version-B",
+                      "text":"Работы ещё не начались."}]}]""", "withheld")))
+                store.setDraftText(storyId, "Сохранённый авторский черновик")
+            }
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+                .putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
+                    assertTrue(descendants(root).filterIsInstance<CheckBox>().none { it.isEnabled })
+                    val link = descendants(root).filterIsInstance<TextView>().single { it.text.toString().contains("· RKB") }
+                    val spans = link.text as Spanned
+                    spans.getSpans(0, spans.length, ClickableSpan::class.java).single().onClick(link)
+                }
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                val content = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("version-A")), 3000))
+                assertTrue(content.text.contains("version-B") && content.text.contains("Страница 17"))
+                assertTrue(content.text.contains("планировали ремонт"))
+                assertTrue(content.text.contains("Работы ещё не начались"))
+                device.pressBack()
+            }
+            StoryStore(context).use { store ->
+                assertEquals("Сохранённый авторский черновик", store.story(storyId)?.draftText)
+                assertTrue(!store.facts(storyId).single().evidenceSupported && !store.facts(storyId).single().selected)
+            }
+        } finally {
+            StoryStore(context).use { it.deleteStory(storyId) }
+            ResearchProjectionStore(context).clear(storyId)
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            config.backendUrl = previousBackend
+        }
+    }
+
+    @Test fun pending_facts_and_status_reason_survive_store_reopen_without_live_session() {
+        val storyId = "durable-research-ui-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
+        )), "image/png", storyId)
+        StoryStore(context).use { store ->
+            store.createStory(imported)
+            store.replaceFacts(storyId, listOf(FactSnapshot("f", "Нужно проверить собственный источник", .5,
+                false, false, "[]", "withheld", "own_evidence_missing")))
+        }
+        val wire = StoryWire().apply {
+            photoSha256 = imported.sha256
+            identityGeneration = 2
+            researchPending = mapOf("facts" to true)
+            researchControls = mapOf("facts" to ResearchControlWire().apply {
+                photoSha256 = imported.sha256; identityGeneration = 2
+            })
+        }
+        ResearchProjectionStore(context).replace(storyId, wire)
+        context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+            .putString("active_story_id", storyId).commit()
+        StoryStore(context).use { store ->
+            assertEquals("own_evidence_missing", store.facts(storyId).single().eligibilityReason)
+        }
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
+                val texts = descendants(root).filterIsInstance<TextView>().map { it.text.toString() }
+                assertTrue(texts.contains("Факты · поиск продолжается"))
+                assertTrue(texts.contains("Нет собственной опоры в источнике"))
+                assertNotNull(findByDescription(root, "research-loader"))
+            }
+        }
+    }
+
     @Test
     fun realInternetFactsShowSourcesAndKeepOwnerSubsetAfterReopen() {
         // Replay the captured production projection, not a connected-backend test.
@@ -62,6 +221,16 @@ class OwnerReviewUiInstrumentedTest {
                 assertTrue(boxes.all { it.isEnabled })
                 boxes[0].performClick()
                 assertEquals("Факты · выбрано 4 из 16", (root as ViewGroup).getChildAt(0).let { (it as TextView).text.toString() })
+                // Three owner actions returning to the same selection must
+                // remain three durable mutations, including after reopen.
+                boxes[0].performClick()
+                boxes[0].performClick()
+                StoryStore(context).use { store ->
+                    val edits = store.pendingOperations(storyId).filter { it.kind == "facts" }
+                    assertEquals(3, edits.size)
+                    assertEquals(3, edits.map { it.requestKey }.distinct().size)
+                    assertEquals(edits.first().payloadJson, edits.last().payloadJson)
+                }
                 selectedId = facts[0].factId
                 val sources = descendants(root).filterIsInstance<TextView>().filter { it.contentDescription?.toString()?.startsWith("Источники факта:") == true }
                 assertEquals(facts.size, sources.size)

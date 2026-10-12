@@ -46,6 +46,24 @@ def research(svc, sid):
         return json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
 
 
+def test_transport_readback_fences_source_and_stop_without_stale_worker_abort(tmp_path):
+    from street_story.research_adapter import ProductResearchAdapter
+    from street_story.service import ConflictError
+    svc, sid, sha = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = svc
+    binding = {'story_id': sid, 'photo_sha256': sha, 'generation': 0, 'purpose': 'facts',
+               'control_revision': 0, 'job_id': 'old-worker', 'job_attempt': 1}
+    with pytest.raises(ConflictError, match='больше не владеет'):
+        adapter.guard_binding(binding)
+    adapter.transport_scope_guard(binding)
+    with pytest.raises(ConflictError):
+        adapter.transport_scope_guard({**binding, 'photo_sha256': 'another-SOURCE'})
+    stop_research(svc, sid, purpose='facts')
+    with pytest.raises(ConflictError):
+        adapter.transport_scope_guard(binding)
+
+
 def test_stop_is_scoped_and_preserves_publication_and_visual_queue(tmp_path):
     svc, sid, sha = fixture(tmp_path)
     before = rows(svc, sid)

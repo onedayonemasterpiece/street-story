@@ -1303,7 +1303,8 @@ from street_story.shared_devcoveer_research import SharedDevCoveerResearch,scope
 directory=Path(sys.argv[1]);model='mimo-v2.6-flash-free';models=json.loads(sys.argv[2])
 config=scoped_research_config(model,directory=directory)
 for selected in models:
- config['provider']['opencode']['models'].update(scoped_research_config(selected,directory=directory)['provider']['opencode']['models'])
+ extra=scoped_research_config(selected,directory=directory).get('provider',{}).get('opencode',{}).get('models',{})
+ if extra: config.setdefault('provider',{}).setdefault('opencode',{}).setdefault('models',{}).update(extra)
 profile=directory/'opencode.json'
 if profile.exists():
  existing=json.loads(profile.read_text());disabled=existing.pop('mcp',{})

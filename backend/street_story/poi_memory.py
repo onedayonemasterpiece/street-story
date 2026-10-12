@@ -399,11 +399,17 @@ def backfill_poi_assertion_review_state(db, now: float) -> int:
     Immutable POI observations remain untouched.
     """
     rows = list(db.execute(
-        "SELECT poi_key,assertion_id,text,sources_json,reviewed_at,review_status,eligibility FROM poi_research_assertions "
+        "SELECT poi_key,assertion_id,text,sources_json,reviewed_at,review_status,eligibility,review_proof_json FROM poi_research_assertions "
         "ORDER BY poi_key,assertion_id"
     ))
     updated = 0
     for row in rows:
+        try:
+            admission = json.loads(row['review_proof_json'] or '{}')
+        except (ValueError, TypeError):
+            admission = {}
+        if _canonical_admission_valid(db, admission, row['text'], row['poi_key']):
+            continue
         keys = memory_keys(db, {"candidate_id": str(row["poi_key"])})
         placeholders = ','.join('?' for _ in keys)
         latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
@@ -451,8 +457,73 @@ def backfill_poi_assertion_review_state(db, now: float) -> int:
     return updated
 
 
+def _canonical_admission(db, story_id, assertion_id, key):
+    from .fact_ledger import accepted_basis_valid
+    assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                           (story_id, assertion_id)).fetchone()
+    if not assertion or not accepted_basis_valid(db, story_id, assertion):
+        return None
+    basis = json.loads(assertion['accepted_basis_json'])
+    inherited = (basis.get('operation') or {}).get('canonical_admission')
+    if (inherited and inherited.get('assertion_id') == assertion_id
+            and _canonical_admission_valid(db, inherited, basis['claim'], key)):
+        return inherited  # Projection is readback, never a new canonical verdict.
+    supports = []
+    keys = memory_keys(db, {'candidate_id': key})
+    placeholders = ','.join('?' for _ in keys)
+    observations = list(db.execute(f'SELECT observation_id,sources_json FROM poi_research_observations '
+                                  f'WHERE poi_key IN ({placeholders}) AND assertion_id=?', (*keys, assertion_id)))
+    for evidence in basis['evidence']:
+        found = None
+        for observation in observations:
+            for source in json.loads(observation['sources_json'] or '[]'):
+                for support in source.get('supports') or []:
+                    if (str(source.get('url') or '').rstrip('/') == evidence['source_url']
+                            and hashlib.sha256(str(support.get('text') or '').strip().encode()).hexdigest() == evidence['span_sha256']
+                            and str(support.get('source_version_id') or source.get('source_version_id') or evidence['source_version_id']) == evidence['source_version_id']):
+                        found = {'observation_id': observation['observation_id'], 'source_url': evidence['source_url'],
+                                 'span_sha256': evidence['span_sha256'], 'source_version_id': evidence['source_version_id']}
+                        break
+                if found:
+                    break
+            if found:
+                break
+        if not found:
+            return None
+        supports.append(found)
+    return {'version': 1, 'claim': basis['claim'], 'subject': basis['subject'], 'assertion_id': assertion_id,
+            'supports': supports, 'operation': basis['operation'], 'reviewed_at': basis['accepted_at'],
+            'source_story_id': story_id, 'accepted_revision_digest': assertion['accepted_revision_digest'],
+            'detector': 'accepted_basis'}
+
+
+def _canonical_admission_valid(db, proof, text, key):
+    if (not isinstance(proof, dict) or proof.get('version') != 1 or proof.get('claim') != text
+            or not isinstance(proof.get('supports'), list) or not proof['supports']
+            or not isinstance(proof.get('assertion_id'), str)
+            or any(not isinstance(ev, dict) for ev in proof['supports'])):
+        return False
+    keys = memory_keys(db, {'candidate_id': key})
+    if proof.get('subject') not in keys:
+        return False
+    for evidence in proof['supports']:
+        row = db.execute('SELECT poi_key,assertion_id,sources_json FROM poi_research_observations WHERE observation_id=?',
+                         (evidence.get('observation_id'),)).fetchone()
+        if not row or row['poi_key'] not in keys or row['assertion_id'] != proof['assertion_id']:
+            return False
+        if not any(str(source.get('url') or '').rstrip('/') == evidence.get('source_url')
+                   and hashlib.sha256(str(support.get('text') or '').strip().encode()).hexdigest() == evidence.get('span_sha256')
+                   and str(support.get('source_version_id') or source.get('source_version_id') or evidence.get('source_version_id')) == evidence.get('source_version_id')
+                   for source in json.loads(row['sources_json'] or '[]') for support in source.get('supports') or []):
+            return False
+    return True
+
+
 def _review_proof(db, story_id: str, assertion_id: str, text: str, sources_json: str, key: str):
     """Freeze a real model admission independently of the publication story."""
+    admitted = _canonical_admission(db, story_id, assertion_id, key)
+    if admitted and admitted['claim'] == text:
+        return json.dumps(admitted, ensure_ascii=False, separators=(',', ':'))
     source = db.execute(
         "SELECT a.display_text,a.revision_digest,f.sources_json,s.research_json FROM fact_assertions a "
         "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
@@ -518,6 +589,9 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
     ))
     for row in rows:
         reviewed_at = float(row["updated_at"] or now)
+        prior = db.execute(f"SELECT review_status,eligibility,reviewed_at,review_proof_json FROM poi_research_assertions "
+            f"WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY COALESCE(reviewed_at,0) DESC LIMIT 1",
+            (*keys, row['assertion_id'])).fetchone()
         proof = _review_proof(db, story_id, row["assertion_id"], row["display_text"], row["sources_json"], key)
         if proof:
             admission = json.loads(proof)
@@ -525,14 +599,32 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
                 # Hydration projects the original admission. It cannot become a
                 # fresh semantic decision or overwrite a later canonical review.
                 continue
-            reviewed_at = float(admission['reviewed_at'])
+            original_review_time = float(admission['reviewed_at'])
+            if row['eligibility'] == 'eligible':
+                reviewed_at = original_review_time
+                if prior and prior['eligibility'] == 'withheld' and float(prior['reviewed_at'] or 0) > reviewed_at:
+                    arbitration = db.execute("SELECT e.event_id,e.created_at FROM fact_arbitration_events e "
+                        "JOIN fact_conflicts c ON c.story_id=e.story_id AND c.conflict_id=e.conflict_id "
+                        "WHERE e.story_id=? AND e.state='active' AND (c.left_fact_id=? OR c.right_fact_id=?) "
+                        "ORDER BY e.created_at DESC LIMIT 1", (story_id, row['assertion_id'], row['assertion_id'])).fetchone()
+                    if arbitration and arbitration['created_at'] > float(prior['reviewed_at']):
+                        reviewed_at = arbitration['created_at']
+                        proof = json.dumps({**admission, 'reviewed_at': reviewed_at,
+                            'revalidation': {'arbitration_event_id': arbitration['event_id']}},
+                            ensure_ascii=False, separators=(',', ':'))
+            # A new adverse state retains the positive basis as lineage but uses
+            # its own observation time, so an older positive story cannot resurrect it.
+        if (row['eligibility'] != 'eligible' and prior
+                and prior['review_status'] == row['review_status'] and prior['eligibility'] == row['eligibility']):
+            # Readback is not a new verdict, including a rejected/cleared basis.
+            reviewed_at = float(prior['reviewed_at'] or reviewed_at)
         latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
-        if not latest or _review_snapshot(latest['text'], latest['sources_json']) != _review_snapshot(row['display_text'], row['sources_json']):
+        if not latest or (latest['text'] != row['display_text'] or not proof and _review_snapshot(latest['text'], latest['sources_json']) != _review_snapshot(row['display_text'], row['sources_json'])):
             continue
         matching_keys = [str(memory['poi_key']) for memory in db.execute(
             f"SELECT poi_key,text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=?",
             (*keys, row['assertion_id']),
-        ) if _review_snapshot(memory['text'], memory['sources_json']) == _review_snapshot(row['display_text'], row['sources_json'])]
+        ) if memory['text'] == row['display_text'] and (proof or _review_snapshot(memory['text'], memory['sources_json']) == _review_snapshot(row['display_text'], row['sources_json']))]
         if not matching_keys:
             continue
         matching_placeholders = ','.join('?' for _ in matching_keys)
@@ -626,6 +718,34 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             proof = json.loads(memory['review_proof_json'] or '{}')
         except (TypeError, ValueError):
             continue
+        if proof.get('version') == 1:
+            if (target['display_text'] != memory['text']
+                    or not _canonical_admission_valid(db, proof, memory['text'], memory['poi_key'])):
+                continue
+            assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                   (story_id, fact_id)).fetchone()
+            from .fact_ledger import accept_fact_basis, accepted_basis_valid
+            if accepted_basis_valid(db, story_id, assertion):
+                continue
+            # Rebind canonical supports to this story's own evidence IDs without
+            # rerunning extraction or creating a synthetic semantic scan.
+            own = list(db.execute('SELECT e.* FROM fact_evidence_spans e JOIN fact_observations o '
+                                  'ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.assertion_id=?',
+                                  (story_id, fact_id)))
+            ids = []
+            for support in proof['supports']:
+                matched = next((ev['evidence_id'] for ev in own if all(ev[k] == support[k]
+                               for k in ('source_url', 'source_version_id', 'span_sha256'))), None)
+                if matched is None:
+                    break
+                ids.append(matched)
+            else:
+                accept_fact_basis(db, story_id, fact_id, ids,
+                                  operation={'canonical_admission': proof}, now=proof['reviewed_at'])
+                db.execute('UPDATE fact_assertions SET accepted_revision_digest=? WHERE story_id=? AND assertion_id=?',
+                           (proof['accepted_revision_digest'], story_id, fact_id))
+                restored += 1
+            continue
         snapshot = list(_review_snapshot(memory['text'], memory['sources_json']))
         if (not isinstance(proof, dict) or not proof.get('scan_id') or proof.get('snapshot') != snapshot
                 or list(_review_snapshot(target['display_text'], target['sources_json'])) != snapshot):
@@ -666,12 +786,21 @@ def _research_memory_facts(
     placeholders = ','.join('?' for _ in keys)
     rows = list(db.execute(
         "SELECT assertion_id,semantic_key,text,confidence,sources_json,"
-        "review_status,eligibility,updated_at FROM (SELECT *,ROW_NUMBER() OVER "
+        "review_status,eligibility,updated_at,poi_key,review_proof_json FROM (SELECT *,ROW_NUMBER() OVER "
         "(PARTITION BY assertion_id ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key) AS rank "
         f"FROM poi_research_assertions WHERE poi_key IN ({placeholders})) WHERE rank=1 AND {where} "
         "ORDER BY updated_at DESC" + (' LIMIT ?' if limit is not None else ''),
         (*keys, max(1, int(limit))) if limit is not None else tuple(keys),
     ))
+    valid_rows = []
+    for row in rows:
+        try:
+            proof = json.loads(row['review_proof_json'] or '{}')
+        except (ValueError, TypeError):
+            proof = {}
+        if proof.get('version') == 1 and not _canonical_admission_valid(db, proof, row['text'], row['poi_key']):
+            continue  # Missing own canonical basis cannot hydrate as admitted.
+        valid_rows.append(row)
     return [
         {
             "fact_id": str(row["assertion_id"]),
@@ -685,7 +814,7 @@ def _research_memory_facts(
             "eligibility": str(row["eligibility"]),
             "origin": "poi_research",
         }
-        for row in rows
+        for row in valid_rows
     ]
 
 
@@ -849,14 +978,19 @@ def persist_research_memory(
         created_at = float(current["created_at"]) if current else now
         keys = memory_keys(db, identity)
         placeholders = ','.join('?' for _ in keys)
-        incoming_snapshot = _review_snapshot(text[:1200], json.dumps(merged_sources, ensure_ascii=False, separators=(',', ':')))
         latest_snapshot = db.execute(
-            f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1",
+            f"SELECT text,sources_json,review_proof_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1",
             (*keys, assertion_id),
         ).fetchone()
-        changed_snapshot = bool(latest_snapshot and _review_snapshot(
-            latest_snapshot['text'], latest_snapshot['sources_json'],
-        ) != incoming_snapshot)
+        try:
+            prior_admission = json.loads(latest_snapshot['review_proof_json'] or '{}') if latest_snapshot else {}
+        except (ValueError, TypeError):
+            prior_admission = {}
+        changed_snapshot = bool(latest_snapshot and (
+            latest_snapshot['text'] != text[:1200]
+            or not _canonical_admission_valid(db, prior_admission, text[:1200], key)
+            and _review_snapshot(latest_snapshot['text'], latest_snapshot['sources_json']) !=
+                _review_snapshot(text[:1200], json.dumps(merged_sources, ensure_ascii=False))))
 
         observation_id = _research_observation_id(
             key,

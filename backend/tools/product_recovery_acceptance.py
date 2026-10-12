@@ -15,10 +15,12 @@ from dataclasses import fields
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
 import sqlite3
+import socket
 import subprocess
 import sys
 import time
@@ -278,6 +280,17 @@ def require_frozen_checkout(expected_sha):
     return head
 
 
+def verify_observation_resume(previous, current, *, allow_harness_change=False):
+    """Permit a recorded transport-only segment, never a product/config change."""
+    if previous == current:
+        return
+    changed = {key for key in previous.keys() | current.keys()
+               if previous.get(key) != current.get(key)}
+    if (not allow_harness_change or previous.get('policy') != 'product-recovery-continuation-v2'
+            or not changed <= {'source_sha', 'harness_sha256'}):
+        raise ValueError('Source/config/qualification/manifest changed; this output cannot be resumed')
+
+
 def selected_items(items, messages):
     """Keep the requested simple→complex order, independent of manifest order."""
     requested = [int(value.strip()) for value in messages.split(',')] if messages else [
@@ -314,9 +327,11 @@ def block_directed_reference_inference(service, items):
     """
     from street_story.errors import PermanentProviderError
     from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    from street_story import identity_architectural_comparison
     restricted = {item['sha256'] for item in items
-        if item.get('acceptance_mode') == 'geometry_without_reference'}
+        if item.get('acceptance_mode') in {'geometry_without_reference', 'physical_identity_G_or_T'}}
     original_reply = LiveVisualComparisonMixin._visual_reply
+    original_article_references = identity_architectural_comparison.ready_article_references
     original_photo, original_batch = service._identify_photo, service._identify_photo_batch
     async def photo(story, *args, **kwargs):
         if story.get('photo_sha256') in restricted:
@@ -330,11 +345,17 @@ def block_directed_reference_inference(service, items):
         if identity.get('photo_sha256') in restricted:
             raise PermanentProviderError('directed_acceptance_external_reference_disabled')
         return original_reply(comparison_id, candidates, identity, remaining)
+    async def article_references(service, story, articles, **kwargs):
+        if story.get('photo_sha256') in restricted:
+            return [], []  # SOURCE+TEXT remains available; no external image fetch/send.
+        return await original_article_references(service, story, articles, **kwargs)
     service._identify_photo, service._identify_photo_batch = photo, batch
     LiveVisualComparisonMixin._visual_reply = staticmethod(reply)
+    identity_architectural_comparison.ready_article_references = article_references
     def restore():
         service._identify_photo, service._identify_photo_batch = original_photo, original_batch
         LiveVisualComparisonMixin._visual_reply = staticmethod(original_reply)
+        identity_architectural_comparison.ready_article_references = original_article_references
     return restore
 
 
@@ -414,7 +435,8 @@ def summarize_receipts(attempts):
 
 def read_case(service, case, item):
     from street_story.identity_proof import verified_physical_identity
-    from street_story.poi_memory import memory_keys, _review_snapshot
+    from street_story.poi_memory import memory_keys, _review_snapshot, _canonical_admission_valid
+    from street_story.fact_ledger import accepted_basis_valid
     from street_story.live_identity_context import identity_research_context
     from street_story.research_control import research_stopped
     with service.store.connection() as db:
@@ -424,7 +446,7 @@ def read_case(service, case, item):
         jobs = [dict(job) for job in db.execute('SELECT id,kind,state,attempts,last_error,created_at,updated_at '
             'FROM jobs WHERE story_id=? ORDER BY created_at', (row['id'],))]
         story_facts = [dict(fact) for fact in db.execute('SELECT a.assertion_id,a.display_text,a.revision_digest,'
-            'a.review_status,a.eligibility,a.updated_at,f.sources_json FROM fact_assertions a '
+            'a.review_status,a.eligibility,a.created_at,a.updated_at,a.accepted_basis_json,f.sources_json FROM fact_assertions a '
             'JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
             'WHERE a.story_id=? AND a.eligibility=\'eligible\'', (row['id'],))]
         keys = memory_keys(db, identity)
@@ -442,20 +464,33 @@ def read_case(service, case, item):
         # the state being measured. Ordinary API mutation/restart is tested separately.
         visible = service._story_repr(db, row)
     proved = []
-    for fact in story_facts:
-        snapshot = list(_review_snapshot(fact['display_text'], fact['sources_json']))
-        matches = []
-        for persisted in canonical:
-            proof = json.loads(persisted.get('review_proof_json') or '{}')
-            if (persisted['assertion_id'] == fact['assertion_id'] and proof.get('detector') == 'backend_semantic_review'
-                    and proof.get('scan_id') and proof.get('source_story_id')
-                    and proof.get('snapshot') == snapshot and persisted['review_status'] == 'eligible'):
-                matches.append({**persisted, 'review_proof': proof})
-        if matches:
-            proved.append({**fact, 'sources': json.loads(fact['sources_json']), 'canonical_evidence': matches})
+    with service.store.connection() as db:
+        for fact in story_facts:
+            assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                   (row['id'], fact['assertion_id'])).fetchone()
+            own_basis_valid = accepted_basis_valid(db, row['id'], assertion)
+            snapshot = list(_review_snapshot(fact['display_text'], fact['sources_json']))
+            matches = []
+            for persisted in canonical:
+                if persisted['assertion_id'] != fact['assertion_id'] or persisted['review_status'] != 'eligible':
+                    continue
+                proof = json.loads(persisted.get('review_proof_json') or '{}')
+                accepted = (own_basis_valid and proof.get('detector') == 'accepted_basis'
+                    and _canonical_admission_valid(db, proof, fact['display_text'], persisted['poi_key']))
+                legacy = (proof.get('detector') == 'backend_semantic_review'
+                    and proof.get('scan_id') and proof.get('source_story_id') and proof.get('snapshot') == snapshot)
+                if accepted or legacy:
+                    matches.append({**persisted, 'review_proof': proof})
+            if matches:
+                accepted_at = json.loads(fact['accepted_basis_json'])['accepted_at'] if own_basis_valid else fact['updated_at']
+                proved.append({**fact, 'admitted_at': accepted_at,
+                               'available_at': max(float(fact['created_at']), float(accepted_at)),
+                               'sources': json.loads(fact['sources_json']), 'canonical_evidence': matches})
     now, started = service.store.now(), float(row['created_at'])
     identity_at = float(identity.get('resolved_at') or now) if identity.get('status') == 'match' else None
-    first_at = min((float(fact['updated_at']) for fact in proved), default=None)
+    # Canonical admission time is lineage, not availability in a newly uploaded
+    # story. Its local projection must exist before the author can use it.
+    first_at = min((float(fact['available_at']) for fact in proved), default=None)
     if identity_at is not None:
         case['identity_elapsed_s'] = min(case.get('identity_elapsed_s', float('inf')), max(0, identity_at - started))
     if first_at is not None:
@@ -490,10 +525,7 @@ def read_case(service, case, item):
         if candidate.get('candidate_id') == identity.get('candidate_id')), {})
     expected = item.get('expected_physical_ids') or [item.get('expected_physical_id')]
     expected = [value for value in expected if value]
-    gates = {'identity_in_180s': case.get('identity_elapsed_s', float('inf')) <= CAPS['identity_seconds'],
-        'first_eligible_in_300s': case.get('first_eligible_elapsed_s', float('inf')) <= CAPS['first_eligible_seconds'],
-        'terminal_in_480s': terminal and total <= CAPS['total_seconds'],
-        'eligible_minimum': len(proved) >= item['min_useful_facts'],
+    gates = {'eligible_minimum': len(proved) >= item['min_useful_facts'],
         'correct_physical_object': identity.get('candidate_id') in expected if expected else None,
         'identity_proof': verified_physical_identity(identity, photo_sha256=row['photo_sha256'],
             generation=int(research.get('identity_generation') or 0)),
@@ -502,6 +534,9 @@ def read_case(service, case, item):
     if item.get('acceptance_mode') == 'geometry_without_reference':
         gates['geometry_without_reference'] = (identity.get('proof_kind') == 'geometry'
             and identity.get('visual_reference_verified') is False
+            and not identity.get('reference_evidence'))
+    if item.get('acceptance_mode') == 'physical_identity_G_or_T':
+        gates['physical_identity_G_or_T'] = (identity.get('proof_kind') in {'geometry', 'architectural_text'}
             and not identity.get('reference_evidence'))
     live_receipts = [json.loads(attempt['receipt_json'] or '{}') for attempt in attempts]
     live_receipts = [receipt for receipt in live_receipts if receipt.get('provider_id') == 'google-live']
@@ -569,23 +604,149 @@ def stop_wrong_physical_case(service, case, item):
 
 
 def apply_hard_cap(service, story_id):
-    from street_story.research_budget import finish_attempt
-    from street_story.research_control import research_stopped
-    with service.store.tx() as db:
-        row = service._story_row(db, story_id)
-        research = json.loads(row['research_json'] or '{}')
-        if research.get('automatic_research_outcome'):
-            return
-        elapsed = service.store.now() - row['created_at']
-        matched = (research.get('visual_identity') or {}).get('status') == 'match'
-        if research_stopped(research, 'facts' if matched else 'identity',
-                photo_sha256=row['photo_sha256'], identity_generation=int(research.get('identity_generation') or 0)):
-            return  # Operator Stop is reported separately, never rewritten as natural completion.
-        # Allow the application deadline watcher one scheduling tick; if the
-        # harness must intervene, natural_product_terminal explicitly fails.
-        if elapsed >= CAPS['total_seconds']+1 or not matched and elapsed >= CAPS['identity_seconds']+1:
-            finish_attempt(service, db, story_id, outcome='deadline_exceeded',
-                reason='acceptance_upload_deadline_exceeded', purpose='facts' if matched else 'identity')
+    """Compatibility: observation never terminates the product task."""
+    return None
+
+
+def upload_form(item, manifest_digest):
+    """Only ordinary intake fields, with no evaluator knowledge."""
+    key = f'acceptance:{manifest_digest}:{item["message_id"]}'
+    form = {'client_story_id': key, 'photo_sha256': item['sha256'],
+            'voice_protocol': 'voice-chunks-v2'}
+    camera = item.get('owner_approx_camera') or {}
+    if camera:
+        form.update(lat=str(camera['latitude']), lon=str(camera['longitude']),
+                    camera_coordinate_source='owner_approx_camera')
+    return key, form
+
+
+async def upload_http_source(client, item, data, key, form, case, report, report_path):
+    import httpx
+    for retry in range(3):
+        try:
+            return await client.post('/v1/stories', data=form,
+                files={'photo': (f'photo-{item["message_id"]}.jpg', data, item['mime'])},
+                headers={'Idempotency-Key': key, 'X-Photo-SHA256': item['sha256']})
+        except httpx.TransportError as exc:
+            case.setdefault('upload_transport_failures', []).append(type(exc).__name__)
+            save(report_path, report)
+            if retry == 2:
+                raise
+            # A lost response is not proof that intake failed. Replay only the
+            # same SOURCE/idempotency key, without renewing provider operations.
+            await asyncio.sleep(1)
+
+
+async def observe_continuation(app, service, selected, cases, report, output, report_path,
+                               manifest_digest, sha, seconds, journal_path, owner_hints=None):
+    """Real TCP clients close while the ordinary backend lifespan keeps working.
+
+    The observation window bounds this experiment, never a product task. An
+    unfinished job remains pending in SQLite when the test server shuts down.
+    """
+    import httpx
+    import uvicorn
+    from street_story.config import reveal
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('Continuation observation must be finite and positive')
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    base = f'http://127.0.0.1:{sock.getsockname()[1]}'
+    server = uvicorn.Server(uvicorn.Config(app, lifespan='off', access_log=False, log_config=None))
+    server_task = asyncio.create_task(server.serve(sockets=[sock]))
+    observation = report.setdefault('continuation_observation', {'transport': 'real_loopback_TCP',
+        'window_seconds': seconds, 'product_deadline': None, 'client_returns': [],
+        'backend_shutdown_is_experiment_end': True})
+    headers = {'Authorization': 'Bearer ' + reveal(service.settings.device_token),
+               'Connection': 'close'}
+    try:
+        while not server.started:
+            if server_task.done():
+                await server_task
+                raise RuntimeError('Observation server did not start')
+            await asyncio.sleep(.05)
+        async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+            for item in selected:
+                case = cases[item['message_id']]
+                if case.get('story_id'):
+                    continue
+                require_frozen_checkout(sha)
+                data = Path(item['path']).read_bytes()
+                if hashlib.sha256(data).hexdigest() != item['sha256']:
+                    raise ValueError('Original corpus SOURCE changed')
+                key, form = upload_form(item, manifest_digest)
+                response = await upload_http_source(client, item, data, key, form, case, report, report_path)
+                response.raise_for_status()
+                case.update(story_id=response.json()['id'], status='RUNNING')
+                save(report_path, report)
+        # Leaving the client context above closes its connections. No socket,
+        # editor session or polling client owns the background research jobs.
+        closed_at = time.monotonic()
+        observation['client_closed_at_utc'] = time.time()
+        due = sorted({min(seconds, 600), seconds})
+        while True:
+            elapsed = time.monotonic() - closed_at
+            for item in selected:
+                case = cases[item['message_id']]
+                read_case(service, case, item)
+                if stop_wrong_physical_case(service, case, item):
+                    read_case(service, case, item)
+                save(output/f'case-{item["message_id"]}.json', case)
+            report['sdk_accounting'] = summarize_sdk_journal(journal_path)
+            observation['elapsed_client_closed_seconds'] = elapsed
+            if due and elapsed >= due[0]:
+                threshold = due.pop(0)
+                # Each return uses a new client and the public story projection.
+                async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+                    returned = []
+                    for item in selected:
+                        case = cases[item['message_id']]
+                        response = await client.get('/v1/stories/' + case['story_id'])
+                        response.raise_for_status()
+                        visible = response.json()
+                        returned.append({'message_id': item['message_id'], 'story_id': visible['id'],
+                            'source_available': visible.get('source_available'), 'state': visible.get('state'),
+                            'identity': visible.get('visual_identity'),
+                            'fact_ids': [fact['fact_id'] for fact in visible.get('facts') or []],
+                            'terminal': case['terminal'], 'status': case['status']})
+                observation['client_returns'].append({'after_seconds': threshold,
+                    'actual_after_seconds': time.monotonic() - closed_at, 'cases': returned})
+                if threshold == 600:
+                    for message_id, hint in (owner_hints or {}).items():
+                        case = cases[message_id]
+                        current, research = service._identity_snapshot(case['story_id'])
+                        question = research.get('identity_clarification') or {}
+                        epoch = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+                        current_question = (bool(question.get('question')) and not question.get('answered')
+                            and question.get('photo_sha256') == current['photo_sha256']
+                            and question.get('generation') == int(research.get('identity_generation') or 0)
+                            and question.get('control_revision') == epoch)
+                        if not current_question and (case.get('product_outcome') or {}).get('outcome') != 'clarification_required':
+                            continue
+                        # Reuse only an actual owner's literal answer. This is
+                        # ordinary durable backend acceptance, recorded separately
+                        # from the TCP/Android/voice delivery observations.
+                        key = 'corpus-owner-hint:' + digest([case['story_id'], hint])
+                        async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+                            reply = await client.post('/v1/stories/' + case['story_id'] + '/identity-hint',
+                                headers={'Idempotency-Key': key}, json={'text': hint})
+                            reply.raise_for_status()
+                        case['owner_hint_delivery'] = {'mode': 'ordinary_authenticated_HTTP_identity_hint',
+                            'actual_owner_literal': hint, 'after_client_close_seconds': elapsed,
+                            'current_question': current_question,
+                            'request_key': key, 'android_or_voice_claim': False}
+            save(report_path, report)
+            if not due:
+                break
+            await asyncio.sleep(min(5, max(.05, due[0] - elapsed)))
+        observation['completed'] = True
+        observation['pending_story_ids'] = [cases[item['message_id']]['story_id'] for item in selected
+                                            if not cases[item['message_id']]['terminal']]
+        save(report_path, report)
+    finally:
+        server.should_exit = True
+        await server_task
+        sock.close()
 
 
 async def run(args):
@@ -604,8 +765,7 @@ async def run(args):
     os.environ['STREET_STORY_DEPLOY_SHA'] = sha
     # app.py constructs its default app on import. Redirect configuration before
     # that import so even initialization/recovery can only touch this task DB.
-    os.environ.update(DATA_DIR=str(output/'data'), VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='',
-        IDENTITY_TIMEOUT_SECONDS=str(CAPS['identity_seconds']), RESEARCH_TIMEOUT_SECONDS=str(CAPS['total_seconds']))
+    os.environ.update(DATA_DIR=str(output/'data'), VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='')
     from street_story.config import Settings
     settings = Settings.from_env()
     effective = {field.name: getattr(settings, field.name) for field in fields(settings)}
@@ -629,9 +789,12 @@ async def run(args):
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
             raise ValueError('Provider qualification evidence changed')
     runtime_caches = runtime_qualification_caches(qualification, installer)
-    frozen = {'policy': 'product-recovery-acceptance-v1', 'source_sha': sha,
+    frozen = {'policy': 'product-recovery-continuation-v2', 'source_sha': sha,
         'manifest_sha256': manifest_digest, 'environment_sha256': environment_digests,
-        'qualification_sha256': digest(qualification), 'caps_from_upload': CAPS,
+        'qualification_sha256': digest(qualification), 'legacy_timing_metrics': CAPS,
+        'product_wave_deadline': None, 'continuation_observation_seconds': getattr(args, 'observe_continuation_seconds', 0),
+        'owner_hints_sha256': hashlib.sha256(managed(args.owner_hints).read_bytes()).hexdigest()
+            if getattr(args, 'owner_hints', None) else None,
         'runtime_qualification_caches_sha256': digest(runtime_caches),
         'effective_settings_sha256': effective_digest, 'public_settings': public_settings,
         'source_hashes': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -640,13 +803,21 @@ async def run(args):
     frozen['availability_history'] = availability_history(args.availability_from, frozen)
     run_path = output/'run.json'
     fresh_run = not run_path.exists()
-    if run_path.exists() and json.loads(run_path.read_text()) != frozen:
-        raise ValueError('Source/config/qualification/manifest changed; this output cannot be resumed')
-    save(run_path, frozen)
+    previous_run = json.loads(run_path.read_text()) if run_path.exists() else None
+    if previous_run is not None:
+        verify_observation_resume(previous_run, frozen,
+            allow_harness_change=getattr(args, 'resume_harness_segment', False))
+    else:
+        save(run_path, frozen)
     report_path = output/'results.json'
     report = json.loads(report_path.read_text()) if report_path.exists() else {
         'run': frozen, 'cases': [blank_result(item) for item in items]}
     cases = {case['message_id']: case for case in report['cases']}
+    if previous_run is not None and previous_run != frozen:
+        segment = {'previous_source_sha': previous_run['source_sha'], 'run': frozen,
+                   'restarted_at_utc': time.time(), 'runtime_source_unchanged': True}
+        save(output/f'resume-segment-{sha[:12]}.json', segment)
+        report.setdefault('resume_segments', []).append(segment)
     save(report_path, report)  # Every unselected manifest photo is explicitly NOT_RUN.
     logging.basicConfig(filename=output/'workers.log', level=logging.INFO)
     if 'street_story.app' in sys.modules:
@@ -665,6 +836,17 @@ async def run(args):
     restore_references = block_directed_reference_inference(service, selected)
     try:
         async with app.router.lifespan_context(app):
+            if getattr(args, 'observe_continuation_seconds', 0):
+                owner_hints = {}
+                if getattr(args, 'owner_hints', None):
+                    owner_hints = {int(key): value for key, value in json.loads(managed(args.owner_hints).read_text()).items()}
+                    if (not set(owner_hints) <= {item['message_id'] for item in selected}
+                            or any(not isinstance(value, str) or not value.strip() or len(value) > 500
+                                   for value in owner_hints.values())):
+                        raise ValueError('Owner hints require selected photos and short literal answers')
+                await observe_continuation(app, service, selected, cases, report, output, report_path,
+                    manifest_digest, sha, args.observe_continuation_seconds, journal_path, owner_hints)
+                return
             for item in selected:
                 case = cases[item['message_id']]
                 if case.get('terminal'):
@@ -711,6 +893,34 @@ async def run(args):
         report['sdk_accounting'] = summarize_sdk_journal(journal_path)
         save(report_path, report)
     return report
+
+
+async def review_retained_scope(engine, job, run_id, revision, fact_ids):
+    """Review the requested claims, then only their current-run repair children."""
+    from street_story import review_packets
+    count = await engine.run(job, run_id, revision, fact_ids=fact_ids)
+    if not count:
+        return count
+    with engine.service.store.connection() as db:
+        pending = set(review_packets.pending_candidates(db, job['story_id'], run_id))
+        links = [tuple(row) for row in db.execute('SELECT r.parent_id,r.child_id FROM live_fact_repairs r '
+            'JOIN live_review_packets p ON p.packet_ref=r.packet_ref WHERE r.story_id=? AND p.run_id=?',
+            (job['story_id'], run_id))]
+    descendants = set(fact_ids)
+    while True:
+        added = {child for parent, child in links if parent in descendants} - descendants
+        if not added:
+            break
+        descendants.update(added)
+    if pending and pending <= descendants - set(fact_ids):
+        count += await engine.run(job, run_id, revision)
+    return count
+
+
+def retained_review_remaining(job, now):
+    """Use the already accepted wave's deadline; never create a replay budget."""
+    return None  # asyncio.timeout(None): one review owns its request timeouts, not an elapsed wave cap.
+
 
 
 async def retained_review(args):
@@ -778,8 +988,8 @@ async def retained_review(args):
     started = time.monotonic()
     restore = instrument_control_boundary()
     try:
-        async with asyncio.timeout(75):
-            count = await HeadlessFactReview(harness).run(job, run_id, revision, fact_ids=fact_ids)
+        async with asyncio.timeout(retained_review_remaining(job, service.store.now())):
+            count = await review_retained_scope(HeadlessFactReview(harness), job, run_id, revision, fact_ids)
         if count:
             report['product_outcome'] = harness._finish(job, run_id, revision, 'explicit_review_packet_completed')
         report.update(status='REVIEW_REQUIRED' if count else 'NO_CLOSED_REVIEW', committed_packets=count,
@@ -809,21 +1019,89 @@ async def retained_review(args):
     return report
 
 
+async def retained_completion(args):
+    """Replay saved eligible model bases in RAM, leaving the retained DB intact.
+
+    This checks completion/resume orchestration, not a new cold or client result.
+    Only the closed job/run execution state is reopened in the disposable copy.
+    No provider is installed and the original identity/evidence remain unchanged.
+    """
+    from types import SimpleNamespace
+    from street_story.db import Store, ScopedConnection
+    from street_story.service import StreetStoryService
+    from street_story.headless_facts import HeadlessFacts
+    path, output = managed(args.retained_completion_db), managed(args.output)
+    if output.exists() or not args.story_id:
+        raise ValueError('Use explicit own story IDs and a fresh segment report')
+    uri = 'file:retained-completion-' + uuid.uuid4().hex + '?mode=memory&cache=shared'
+    keeper = sqlite3.connect(uri, uri=True)
+    with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as original:
+        original.backup(keeper)
+    class MemoryStore(Store):
+        def connection(self):
+            db = sqlite3.connect(uri, uri=True, isolation_level=None, factory=ScopedConnection)
+            db.row_factory = sqlite3.Row
+            return db
+    service = StreetStoryService.__new__(StreetStoryService)
+    service.store, service.providers = MemoryStore.__new__(MemoryStore), SimpleNamespace(research=None)
+    harness = HeadlessFacts(service)
+    report = {'mode': 'retained_completion_in_memory_replay', 'cold_acceptance': False,
+        'source_database': str(path), 'provider_dispatches': 0,
+        'synthetic_execution_preconditions': ['same closed job marked running', 'same run marked partial',
+            'old terminal checkpoint removed in RAM'], 'cases': []}
+    try:
+        for sid in args.story_id.split(','):
+            with service.store.tx() as db:
+                job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='research' "
+                    'ORDER BY created_at DESC LIMIT 1', (sid,)).fetchone())
+                run = dict(db.execute('SELECT * FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1',
+                    (sid,)).fetchone())
+                vision_before = [tuple(r) for r in db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
+                db.execute("UPDATE jobs SET state='running' WHERE id=?", (job['id'],))
+                db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run['run_id'],))
+                db.execute('DELETE FROM research_checkpoints WHERE job_id=? AND stage=?',
+                    (job['id'], 'headless_fact_outcome:' + run['run_id']))
+                job['state'] = 'running'
+            started = time.monotonic()
+            outcome = await harness.run(job, run['run_id'], run['goal'], run['extraction_scope'])
+            with service.store.connection() as db:
+                vision_after = [tuple(r) for r in db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
+            report['cases'].append({'story_id': sid, 'outcome': outcome, 'elapsed_s': time.monotonic()-started,
+                'provider_receipts_unchanged': vision_before == vision_after})
+        report['status'] = 'PASS' if all(c['provider_receipts_unchanged'] and
+            (c['outcome'] or {}).get('reason') == 'model_goal_sufficient' for c in report['cases']) else 'FAIL'
+        save(output, report)
+        print(json.dumps(report, ensure_ascii=False), flush=True)
+    finally:
+        keeper.close()
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path)
+    parser.add_argument('--owner-hints', type=Path,
+                        help='Actual literal owner answers, applied at the 10-minute return through durable backend acceptance')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--expected-sha')
+    parser.add_argument('--resume-harness-segment', action='store_true',
+        help='Record an explicit harness-only restart segment; runtime/config/manifest hashes must be unchanged')
     parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
     parser.add_argument('--retained-review-run', type=Path, help='Explicit backend review segment over an existing retained DB; no identity replay')
+    parser.add_argument('--retained-completion-db', type=Path, help='Offline in-memory completion replay; no provider or product acceptance')
     parser.add_argument('--story-id')
     parser.add_argument('--fact-ids', default='')
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
                         help='Prior frozen run: import only same-config observed provider429 history')
+    parser.add_argument('--observe-continuation-seconds', type=float, default=0,
+        help='Observe ordinary corpus uploads over real HTTP; close clients, reopen after10/20min. No terminal Stop at observation end.')
     parser.add_argument('--messages', default='104', help='Ordered IDs; default is the simple canary')
     args = parser.parse_args()
     if args.inspect_initial_db:
         inspect_retained_initial(args.inspect_initial_db, args.output)
+        return
+    if args.retained_completion_db:
+        asyncio.run(retained_completion(args))
         return
     if args.retained_review_run:
         if not args.expected_sha:

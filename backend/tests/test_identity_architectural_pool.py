@@ -220,3 +220,19 @@ def test_joint_redundant_citation_normalization_requires_exact_frozen_span(damag
         expected = copy.deepcopy(payload)
         expected['accepted_architectural_text']['correspondences'][0].pop('source_quote')
         assert normalized == expected
+
+
+def test_bounded_literal_portion_retains_hash_and_reaches_late_architecture():
+    from street_story.identity_architectural_pool import joint_source_spans
+    text = ('General history. ' * 1100) + 'The actual cornice is semicircular.'
+    article = _article('late', text)
+    first, refs = joint_source_spans([article])
+    assert sum(len(span['source_quote']) for span in refs.values()) <= 12000
+    assert first[0]['full_text_sha256'] == article['text_sha256']
+    assert not first[0]['all_passages_displayed']
+    cursor = first[0]['next_cursor']
+    later, refs = joint_source_spans([{**article, 'text_cursor': cursor}])
+    assert any('semicircular' in span['literal_text'] for span in later[0]['passages'])
+    assert all(span['source_quote'] == text[span['start']:span['end']] for span in refs.values())
+    assert later[0]['next_cursor'] is None
+    assert article['text'] == text

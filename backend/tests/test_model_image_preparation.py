@@ -144,7 +144,7 @@ async def test_identity_suggest_source_prepared_before_generate():
     gemini = SimpleNamespace(executor=Executor(), _generate=generate, research_routes=[])
     svc = SimpleNamespace(_source_photo_bytes=lambda _: raw, providers=SimpleNamespace(gemini=gemini))
     await identity_discovery.suggest(svc, {"id": "story"}, "", [])
-    verify_prepared(seen[0])
+    verify_prepared(seen[0], expected=(3000, 4000))
 
 
 @pytest.mark.asyncio

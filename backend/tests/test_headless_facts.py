@@ -191,8 +191,8 @@ async def test_unknown_core_keeps_original_wait_and_does_not_use_ready_continuat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('role,expected_terminal', [('facts_live', True), ('facts', False)])
-async def test_only_closed_unobservable_live_unknown_finishes_without_resending(tmp_path, role, expected_terminal):
+@pytest.mark.parametrize('role', ['facts_live', 'facts'])
+async def test_unknown_request_keeps_task_pending_without_resending(tmp_path, role):
     from street_story.research_adapter import ProductResearchAdapter, canonical
     svc, job, researcher, reader, _ = await fixture(tmp_path)
     calls = []
@@ -212,13 +212,9 @@ async def test_only_closed_unobservable_live_unknown_finishes_without_resending(
     researcher.extract_fact_page = unknown
     try:
         for _ in range(2):
-            if expected_terminal:
-                result = await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-                assert result['outcome'] == 'resource_blocked'
-                assert result['reason'] == 'live_research_original_outcome_unavailable'
-            else:
-                with pytest.raises(RetryableProviderError):
-                    await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+            with pytest.raises(RetryableProviderError) as waiting:
+                await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+            assert waiting.value.retry_at >= svc.store.now() + 299
         assert len(calls) == 1 and svc.story(job['story_id'])['facts'] == []
         with svc.store.connection() as db:
             receipt = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])
@@ -501,6 +497,31 @@ async def test_sufficiency_waits_for_exact_model_basis_after_first_review(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('changed_basis', [False, True])
+@pytest.mark.parametrize('count', [2, 3])
+async def test_saved_model_basis_completes_resume_without_new_reads(tmp_path, monkeypatch, changed_basis, count):
+    from test_headless_fact_review_parallel import candidates, ControlledReview, RUN
+    svc, job, harness = await candidates(tmp_path, count=count)
+    job['payload_json'] = json.dumps({**json.loads(job['payload_json']), 'minimum_useful_facts': 3})
+    assert await ControlledReview(harness).run(job, RUN, 0)
+    with svc.store.connection() as db:
+        basis = [list(r) for r in db.execute('SELECT fact_id,text FROM facts WHERE story_id=?', (job['story_id'],))]
+    if changed_basis:
+        basis[0][1] += ' Unsupported new qualifier.'
+    svc.store.checkpoint_put(job['id'], 'headless_fact_review:saved-sufficiency',
+        {'phase': 'committed', 'research_sufficient': True, 'sufficiency_basis': basis})
+    async def no_reads(*args, **kwargs):
+        raise AssertionError('Optional source work was entered')
+    monkeypatch.setattr(harness, '_prepare_units', no_reads)
+    if changed_basis or count < 3:
+        with pytest.raises(AssertionError, match='Optional source work'):
+            await harness.run(job, RUN, 'History', 'history')
+    else:
+        outcome = await harness.run(job, RUN, 'History', 'history')
+        assert outcome['reason'] == 'model_goal_sufficient' and outcome['eligible_count'] == 3
+
+
+@pytest.mark.asyncio
 async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledger(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
@@ -645,7 +666,7 @@ async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard, proo
 
 
 @pytest.mark.asyncio
-async def test_late_owner_edit_defers_durable_result_without_resending(tmp_path):
+async def test_late_owner_edit_preserves_durable_result_without_resending(tmp_path):
     svc, job, researcher, reader, _ = await fixture(tmp_path)
 
     def edit(story):
@@ -657,14 +678,12 @@ async def test_late_owner_edit_defers_durable_result_without_resending(tmp_path)
 
     researcher.after_extract = edit
     try:
-        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
-        assert svc.story(job['story_id'])['facts'] == []
+        assert len(svc.story(job['story_id'])['facts']) == 1
         researcher.after_extract = None
-        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-        assert svc.story(job['story_id'])['facts'] == []
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert len(svc.story(job['story_id'])['facts']) == 1
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
         assert len(researcher.pages) == len(researcher.model_units) == 1
     finally:
@@ -855,10 +874,15 @@ async def test_result_checkpoint_crash_retains_original_owner_fence_before_repla
             await harness.run(job, 'headless-run', 'Find historical facts', 'history')
         monkeypatch.setattr(svc.store, 'checkpoint_put', original_put)
         researcher.after_extract = None
-        with pytest.raises(RetryableProviderError):
-            await harness.run(job, 'headless-run', 'Find historical facts', 'history')
-        assert len(researcher.pages) == 1
-        assert svc.story(job['story_id'])['facts'] == []
+        outcome = await harness.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert outcome is None
+        # Re-enter the adapter to read the original unit; no second model result.
+        assert len(researcher.pages) == 2
+        assert researcher.pages[0]['_unit_id'] == researcher.pages[1]['_unit_id']
+        assert len(researcher.model_units) == 1
+        facts = svc.story(job['story_id'])['facts']
+        assert len(facts) == 1
+        assert facts[0]['review_status'] == 'unreviewed'
         assert svc.story(job['story_id'])['draft_text'] == 'Changed owner draft'
     finally:
         await reader.search_http.aclose()

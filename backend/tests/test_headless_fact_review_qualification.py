@@ -34,6 +34,10 @@ def proof(route):
             'directory': route['client'].directory, **dict.fromkeys(FLAGS, True)}
 
 
+def undecorated(routes):
+    return [{k: v for k, v in r.items() if k != '_review_admission'} for r in routes]
+
+
 def engine(routes, entries):
     provider = SimpleNamespace(_fact_pool_routes=lambda: routes)
     store = SimpleNamespace(cache_get=lambda key: {'routes': entries}
@@ -71,15 +75,15 @@ def test_explicit_matching_live_semantic_proof_allows_review_and_retains_health_
     selected = route()
     entry = proof(selected)
     reviewer = engine([selected], [entry])
-    assert reviewer._qualified_routes() == [selected]
+    assert undecorated(reviewer._qualified_routes()) == [selected]
     selected['available'] = False
     assert reviewer._qualified_routes() == []
-    assert reviewer._qualified_routes(available=False) == [selected]
+    assert undecorated(reviewer._qualified_routes(available=False)) == [selected]
 
 
 def test_matching_existing_text_proof_remains_available_without_live_proof():
     live, text = route(), route('facts')
-    assert engine([live, text], [proof(text)])._qualified_routes() == [text]
+    assert undecorated(engine([live, text], [proof(text)])._qualified_routes()) == [text]
 
 
 def test_timing_metadata_cannot_qualify_or_rebind_review_route():
@@ -94,7 +98,7 @@ def test_timing_metadata_cannot_qualify_or_rebind_review_route():
     assert decorated[0]['review_latency_hint'] == entry['qualification_review_timing']
     assert 'review_latency_hint' not in selected  # No shared pool/client mutation.
     entry['qualification_review_timing']['source_sha256'] = 'b' * 64
-    assert reviewer._qualified_routes() == [selected]
+    assert undecorated(reviewer._qualified_routes()) == [selected]
     entry['own_passages_verified'] = False
     assert reviewer._qualified_routes() == []
 
@@ -135,7 +139,7 @@ async def original_fixture(tmp_path):
         next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review'))
     live = route()
     args = {'packet_ref': packet['packet_ref'], 'decisions': [
-        {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+        {'fact': item['fact'], 'verdict': 'supported',
          'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
          'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own literal evidence.'}
         for item in packet['items']], 'relations_complete': True, 'conflicts': [],
@@ -246,6 +250,49 @@ async def test_unqualified_closed_original_is_technical_only_and_finishes_withou
 
 
 @pytest.mark.asyncio
+async def test_new_closed_result_uses_frozen_admission_after_cache_expiry(tmp_path):
+    import copy
+    svc, job, harness, reviewer, packet, unit, _, live, _, args = await original_fixture(tmp_path)
+    with svc.store.tx() as db:
+        db.execute("DELETE FROM research_provider_attempts WHERE attempt_id='original-read'")
+    svc.store.cache_put('fact-semantic-verification-v1', {'routes': [proof(live)]}, 3600)
+    sends = []
+    async def run(story, role, received_unit, invoke, *, client):
+        assert received_unit == unit
+        admitted = svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)
+        assert admitted['phase'] == 'started'
+        assert admitted['review_admission']['route_identity'] == admitted['route_identity']
+        sends.append(received_unit)
+        svc.store.cache_put('fact-semantic-verification-v1', {'routes': []}, 3600)
+        return {'result': args}
+    svc.providers.research = SimpleNamespace(_fact_pool_routes=lambda: [live], run=run,
+        extract_fact_page=svc.providers.research.extract_fact_page)
+    result = await reviewer._infer(packet, job, unit, {})
+    assert result == args and sends == [unit]
+    frozen = svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)
+    assert reviewer._qualified_routes() == []  # No new work admitted by expired proof.
+    assert reviewer._result_route_qualified(frozen)
+    for key in ('route_identity', 'frozen_packet', 'verifier_schema', 'verifier_contract_id'):
+        changed = copy.deepcopy(frozen)
+        if isinstance(changed[key], dict):
+            changed[key]['foreign'] = True
+        else:
+            changed[key] = 'another-contract'
+        assert not reviewer._result_route_qualified(changed)
+    for key in ('route_identity', 'review_admission'):
+        for malformed in (True, ['foreign'], 'foreign'):
+            assert not reviewer._result_route_qualified({**frozen, key: malformed})
+    for malformed in (True, ['foreign'], 'foreign'):
+        assert not reviewer._result_route_qualified({**frozen, 'review_admission': {
+            **frozen['review_admission'], 'controls': malformed}})
+    assert await reviewer.run(job, RUN, 0) == 1
+    assert await reviewer.run(job, RUN, 0) == 0
+    assert sends == [unit]
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_withdrawn_review_proof_before_commit_cannot_promote_valid_closed_answer(tmp_path):
     from test_headless_fact_review_parallel import qualify_controlled_review
     svc, job, harness = await candidates(tmp_path, count=1)
@@ -253,7 +300,7 @@ async def test_withdrawn_review_proof_before_commit_cannot_promote_valid_closed_
     class WithdrawnReview(HeadlessFactReview):
         async def _infer(self, packet, job, unit, saved, ordinal=0):
             args = {'packet_ref': packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+                {'fact': item['fact'], 'verdict': 'supported',
                  'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
                  'claims': [item['text']], 'basis_quotes': [item['quote_ref']]}
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],

@@ -1,5 +1,5 @@
 from test_reference_image_codec import jpeg
-from street_story.reference_image_codec import normalize_reference
+from street_story.reference_image_codec import normalize_source
 import json
 from types import SimpleNamespace
 
@@ -108,7 +108,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
     assert candidates[0]['map_coordinates']['provenance'] == 'osm.center'  # Full provenance remains durable.
     assert [item['road_name'] for item in context['location_search_context']['nearby_context']] == ['First Road', 'Second Road']
     assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building', 'brick building']
-    assert contents_seen[0][0].inline_data.data == normalize_reference(jpeg())[1]
+    assert contents_seen[0][0].inline_data.data == normalize_source(jpeg())[1]
     assert 'address' not in story  # no model search hint becomes confirmed subject data
 
 

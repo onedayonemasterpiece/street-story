@@ -148,7 +148,7 @@ def _apply_repair(adapter, session, db, row, payload, stable_id, args):
     for child_id in ids:
         db.execute('INSERT INTO live_fact_repairs VALUES(?,?,?,?,?,?)', (session.resource_id, item['id'], child_id, stable_id, ref, reason))
     if not evidence_only:
-        db.execute("UPDATE fact_assertions SET owner_selected=0,review_status='withheld',eligibility='withheld',updated_at=? WHERE story_id=? AND assertion_id=?", (now, session.resource_id, item['id']))
+        db.execute("UPDATE fact_assertions SET owner_selected=0,review_status='withheld',eligibility='withheld',accepted_basis_json=NULL,accepted_revision_digest=NULL,updated_at=? WHERE story_id=? AND assertion_id=?", (now, session.resource_id, item['id']))
         db.execute('UPDATE facts SET selected=0 WHERE story_id=? AND fact_id=?', (session.resource_id, item['id']))
         from .poi_memory import sync_poi_review_from_story
         # Withhold the exact old shared variant immediately. A provider failure

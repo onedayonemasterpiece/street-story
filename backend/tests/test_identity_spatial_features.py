@@ -4,7 +4,7 @@ import math
 import pytest
 
 from street_story.identity_scene import render_scene, scene_camera_context
-from street_story.identity_spatial_features import geometry_feature, measure_spatial_relations
+from street_story.identity_spatial_features import geometry_feature, measure_spatial_relations, supplied_relation_options
 
 
 def point(east, north):
@@ -20,6 +20,38 @@ def building(oid, east, north, width=20, depth=10):
 
 def story(entries, **extra):
     return {'latitude':55.,'longitude':21.,'_identity_map_snapshot':{'observed_pool':entries},**extra}
+
+
+def test_ready_scene_supplies_bounded_relations_bound_to_actual_primitives():
+    from street_story.identity_scene import lean_scene_manifest
+    entries = [building(i, 15+i*30, 20+i*4) for i in range(1, 20)]
+    entries.append({'type': 'way', 'id': 50, 'tags': {'highway': 'residential'},
+        'center': point(30, 5), 'geometry': [point(-20, 5), point(700, 5)]})
+    source = story(entries, _location_provenance={'kind': 'owner_approx_camera'})
+    original = copy.deepcopy(source)
+    options = supplied_relation_options(source, [], active_ids=['osm:way:19'])
+    assert len(options) == 7 and [o['id'] for o in options] == ['R' + str(i) for i in range(1, 8)]
+    assert any(ref['candidate_id'] == 'osm:way:19' for option in options for ref in option['map_features'])
+    for option in options:
+        assert all(geometry_feature(source, [], ref) for ref in option['map_features'])
+        if option['kind'] == 'observed_side_pair':
+            refs = option['map_features']
+            control = measure_spatial_relations(source, [], [r['candidate_id'] for r in refs],
+                front_segments=[{'first': refs[0], 'second': refs[1]}])
+            assert option['side_relation'] == control['front_segments'][0]
+            assert option['boundary_gap']['physical_passage_verified'] is False
+        else:
+            assert option['pose_scenario']['is_measured_camera_pose'] is False
+    scene = render_scene(source, [], detail_candidate_ids=['osm:way:19'])
+    assert lean_scene_manifest(scene['manifest'])['relation_options'] == options
+    assert len(scene['manifest']['objects']['rows']) == 20
+    assert source == original
+
+
+def test_relation_options_do_not_invent_geometry_or_an_anchor():
+    assert supplied_relation_options({'latitude': None, 'longitude': None}, []) == []
+    source = story([{'type': 'node', 'id': 1, 'tags': {'building': 'yes'}, **point(10, 20)}])
+    assert supplied_relation_options(source, []) == []
 
 
 def test_owner_approx_camera_has_nominal_position_but_no_exif_accuracy_or_invented_heading():
@@ -72,6 +104,49 @@ def test_feature_aliases_resolve_actual_contour_segments_tags_and_entries_withou
     assert geometry_feature(source,[],{'candidate_id':'osm:node:9','kind':'entry'})['coordinates']==[point(10,15)]
     assert geometry_feature(source,[],{'candidate_id':'osm:way:1','kind':'entry'}) is None
     assert source==original
+
+
+@pytest.mark.parametrize('field,tag,value', [
+    ('house_number', 'addr:housenumber', '73B'),
+    ('street', 'addr:street', 'Unseen Lane'),
+    ('city', 'addr:city', 'Unseen City'),
+])
+@pytest.mark.parametrize('serialized', [False, True])
+def test_issued_normalized_own_address_resolves_without_rewriting_reference(field, tag, value, serialized):
+    from street_story.identity_map_context import map_entry_context
+    entry = map_entry_context(building(909, 10, 10))
+    entry['map_address'] = {field: value, 'provenance': 'osm.tags', 'scope': 'mapped_entry_only',
+        'source_url': entry['map_object']['source_url']}
+    source = story([], _identity_observed_candidates=[entry])
+    original = copy.deepcopy(source)
+    reference = {'candidate_id': entry['candidate_id'], 'kind': 'attribute',
+        'key': field+'='+value if serialized else tag}
+    frozen = copy.deepcopy(reference)
+    result = geometry_feature(source, [], reference)
+    assert result['key'] == tag and result['value'] == value
+    assert result['provenance'] == 'osm.tags'
+    assert reference == frozen and source == original
+
+
+@pytest.mark.parametrize('defect', ['wrong_value', 'foreign_source', 'inferred', 'complex_scope', 'conflicting_tag'])
+def test_address_reference_cannot_fabricate_value_or_transfer_another_scope(defect):
+    from street_story.identity_map_context import map_entry_context
+    entry = map_entry_context(building(909, 10, 10))
+    entry['map_address'] = {'house_number': '73B', 'provenance': 'osm.tags', 'scope': 'mapped_entry_only',
+        'source_url': entry['map_object']['source_url']}
+    key = 'house_number=73B'
+    if defect == 'wrong_value':
+        key = 'house_number=73C'
+    elif defect == 'foreign_source':
+        entry['map_address']['source_url'] = 'https://www.openstreetmap.org/way/910'
+    elif defect == 'inferred':
+        entry['map_address']['provenance'] = 'reverse_geocode'
+    elif defect == 'complex_scope':
+        entry['map_address']['scope'] = 'historical_complex'
+    else:
+        entry['map_object']['tags']['addr:housenumber'] = '73C'
+    assert geometry_feature(story([], _identity_observed_candidates=[entry]), [],
+        {'candidate_id': entry['candidate_id'], 'kind': 'attribute', 'key': key}) is None
 
 
 @pytest.mark.parametrize('reference',[

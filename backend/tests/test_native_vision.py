@@ -174,6 +174,18 @@ async def test_completed_native_result_survives_accounting_and_reconciles_exact_
         receipt['accounting_finalization'] = record
         db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
                    (canonical(receipt), binding['attempt_id']))
+        # Older future-due and foreign-authority records must not consume the
+        # bounded recovery slots before this eligible original finalization.
+        for suffix, changes in (
+                ('future', {'retry_at': service.store.now() + 3600}),
+                ('foreign', {'authority_sha256': 'another-authority'})):
+            blocked = copy.deepcopy(receipt)
+            blocked['accounting_finalization'].update(changes)
+            db.execute('INSERT INTO research_provider_attempts '
+                       '(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) '
+                       'VALUES(?,?,?,?,?,?,?)',
+                       ('blocked-' + suffix, 'blocked-' + suffix, sid, 'vision_native',
+                        canonical(blocked), 0, 0))
     await reopened.recover_accounting()
     await reopened.recover_accounting()
     restored, saved = reopened._accounting_record(binding)
@@ -289,7 +301,7 @@ async def test_unsent_setup_deadline_is_local_but_external_cancellation_propagat
 @pytest.mark.asyncio
 async def test_below_reserve_never_sends_model_turn(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
-    client.used = 98
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
@@ -301,7 +313,8 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('with_article_reference', [False, True])
-async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference):
+@pytest.mark.parametrize('legacy_duplicate', [False, True])
+async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference, legacy_duplicate):
     provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
     map_file = io.BytesIO()
     Image.new('RGB', (67, 13), 'blue').save(map_file, format='PNG')
@@ -325,6 +338,12 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     assert pixels == [i[2] for i in images]
     receipt = receipts[-1]
     assert receipt['phase'] == 'unknown'
+    assert not any(method == 'turn/interrupt' for method, _ in client.calls)
+    assert 'frozen_source_map' not in receipt['binding']
+    frozen = copy.deepcopy(receipt['frozen_source_map'])
+    if legacy_duplicate:
+        # Existing receipts are read unchanged, including their duplicated packet.
+        receipt['binding']['frozen_source_map'] = copy.deepcopy(frozen)
     binding = {**receipt['binding'], **{key: receipt[key] for key in (
         'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
     client.used = 99
@@ -332,6 +351,11 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     provider.timeout = 1
     readback = await provider.compare_source_map(story, {}, 'different incoming request', [], binding, {})
     assert readback['host_context'] == host
+    assert readback['receipt']['frozen_source_map'] == frozen
+    assert 'frozen_source_map' not in readback['receipt']['binding']
+    assert receipt['frozen_source_map'] == frozen
+    if legacy_duplicate:
+        assert receipt['binding']['frozen_source_map'] == frozen
     assert sum(method == 'turn/start' for method, _ in client.calls) == 1
     assert len(sends) == 1
     await provider.close()
@@ -343,7 +367,7 @@ async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(
     images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
     host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
                                  'map_image_sha256': hashlib.sha256(source).hexdigest()}}
-    client.used = 99
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.compare_source_map(story, VERDICT_SCHEMA, 'bounded geometry', images,
                                          {'attempt_id': 'spatial'}, host)
@@ -549,6 +573,7 @@ async def test_recovered_unsent_admission_cannot_keep_not_sent_after_actual_turn
     assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
     assert finalized[-1][1] == 'unknown'
     assert finalized[-1][0]['actual_total_tokens'] is None
+    assert not any(method == 'turn/interrupt' for method, _ in client.calls)
     await provider.close()
 
 
@@ -612,7 +637,7 @@ async def test_native_rejection_invalidates_quota_grant_before_expiry(tmp_path):
     with pytest.raises(RetryableProviderError):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert provider.service.store.cache[provider.permission._key('owner-binding')]['expires_at'] == 0
-    client.used = 98
+    client.used = 100
     with pytest.raises(RetryableProviderError, match='below_reserve'):
         await provider.permission.ensure(client)
     assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2
@@ -671,16 +696,50 @@ async def test_partial_native_readback_waits_on_same_turn_without_new_send(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_cancellation_interrupts_owned_turn_and_keeps_unknown_receipt(tmp_path):
+@pytest.mark.parametrize('stopped', [False, True])
+async def test_worker_cancellation_retains_owned_turn_unless_source_control_is_superseded(tmp_path, stopped):
+    from street_story.service import ConflictError
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.block_read = True
     task = asyncio.create_task(provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'}))
     await client.read_started.wait()
+    def guard(binding):
+        if stopped:
+            raise ConflictError('research_scope_superseded', 'Owner stopped this SOURCE.')
+    provider.scope_guard = guard
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
+    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == int(stopped)
     assert receipts[-1]['phase'] == 'unknown' and finalized[-1][1] == 'unknown'
+    assert receipts[-1].get('abort_requested', False) is stopped
+    if not stopped:
+        assert receipts[-1]['pending_reason'] == 'worker_cancelled'
+        client.block_read = False
+        binding = {**receipts[-1]['binding'], **{key: receipts[-1][key] for key in
+            ('thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport')}}
+        client.calls.clear()
+        response = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+        assert response['receipt']['phase'] == 'completed'
+        assert all(method == 'thread/read' for method, _ in client.calls)
+        assert len(sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_poll_interrupts_only_explicit_superseded_source_scope(tmp_path):
+    from street_story.service import ConflictError
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    client.turn_status = 'inProgress'
+    def guard(binding):
+        if client.read_started.is_set():
+            raise ConflictError('research_scope_superseded', 'SOURCE replaced or owner Stop.')
+    provider.scope_guard = guard
+    with pytest.raises(RetryableProviderError):
+        await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'stopped'})
+    assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
+    assert receipts[-1]['phase'] == 'unknown' and receipts[-1]['abort_reason'] == 'scope_superseded'
+    assert len(sends) == 1 and finalized[-1][1] == 'unknown'
 
 
 @pytest.mark.asyncio
@@ -722,4 +781,32 @@ async def test_admission_counts_actual_schema_instructions_labels_and_unicode_se
     assert metadata['image_bytes'] == sum(len(base64.b64decode(part['url'].split(',', 1)[1]))
         for part in turn['input'] if part['type'] == 'image')
     assert metadata['unexposed_provider_context'] == 'unknown'
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('scope', ['text_without_map', 'geometry_without_map', 'claimed_missing_map'])
+async def test_source_only_native_t_transport_requires_text_and_never_claims_missing_map(tmp_path, scope):
+    from street_story.errors import PermanentProviderError
+    provider, client, source, story, _, _, sends, _ = setup(tmp_path)
+    receipt = {'model_source_sha256': hashlib.sha256(source).hexdigest()}
+    host = {'source_map_receipt': receipt}
+    if scope != 'geometry_without_map':
+        host['source_text_receipt'] = {'articles': [{'article_id': 'received', 'text': 'Own retained text.'}]}
+    if scope == 'claimed_missing_map':
+        receipt['map_image_sha256'] = 'a' * 64
+    images = [('SOURCE', 'image/jpeg', source)]
+    if scope == 'text_without_map':
+        result = await provider.compare_source_map(story, VERDICT_SCHEMA, 'Compare SOURCE with retained TEXT',
+                                                  images, {'attempt_id': 'independent-T'}, host)
+        assert result['host_context'] == host
+        assert sum(method == 'turn/start' for method, _ in client.calls) == len(sends) == 1
+        supplied = next(params for method, params in client.calls if method == 'turn/start')['input']
+        assert [part['text'] for part in supplied if part['type'] == 'text'][1:] == ['SOURCE']
+        assert [base64.b64decode(part['url'].split(',', 1)[1]) for part in supplied if part['type'] == 'image'] == [source]
+    else:
+        with pytest.raises(PermanentProviderError, match='native_source_map_image_binding_invalid'):
+            await provider.compare_source_map(story, VERDICT_SCHEMA, 'SOURCE input', images,
+                                              {'attempt_id': 'invalid-missing-map'}, host)
+        assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
     await provider.close()

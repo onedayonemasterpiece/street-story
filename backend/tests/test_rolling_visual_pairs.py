@@ -35,6 +35,85 @@ def retained_unknown(svc, story, item, context, *, foreign=False):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('original_route', ['google', 'opencode', 'native'])
+@pytest.mark.parametrize('stop_during_reader', [False, True])
+async def test_due_original_readback_is_consumed_while_independent_reader_is_blocked(tmp_path, monkeypatch, original_route, stop_during_reader):
+    svc, story, _ = prepare(tmp_path, count=2)
+    svc.settings = replace(svc.settings, worker_poll_seconds=.01)
+    clock = [svc.store.now()]
+    svc.store.now = lambda: clock[0]
+    unknown, reader_entered, release, observed = (asyncio.Event() for _ in range(4))
+    calls = []
+
+    async def read(service, item, sources, rejected, *, receipts):
+        reader_entered.set()
+        clock[0] += 2  # The original address becomes due during this reader.
+        await release.wait()
+        receipts.append({'url': sources[0]['url'], 'status': 'completed'})
+        return []
+
+    monkeypatch.setattr('street_story.article_media.article_candidates', read)
+
+    async def pair(route, snapshot, item, schema, context):
+        cid = item['_visual_reference_mapping'][0]['candidate_id']
+        address = json.loads(context)['comparison_id']
+        calls.append((route, cid, address, item['_visual_pair_resume_only']))
+        if cid == 'gate:b':
+            assert route == original_route
+            if not item['_visual_pair_resume_only']:
+                retained_unknown(svc, story, item, context)
+                unknown.set()
+                raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=clock[0]+1)
+            assert reader_entered.is_set() and not release.is_set()
+            observed.set()
+            return response(item, 'original-closed')
+        await unknown.wait()
+        with svc.store.tx() as db:
+            row = svc._story_row(db, story['id'])
+            research = json.loads(row['research_json'])
+            research['identity_article_discovery'] = {'generation': 0, 'photo_sha256': row['photo_sha256'],
+                'sources': [{'url': 'https://example.com/slow-article'}]}
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        return response(item, 'independent-negative')
+
+    provider = install(svc, pair)
+    provider.parallel_visual_routes = lambda: ('google', original_route)
+    task = asyncio.create_task(svc.run_once(claim_kind='identity_visual'))
+    try:
+        await asyncio.wait_for(reader_entered.wait(), 2)
+        if stop_during_reader:
+            stop_research(svc, story['id'], purpose='identity')
+            _, stopped = svc._identity_snapshot(story['id'])
+            await asyncio.sleep(.05)
+            assert not observed.is_set()
+            assert len(calls) == 2
+            release.set()
+            assert await task
+            _, after = svc._identity_snapshot(story['id'])
+            assert after['visual_search_operation'] == stopped['visual_search_operation']
+            return
+        await asyncio.wait_for(observed.wait(), .5)
+        async def wait_committed():
+            while True:
+                _, research = svc._identity_snapshot(story['id'])
+                if all(p['phase'] == 'completed' for p in research['visual_search_operation']['parallel_pairs']):
+                    return
+                await asyncio.sleep(0)
+        await asyncio.wait_for(wait_committed(), .5)
+        _, research = svc._identity_snapshot(story['id'])
+        peer = next(p for p in research['visual_search_operation']['parallel_pairs'] if p['route'] == original_route
+                    and p['candidates'][0]['candidate_id'] == 'gate:b')
+        assert peer['phase'] == 'completed'
+        original_calls = [call for call in calls if call[1] == 'gate:b']
+        assert original_calls == [(original_route, 'gate:b', peer['id'], False),
+                                  (original_route, 'gate:b', peer['id'], True)]
+        assert not task.done()  # Independent acquisition still owns its reader.
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_empty_page_keeps_fast_slot_free_for_next_source_before_slow_pair_finishes(tmp_path, monkeypatch):
     svc, story, _ = prepare(tmp_path, count=2)
     svc.settings = replace(svc.settings, worker_poll_seconds=.01)

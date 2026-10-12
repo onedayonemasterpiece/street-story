@@ -15,6 +15,33 @@ from test_identity_scene import building, point
 from test_visual_search_continuation import prepared
 
 
+def cache_ready_articles(service, articles):
+    import base64
+    for article in articles:
+        body = article['text'].encode()
+        service.store.cache_put('public-article-acquisition-v1:' + hashlib.sha256(article['url'].encode()).hexdigest(),
+            {'body': base64.b64encode(body).decode(), 'sha256': hashlib.sha256(body).hexdigest(),
+             'final_url': article['url'], 'mime': 'text/html', 'acquired_at': service.store.now()}, 600)
+
+
+@pytest.mark.parametrize('status,active,expected', [
+    ('unknown', False, ['osm:way:2', 'osm:way:3']),
+    ('contradicted', False, ['osm:way:2']),
+    ('contradicted', True, ['osm:way:2', 'osm:way:3'])])
+def test_material_scope_preserves_exclusion_basis_without_interpreting_its_text(status, active, expected):
+    initial = {'observed_candidate_ids': ['osm:way:2'], 'spatial_hypotheses': [
+        {'candidate_id': 'osm:way:3', 'support_status': status, 'basis': ['Received MAP body.'],
+         'counterevidence': ['Received SOURCE number disagrees with this own MAP record.']}],
+        'research_priority': {'candidate_ids': ['osm:way:3'] if active else ['osm:way:2']}}
+    original = copy.deepcopy(initial)
+    prior = identity_discovery._conditional_text_prior(initial, ['osm:way:2', 'osm:way:3'])
+    assert initial == original
+    assert set(prior['candidate_ids']) == {'osm:way:2', 'osm:way:3'}
+    assert set(prior['material_alternative_candidate_ids']) == set(expected)
+    exclusions = prior['previous_model_exclusions_not_identity_proof']
+    assert exclusions == ([initial['spatial_hypotheses'][0]] if status == 'contradicted' and not active else [])
+
+
 def geometry_setup(tmp_path):
     service, _adapter, story, _sessions = prepared(tmp_path)
     first, other = building(2, 20), building(3, 50)
@@ -74,7 +101,8 @@ class Executor:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('invalid_geometry', [False, True])
-async def test_acquired_three_article_text_can_accept_in_first_joint_without_waiting_for_failed_G(tmp_path, monkeypatch, invalid_geometry):
+@pytest.mark.parametrize('final_subject', ['T', 'uncertain', 'missing'])
+async def test_acquired_three_article_text_can_accept_in_first_joint_without_waiting_for_failed_G(tmp_path, monkeypatch, invalid_geometry, final_subject):
     from dataclasses import replace
     from street_story import identity_architectural_context
     from test_identity_architectural_pool import _three_documents
@@ -87,6 +115,9 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         'reason':'Neighbor has different bay/window-axis arrangement in SOURCE.'}]
     articles = receipt['articles']
     aids = [a['article_id'] for a in articles]
+    # Initial T may join already acquired bodies without waiting for HTTP.
+    # The body-to-text reader below is controlled, but cache readiness is real.
+    cache_ready_articles(service, articles)
 
     async def catalogue(*args, **kwargs):
         return {'results': [{'article_id':a['article_id'], 'canonical_url':a['url']} for a in articles],
@@ -107,6 +138,7 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         raw_packet = contents[-1].split('Данные ниже — только контекст:\n', 1)[1]
         packet, _ = json.JSONDecoder().raw_decode(raw_packet)
         packet = expand_planner_packet(packet)
+        assert 'active research_priority question about another physical candidate' in raw_packet
         passages = packet['acquired_architectural_text']['literal_source_passages']
         for article in articles:
             own = next(row for row in passages if row['article_id'] == article['article_id'])
@@ -125,6 +157,8 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
             'postal_interpretation':'The received literal source and OSM records denote the chosen individual body.'}]
         g = geometry_decision()
         g['decision'] = 'uncertain'
+        if final_subject != 'T' and not invalid_geometry:
+            g['decision'] = 'accepted_geometry'
         if invalid_geometry:
             g['candidate_id'] = 'osm:way:unreceived'
         from street_story.identity_architectural_pool import joint_source_spans
@@ -135,13 +169,30 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
                 if span['article_id'] == relation['article_id'] and literal in span['source_quote'])
             assert chosen in contents[-1]
             relation['source_span_ref'] = chosen
-        return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
+        from street_story.identity_subject_resolution import INSTRUCTIONS
+        assert INSTRUCTIONS in contents[-1]
+        answer = {**payload(g), 'accepted_architectural_text': decision}
+        if final_subject != 'missing':
+            answer['subject_resolution'] = {'decision': 'accepted' if final_subject == 'T' else 'uncertain',
+                'basis_kind': final_subject if final_subject == 'T' else 'none',
+                'candidate_id': 'osm:way:2' if final_subject == 'T' else '',
+                'unresolved_counterevidence': [] if final_subject == 'T' else ['The exact SOURCE body still has a material alternative.'],
+                'reason': 'Own text resolves the individual SOURCE body despite insufficient geometry.' if final_subject == 'T'
+                    else 'Positive text correspondence has not settled which physical body SOURCE shows.'}
+        return SimpleNamespace(text=json.dumps(answer))
 
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No extra planner'))
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    if final_subject != 'T':
+        assert '_identity_geometry_result' not in story
+        assert len(calls) == 1  # Final uncertainty does not add a reviewer or joint3.
+        assert history['search_plan']['payload']['source_text_receipt']['articles']
+        return
     accepted = story['_identity_geometry_result']
     assert accepted['proof_kind'] == 'architectural_text' and accepted['candidate_id'] == 'osm:way:2'
+    from street_story.identity_proof import IDENTITY_CONTINUATION_CONTRACT
+    assert accepted['architectural_text_proof']['source_text_receipt']['identity_continuation_contract'] == IDENTITY_CONTINUATION_CONTRACT
     assert len(history['search_plan']['payload']['source_text_receipt']['articles']) == 3
     assert len(accepted['architectural_text_proof']['source_text_receipt']['articles']) == 1
     assert len(calls) == 1
@@ -210,6 +261,10 @@ async def test_joint_repairs_one_unreceived_alternative_without_another_judge_or
         calls.append(contents)
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(payload(bad)))
+        from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS
+        scope, _ = json.JSONDecoder().raw_decode(contents[-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+        assert 'osm:way:3' in scope['physical_body_candidate_ids']
+        assert scope['material_alternative_candidate_ids'] == []
         assert 'unreceived_alternative_ids' in contents[-1] and 'osm:way:999' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
@@ -220,6 +275,10 @@ async def test_joint_repairs_one_unreceived_alternative_without_another_judge_or
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(calls) == 2 and story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS, received_comparison_scope
+    issued, _ = json.JSONDecoder().raw_decode(calls[-1][-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+    admitted = received_comparison_scope(story['_identity_geometry_result']['geometry_proof']['source_map_receipt'])
+    assert issued == admitted
 
 
 @pytest.mark.asyncio
@@ -316,6 +375,15 @@ async def test_joint_geometry_rejects_missing_or_wrong_map_label_binding(tmp_pat
     with pytest.raises(PermanentProviderError, match='identity_geometry_proof_invalid'):
         await identity_discovery.prepare_search_plan(service, story, '', active)
     assert '_identity_geometry_result' not in story
+    retained = service._identity_snapshot(story['id'])[1]['identity_physical_hypothesis']
+    import base64
+    import hashlib
+    original_input = retained['original_input']
+    assert original_input['schema'] and original_input['prompt'] and original_input['configuration']
+    assert {part['label'] for part in original_input['image_parts']} == {'SOURCE', 'MAP'}
+    for part in original_input['image_parts']:
+        assert hashlib.sha256(base64.b64decode(part['bytes_base64'])).hexdigest() == part['sha256']
+    assert retained['reason']['validation'] and not retained['identity_accepted']
 
 
 @pytest.mark.asyncio
@@ -504,8 +572,11 @@ async def test_uncertain_joint_geometry_can_choose_one_bound_distinguishing_addr
     plan['visual_query'] = 'Generic appearance search must not become a compulsory extra step'
     plan['first_wave_hypotheses'] = [{'kind': 'address', 'subject_id': 'osm:way:2', 'query': '',
         'reason': 'Read the actual mapped address source for the chosen remaining question.'}]
+    calls = []
     async def generate(*args, **kwargs):
-        return SimpleNamespace(text=json.dumps(plan))
+        calls.append(args)
+        answer = plan if len(calls) == 1 else {'accepted_geometry': decision}
+        return SimpleNamespace(text=json.dumps(answer))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     assert history['planned_queries'] == ['Observed city Observed street 12A']
@@ -540,3 +611,52 @@ def test_uncertain_geometry_does_not_invent_pose_but_positive_still_requires_it(
     assert not list(validator.iter_errors(decision))
     decision.update(decision='accepted_geometry', candidate_id='osm:way:2')
     assert list(validator.iter_errors(decision))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('foreign', [False, True])
+async def test_general_geometry_uses_received_relations_without_numerical_pose(tmp_path, foreign):
+    from street_story.identity_geometry_contract import CONTRACT
+    from street_story.identity_proof import freeze_geometry_proof
+    from street_story.identity_scene import planner_scene
+    service, story, active = geometry_setup(tmp_path)
+    scene = await planner_scene(service, story, active)
+    decision = geometry_decision()
+    decision['spatial_correspondence'] = {'pattern_kind': 'general_relations',
+        'source_pattern': 'Individual body bounds the photographed approach, with a distinct neighboring return.',
+        'coverage_basis': 'Received body and approach primitives; material neighbor addressed.',
+        'candidate_ids': ['osm:way:2'], 'assumption_limits': ['Heading and pitch are unknown.']}
+    if foreign:
+        decision['decisive_relations'][0]['map_features'][0]['candidate_id'] = 'osm:way:999999'
+    digest = hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest()
+    receipt = {'joint_image_input': True, 'geometry_contract': CONTRACT,
+        'source_photo_sha256': story['photo_sha256'], 'original_source_sha256': digest, 'model_source_sha256': digest,
+        'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene['manifest'],
+        'physical_body_candidate_ids': ['osm:way:2', 'osm:way:3'], 'material_alternative_candidate_ids': ['osm:way:3']}
+    rejection = []
+    proof = freeze_geometry_proof(story, decision, receipt, active, rejection=rejection)
+    if foreign:
+        assert proof is None
+        assert rejection == [{'code': 'geometry_relation_subject_unreceived', 'relation_index': 0}]
+    else:
+        assert rejection == []
+        assert proof['spatial_correspondence']['kind'] == 'general_relations'
+        assert 'pose' not in proof['decision']['spatial_correspondence']
+        wrong_source = {**receipt, 'source_photo_sha256': 'other-photo'}
+        assert freeze_geometry_proof(story, decision, wrong_source, active, rejection=rejection) is None
+        assert rejection[-1]['failed_fields'] == ['source_photo_binding']
+        # A frozen v3 operation retains its indices; a bad old reply cannot be
+        # accepted by the new contract or rewritten to remove its bad pointer.
+        receipt['geometry_contract'] = 'source-map-spatial-correspondence-v3'
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0]
+        assert freeze_geometry_proof(story, decision, receipt, active)['spatial_correspondence']['contract'] == receipt['geometry_contract']
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0, 1, 2, 3]
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_spatial_correspondence_unresolved'
+        receipt['geometry_contract'] = CONTRACT
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_decision_schema_invalid'
+        receipt['geometry_contract'] = 'source-map-spatial-correspondence-v2'
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0]
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_spatial_correspondence_unresolved'
