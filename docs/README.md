@@ -27,6 +27,8 @@ The recovery brief remains the full-task entrypoint; completing this core slice 
 Its [measured day audit](reports/street-story-measured-day-audit-20261010.md)
 records observations and limitations; it is not proof that proposed repairs shipped.
 
+The later owner-approved [map-selection MVP design (12 October)](design/street-story-owner-map-selection-mvp-20261012.md) defines the manual MVP path: photo → map → confirmed building or candidate group → sourced facts → saved material → publication. For an exact owner-confirmed building, it explicitly changes the CORE-PHOTO-IDENTITY boundary for this MVP: no additional identity check is required; approximate groups still require identification. It includes changing the confirmed selection within the story and isolating stale results. This is a proposed implementation contract, not evidence of shipped behavior; requirements.json and product code are unchanged.
+
 The [photo search methods](photo-search-methods.md), [backend contract](backend-contract.md),
 [runtime runbook](backend-runtime.md) and [POI contract](poi-knowledge-base.md)
 describe their domain boundaries. Label current implementation separately from
