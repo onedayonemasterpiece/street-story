@@ -107,8 +107,10 @@ class OwnerPlaceInstrumentedTest {
             })
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit().putString("active_story_id", id).commit()
             androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = androidx.test.uiautomator.UiDevice.getInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation())
                 var map: org.maplibre.android.maps.MapLibreMap? = null
                 var mapView: org.maplibre.android.maps.MapView? = null
+                try {
                 scenario.onActivity { activity ->
                     val views = descendants(activity.findViewById(android.R.id.content)).toList()
                     mapView = views.filterIsInstance<org.maplibre.android.maps.MapView>().single()
@@ -122,22 +124,44 @@ class OwnerPlaceInstrumentedTest {
                 val deadline = android.os.SystemClock.elapsedRealtime() + 12000
                 var rendered = false
                 var targetX = 0; var targetY = 0
+                var previousBounds: android.graphics.Rect? = null
                 while (!rendered && android.os.SystemClock.elapsedRealtime() < deadline) {
                     scenario.onActivity {
                         val current = map
-                        if (current?.style != null) {
+                        val view = mapView
+                        if (current?.style != null && view != null) {
+                            val bounds = android.graphics.Rect()
+                            val visible = view.getGlobalVisibleRect(bounds)
                             val point = current.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
-                            rendered = current.queryRenderedFeatures(point, "owner-buildings-fill").isNotEmpty()
-                            val origin = IntArray(2); mapView!!.getLocationOnScreen(origin)
-                            targetX = origin[0] + point.x.toInt(); targetY = origin[1] + point.y.toInt()
+                            // The SDK's first queryable frame can precede its load overlay removal.
+                            // Require a visible native surface and two stable layout observations.
+                            rendered = visible && view.isAttachedToWindow && !view.isLayoutRequested &&
+                                view.foreground == null && previousBounds == bounds &&
+                                current.queryRenderedFeatures(point, "owner-buildings-fill").any { it.id() == "osm:way:fixture" }
+                            previousBounds = android.graphics.Rect(bounds)
                         }
                     }
                     if (!rendered) android.os.SystemClock.sleep(100)
                 }
-                assertTrue("native renderer must expose the server contour for hit testing", rendered)
-                val device = androidx.test.uiautomator.UiDevice.getInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation())
-                device.click(targetX, targetY)
-                assertNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("Дом карты")), 3000))
+                assertTrue("native contour must render on a stable visible map before touch", rendered)
+                androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                device.waitForIdle()
+                device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-map-before-tap.xml"))
+                scenario.onActivity { activity ->
+                    val currentViews = descendants(activity.findViewById(android.R.id.content)).toList()
+                    val view = currentViews.filterIsInstance<org.maplibre.android.maps.MapView>().single()
+                    assertSame("click must target the currently attached native view", mapView, view)
+                    val point = map!!.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
+                    assertTrue("the exact injected touch must hit the server contour", map!!.queryRenderedFeatures(point, "owner-buildings-fill").any { it.id() == "osm:way:fixture" })
+                    val origin = IntArray(2); view.getLocationOnScreen(origin)
+                    targetX = origin[0] + point.x.toInt(); targetY = origin[1] + point.y.toInt()
+                    val bounds = android.graphics.Rect(); assertTrue(view.getGlobalVisibleRect(bounds))
+                    assertTrue("touch point must lie inside current visible bounds", bounds.contains(targetX, targetY))
+                    android.util.Log.i("StreetStoryMapE2E", "stage=before_single_tap target=$targetX,$targetY bounds=$bounds camera=${map!!.cameraPosition} foreground=${view.foreground}")
+                }
+                assertTrue("one physical map tap must be injected", device.click(targetX, targetY))
+                val selectedStatus = device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("Дом карты")), 3000)
+                assertNotNull("one physical tap must select the queried contour", selectedStatus)
                 assertTrue("retain native contour selection screenshot", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-ui.png")))
                 scenario.onActivity { activity ->
                     descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-confirm" }.performClick()
@@ -215,6 +239,26 @@ class OwnerPlaceInstrumentedTest {
                     descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-automatic" }.performClick()
                 }
                 assertEquals("recognition remains an explicit separate action", 1, store.pendingOperations(id).count { it.kind == "identity" })
+                } catch (failure: Throwable) {
+                    // Capture before ActivityScenario.use closes the failed screen, at every stage.
+                    runCatching { device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.png")) }
+                    runCatching { device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.xml")) }
+                    runCatching {
+                        scenario.onActivity { activity ->
+                            val view = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<org.maplibre.android.maps.MapView>().firstOrNull()
+                            val bounds = android.graphics.Rect(); view?.getGlobalVisibleRect(bounds)
+                            val native = map
+                            val point = native?.projection?.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
+                            val hits = if (native != null && point != null) native.queryRenderedFeatures(point, "owner-buildings-fill").map { it.id() } else emptyList()
+                            val status = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<android.widget.TextView>()
+                                .firstOrNull { it.contentDescription?.toString() == "owner-place-status" }?.text
+                            val diagnostic = "failure=${failure.javaClass.simpleName}: ${failure.message}\nbounds=$bounds attached=${view?.isAttachedToWindow} foreground=${view?.foreground}\ncamera=${native?.cameraPosition} point=$point hits=$hits status=$status\n"
+                            java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.txt").writeText(diagnostic)
+                            android.util.Log.e("StreetStoryMapE2E", diagnostic)
+                        }
+                    }
+                    throw failure
+                }
             }
         } finally {
             store.deleteStory(id); research.clear(id); PhotoAssets.releaseTemporary(photo.path)

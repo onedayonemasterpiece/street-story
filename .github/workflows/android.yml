@@ -118,6 +118,7 @@ jobs:
             instrumentation.txt
             provisioning-logcat.txt
             instrumentation-crash-logcat.txt
+            owner-place-map-logcat.txt
             ui-evidence/
 
   release:
