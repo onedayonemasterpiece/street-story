@@ -83,7 +83,8 @@ class Executor:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('invalid_geometry', [False, True])
-async def test_acquired_three_article_text_can_accept_in_first_joint_without_waiting_for_failed_G(tmp_path, monkeypatch, invalid_geometry):
+@pytest.mark.parametrize('final_subject', ['T', 'uncertain', 'missing'])
+async def test_acquired_three_article_text_can_accept_in_first_joint_without_waiting_for_failed_G(tmp_path, monkeypatch, invalid_geometry, final_subject):
     from dataclasses import replace
     from street_story import identity_architectural_context
     from test_identity_architectural_pool import _three_documents
@@ -138,6 +139,8 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
             'postal_interpretation':'The received literal source and OSM records denote the chosen individual body.'}]
         g = geometry_decision()
         g['decision'] = 'uncertain'
+        if final_subject != 'T' and not invalid_geometry:
+            g['decision'] = 'accepted_geometry'
         if invalid_geometry:
             g['candidate_id'] = 'osm:way:unreceived'
         from street_story.identity_architectural_pool import joint_source_spans
@@ -148,11 +151,26 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
                 if span['article_id'] == relation['article_id'] and literal in span['source_quote'])
             assert chosen in contents[-1]
             relation['source_span_ref'] = chosen
-        return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
+        from street_story.identity_subject_resolution import INSTRUCTIONS
+        assert INSTRUCTIONS in contents[-1]
+        answer = {**payload(g), 'accepted_architectural_text': decision}
+        if final_subject != 'missing':
+            answer['subject_resolution'] = {'decision': 'accepted' if final_subject == 'T' else 'uncertain',
+                'basis_kind': final_subject if final_subject == 'T' else 'none',
+                'candidate_id': 'osm:way:2' if final_subject == 'T' else '',
+                'unresolved_counterevidence': [] if final_subject == 'T' else ['The exact SOURCE body still has a material alternative.'],
+                'reason': 'Own text resolves the individual SOURCE body despite insufficient geometry.' if final_subject == 'T'
+                    else 'Positive text correspondence has not settled which physical body SOURCE shows.'}
+        return SimpleNamespace(text=json.dumps(answer))
 
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No extra planner'))
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    if final_subject != 'T':
+        assert '_identity_geometry_result' not in story
+        assert len(calls) == 1  # Final uncertainty does not add a reviewer or joint3.
+        assert history['search_plan']['payload']['source_text_receipt']['articles']
+        return
     accepted = story['_identity_geometry_result']
     assert accepted['proof_kind'] == 'architectural_text' and accepted['candidate_id'] == 'osm:way:2'
     from street_story.identity_proof import IDENTITY_CONTINUATION_CONTRACT

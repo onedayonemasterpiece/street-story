@@ -10,7 +10,8 @@ from test_geometry_identity_plan import geometry_decision, geometry_setup, paylo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['accepted', 'uncertain', 'malformed', 'accepted_with_text', 'uncertain_with_text',
-    'accepted_malformed_with_text', 'uncertain_malformed_with_text', 'foreign_target', 'clarification'])
+    'accepted_malformed_with_text', 'uncertain_malformed_with_text', 'unresolved_with_text',
+    'missing_resolution_with_text', 'foreign_target', 'clarification'])
 async def test_empty_address_text_uses_existing_joint2_without_assuming_identity(tmp_path, monkeypatch, outcome):
     svc, story, active = geometry_setup(tmp_path)
     story['_camera_hints'] = {'diagonal_fov_35mm_deg': 79.5, 'digital_zoom_ratio': 1.7,
@@ -131,6 +132,19 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
             if 'malformed' in outcome:
                 text_decision['correspondences'][0]['source_span_ref'] = 'unreceived-source-span'
             result = {'accepted_geometry': decision, 'accepted_architectural_text': text_decision}
+            from street_story.identity_subject_resolution import CONTRACT, INSTRUCTIONS
+            assert INSTRUCTIONS in prompt
+            assert host_context['source_map_receipt']['subject_resolution_contract'] == CONTRACT
+            assert text_receipt['subject_resolution_contract'] == CONTRACT
+            assert 'subject_resolution' in schema['required']
+            if outcome != 'missing_resolution_with_text':
+                accepted = outcome.startswith('accepted')
+                result['subject_resolution'] = {'decision': 'accepted' if accepted else 'uncertain',
+                    'basis_kind': 'G' if accepted else 'none',
+                    'candidate_id': 'osm:way:2' if accepted else '',
+                    'unresolved_counterevidence': [] if accepted else ['The SOURCE return still admits a material alternative.'],
+                    'reason': 'Unrelated article does not concern this independently resolved geometry.' if accepted
+                        else 'The joint evidence leaves the physical subject unresolved.'}
         return {'result': result, 'receipt': {'phase': 'completed', 'turn_id': 'joint2'},
             'host_context': host_context}
     svc.providers.gemini = SimpleNamespace()

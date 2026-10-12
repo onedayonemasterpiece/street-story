@@ -49,6 +49,9 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates, *, re
     entries = scene_entries(story, candidates)
     catalog = {entry['candidate_id']: entry for entry in entries}
     receipt = source_map_receipt or {}
+    from .identity_subject_resolution import resolution_supports
+    if not resolution_supports(receipt, decision or {}, 'G'):
+        return reject('geometry_final_subject_not_accepted')
     structured = receipt.get('geometry_contract') in {CONTRACT, LEGACY_CONTRACT}
     if not isinstance(decision, dict) or not Draft202012Validator(
             geometry_decision_schema(list(catalog), structured=structured or
@@ -320,6 +323,9 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     scope = _scope(story)
     receipt = source_text_receipt or {}
     if not isinstance(receipt, dict):
+        return None
+    from .identity_subject_resolution import resolution_supports
+    if not resolution_supports(receipt, decision or {}, 'T'):
         return None
     articles = receipt.get('articles') or []
     if not isinstance(articles, list) or not articles:

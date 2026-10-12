@@ -113,6 +113,10 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
                     'candidate_id': '', 'article_bindings': [], 'correspondences': [],
                     'material_alternatives': [], 'material_alternatives_resolved': False,
                     'physical_link_evidence': []}
+            if 'subject_resolution' in schema['properties']:
+                first['subject_resolution'] = {'decision': 'uncertain', 'basis_kind': 'none',
+                    'candidate_id': '', 'unresolved_counterevidence': ['Need the nominated body detail.'],
+                    'reason': 'Neither component has resolved the SOURCE subject.'}
             closed_G.update(phase='completed', turn_id='original-G', result=first,
                 frozen_source_map={'host_context': copy.deepcopy(host_context)})
         return {'result': closed_G['result'], 'receipt': closed_G,
@@ -137,6 +141,10 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
                 invalid_geometry = geometry_decision()
                 invalid_geometry.pop('bounded_coverage')
                 linked = {'accepted_geometry': invalid_geometry, 'accepted_architectural_text': linked}
+                if 'subject_resolution' in schema['properties']:
+                    linked['subject_resolution'] = {'decision': 'accepted', 'basis_kind': 'T',
+                        'candidate_id': 'osm:way:2', 'unresolved_counterevidence': [],
+                        'reason': 'Original own text resolves the individual body without the invalid geometry component.'}
         return {'result': linked, 'receipt': {'phase': 'completed', 'turn_id': 'original-T'},
             'host_context': original}
     async def forbidden(*args, **kwargs):
@@ -157,7 +165,12 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
     proof_key, receipt_key = (('geometry_proof', 'source_map_receipt') if joint_geometry == 'without_text'
         else ('architectural_text_proof', 'source_text_receipt'))
     proof = story['_identity_geometry_result'][proof_key]
-    assert proof[receipt_key] == saved['frozen_source_map']['host_context'][receipt_key]
+    expected_receipt = saved['frozen_source_map']['host_context'][receipt_key]
+    if expected_receipt.get('subject_resolution_contract'):
+        from street_story.identity_subject_resolution import bind_subject_resolution
+        expected_receipt = bind_subject_resolution(expected_receipt, {
+            'subject_resolution': proof[receipt_key]['subject_resolution']})
+    assert proof[receipt_key] == expected_receipt
     assert joint_followup_marker(svc, story)['prepared_request'] == original_request
     assert svc._identity_snapshot(story['id'])[1]['research_budget']['work_units'] == original_units
     if joint_geometry is True:

@@ -555,6 +555,11 @@ async def _suggest(service, story, transcript, candidates):
             observed_ids, [article['article_id'] for article in early_text_articles], structural=True,
             source_span_refs=early_text_span_refs, physical_link_inventory=early_physical_link_inventory,
             closed_identity_continuation=early_continuation_contract == IDENTITY_CONTINUATION_CONTRACT)
+    fresh_initial_resolution = bool(scene and early_text_articles and not (
+        frozen_initial or addressed_initial or native_original))
+    if fresh_initial_resolution:
+        from .identity_subject_resolution import with_subject_resolution
+        schema = with_subject_resolution(schema)
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
@@ -773,6 +778,9 @@ async def _suggest(service, story, transcript, candidates):
             prompt = frozen_initial['prompt']
             schema.clear()
             schema.update(copy.deepcopy(frozen_initial['schema']))
+    if fresh_initial_resolution:
+        from .identity_subject_resolution import INSTRUCTIONS as RESOLUTION_INSTRUCTIONS
+        prompt = RESOLUTION_INSTRUCTIONS + '\n' + prompt
     response_contract = identity_transport_schema(schema, map_label_references=bool(scene))
     literal_names = []
     if scene:
@@ -848,6 +856,9 @@ async def _suggest(service, story, transcript, candidates):
         'source_span_refs': early_text_span_refs, 'physical_link_inventory': early_physical_link_inventory,
         **({'identity_continuation_contract': early_continuation_contract} if early_continuation_contract else {})}
         if early_text_articles else {})
+    if fresh_initial_resolution:
+        from .identity_subject_resolution import CONTRACT as RESOLUTION_CONTRACT
+        source_text_receipt['subject_resolution_contract'] = RESOLUTION_CONTRACT
     early_source_text_receipt = copy.deepcopy(source_text_receipt)
     geometry_prior_ids = []
     initial_map_context = (scene, scene_manifest, physical_context, resolution_packet)
@@ -859,6 +870,7 @@ async def _suggest(service, story, transcript, candidates):
     joint_model_id = None
     native_source_map_receipt = None
     original_followup_context = {}
+    joint_resolution_required = 'subject_resolution' in schema['properties']
     response_id_resolutions = []
     def diagnostic_stage(raw_json):
         if story.get('_identity_search_plan_route', 'google') != 'google' or not isinstance(raw_json, str):
@@ -871,6 +883,7 @@ async def _suggest(service, story, transcript, candidates):
         return {}
     def joint_source_map_receipt(*, current_scene=False):
         from .identity_geometry_contract import CONTRACT
+        from .identity_subject_resolution import CONTRACT as RESOLUTION_CONTRACT
         if original_followup_context:
             return original_followup_context['source_map_receipt']
         if native_source_map_receipt is not None and not joint_followup_used and not current_scene:
@@ -880,6 +893,7 @@ async def _suggest(service, story, transcript, candidates):
             'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene_manifest,
             'source_preparation': source_preparation, 'map_identity_labels_required': True,
             'geometry_contract': CONTRACT,
+            **({'subject_resolution_contract': RESOLUTION_CONTRACT} if joint_resolution_required else {}),
             'model_id': joint_model_id,
             'physical_body_candidate_ids': [row[1] for row in physical_context['rows']],
             'material_alternative_candidate_ids': list(dict.fromkeys([*geometry_prior_ids,
@@ -899,6 +913,8 @@ async def _suggest(service, story, transcript, candidates):
         supporting = {item['article_id'] for item in bindings}
         receipt = {**source_text_receipt, 'articles': [article for article in
             source_text_receipt.get('articles') or [] if article['article_id'] in supporting]}
+        from .identity_subject_resolution import bind_subject_resolution
+        receipt = bind_subject_resolution(receipt, payload)
         return freeze_architectural_text_proof(story, decision, receipt, [*observed, *candidates])
     def accept(payload, *, original_schema_readback=False, original_schema=None,
             raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False,
@@ -1020,13 +1036,16 @@ async def _suggest(service, story, transcript, candidates):
                                         'decision': payload['accepted_geometry']}
             payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
             action = {}
-        source_map_receipt = joint_source_map_receipt() if original_schema is None else {}
+        from .identity_subject_resolution import bind_subject_resolution, resolution_supports
+        source_map_receipt = bind_subject_resolution(
+            joint_source_map_receipt() if original_schema is None else {}, payload)
         from .identity_candidate_policy import physical_research_priority
         priority = physical_research_priority(story, payload, [*observed, *candidates],
             {**source_map_receipt, **source_text_receipt}
                 if story.get('_identity_search_plan_route') != 'qualified_text_fallback' else {})
         actionable_priority = bool((priority or {}).get('active_candidate_ids') and (
             priority.get('explicit_model_selection') is True
+            or joint_resolution_required and (payload.get('subject_resolution') or {}).get('decision') == 'uncertain'
             or (payload.get('accepted_geometry') or {}).get('decision') == 'uncertain'
                 and action.get('kind') != 'none' and action.get('target_candidate_ids')
                 and str(action.get('reason') or '').strip()
@@ -1041,9 +1060,13 @@ async def _suggest(service, story, transcript, candidates):
         if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
             text_proof = closed_text_proof(payload)
             if text_proof is None:
-                rejected_text = {'reason': 'identity_architectural_text_proof_invalid',
+                final_selected = resolution_supports(bind_subject_resolution(source_text_receipt, payload),
+                    payload['accepted_architectural_text'], 'T')
+                rejected_text = {'reason': ('identity_architectural_text_proof_invalid' if final_selected
+                    else 'identity_final_subject_not_selected'),
                                  'decision': payload['accepted_architectural_text']}
-                payload = {key: value for key, value in payload.items() if key != 'accepted_architectural_text'}
+                if final_selected:
+                    payload = {key: value for key, value in payload.items() if key != 'accepted_architectural_text'}
         if rejected_text:
             # Host admission metadata preserves the actual rejected decision;
             # the immutable closed provider answer is never rewritten.
@@ -1056,15 +1079,18 @@ async def _suggest(service, story, transcript, candidates):
                 {'reason':rejected_geometry_schema['reason'], 'preserved_text_proof':True})
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
             if geometry_proof is None:
+                final_selected = resolution_supports(source_map_receipt, payload['accepted_geometry'], 'G')
                 if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses') or text_proof
-                        or actionable_priority):
+                        or actionable_priority) and final_selected:
                     reject('identity_geometry_proof_invalid')
                 # A closed joint response can still nominate useful, separately
                 # validated searches/pages. An invalid proof does not establish
                 # identity and does not force another paid planning operation.
                 rejected_geometry = payload['accepted_geometry']
-                payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
-                payload['rejected_geometry'] = {'reason': 'identity_geometry_proof_invalid',
+                if final_selected:
+                    payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
+                payload['rejected_geometry'] = {'reason': ('identity_geometry_proof_invalid' if final_selected
+                    else 'identity_final_subject_not_selected'),
                     'decision': rejected_geometry}
                 action = {}
                 record_identity_event(service, story['id'], 'identity_geometry_not_accepted',
@@ -1126,6 +1152,16 @@ async def _suggest(service, story, transcript, candidates):
             reject('identity_search_plan_malformed')
         if validate_only:
             return payload
+        if source_map_receipt.get('subject_resolution_contract'):
+            final = source_map_receipt.get('subject_resolution') or {}
+            record_identity_event(service, story['id'], 'identity_joint_subject_resolved', {
+                'contract': source_map_receipt['subject_resolution_contract'],
+                'decision': final.get('decision', 'missing'), 'basis_kind': final.get('basis_kind'),
+                'candidate_id': final.get('candidate_id'),
+                'unresolved_counterevidence_count': len(final.get('unresolved_counterevidence') or []),
+                'geometry_proof_admitted': geometry_proof is not None,
+                'text_proof_admitted': text_proof is not None,
+                'continuation_preserved': bool(priority or queries or prior)})
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:8]
         if result[2] and not ready_wiki and not single_geometry_action and result[2] not in story['_identity_article_queries']:
@@ -1170,7 +1206,7 @@ async def _suggest(service, story, transcript, candidates):
         return result
     def reuse_initial_plan():
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
-        nonlocal source_text_receipt, text_articles
+        nonlocal source_text_receipt, text_articles, joint_resolution_required
         from .identity_plan_diagnostics import reusable_closed_initial_plan
         marker = joint_operation_marker(service, story, stage='initial')
         saved = reusable_closed_initial_plan(marker, initial_unit_binding)
@@ -1180,6 +1216,7 @@ async def _suggest(service, story, transcript, candidates):
         # Revalidate every semantic/proof guard; this is not a new model result.
         schema.clear()
         schema.update(copy.deepcopy(saved['schema']))
+        joint_resolution_required = 'subject_resolution' in schema['properties']
         if saved.get('source_text_receipt'):
             followup_send_state = source_text_receipt.get('provider_send_state')
             source_text_receipt = copy.deepcopy(saved['source_text_receipt'])
@@ -1208,7 +1245,7 @@ async def _suggest(service, story, transcript, candidates):
     async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal initial_binding, initial_outcome
-        nonlocal joint_model_id
+        nonlocal joint_model_id, joint_resolution_required
         if joint_followup_used:
             # An executor key/model loop cannot repeat an already addressed
             # joint2 after a lost/error response. Preserve the original outcome.
@@ -1218,6 +1255,7 @@ async def _suggest(service, story, transcript, candidates):
                 joint_operation_marker(service, story, stage='initial'), model):
             raise PermanentProviderError('identity_joint_initial_already_addressed')
         text_articles, source_text_receipt = copy.deepcopy(early_text_articles), copy.deepcopy(early_source_text_receipt)
+        joint_resolution_required = 'subject_resolution' in initial_schema['properties']
         from google.genai.errors import APIError
         from .service import ConflictError
         initial_binding = initial_unit_binding
@@ -1274,6 +1312,7 @@ async def _suggest(service, story, transcript, candidates):
     async def process_initial_response(response, *, model=None, quota=None, executor, initial_route='google'):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
+        nonlocal joint_resolution_required
         story['_identity_search_plan_route'] = initial_route
         component_rejections = {}
         decode_error = False
@@ -1352,8 +1391,10 @@ async def _suggest(service, story, transcript, candidates):
             issues['schema_validation'] = {'errors': schema_errors, 'truncated': schema_errors_truncated}
         from .identity_proof import freeze_geometry_proof
         geometry_rejection_details = []
+        from .identity_subject_resolution import bind_subject_resolution
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
-            joint_source_map_receipt(), [*observed, *candidates], rejection=geometry_rejection_details) if isinstance(payload, dict) else None)
+            bind_subject_resolution(joint_source_map_receipt(), payload), [*observed, *candidates],
+            rejection=geometry_rejection_details) if isinstance(payload, dict) else None)
         initial_text = closed_text_proof(payload) if isinstance(payload, dict) and initial_validation_error is None else None
         if initial_geometry is not None and initial_validation_error is None:
             # Independent G already passed strict admission. An inapplicable T
@@ -1381,12 +1422,17 @@ async def _suggest(service, story, transcript, candidates):
             nomination_id = requested_targets[0]
         if (scene and initial_geometry is None and isinstance(geometry_claim, dict)
                 and geometry_claim.get('decision') in {'accepted_geometry', 'uncertain'}):
+            from .identity_subject_resolution import resolution_supports
+            final_selected = resolution_supports(bind_subject_resolution(joint_source_map_receipt(), payload),
+                geometry_claim, 'G')
             geometry_rejection = {'code': ('identity_geometry_proof_invalid'
                 if geometry_claim['decision'] == 'accepted_geometry' else 'identity_geometry_uncertain'),
                 'previous_claim_is_not_confirmation': True,
                 'validation': geometry_rejection_details,
                 'original_operation': {'joint_stage': 'initial', 'binding': initial_binding,
                     'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()}}
+            if geometry_claim['decision'] == 'accepted_geometry' and not final_selected:
+                geometry_rejection['code'] = 'identity_final_subject_not_selected'
             correspondence = geometry_claim.get('spatial_correspondence')
             correspondence = correspondence if isinstance(correspondence, dict) else {}
             if geometry_claim['decision'] == 'accepted_geometry' and correspondence.get('pattern_kind') == 'frontage_sequence':
@@ -1428,6 +1474,7 @@ async def _suggest(service, story, transcript, candidates):
             if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
             if (geometry_claim['decision'] == 'accepted_geometry'
+                    and final_selected
                     and not any(queries_from(payload)) and not payload.get('article_queries')
                     and not payload.get('first_wave_hypotheses')
                     and not payload.get('selected_wikipedia_page_ids')
@@ -1436,7 +1483,8 @@ async def _suggest(service, story, transcript, candidates):
                 issues['host_evidence_contract'] = geometry_rejection
         lookup = {}
         new_text_acquired = bool(text_articles and isinstance(payload, dict)
-                                 and payload.get('rejected_architectural_text'))
+            and payload.get('rejected_architectural_text')
+            and payload['rejected_architectural_text']['reason'] != 'identity_final_subject_not_selected')
         early_text_evaluated = (bool(source_text_receipt) and isinstance(payload, dict)
             and isinstance(payload.get('accepted_architectural_text')
                 or (payload.get('rejected_architectural_text') or {}).get('decision'), dict))
@@ -1707,6 +1755,11 @@ async def _suggest(service, story, transcript, candidates):
                 source_text_receipt['text_delivery'] = compact_t['text_delivery']
                 source_text_receipt['comparison_scope'] = compact_t['comparison_scope']
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
+                if not (address_detail and detail_request) and not native_readback_only:
+                    # This operation returns one T decision, not joint G/T.
+                    # Its original binding must not inherit joint1's marker.
+                    joint_resolution_required = False
+                    source_text_receipt.pop('subject_resolution_contract', None)
                 if address_detail and detail_request:
                     # Keep the existing compact acquired-text packet. Only the
                     # two decision components join it, not another full planner
@@ -1715,8 +1768,16 @@ async def _suggest(service, story, transcript, candidates):
                         'accepted_geometry': copy.deepcopy(schema['properties']['accepted_geometry']),
                         'accepted_architectural_text': compact_t['schema']},
                         'required': ['accepted_geometry', 'accepted_architectural_text'], 'additionalProperties': False}
+                    if not native_readback_only:
+                        from .identity_subject_resolution import (CONTRACT as RESOLUTION_CONTRACT,
+                            INSTRUCTIONS as RESOLUTION_INSTRUCTIONS, with_subject_resolution)
+                        followup_contract = with_subject_resolution(followup_contract)
+                        schema['properties']['subject_resolution'] = copy.deepcopy(
+                            followup_contract['properties']['subject_resolution'])
+                        joint_resolution_required = True
+                        source_text_receipt['subject_resolution_contract'] = RESOLUTION_CONTRACT
                     compact_t = {**compact_t, 'schema': followup_contract}
-                    followup_prompt += ('\nDecide G and T independently in this same decision. Return '
+                    followup_prompt += ('\nDescribe G and T evidence in this same operation. Return '
                         'accepted_geometry and accepted_architectural_text using the issued contracts. '
                         'The requested address lookup and initial nomination are hypotheses; '
                         'unrelated/absent article support does not invalidate sufficient geometry. '
@@ -1730,6 +1791,8 @@ async def _suggest(service, story, transcript, candidates):
                             ensure_ascii=False, separators=(',', ':'))
                         + '\nRequested observed geometry (data, not identity):\n'
                         + json.dumps(detail_request, ensure_ascii=False, separators=(',', ':')))
+                    if joint_resolution_required:
+                        followup_prompt += '\n' + RESOLUTION_INSTRUCTIONS
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
                 # The complete proof contract contains host-only JSON Schema
@@ -1762,6 +1825,22 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_inapplicable', {
                     'reason': 'no_received_physical_nomination', 'article_count': len(text_articles),
                     'existing_joint_followup_preserved': True, 'identity_accepted': False})
+            if (not compact_t and not native_readback_only and text_articles
+                    and {'accepted_geometry', 'accepted_architectural_text'} <= set(followup_contract['properties'])
+                    and 'subject_resolution' not in followup_contract['properties']):
+                from .identity_subject_resolution import (CONTRACT as RESOLUTION_CONTRACT,
+                    INSTRUCTIONS as RESOLUTION_INSTRUCTIONS, with_subject_resolution)
+                previous_contract = followup_contract
+                followup_contract = with_subject_resolution(followup_contract)
+                schema['properties']['subject_resolution'] = copy.deepcopy(
+                    followup_contract['properties']['subject_resolution'])
+                joint_resolution_required = True
+                source_text_receipt['subject_resolution_contract'] = RESOLUTION_CONTRACT
+                followup_prompt += '\n' + RESOLUTION_INSTRUCTIONS
+                followup_config = types.GenerateContentConfig(response_mime_type='application/json',
+                    system_instruction=followup_config.system_instruction.replace(
+                        json.dumps(previous_contract, ensure_ascii=False, separators=(',', ':')),
+                        json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')), 1))
             if address_detail and detail_request and not text_articles:
                 followup_prompt, followup_contract, resolution_packet = _compact_geometry_followup(
                     schema, scene_manifest, physical_context, detail_request, plain_packet)
@@ -1867,7 +1946,7 @@ async def _suggest(service, story, transcript, candidates):
                 compact_t = ({**(compact_t or {}), 'schema': issued_followup_schema,
                     'received_candidate_ids': prepared_request.get('received_candidate_ids')}
                     if 'decision' in frozen_fields or 'accepted_geometry' in frozen_fields
-                        and set(frozen_fields) <= {'accepted_geometry', 'accepted_architectural_text'} else None)
+                        and set(frozen_fields) <= {'accepted_geometry', 'accepted_architectural_text', 'subject_resolution'} else None)
             retry_claim = False
             def check_prepared_request():
                 if native_readback_only:
@@ -2065,7 +2144,7 @@ async def _suggest(service, story, transcript, candidates):
                                 compact_t = {**(compact_t or {}), 'schema': issued_followup_schema}
                                 schema['properties']['accepted_architectural_text'] = issued_followup_schema
                             elif 'accepted_geometry' in issued_followup_schema.get('properties', {}) and set(
-                                    issued_followup_schema['properties']) <= {'accepted_geometry', 'accepted_architectural_text'}:
+                                    issued_followup_schema['properties']) <= {'accepted_geometry', 'accepted_architectural_text', 'subject_resolution'}:
                                 compact_t = {**(compact_t or {}), 'schema': issued_followup_schema}
                                 schema['properties'].update(copy.deepcopy(issued_followup_schema['properties']))
                             else:
@@ -2174,7 +2253,7 @@ async def _suggest(service, story, transcript, candidates):
                             'provider_id': followup_provider, 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
                     decision_schema = compact_t['schema']
                     joint_components = ('accepted_geometry' in decision_schema.get('properties', {}) and set(
-                        decision_schema['properties']) <= {'accepted_geometry', 'accepted_architectural_text'})
+                        decision_schema['properties']) <= {'accepted_geometry', 'accepted_architectural_text', 'subject_resolution'})
                     if joint_components:
                         from jsonschema import Draft202012Validator
                         if not isinstance(answer, dict) or set(answer) - set(decision_schema['properties']):
@@ -2192,9 +2271,10 @@ async def _suggest(service, story, transcript, candidates):
                                     raise ValueError('source_map_component_invalid')
                             except ValueError:
                                 payload.pop(name, None)
-                                component_rejections[name] = {'reason': (
-                                    'identity_architectural_text_schema_invalid' if name == 'accepted_architectural_text'
-                                    else 'identity_geometry_schema_invalid'), 'decision': value}
+                                component_rejections[name] = {'reason': {
+                                    'accepted_architectural_text': 'identity_architectural_text_schema_invalid',
+                                    'accepted_geometry': 'identity_geometry_schema_invalid',
+                                    'subject_resolution': 'identity_subject_resolution_schema_invalid'}[name], 'decision': value}
                             else:
                                 payload[name] = value
                         if component_rejections:
