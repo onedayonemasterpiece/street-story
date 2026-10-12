@@ -32,8 +32,12 @@ internal object FactPresentation {
         return when {
             result.reason == "source_selection_unavailable" ->
                 "Исследование не завершено · временная проблема с выбором источников"
+            result.reason in setOf("research_output_exhausted", "research_empty_response",
+                "research_fact_routes_exhausted", "research_fact_executor_unavailable",
+                "research_provider_failed", "research_transport_unavailable") ->
+                "Не удалось обработать найденные источники · исследование не завершено"
             result.outcome == "resource_blocked" ->
-                "Исследование не завершено · источники временно недоступны"
+                "Исследование не завершено · временная ошибка обработки"
             result.outcome == "useful_partial" ->
                 "Исследование не завершено · найдена часть подтверждённых фактов"
             else -> "Исследование не завершено"
