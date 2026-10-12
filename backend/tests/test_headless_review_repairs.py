@@ -4,7 +4,7 @@ import json
 import pytest
 
 from street_story.headless_fact_review import HeadlessFactReview
-from street_story.headless_review_quotes import response_schema
+from street_story.headless_review_quotes import OWN_REFS_CONTRACT, response_schema
 from street_story.live import FUNCTIONS
 from test_headless_fact_review_parallel import ControlledReview, candidates
 from test_headless_fact_pool import RUN
@@ -26,7 +26,9 @@ class ReplacingReview(ControlledReview):
             if not repaired:
                 decision.update(verdict='repair_needed', atomic=False, support_complete=False,
                     repair_facts=[{'text': rows[0]['text'] if self.unchanged else 'In 2005 the gate housed an exhibit.', 'claim_key': 'exhibit-2005',
-                                   'evidence': [999] if self.foreign else [0]}])
+                                   **({'quote_refs': ['@own_quote:foreign'] if self.foreign else [rows[0]['quote_ref']]}
+                                      if packet.get('evidence_addressing') == OWN_REFS_CONTRACT
+                                      else {'evidence': [999] if self.foreign else [0]})}])
         old = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)
         self._put(job, unit, {**old, 'args': args})
         return args

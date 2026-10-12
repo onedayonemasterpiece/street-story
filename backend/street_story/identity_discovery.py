@@ -1052,11 +1052,12 @@ async def _suggest(service, story, transcript, candidates):
             or (payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain'
                 and source_text_receipt.get('source_image_input') is True))
         geometry_proof = None
+        geometry_admission_issues = []
         text_proof = None
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
             from .identity_proof import freeze_geometry_proof
             geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
-                [*observed, *candidates])
+                [*observed, *candidates], rejection=geometry_admission_issues)
         if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
             text_proof = closed_text_proof(payload)
             if text_proof is None:
@@ -1096,6 +1097,7 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_geometry_not_accepted',
                     {'candidate_id': rejected_geometry.get('candidate_id'),
                      'candidate_label': rejected_geometry.get('candidate_label'),
+                     'admission_issue_codes': [issue['code'] for issue in geometry_admission_issues],
                      'preserved_search_plan': True})
         if geometry_proof and text_proof and geometry_proof['candidate_id'] != text_proof['candidate_id']:
             payload = {**payload,

@@ -7,7 +7,8 @@ new inference or independent semantic judge is introduced.
 from __future__ import annotations
 
 LEGACY_CONTRACT = 'source-map-spatial-correspondence-v2'
-CONTRACT = 'source-map-spatial-correspondence-v3'
+INDEXED_CONTRACT = 'source-map-spatial-correspondence-v3'
+CONTRACT = 'source-map-spatial-correspondence-v4'
 
 GEOMETRY_COMPARISON_INSTRUCTIONS = (
     'Compare the photographed projection with the received MAP geometry, not image size with '
@@ -22,6 +23,8 @@ GEOMETRY_COMPARISON_INSTRUCTIONS = (
     'photographed body under the plausible views, and what remains unobserved. Mere apparent size '
     'or resemblance of the whole image to one outline does not resolve an alternative. Use '
     'general_relations or existing quantitative scenarios without inventing measurements. '
+    'For general_relations, every returned decisive_relation supplies its own received map_features. '
+    'All returned decisive_relations are checked; do not return separate relation indices. '
     'Requested conditional_boundary_view supplies actual side bearings, angular spans and '
     'midpoint self-occlusion from the nominal anchor. Compare the visible adjoining SOURCE '
     'faces with those sides; a whole footprint is not its visible projection. Inside/on-boundary '
@@ -58,7 +61,7 @@ def _measured_schema(feature):
         'additionalProperties': False}
 
 
-def correspondence_schema(feature):
+def correspondence_schema(feature, *, contract=None):
     """General observed relations, plus conditional quantitative scenarios."""
     text = {'type': 'string', 'minLength': 1, 'maxLength': 300}
     general = {'type': 'object', 'properties': {
@@ -67,10 +70,13 @@ def correspondence_schema(feature):
         'assumption_limits': {'type': 'array', 'maxItems': 8, 'items': text},
         'candidate_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8,
                           'uniqueItems': True, 'items': {'type': 'string', 'maxLength': 100}},
-        'decisive_relation_indices': {'type': 'array', 'minItems': 1, 'maxItems': 8,
-                                     'uniqueItems': True, 'items': {'type': 'integer', 'minimum': 0, 'maximum': 7}}},
+        },
         'required': ['pattern_kind', 'source_pattern', 'coverage_basis', 'assumption_limits',
-                     'candidate_ids', 'decisive_relation_indices'], 'additionalProperties': False}
+                     'candidate_ids'], 'additionalProperties': False}
+    if contract in {INDEXED_CONTRACT, LEGACY_CONTRACT}:
+        general['properties']['decisive_relation_indices'] = {'type': 'array', 'minItems': 1, 'maxItems': 8,
+            'uniqueItems': True, 'items': {'type': 'integer', 'minimum': 0, 'maximum': 7}}
+        general['required'].append('decisive_relation_indices')
     return {'oneOf': [general, _measured_schema(feature)]}
 
 
@@ -85,7 +91,8 @@ def _general_correspondence(story, candidates, decision, receipt, value):
     required = set(receipt.get('material_alternative_candidate_ids') or []) - {cid}
     addressed = {item['candidate_id'] for item in decision['rejected_alternatives']}
     relations = decision['decisive_relations']
-    indices = value.get('decisive_relation_indices') or []
+    indices = (list(range(len(relations))) if receipt.get('geometry_contract') == CONTRACT
+               else value.get('decisive_relation_indices') or [])
     if (cid not in ids or not set(ids).issubset(allowed & received)
             or not required.issubset(addressed)
             or set(indices) != set(range(len(relations)))
@@ -103,7 +110,7 @@ def _general_correspondence(story, candidates, decision, receipt, value):
         if not features:
             return None
         resolved.append({'relation_index': index, 'features': features})
-    return {'contract': CONTRACT, 'kind': 'general_relations', 'resolved_relations': resolved,
+    return {'contract': receipt['geometry_contract'], 'kind': 'general_relations', 'resolved_relations': resolved,
             'assumption_limits': value['assumption_limits'],
             'scope': 'Same joint SOURCE/MAP semantic decision, bound to received primitives; no numerical pose claimed.'}
 
@@ -112,7 +119,7 @@ def measured_correspondence(story, candidates, decision, receipt):
     from .identity_spatial_features import geometry_feature, measure_spatial_relations
     value = decision.get('spatial_correspondence') or {}
     if value.get('pattern_kind') == 'general_relations':
-        if receipt.get('geometry_contract') != CONTRACT:
+        if receipt.get('geometry_contract') not in {CONTRACT, INDEXED_CONTRACT}:
             return None  # Frozen v2 operations retain their original measured contract.
         return _general_correspondence(story, candidates, decision, receipt, value)
     cid = decision['candidate_id']
@@ -183,6 +190,7 @@ def measured_correspondence(story, candidates, decision, receipt):
             measured['left_to_right_order'] != measurements[0]['left_to_right_order']
             for measured in measurements[1:]):
         return None
-    return {'contract': CONTRACT, 'measurements': measurements,
+    return {'contract': CONTRACT if receipt.get('geometry_contract') == CONTRACT else INDEXED_CONTRACT,
+        'measurements': measurements,
         'scope': 'Observed OSM relations under explicit model pose scenarios; '
             'SOURCE interpretation and material relevance remain the joint model decision.'}

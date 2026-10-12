@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story import review_packets
-from street_story.headless_review_quotes import model_packet
+from street_story.headless_review_quotes import OWN_REFS_CONTRACT, model_packet
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.headless_facts import HeadlessFacts
 from street_story.service import ConflictError
@@ -18,7 +18,8 @@ def model_decisions(packet):
     for fact in packet['facts']:
         evidence = fact['evidence']
         quotes = [s['quote_ref'] for e in evidence for s in e['slices'] if s.get('quote_ref')]
-        decisions.append({'fact': fact['fact'], 'evidence': [e['evidence'] for e in evidence],
+        decisions.append({'fact': fact['fact'], **({'evidence': [e['evidence'] for e in evidence]}
+            if packet.get('evidence_addressing') != OWN_REFS_CONTRACT else {}),
             'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
             'claims': [fact['text']], 'basis_quotes': quotes or [fact['text']], 'reason': 'Own unchanged frozen passage.',
             **({'own_evidence_values': [], 'own_value_conflicts': []} if packet.get('verifier_presentation') else {})})
@@ -186,9 +187,12 @@ class ControlledReview(HeadlessFactReview):
         for fact in sorted({r['fact'] for r in packet['items']}):
             rows=[r for r in packet['items'] if r['fact']==fact]
             item=rows[0]
-            decisions.append({'fact':fact,'evidence':sorted({r['evidence'] for r in rows}),
+            decisions.append({'fact':fact, **({'evidence':sorted({r['evidence'] for r in rows})}
+                if packet.get('evidence_addressing') != OWN_REFS_CONTRACT else {}),
                 'verdict':'supported','atomic':True,'support_complete':True,'qualifiers_preserved':True,
-                'claims':[item['text']],'basis_quotes':[item['text']], 'reason':'Controlled own exact passage.'})
+                'claims':[item['text']],'basis_quotes':([r['quote_ref'] for r in rows]
+                    if packet.get('evidence_addressing') == OWN_REFS_CONTRACT else [item['text']]),
+                'reason':'Controlled own exact passage.'})
         args={'packet_ref':packet['packet_ref'],'decisions':decisions,'relations_complete':True,
               'conflicts':[],'coverage_complete':False,'missing_aspects':[]}
         self._put(job, unit, {'phase':'result','args':args,

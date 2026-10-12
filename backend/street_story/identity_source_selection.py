@@ -584,7 +584,7 @@ def identity_transport_schema(schema, *, map_label_references=False):
     return result
 
 
-def geometry_decision_schema(candidate_ids, *, structured=False):
+def geometry_decision_schema(candidate_ids, *, structured=False, geometry_contract=None):
     """Evidence from the existing joint call, rather than a second judge."""
     text = {'type': 'string', 'maxLength': 300}
     # The exact ID dictionary is already in the map packet. The common proof
@@ -633,7 +633,7 @@ def geometry_decision_schema(candidate_ids, *, structured=False):
             'assumptions', 'bounded_coverage', 'camera_pose'], 'additionalProperties': False}
     if structured:
         from .identity_geometry_contract import correspondence_schema
-        correspondence = correspondence_schema(feature)
+        correspondence = correspondence_schema(feature, contract=geometry_contract)
         schema['properties']['spatial_correspondence'] = {'anyOf': [correspondence, {'type': 'null'}]}
         # Uncertain answers may ask for a new view without inventing a pose.
         schema['allOf'] = [{'if': {'properties': {'decision': {'const': 'accepted_geometry'}}},

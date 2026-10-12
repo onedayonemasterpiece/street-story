@@ -82,7 +82,8 @@ VERIFIER_PROMPT = (
     'selectable propositions in claims; choose atomic and verdict only AFTER that enumeration. '
     'For repair_needed supply repair_facts for the independently supportable replacements: '
     '1–8 precise atomic replacements with a '
-    'model claim_key and own evidence numbers, in the candidate\'s language. Preserve unresolved disagreement in the text; '
+    'model claim_key and received own quote_refs, in the candidate\'s language. The quote references '
+    'already resolve their evidence; do not return a second evidence index. Preserve unresolved disagreement in the text; '
     'never choose a disputed value. Only propose what these actual own spans support. The host '
     'will preserve lineage and review replacements within the existing bounded budget. '
     'If no safe replacement can be supported, use insufficient and explain the remaining '
@@ -92,7 +93,7 @@ VERIFIER_PROMPT = (
     'uncertainty and planned/future/estimated versus completed/actual modality. Missing context '
     'is insufficient, not historical falsity. Mutable states need the source as-of date or '
     'own current evidence; retrieval/review time and undated currently are not present proof. '
-    'basis_quotes uses exact quote_ref labels from THIS fact\'s chosen own evidence numbers, '
+    'basis_quotes uses exact received quote_ref labels for THIS fact, '
     'never prose or another fact\'s labels. The host resolves literal addressing, not meaning. '
     'Compare packet facts and nearby_existing_claims for duplicates/incompatibility. Different '
     'wording is not conflict. equivalent_to uses a received distinct fact number or null; '
@@ -111,7 +112,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v16-scoped-relations:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v17-own-addresses:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
@@ -726,7 +727,8 @@ class HeadlessFactReview:
                     packet['own_source_context'] = source_context(db, packet['packet_ref'], job['story_id'])
                     goal = db.execute('SELECT goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0]
                 inventory = self.harness.adapter._get_facts(job['story_id'], {'eligibility': 'eligible', 'limit': 50})
-                packet.update(verifier_presentation='one_assertion_all_own_slices_v1', coverage_goal=goal,
+                packet.update(verifier_presentation='one_assertion_all_own_slices_v1',
+                    evidence_addressing=headless_review_quotes.OWN_REFS_CONTRACT, coverage_goal=goal,
                     pending_relation_context=pending_context,
                     eligible_facts=[{'fact_id': f['fact_id'], 'text': f['text']} for f in inventory['facts']],
                     eligible_inventory_complete=not inventory['has_more'])

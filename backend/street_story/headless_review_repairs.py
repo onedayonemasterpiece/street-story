@@ -38,6 +38,10 @@ async def resume(engine, session, job, unit, outcome):
             for index, decision in enumerate(args.get('decisions', [])):
                 if not isinstance(decision, dict) or not decision.get('repair_facts'):
                     continue
+                # Fresh private proposals use the same scoped quote address as
+                # their parent review. Legacy frozen proposals keep exact indices.
+                decision = headless_review_quotes.resolve_quotes(outcome['frozen_packet'],
+                    {**args, 'decisions': [decision]}, include_repairs=True)['decisions'][0]
                 checked = {key: value for key, value in resolved['decisions'][index].items()
                            if key not in {'repair_facts', 'own_evidence_values', 'own_value_conflicts'}}
                 review_packets.validate_decision(checked, original, outcome['packet_ref'])

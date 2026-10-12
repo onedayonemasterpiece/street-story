@@ -599,8 +599,7 @@ async def test_general_geometry_uses_received_relations_without_numerical_pose(t
     decision['spatial_correspondence'] = {'pattern_kind': 'general_relations',
         'source_pattern': 'Individual body bounds the photographed approach, with a distinct neighboring return.',
         'coverage_basis': 'Received body and approach primitives; material neighbor addressed.',
-        'candidate_ids': ['osm:way:2'], 'assumption_limits': ['Heading and pitch are unknown.'],
-        'decisive_relation_indices': [0]}
+        'candidate_ids': ['osm:way:2'], 'assumption_limits': ['Heading and pitch are unknown.']}
     if foreign:
         decision['decisive_relations'][0]['map_features'][0]['candidate_id'] = 'osm:way:999999'
     digest = hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest()
@@ -620,6 +619,18 @@ async def test_general_geometry_uses_received_relations_without_numerical_pose(t
         wrong_source = {**receipt, 'source_photo_sha256': 'other-photo'}
         assert freeze_geometry_proof(story, decision, wrong_source, active, rejection=rejection) is None
         assert rejection[-1]['failed_fields'] == ['source_photo_binding']
+        # A frozen v3 operation retains its indices; a bad old reply cannot be
+        # accepted by the new contract or rewritten to remove its bad pointer.
+        receipt['geometry_contract'] = 'source-map-spatial-correspondence-v3'
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0]
+        assert freeze_geometry_proof(story, decision, receipt, active)['spatial_correspondence']['contract'] == receipt['geometry_contract']
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0, 1, 2, 3]
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_spatial_correspondence_unresolved'
+        receipt['geometry_contract'] = CONTRACT
+        assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
+        assert rejection[-1]['code'] == 'geometry_decision_schema_invalid'
         receipt['geometry_contract'] = 'source-map-spatial-correspondence-v2'
+        decision['spatial_correspondence']['decisive_relation_indices'] = [0]
         assert freeze_geometry_proof(story, decision, receipt, active, rejection=rejection) is None
         assert rejection[-1]['code'] == 'geometry_spatial_correspondence_unresolved'

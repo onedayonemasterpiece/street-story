@@ -40,7 +40,7 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates, *, re
     from .identity_scene import scene_camera_context
     from .identity_source_selection import geometry_decision_schema
     from .identity_spatial_features import geometry_feature
-    from .identity_geometry_contract import CONTRACT, LEGACY_CONTRACT, measured_correspondence
+    from .identity_geometry_contract import CONTRACT, INDEXED_CONTRACT, LEGACY_CONTRACT, measured_correspondence
     from .identity_subject_binding import article_candidate
     def reject(code, **details):
         if rejection is not None:
@@ -52,9 +52,9 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates, *, re
     from .identity_subject_resolution import resolution_supports
     if not resolution_supports(receipt, decision or {}, 'G'):
         return reject('geometry_final_subject_not_accepted')
-    structured = receipt.get('geometry_contract') in {CONTRACT, LEGACY_CONTRACT}
+    structured = receipt.get('geometry_contract') in {CONTRACT, INDEXED_CONTRACT, LEGACY_CONTRACT}
     if not isinstance(decision, dict) or not Draft202012Validator(
-            geometry_decision_schema(list(catalog), structured=structured or
+            geometry_decision_schema(list(catalog), geometry_contract=receipt.get('geometry_contract') or INDEXED_CONTRACT, structured=structured or
                 isinstance(decision, dict) and 'spatial_correspondence' in decision)).is_valid(decision):
         return reject('geometry_decision_schema_invalid')
     cid = decision.get('candidate_id')

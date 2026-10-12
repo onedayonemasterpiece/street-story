@@ -5,6 +5,7 @@ import hashlib
 from .service import ConflictError
 
 PREFIX = '@own_quote:'
+OWN_REFS_CONTRACT = 'own_quote_refs_v2'
 
 
 def _entry(packet, item):
@@ -60,9 +61,30 @@ def response_schema(packet, public_schema):
         quotes['description'] = ('Exact frozen quote_ref labels or short literal own-evidence quotations. Choose this fact\'s selected '
                                  'evidence; empty only for unsupported decisions. Labels establish '
                                  'literal addressing, not semantic support.')
+    if packet.get('evidence_addressing') == OWN_REFS_CONTRACT:
+        scopes = {}
+        for item in packet['items']:
+            scopes.setdefault(item['fact'], []).append(item['quote_ref'])
+        schema['properties']['decisions']['items']['allOf'] = [{'oneOf': [
+            {'properties': {'fact': {'const': number},
+                'basis_quotes': {'items': {'type': 'string', 'enum': refs}}},
+             'required': ['fact']} for number, refs in sorted(scopes.items())]}]
+        decisions['basis_quotes']['description'] = ('Choose only received quote_ref labels for THIS fact. '
+            'Each label already names its exact own evidence; do not return a second evidence index. '
+            'A candidate or paraphrase is not a literal source address.')
+        decisions.pop('evidence')
+        schema['properties']['decisions']['items']['required'].remove('evidence')
+        schema['properties']['decisions']['items']['additionalProperties'] = False
     if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
         from .headless_review_repairs import REPLACEMENTS_SCHEMA
         decisions['repair_facts'] = deepcopy(REPLACEMENTS_SCHEMA)
+        if packet.get('evidence_addressing') == OWN_REFS_CONTRACT:
+            replacement = decisions['repair_facts']['items']
+            replacement['properties'].pop('evidence')
+            replacement['required'].remove('evidence')
+            replacement['properties']['quote_refs'] = {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}
+            replacement['required'].append('quote_refs')
         peers = [row['fact_id'] for row in packet.get('pending_relation_context', [])]
         if peers:
             decisions['related_pending_ids'] = {'type': 'array', 'maxItems': 12,
@@ -72,6 +94,11 @@ def response_schema(packet, public_schema):
                 'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
             'required': ['property', 'value', 'quote_refs'], 'additionalProperties': False}}
         decisions['own_value_conflicts'] = {'type': 'array', 'maxItems': 12, 'items': {'type': 'string', 'maxLength': 500}}
+        if packet.get('evidence_addressing') == OWN_REFS_CONTRACT:
+            for variant, (_, labels) in zip(schema['properties']['decisions']['items']['allOf'][0]['oneOf'], sorted(scopes.items())):
+                refs = {'type': 'array', 'items': {'type': 'string', 'enum': labels}}
+                variant['properties']['repair_facts'] = {'items': {'properties': {'quote_refs': refs}}}
+                variant['properties']['own_evidence_values'] = {'items': {'properties': {'quote_refs': refs}}}
         # Advisory early stopping cannot discard independent own-source
         # verdicts. sufficient_basis validates addressing before any stop.
         schema['properties']['research_sufficient'] = {'description': 'Optional boolean early-stop advice.'}
@@ -155,7 +182,7 @@ def sufficient_basis(packet, args, original_items):
             + [(fid, known[fid]) for fid in known_ids])
 
 
-def resolve_quotes(packet, args):
+def resolve_quotes(packet, args, *, include_repairs=False):
     """Resolve only explicit labels for this fact's selected immutable evidence."""
     if 'quote_catalog' not in packet:
         return args  # Addressed legacy contracts keep their original literal semantics.
@@ -170,6 +197,32 @@ def resolve_quotes(packet, args):
         literals[label] = item['passage']
     resolved = deepcopy(args)
     for decision in resolved.get('decisions', []):
+        if packet.get('evidence_addressing') == OWN_REFS_CONTRACT:
+            def own_indices(refs):
+                if not isinstance(refs, list):
+                    raise ConflictError('live_fact_review_evidence_invalid', 'Use received own quote references.')
+                indices = []
+                for ref in refs:
+                    entry = catalog.get(ref) if isinstance(ref, str) else None
+                    if not isinstance(entry, dict) or ref not in literals or entry['fact'] != decision.get('fact'):
+                        raise ConflictError('live_fact_review_evidence_invalid', 'Quote reference belongs to another or unknown assertion.')
+                    if entry['evidence'] not in indices:
+                        indices.append(entry['evidence'])
+                return indices
+            indices = own_indices(decision.get('basis_quotes'))
+            # No repair of conflicting redundant pointers, including bypassed
+            # private responses. Only the issued reference supplies this address.
+            if 'evidence' in decision and decision['evidence'] != indices:
+                raise ConflictError('live_fact_review_evidence_invalid', 'Redundant evidence selection conflicts with own references.')
+            decision['evidence'] = indices
+            for child in decision.get('repair_facts', []) if include_repairs else []:
+                if not isinstance(child, dict):
+                    raise ConflictError('live_fact_review_evidence_invalid', 'Malformed own-reference replacement.')
+                refs = child.pop('quote_refs', None)
+                indices = own_indices(refs)
+                if 'evidence' in child and child['evidence'] != indices:
+                    raise ConflictError('live_fact_review_evidence_invalid', 'Replacement evidence conflicts with own references.')
+                child['evidence'] = indices
         quotes = decision.get('basis_quotes')
         if not isinstance(quotes, list):
             continue  # The ordinary public validator rejects malformed fields.

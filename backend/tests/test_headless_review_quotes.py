@@ -127,7 +127,8 @@ def public_schema():
 
 def answer(packet):
     return {'packet_ref': packet['packet_ref'], 'decisions': [
-        {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+        {'fact': item['fact'], **({'evidence': [item['evidence']]}
+            if packet.get('evidence_addressing') != headless_review_quotes.OWN_REFS_CONTRACT else {}), 'verdict': 'supported',
          **({'own_evidence_values': [], 'own_value_conflicts': []}
             if packet.get('verifier_presentation') else {}),
          'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
@@ -189,6 +190,85 @@ def test_private_relations_use_only_received_local_numbers_and_existing_ids():
     assert validate(args)
     args['decisions'][0]['equivalent_to_existing'] = 'invented-id'
     assert not validate(args)
+
+
+@pytest.mark.parametrize('mutation', ['one_based_evidence', 'foreign_quote', 'candidate_as_quote'])
+def test_fresh_private_evidence_schema_binds_each_fact_to_its_own_addresses(mutation):
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet['evidence_addressing'] = headless_review_quotes.OWN_REFS_CONTRACT
+    args = answer(packet)
+    validate = Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid
+    assert validate(args)
+    if mutation == 'one_based_evidence':
+        args['decisions'][2]['evidence'] = [1]  # Fact1 has only evidence0.
+    elif mutation == 'foreign_quote':
+        args['decisions'][0]['basis_quotes'] = [packet['items'][2]['quote_ref']]
+    else:
+        args['decisions'][0]['basis_quotes'] = ['One independently selectable claim.']
+    assert not validate(args)
+
+
+def test_fresh_private_addresses_keep_all_own_slices_and_legacy_literal_schema():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    args = answer(packet)
+    args['decisions'][0]['basis_quotes'] = [packet['items'][0]['quote_ref'], packet['items'][1]['quote_ref']]
+    packet['evidence_addressing'] = headless_review_quotes.OWN_REFS_CONTRACT
+    for decision in args['decisions']:
+        decision.pop('evidence', None)
+    assert Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid(args)
+    args['decisions'][0]['basis_quotes'] = ['Башня была построена в 1859 году.']
+    assert not Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid(args)
+    packet.pop('evidence_addressing')
+    for decision in args['decisions']:
+        decision['evidence'] = [0]
+    assert Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid(args)
+
+
+@pytest.mark.parametrize('invalid', ['foreign_quote', 'unknown_quote', 'wrong_redundant_index', 'literal', 'foreign_repair'])
+def test_single_own_reference_cannot_guess_or_repair_an_address(invalid):
+    packet = packet_fixture()
+    packet['evidence_addressing'] = headless_review_quotes.OWN_REFS_CONTRACT
+    args = answer(packet)
+    if invalid == 'foreign_quote':
+        args['decisions'][0]['basis_quotes'] = [packet['items'][2]['quote_ref']]
+    elif invalid == 'unknown_quote':
+        args['decisions'][0]['basis_quotes'][0] += 'unknown'
+    elif invalid == 'wrong_redundant_index':
+        args['decisions'][0]['evidence'] = [1]
+    elif invalid == 'literal':
+        args['decisions'][0]['basis_quotes'] = [packet['items'][0]['passage']]
+    else:
+        args['decisions'][0]['repair_facts'] = [{'text': 'New claim.', 'claim_key': 'new',
+            'quote_refs': [packet['items'][2]['quote_ref']]}]
+    with pytest.raises(ConflictError):
+        headless_review_quotes.resolve_quotes(packet, args, include_repairs=True)
+
+
+def test_single_own_reference_retains_all_basis_and_model_semantics():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet.update(evidence_addressing=headless_review_quotes.OWN_REFS_CONTRACT,
+        verifier_presentation='one_assertion_all_own_slices_v1')
+    args = answer(packet)
+    decision = args['decisions'][0]
+    decision['basis_quotes'].append(packet['items'][1]['quote_ref'])
+    decision.update(verdict='repair_needed', atomic=False, reason='Model-owned unresolved dates.',
+        repair_facts=[{'text': 'Original conflicting dates remain unresolved.', 'claim_key': 'dates',
+                      'quote_refs': decision['basis_quotes'][:]}])
+    original = deepcopy(args)
+    private = headless_review_quotes.response_schema(packet, public_schema())
+    assert Draft202012Validator(private).is_valid(args)
+    resolved = headless_review_quotes.resolve_quotes(packet, args, include_repairs=True)
+    assert args == original
+    assert resolved['decisions'][0]['evidence'] == [0, 1]
+    assert resolved['decisions'][0]['basis_quotes'] == [item['passage'] for item in packet['items'][:2]]
+    assert resolved['decisions'][0]['repair_facts'][0]['evidence'] == [0, 1]
+    for key in ('verdict', 'atomic', 'reason', 'claims', 'qualifiers_preserved', 'support_complete'):
+        assert resolved['decisions'][0][key] == original['decisions'][0][key]
+    args['decisions'][0]['evidence'] = [0, 1]
+    assert not Draft202012Validator(private).is_valid(args)
 
 
 def test_private_schema_accepts_literal_quote_while_own_evidence_guard_remains():
@@ -277,7 +357,7 @@ async def test_label_review_commits_own_literals_without_rewriting_closed_answer
     class LabelReview(HeadlessFactReview):
         async def _infer(self, packet, job, unit, saved, ordinal=0):
             args = {'packet_ref': packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+                {'fact': item['fact'], 'verdict': 'supported',
                  'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
                  'claims': [item['text']], 'basis_quotes': [item['quote_ref']]}
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],
