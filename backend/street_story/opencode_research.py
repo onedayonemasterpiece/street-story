@@ -743,13 +743,19 @@ class OpenCodeResearch:
                                 if 'selected_sources' in result:
                                     sources, rejected = selected_search_sources(discovered, result)
                                     selection_status = 'model_selected'
-                                elif binding.get('purpose') == 'identity':
+                                elif (binding.get('purpose') == 'identity'
+                                      or binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1'):
                                     sources, rejected, selection_status = [], 0, 'selection_unavailable'
                                 else:
                                     sources, rejected, selection_status = discovered, 0, 'legacy_discovery'
                                 receipt.update(discovered_sources=discovered, sources=sources,
                                     source_selection={'status': selection_status, 'discovered_count': len(discovered),
                                         'selected_count': len(sources), 'unobserved_count': rejected})
+                                if binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1':
+                                    receipt.update(provider_send_state='response_closed', response_finish=info.get('finish'))
+                                    receipt['source_selection']['reason'] = (
+                                        'final_selection_json_unavailable' if selection_status == 'selection_unavailable'
+                                        else str(result.get('summary') or '')[:1200])
                                 LOG.info('street_story_search_selection story_id=%s attempt_id=%s purpose=%s '
                                          'status=%s discovered=%s selected=%s unobserved=%s',
                                          binding.get('story_id'), binding.get('attempt_id'), binding.get('purpose'),
@@ -823,6 +829,19 @@ class OpenCodeResearch:
                   'using the supplied alternatives, or return an empty selection. '
                   'For facts, choose relevant source-backed articles about the confirmed subject, including historical material. '
                   'This choice is acquisition guidance only, never proof of identity or facts. Hypotheses/query:\n' + str(query))
+        if binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1':
+            prompt = ('Use websearch for the confirmed owner-selected physical object. '
+                      'Use ONE websearch round only: one query, or at most two queries issued together in that round. '
+                      'Reserve the next assistant turn for final JSON. After that first round, do not refine with '
+                      'another tool call: return the specified summary and selected_sources JSON immediately. '
+                      'Preserve the supplied city, street and full house number/range. Reuse saved research history. '
+                      'Select only exact URLs observed in completed websearch output whose title/snippet supports '
+                      'substantive reading about this specific building. Omit broad directories, nearby objects, '
+                      'and rental-only or interior-only pages. An address match alone is not substantive building evidence. '
+                      'Return every relevant observed source in useful reading order; there is no source-count cap. '
+                      'If no source is suitable, return selected_sources: [] and explain why in summary. '
+                      'Do not fetch pages, run commands, code, file tools, tasks or validation. '
+                      'Selection is acquisition guidance, never proof of identity or facts. Context:\n' + str(query))
         return await self._run('search', prompt, binding, SEARCH_SCHEMA)
 
     async def compare_image(self, snapshot, binding, jsonschema, context=''):

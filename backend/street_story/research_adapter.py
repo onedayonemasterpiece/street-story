@@ -474,6 +474,11 @@ class ProductResearchAdapter:
                 'purpose': 'identity' if visual else ('facts' if role.startswith('facts') or '_fact_research_control_revision' in story else 'identity'),
                 'control_revision': story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+            if (role == 'search' and binding['purpose'] == 'facts'
+                    and self._owner_exact_fact_scope(story)):
+                # Version only a newly admitted operation. Original addressed
+                # requests and completed receipts retain their frozen contract.
+                binding['search_selection_contract'] = 'owner-exact-selected-urls-v1'
             if story.get('_fact_pool_unit_id'):
                 binding.update(fact_unit_id=story['_fact_pool_unit_id'],
                                fact_input_sha256=story.get('_fact_pool_input_sha256'),
@@ -826,6 +831,20 @@ class ProductResearchAdapter:
                 result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
                               source_selection=found.payload.get('source_selection', {}))
                 result['receipt']['outcome'] = 'selection_unavailable'
+        strict_selection = ((independent or {}).get('receipt', {}).get('binding', {}).get(
+            'search_selection_contract') == 'owner-exact-selected-urls-v1')
+        if strict_selection:
+            if result.get('receipt') != independent.get('receipt'):
+                result['receipt']['independent_search'] = independent['receipt']
+            if not result.get('sources'):
+                # A closed search without selected URLs consumes this query.
+                # The existing bounded empty continuation may try the next one.
+                result['outcome'] = 'completed_empty'
+                inventory = [*independent['receipt'].get('discovered_sources', []),
+                             *result.get('discovered_sources', [])]
+                result['discovered_sources'] = list({source['url']: source for source in inventory
+                    if isinstance(source, dict) and source.get('url')}.values())
+                result.setdefault('source_selection', independent['receipt'].get('source_selection', {}))
         if job_id:
             self.service.store.checkpoint_put(job_id, key, result)
         else:
