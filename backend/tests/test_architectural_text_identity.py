@@ -101,6 +101,38 @@ def architectural_identity(**kwargs):
         'architectural_text_proof': proof, 'candidates': candidates, 'reference_evidence': []}
 
 
+@pytest.mark.parametrize('query_scope', ['peer', 'chosen', 'passive'])
+def test_new_t_binding_cannot_close_an_explicit_peer_identity_query(query_scope):
+    from jsonschema import Draft202012Validator
+    from street_story.identity_proof import IDENTITY_CONTINUATION_CONTRACT, architectural_text_decision_schema
+    story, candidates, decision, receipt = text_inputs()
+    peer = {**copy.deepcopy(candidates[0]), 'candidate_id': 'osm:way:8'}
+    candidates = [*candidates, peer]
+    story['_identity_observed_candidates'] = candidates
+    decision['research_priority'] = {
+        'candidate_ids': ['osm:way:7'] if query_scope == 'chosen' else ['osm:way:8'],
+        'reason': 'Controlled addressed follow-up.', 'next_step': 'existing_images',
+        'next_question': '' if query_scope == 'passive' else 'Read the addressed body images.',
+        'contradictions': []}
+    original = copy.deepcopy(decision)
+    # Historic receipts retain their original contract, including frozen UNKNOWN
+    # input. No new flag is invented in or retroactively applied to that receipt.
+    assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
+    schema = architectural_text_decision_schema(['osm:way:7', 'osm:way:8'],
+        [receipt['articles'][0]['article_id']], structural=True, closed_identity_continuation=True)
+    receipt = {**receipt, 'identity_continuation_contract': IDENTITY_CONTINUATION_CONTRACT}
+    if query_scope == 'peer':
+        assert not Draft202012Validator(schema).is_valid(decision)
+        assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
+        uncertain = {**decision, 'decision': 'uncertain'}
+        assert Draft202012Validator(schema).is_valid(uncertain)
+        assert uncertain['research_priority'] == original['research_priority']
+    else:
+        assert Draft202012Validator(schema).is_valid(decision)
+        assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
+    assert decision == original  # No host rewriting of the model's verdict/query.
+
+
 def test_text_identity_has_actual_source_hash_and_exact_lead_without_fake_ref():
     identity = architectural_identity()
     identity = json.loads(json.dumps(identity))

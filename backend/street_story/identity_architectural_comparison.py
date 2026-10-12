@@ -15,7 +15,7 @@ from itertools import permutations
 
 from .identity_architectural_context import _subject_addresses, literal_address_card_selection
 from .identity_candidate_policy import candidate_identity_eligible
-from .identity_proof import architectural_text_decision_schema
+from .identity_proof import IDENTITY_CONTINUATION_CONTRACT, architectural_text_decision_schema
 from .identity_source_selection import observed_address_context
 from .identity_subject_binding import article_candidate
 
@@ -680,7 +680,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         packet['owner_hint_not_identity_evidence'] = copy.deepcopy(hint)
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(comparison_ids)), structural=True,
-        physical_link_inventory=inventory, source_span_refs=source_span_refs)
+        physical_link_inventory=inventory, source_span_refs=source_span_refs,
+        closed_identity_continuation=True)
     # A compact comparison can confirm only its issued article/body bindings,
     # but its next investigation may nominate any received physical reserve.
     schema['properties']['research_priority'] = scoped_research_priority_schema(comparison_ids, len(physical_catalog))
@@ -763,6 +764,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         'relationship remains unresolved, return uncertain, even when an article matches generic details. '
         'Optional research_priority can retain several received physical bodies and the next useful '
         'question for existing article/Wiki images, targeted search or reserve expansion. '
+        'If that next_question requests investigation of another physical candidate, the individual-body '
+        'binding is not closed: return uncertain and keep that addressed continuation. An accepted '
+        'decision can retain optional follow-up questions about only the chosen physical body. '
         'Keep contradictions scoped to the physical body, article or facade with actual conditions '
         'and source URL; an unexplored question is not a whole-building veto. '
         'Literal passages are bounded portions of retained complete source bodies. An unread tail is unknown. '
@@ -779,6 +783,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
         # nominated body are issued, while context-only nodes cannot be accepted.
         'required_map_counterpoints': all_map_counterpoints,
         'comparison_scope': comparison_scope,
+        'identity_continuation_contract': IDENTITY_CONTINUATION_CONTRACT,
         'received_candidate_ids': list(physical_catalog),
         'source_span_refs': source_span_refs,
         'article_ids': article_ids, 'utf8_bytes': len(instruction.encode()),
@@ -925,7 +930,8 @@ async def continue_requested_text(service, story, candidates, payload, history):
             receipt.pop('map_image_sha256', None)
         prepared = prepare_architectural_comparison(story, candidates, receipt, complete_source=True)
         receipt.update(physical_link_inventory=prepared['physical_link_inventory'], source_span_refs=prepared['source_span_refs'],
-            comparison_scope=prepared['comparison_scope'])
+            comparison_scope=prepared['comparison_scope'],
+            identity_continuation_contract=prepared['identity_continuation_contract'])
         receipt['text_delivery'] = prepared['text_delivery']
         from .identity_source_selection import freeze_identity_response_context
         receipt['architectural_comparison_contract'] = {

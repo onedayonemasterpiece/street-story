@@ -1592,7 +1592,7 @@ async def _suggest(service, story, transcript, candidates):
                 'If geometry is insufficient, return uncertain with one useful action. '
                 'Do not raise confidence to satisfy this check.')
             if text_articles:
-                from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT
+                from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT, IDENTITY_CONTINUATION_CONTRACT
                 from .identity_architectural_evidence import literal_evidence_inventory
                 from .identity_architectural_pool import joint_source_spans
                 source_passages, source_span_refs = joint_source_spans(text_articles)
@@ -1604,7 +1604,8 @@ async def _suggest(service, story, transcript, candidates):
                     'source_preparation': source_preparation,
                     'source_image_input': True, 'articles': text_articles, 'lookup': lookup,
                     'text_contract': TEXT_CONTRACT, 'physical_link_inventory': physical_link_inventory,
-                    'source_span_refs': source_span_refs}
+                    'source_span_refs': source_span_refs,
+                    'identity_continuation_contract': IDENTITY_CONTINUATION_CONTRACT}
                 if conditional_prior:
                     source_text_receipt['conditional_initial_decision'] = conditional_prior
                 if geometry_rejection:
@@ -1613,7 +1614,7 @@ async def _suggest(service, story, transcript, candidates):
                     observed_ids, [item['article_id'] for item in text_articles],
                     material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8,
                     structural=True, physical_link_inventory=physical_link_inventory,
-                    source_span_refs=source_span_refs)
+                    source_span_refs=source_span_refs, closed_identity_continuation=True)
                 if address_detail and detail_request:
                     from .identity_architectural_comparison import (received_map_counterpoints,
                         require_material_alternative_coverage)
@@ -1649,6 +1650,9 @@ async def _suggest(service, story, transcript, candidates):
                     'accepted_architectural_text requires resolved physical binding/scope, material alternatives '
                     'and no unexplained decisive contradiction. Generic history, neighbor text or missing neighbor '
                     'article is insufficient. Select source_span_ref from that article; never rewrite its text. '
+                    'If research_priority has a next_question addressed to another physical candidate, '
+                    'the individual-body binding is not closed: return uncertain and retain that continuation. '
+                    'An accepted decision can keep optional follow-up questions about only the chosen body. '
                     'Finish identity immediately if '
                     'sufficient; otherwise preserve one specific ambiguity and useful action. '
                     'Architectural TEXT is an independent identity proof; an unaccepted geometry claim '

@@ -12,6 +12,7 @@ import math
 import re
 
 POLICY = 'spatial_identity_v1'
+IDENTITY_CONTINUATION_CONTRACT = 'closed-individual-body-query-v1'
 
 
 def _digest(value):
@@ -206,7 +207,7 @@ STRUCTURAL_FEATURES = {'levels', 'window_axes', 'bay', 'roof', 'openings', 'comp
 
 
 def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8, structural=False,
-        source_span_refs=None, physical_link_inventory=None):
+        source_span_refs=None, physical_link_inventory=None, closed_identity_continuation=False):
     """The joint SOURCE/text model decides sufficiency and physical scope."""
     text = {'type': 'string', 'maxLength': 600}
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
@@ -268,6 +269,16 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         'description': 'Optional next bounded portion of the same retained verified full body. Use exact next_cursor or a specific unread start_char. No new fetch.'}
     schema.setdefault('allOf', []).append({'if': {'properties': {'decision': {'const': 'accepted_architectural_text'}}},
         'then': {'properties': {'source_text_requests': {'maxItems': 0}}}})
+    if closed_identity_continuation:
+        # A query about another physical candidate is still identity work.
+        # Optional questions about only the chosen body remain valid research.
+        for chosen in dict.fromkeys(candidate_ids):
+            schema['allOf'].append({'if': {'required': ['research_priority'], 'properties': {
+                'decision': {'const': 'accepted_architectural_text'}, 'candidate_id': {'const': chosen},
+                'research_priority': {'required': ['next_question'], 'properties': {
+                    'next_question': {'type': 'string', 'pattern': r'\S'}}}}},
+                'then': {'properties': {'research_priority': {'properties': {
+                    'candidate_ids': {'items': {'enum': [chosen]}}}}}}})
     return schema
 
 
@@ -386,6 +397,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             architectural_text_decision_schema(list(catalog), list(table),
                 material_alternative_limit=alternative_limit,
                 physical_link_inventory=inventory,
+                closed_identity_continuation=receipt.get('identity_continuation_contract') == IDENTITY_CONTINUATION_CONTRACT,
                 structural=structural or isinstance(decision, dict) and any('feature_kind' in item
                     for item in decision.get('correspondences') or [] if isinstance(item, dict)))).is_valid(decision):
         return None

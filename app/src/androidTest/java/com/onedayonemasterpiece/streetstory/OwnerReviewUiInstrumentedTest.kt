@@ -83,9 +83,11 @@ class OwnerReviewUiInstrumentedTest {
                 val quote = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(
                     androidx.test.uiautomator.By.textContains("left-version")), 3000))
                 assertTrue(quote.text.contains("Работы ещё не начались") && quote.text.contains("Страница 17"))
-                val scroll = requireNotNull(device.findObject(androidx.test.uiautomator.By.scrollable(true)))
-                scroll.scrollUntil(androidx.test.uiautomator.Direction.DOWN,
-                    androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")))
+                if (device.findObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")) == null) {
+                    requireNotNull(device.findObject(androidx.test.uiautomator.By.scrollable(true))).scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")))
+                }
                 val review = requireNotNull(device.findObject(androidx.test.uiautomator.By.text("Уточнить с Мирой")))
                 assertTrue(!review.isEnabled)
                 assertNotNull(device.findObject(androidx.test.uiautomator.By.textContains("Разные временные границы")))
