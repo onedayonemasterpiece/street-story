@@ -807,6 +807,13 @@ def resolve_fact_conflict(
                 "left_revision_digest": left_revision,
                 "right_revision_digest": right_revision,
                 "evidence_digest": evidence_digest,
+                # A→B→A is a new addressed assessment, not resurrection of the
+                # first superseded A receipt. Adjacent identical calls remain
+                # idempotent through the current-resolution comparison above.
+                "previous_event_id": next((event[0] for event in db.execute(
+                    "SELECT event_id FROM fact_arbitration_events WHERE story_id=? AND conflict_id=? "
+                    "AND state='active' ORDER BY created_at DESC,event_id DESC LIMIT 1",
+                    (story_id, conflict_id))), None),
             }
             event_id = "arbitration_" + hashlib.sha256(
                 json.dumps(

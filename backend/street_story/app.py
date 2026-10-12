@@ -7,7 +7,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -394,6 +394,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post("/v1/stories/{story_id}/facts", dependencies=[Depends(auth)])
     async def facts(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "facts", idempotency_key)
+
+    @app.get('/v1/stories/{story_id}/fact-conflicts', dependencies=[Depends(auth)])
+    async def fact_conflict_journal(story_id: str, cursor: int | None = Query(default=None, ge=1)):
+        from .conflict_journal import conflict_journal
+        return conflict_journal(service, story_id, cursor)
 
     @app.post('/v1/stories/{story_id}/research-control', dependencies=[Depends(auth)])
     async def research_control(story_id: str, request: Request,

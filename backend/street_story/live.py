@@ -1079,6 +1079,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     'expected_photo_sha256': state['story']['photo_sha256'],
                     'expected_identity_generation': state['story']['identity_generation'],
                 },
+                'fact_research_control_revision': state['story']['research_controls']['facts']['revision'],
             },
             "context": context,
             "configuration": {
@@ -4966,15 +4967,26 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "fact_conflict_confidence_invalid", "Confidence must be between 0 and 1"
             )
         try:
-            resolved = resolve_fact_conflict(
-                self.service,
-                story_id,
-                conflict_id,
-                resolution,
-                reason,
-                confidence,
-                arbitrated_by="mira",
-            )
+            with self.service.store.tx() as db:
+                story, research = self._fact_research_control_guard(db, session)
+                scope = session.state.get('research_control_scope') or {}
+                if (scope.get('expected_photo_sha256') != story['photo_sha256']
+                        or scope.get('expected_identity_generation') != int(research.get('identity_generation') or 0)):
+                    raise ConflictError('live_fact_conflict_scope_stale', 'Объект или исходное фото изменились; прочитайте текущие опоры заново.')
+                previous_events = db.execute('SELECT COUNT(*) FROM fact_arbitration_events WHERE story_id=? AND conflict_id=?',
+                                             (story_id, conflict_id)).fetchone()[0]
+                resolved = resolve_fact_conflict(
+                    self.service, story_id, conflict_id, resolution, reason, confidence,
+                    arbitrated_by="mira", connection=db)
+                result = {
+                    "conflict": resolved,
+                    "resolution": resolved.get("final_resolution"),
+                    "preferred_fact_id": resolved.get("final_fact_id"),
+                    "fact_conflicts": conflict_rows(db, story_id, limit=12),
+                }
+                self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
+                changed = db.execute('SELECT COUNT(*) FROM fact_arbitration_events WHERE story_id=? AND conflict_id=?',
+                                     (story_id, conflict_id)).fetchone()[0] > previous_events
         except KeyError:
             raise ConflictError(
                 "fact_conflict_unknown", "Conflict is not present in the current topic"
@@ -4983,16 +4995,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise ConflictError(
                 "fact_conflict_resolution_invalid", str(exc)
             ) from None
-        result = {
-            "conflict": resolved,
-            "resolution": resolved.get("final_resolution"),
-            "preferred_fact_id": resolved.get("final_fact_id"),
-            "fact_conflicts": self._topic_state(story_id).get("fact_conflicts", [])[:12],
-        }
-        with self.service.store.tx() as db:
-            self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
-        # The shared arbitration ledger emits the durable fact_conflict_arbitrated
-        # telemetry event exactly once. Avoid duplicating it in the Live adapter.
+        if changed:
+            from .identity_telemetry import record_identity_event
+            record_identity_event(self.service, story_id, 'fact_conflict_arbitrated', {
+                'conflict_id': conflict_id, 'resolution': resolution, 'confidence': confidence,
+                'final_fact_id': resolved.get('final_fact_id'), 'arbitrated_by': 'mira',
+            }, source='fact_conflict')
         return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:

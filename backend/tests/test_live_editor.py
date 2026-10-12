@@ -285,7 +285,9 @@ def make_service(tmp_path: Path):
         id="live_1234567890abcdef",
         resource_id=story["id"],
         model="gemini-3.8-live",
-        state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
+        state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None,
+               'research_control_scope': {'expected_photo_sha256': story['photo_sha256'], 'expected_identity_generation': 0},
+               'fact_research_control_revision': 0},
     )
     return svc, adapter, session, events
 

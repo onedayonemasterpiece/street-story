@@ -1017,6 +1017,105 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showConflictJournal(storyId: String, cursor: Long? = null) {
+        val local = store.story(storyId) ?: return
+        val base = config.backendUrl
+        val token = config.deviceToken
+        val server = local.serverStoryId
+        fun displayCached() {
+            val saved = research.conflictJournal(storyId)
+            val generation = research.get(storyId)?.identityGeneration
+            if (saved != null && saved.photoSha256 == local.photoSha256 &&
+                (generation == null || generation == saved.identityGeneration)) drawConflictJournal(storyId, saved, true)
+            else Toast.makeText(this, "Сохранённого журнала пока нет", Toast.LENGTH_LONG).show()
+        }
+        if (base.isNullOrBlank() || token.isNullOrBlank() || server.isNullOrBlank()) { displayCached(); return }
+        Toast.makeText(this, "Читаем журнал противоречий", Toast.LENGTH_SHORT).show()
+        Thread {
+            runCatching { ApiClient(base, token).conflictJournal(server, cursor) }.onSuccess { journal ->
+                runOnUiThread {
+                    val current = store.story(storyId)
+                    val generation = research.get(storyId)?.identityGeneration
+                    if (activeStoryId != storyId || current == null || current.photoSha256 != journal.photoSha256 ||
+                        current.serverStoryId != journal.storyId || (generation != null && generation != journal.identityGeneration)) return@runOnUiThread
+                    research.replaceConflictJournal(storyId, journal, append = cursor != null)
+                    drawConflictJournal(storyId, requireNotNull(research.conflictJournal(storyId)), false)
+                }
+            }.onFailure {
+                runOnUiThread { if (activeStoryId == storyId) displayCached() }
+            }
+        }.start()
+    }
+
+    private fun drawConflictJournal(storyId: String, journal: ConflictJournalWire, saved: Boolean) {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(12)) }
+        if (saved) wrap.addView(label("Сохранённый журнал · текущий серверный статус недоступен", 12, MUTED, Typeface.DEFAULT))
+        if (journal.items.isEmpty()) wrap.addView(label("Сохранённых противоречий нет", 14, INK, Typeface.DEFAULT))
+        journal.items.forEach { conflict ->
+            wrap.addView(label(conflict.reason, 15, INK, Typeface.DEFAULT_BOLD))
+            conflict.poiKey?.let { wrap.addView(label("Объект: $it", 12, MUTED, Typeface.DEFAULT)) }
+            listOf("Первая версия" to conflict.left, "Вторая версия" to conflict.right).forEach { (title, side) ->
+                wrap.addView(label("$title\n${side.text}", 14, INK, Typeface.DEFAULT))
+                val support = FactPresentation.sourceDetails(side.sources)
+                wrap.addView(label(if (support.isBlank()) "Собственные опоры не сохранены" else support, 12, MUTED, Typeface.DEFAULT).apply {
+                    setTextIsSelectable(true); setPadding(0, dp(4), 0, dp(8))
+                })
+                side.recordedRevisionDigest?.takeIf { it.isNotBlank() }?.let {
+                    wrap.addView(label("Редакция при записи: $it", 11, MUTED, Typeface.DEFAULT))
+                }
+                if (side.currentRevisionDigest != side.recordedRevisionDigest) {
+                    wrap.addView(label("Текущая редакция опор: ${side.currentRevisionDigest ?: "не сохранена"}", 11, MUTED, Typeface.DEFAULT))
+                }
+            }
+            wrap.addView(label("Решение: ${conflictResolution(conflict.resolution)}\n${conflict.resolutionReason.orEmpty()}", 14, INK, Typeface.DEFAULT))
+            conflict.arbitrationEvents.forEach { event ->
+                wrap.addView(label("${conflictTime(event.createdAt)} · ${event.arbitratedBy}\n${conflictResolution(event.resolution)} · ${event.state}\n${event.reason}", 12, MUTED, Typeface.DEFAULT))
+            }
+            wrap.addView(label("Записано ${conflictTime(conflict.firstSeenAt)} · обновлено ${conflictTime(conflict.lastSeenAt)}", 11, MUTED, Typeface.DEFAULT))
+            wrap.addView(secondaryButton("Уточнить с Мирой") { discussConflict(storyId, journal, conflict) }.apply { isEnabled = !saved })
+        }
+        lateinit var dialog: AlertDialog
+        if (journal.hasMore && !saved) wrap.addView(secondaryButton("Следующие записи") {
+            dialog.dismiss(); showConflictJournal(storyId, journal.nextCursor)
+        })
+        dialog = AlertDialog.Builder(this).setTitle("Противоречия и решения")
+            .setView(ScrollView(this).apply { addView(wrap) }).setPositiveButton("Закрыть", null).create()
+        dialog.show()
+    }
+
+    private fun conflictResolution(value: String): String = when (value) {
+        "prefer_left" -> "Предпочтена первая версия"
+        "prefer_right" -> "Предпочтена вторая версия"
+        "both_valid" -> "Обе версии действительны в своих границах"
+        else -> "Не разрешено"
+    }
+
+    private fun conflictTime(value: Double): String = if (value > 0) DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+        .withZone(ZoneId.systemDefault()).format(Instant.ofEpochSecond(value.toLong())) else "время не указано"
+
+    private fun discussConflict(storyId: String, journal: ConflictJournalWire, conflict: FactConflictWire) {
+        val scope = research.get(storyId) ?: return
+        val revision = scope.researchControls?.get("facts")?.revision
+        fun current(): Boolean = activeStoryId == storyId && store.story(storyId)?.photoSha256 == journal.photoSha256 &&
+            research.get(storyId)?.identityGeneration == journal.identityGeneration &&
+            research.get(storyId)?.researchControls?.get("facts")?.revision == revision
+        if (!current()) { SyncScheduler.enqueue(this); return }
+        val input = EditText(this).apply {
+            hint = "Ваше уточнение (необязательно)"
+            filters = arrayOf(android.text.InputFilter.LengthFilter(3000))
+        }
+        AlertDialog.Builder(this).setTitle("Уточнение противоречия").setView(input)
+            .setNegativeButton("Отмена", null).setPositiveButton("Обсудить") { _, _ ->
+                val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
+                    "Прочитай собственные источники обеих версий, сохрани обоснованное адресное решение либо оставь его неразрешённым. " +
+                    "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование. " + input.text.toString()
+                fun send() { if (current() && live.isActiveFor(storyId)) live.sendText(request) }
+                if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
+                    runOnUiThread { if (ready) send() else if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show() }
+                }
+            }.show()
+    }
+
     private fun maybeCheckForUpdate() {
         val now = System.currentTimeMillis()
         val last = prefs.getLong("update_checked_at", 0L)
@@ -1606,6 +1705,7 @@ class MainActivity : Activity() {
         }
         val factsHeading = label(title, 15, INK, Typeface.DEFAULT_BOLD)
         host.addView(factsHeading)
+        host.addView(secondaryButton("Противоречия и решения") { showConflictJournal(storyId) })
         if (progress != null) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
