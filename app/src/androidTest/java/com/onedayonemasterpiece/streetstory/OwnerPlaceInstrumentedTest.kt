@@ -177,15 +177,19 @@ class OwnerPlaceInstrumentedTest {
         val gson = Gson()
         try {
             store.createStory(photo)
-            research.replace(id, StoryWire().apply {
+            val mapWire = StoryWire().apply {
+                this.id = "ui-story"; clientStoryId = id; photoSha256 = photo.sha256
                 identityMode = "manual"; identityGeneration = 0; revision = 1
+                state = StoryStage.PHOTO_READY; sourceAvailable = true
                 placeMap = gson.fromJson("""{"snapshot_id":"ui-map","photo_sha256":"${photo.sha256}","identity_generation":0,
                   "camera":{"latitude":54.7,"longitude":20.5,"origin":"exif"},
                   "center":{"latitude":54.7,"longitude":20.5},"zoom":18,
                   "buildings":{"type":"FeatureCollection","features":[{"type":"Feature","id":"osm:way:fixture",
                     "properties":{"candidate_id":"osm:way:fixture","poi_id":"osm:way:fixture","label":"Дом карты"},
                     "geometry":{"type":"Polygon","coordinates":[[[20.4998,54.6998],[20.5002,54.6998],[20.5002,54.7002],[20.4998,54.7002],[20.4998,54.6998]]]}}]}}""", PlaceMapWire::class.java)
-            })
+                cameraPoint = placeMap?.camera
+            }
+            research.replace(id, mapWire)
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit().putString("active_story_id", id).commit()
             androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 val device = androidx.test.uiautomator.UiDevice.getInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation())
@@ -273,12 +277,52 @@ class OwnerPlaceInstrumentedTest {
                 assertEquals("Клиническая 19А", payload.getAsJsonObject("owner_context")["address"].asString)
                 assertEquals("Дом карты", payload.getAsJsonObject("owner_context")["name"].asString)
                 MockWebServer().apply { start() }.use { transport ->
-                    transport.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("{\"id\":\"ui-story\"}"))
-                    ApiClient(transport.url("/").toString().trimEnd('/'), "instrumentation-only").mutate("ui-story", "place", queued.payloadJson, queued.requestKey)
-                    val sent = JsonParser.parseString(transport.takeRequest().body.readUtf8()).asJsonObject
+                    // Controlled acknowledgement through the normal outbox/sync
+                    // projection path, with no background workers or providers.
+                    transport.dispatcher = object : Dispatcher() {
+                        override fun dispatch(request: RecordedRequest): MockResponse {
+                            if (request.method == "POST" && request.path == "/v1/stories/ui-story/place") {
+                                mapWire.identityGeneration = 1; mapWire.revision = 2; mapWire.state = StoryStage.RESEARCHING
+                                mapWire.placeName = "Дом карты"
+                                mapWire.visualIdentity = VisualIdentityWire().apply {
+                                    status = "owner_confirmed"; candidateId = "osm:way:fixture"; candidateName = "Дом карты"
+                                }
+                                mapWire.placeSelection = JsonParser.parseString("""{"candidate_id":"osm:way:fixture",
+                                    "mode":"exact","generation":1,"snapshot_id":"ui-map","photo_sha256":"${photo.sha256}",
+                                    "candidate":{"name":"Дом карты"}}""").asJsonObject
+                                mapWire.placeMap!!.identityGeneration = 1
+                                mapWire.placeMap!!.revision = 2
+                                mapWire.placeMap!!.selected = mapWire.placeSelection
+                            } else if (request.method != "GET" || request.path != "/v1/stories/ui-story") {
+                                return MockResponse().setResponseCode(404)
+                            }
+                            return MockResponse().setHeader("Content-Type", "application/json").setBody(gson.toJson(mapWire))
+                        }
+                    }
+                    store.setServerIdentity(id, mapWire.id)
+                    PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+                    val api = ApiClient(transport.url("/").toString().trimEnd('/'), "instrumentation-only")
+                    TestListenableWorkerBuilder<SyncWorker>(context).build().syncStory(
+                        store, FeedProjectionStore(context), research, api, requireNotNull(store.story(id)), null)
+                    val before = requireNotNull(transport.takeRequest(3, java.util.concurrent.TimeUnit.SECONDS))
+                    assertEquals("GET", before.method)
+                    val confirmation = requireNotNull(transport.takeRequest(3, java.util.concurrent.TimeUnit.SECONDS))
+                    assertEquals("/v1/stories/ui-story/place", confirmation.path)
+                    assertEquals(queued.requestKey, confirmation.getHeader("Idempotency-Key"))
+                    val sent = JsonParser.parseString(confirmation.body.readUtf8()).asJsonObject
                     assertEquals(payload.getAsJsonObject("owner_context"), sent.getAsJsonObject("owner_context"))
                     assertEquals("osm:way:fixture", sent["candidate_id"].asString)
+                    assertEquals(photo.sha256, sent["expected_photo_sha256"].asString)
+                    assertEquals(0, sent["expected_identity_generation"].asInt)
+                    assertEquals("GET", requireNotNull(transport.takeRequest(3, java.util.concurrent.TimeUnit.SECONDS)).method)
+                    assertEquals("exactly one acknowledgement and final readback", 3, transport.requestCount)
                 }
+                assertEquals("acknowledged place command must leave the pending outbox", "done", store.operation(queued.id)?.state)
+                assertTrue(store.pendingOperations(id).none { it.kind == "place" })
+                val persistedSelection = requireNotNull(ResearchProjectionStore(context).get(id))
+                assertEquals(1, persistedSelection.identityGeneration)
+                assertEquals("osm:way:fixture", persistedSelection.placeSelection?.get("candidate_id")?.asString)
+                assertEquals("Дом карты", persistedSelection.candidateName)
                 scenario.onActivity { activity ->
                     (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
                         .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
@@ -302,21 +346,39 @@ class OwnerPlaceInstrumentedTest {
                 scenario.recreate()
                 scenario.onActivity { activity ->
                     val restoredMap = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<org.maplibre.android.maps.MapView>().single()
+                    mapView = restoredMap
                     restoredMap.getMapAsync { map = it }
                 }
                 val reopenDeadline = android.os.SystemClock.elapsedRealtime() + 12000
                 var reopenRendered = false
+                var previousReopenBounds: android.graphics.Rect? = null
                 while (!reopenRendered && android.os.SystemClock.elapsedRealtime() < reopenDeadline) {
                     scenario.onActivity {
                         val current = map
-                        if (current?.style != null) {
+                        val view = mapView
+                        if (current?.style != null && view != null) {
                             val point = current.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
-                            reopenRendered = current.queryRenderedFeatures(point, "owner-buildings-fill").isNotEmpty()
+                            val bounds = android.graphics.Rect()
+                            reopenRendered = view.getGlobalVisibleRect(bounds) && view.isAttachedToWindow && !view.isLayoutRequested &&
+                                view.foreground == null && previousReopenBounds == bounds &&
+                                current.queryRenderedFeatures(point, "owner-buildings-fill").any { it.id() == "osm:way:fixture" } &&
+                                current.queryRenderedFeatures(point, "owner-selected-fill").any { it.id() == "osm:way:fixture" }
+                            previousReopenBounds = android.graphics.Rect(bounds)
                         }
                     }
                     if (!reopenRendered) android.os.SystemClock.sleep(100)
                 }
-                assertTrue("recreated native map must restore server contours", reopenRendered)
+                assertTrue("recreated visible native map must restore the acknowledged selected contour", reopenRendered)
+                androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                device.waitForIdle()
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
+                scenario.onActivity { activity ->
+                    val views = descendants(activity.findViewById(android.R.id.content)).toList()
+                    val status = views.filterIsInstance<android.widget.TextView>().single { it.contentDescription?.toString() == "owner-place-status" }
+                    assertTrue("acknowledged selected name must survive recreation", status.text.toString().startsWith("Дом карты ·"))
+                    assertTrue("acknowledged selection must be available after reopening",
+                        views.single { it.contentDescription?.toString() == "owner-place-confirm" }.isEnabled)
+                }
                 assertTrue("retain native map reopen screenshot", device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-reopen.png")))
                 scenario.onActivity { activity ->
                     descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-automatic" }.performClick()
