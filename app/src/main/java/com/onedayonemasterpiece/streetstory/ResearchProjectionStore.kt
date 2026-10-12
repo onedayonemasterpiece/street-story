@@ -35,6 +35,11 @@ data class ResearchProjectionSnapshot(
     val identityGeneration: Int? = null,
     val researchControls: Map<String, ResearchControlWire>? = null,
     val researchPending: Map<String, Boolean> = emptyMap(),
+    val backendRevision: Int = 0,
+    val placeMap: PlaceMapWire? = null,
+    val placeSelection: com.google.gson.JsonObject? = null,
+    val cameraPoint: PlaceCameraWire? = null,
+
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -42,9 +47,16 @@ class ResearchProjectionStore(context: Context) {
     private val gson = Gson()
 
     fun replace(storyId: String, wire: StoryWire) {
+        val prior = get(storyId)
+        if (prior != null && (wire.revision < prior.backendRevision ||
+            (wire.identityGeneration ?: 0) < (prior.identityGeneration ?: 0))) return
         val identity = wire.visualIdentity
         val snapshot = ResearchProjectionSnapshot(
             identityStatus = identity?.status?.takeIf { it.isNotBlank() },
+            backendRevision = wire.revision,
+            placeMap = wire.placeMap,
+            placeSelection = wire.placeSelection,
+            cameraPoint = wire.cameraPoint,
             candidateId = identity?.candidateId?.takeIf { !it.isNullOrBlank() },
             candidateName = identity?.candidateName?.takeIf { !it.isNullOrBlank() },
             observations = identity?.observations?.filter { it.isNotBlank() } ?: emptyList(),
@@ -75,6 +87,11 @@ class ResearchProjectionStore(context: Context) {
     fun get(storyId: String): ResearchProjectionSnapshot? {
         val raw = prefs.getString(key(storyId), null) ?: return null
         return runCatching { gson.fromJson(raw, ResearchProjectionSnapshot::class.java) }.getOrNull()
+    }
+
+    fun replacePlaceMap(storyId: String, map: PlaceMapWire) {
+        val prior = get(storyId) ?: return
+        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(placeMap = map, cameraPoint = map.camera))).commit())
     }
 
     fun clear(storyId: String) {

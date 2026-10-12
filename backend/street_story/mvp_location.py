@@ -118,6 +118,12 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
         with self.store.connection() as db:
             story = dict(self._story_row(db, job["story_id"]))
 
+        identity = (json.loads(story.get('research_json') or '{}').get('visual_identity') or {})
+        if identity.get('status') == 'owner_confirmed':
+            # A named owner point is a valid target even with no camera GPS.
+            # Voice geocoding must not replace the selected object or camera.
+            return await super()._run_research(job)
+
         if story["latitude"] is None or story["longitude"] is None:
             if live_transcript:
                 transcript = live_transcript[:12000]

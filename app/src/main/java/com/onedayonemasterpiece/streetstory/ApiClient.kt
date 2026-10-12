@@ -49,6 +49,10 @@ class PublicationWire {
 }
 
 class StoryWire {
+    @SerializedName("identity_mode") var identityMode: String? = null
+    @SerializedName("place_map") var placeMap: PlaceMapWire? = null
+    @SerializedName("place_selection") var placeSelection: com.google.gson.JsonObject? = null
+    @SerializedName("camera_point") var cameraPoint: PlaceCameraWire? = null
     @SerializedName("photo_sha256") var photoSha256: String? = null
     @SerializedName("source_available") var sourceAvailable: Boolean? = null
     @SerializedName("identity_generation") var identityGeneration: Int? = null
@@ -264,6 +268,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
             field("client_story_id", story.clientStoryId)
             field("photo_sha256", story.photoSha256)
             field("voice_protocol", "voice-chunks-v2")
+            field("identity_mode", "manual")
             story.latitude?.let { field("lat", it.toString()) }
             story.longitude?.let { field("lon", it.toString()) }
             out.writeBytes("--$boundary\r\n")
@@ -280,6 +285,11 @@ class ApiClient(private val baseUrl: String, private val token: String,
     fun conflictJournal(serverStoryId: String, cursor: Long? = null): ConflictJournalWire = requestJson(
         "GET", "/v1/stories/${segment(serverStoryId)}/fact-conflicts" + (cursor?.let { "?cursor=$it" } ?: ""),
         null, null, ConflictJournalWire::class.java)
+
+    fun placeMap(serverStoryId: String, latitude: Double? = null, longitude: Double? = null, zoom: Double? = null): PlaceMapWire {
+        val query = if (latitude != null && longitude != null) "?latitude=$latitude&longitude=$longitude&radius_m=350" + (zoom?.let { "&zoom=$it" } ?: "") else ""
+        return requestJson("GET", "/v1/stories/${segment(serverStoryId)}/place-map$query", null, null, PlaceMapWire::class.java)
+    }
 
     fun ensureIdentity(serverStoryId: String): StoryWire =
         requestJson("POST", "/v1/stories/${segment(serverStoryId)}/identity", "{}", null, StoryWire::class.java)
@@ -376,7 +386,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity"))
         if (endpoint == "research-control") {
             val receipt = requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey,
                 ResearchControlReceiptWire::class.java)

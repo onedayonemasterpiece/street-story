@@ -61,6 +61,7 @@ class MainActivity : Activity() {
     private lateinit var contentHost: FrameLayout
     private lateinit var dock: LinearLayout
 
+    private var placeMapPanel: PlaceMapPanel? = null
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
     private var pendingPhotoRecoveryStoryId: String? = null
@@ -180,13 +181,36 @@ class MainActivity : Activity() {
         }
         ContextCompat.registerReceiver(this, changedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
+        placeMapPanel?.start()
         live.addListener(liveListener)
         SyncScheduler.enqueue(this)
         resumeUpdateAfterPermission()
         maybeCheckForUpdate()
     }
 
+    override fun onResume() {
+        super.onResume()
+        placeMapPanel?.resume()
+    }
+
+    override fun onPause() {
+        placeMapPanel?.pause()
+        super.onPause()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        placeMapPanel?.lowMemory()
+    }
+
+    override fun onDestroy() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
+        super.onDestroy()
+    }
+
     override fun onStop() {
+        placeMapPanel?.stop()
         live.removeListener(liveListener)
         if (receiverRegistered) {
             unregisterReceiver(changedReceiver)
@@ -344,6 +368,8 @@ class MainActivity : Activity() {
     private fun showTopic(storyId: String) {
         val story = store.story(storyId) ?: run { showTopics(); return }
         setActiveStory(storyId)
+        placeMapPanel?.dispose()
+        placeMapPanel = null
         contentHost.removeAllViews()
         shownImagePath = null
         previewExpanded = true
@@ -412,7 +438,11 @@ class MainActivity : Activity() {
             contentDescription = "publication-image"
             setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
         }
-        column.addView(previewImage, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
+        val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
+        column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(photoHeight)))
+        placeMapPanel = PlaceMapPanel(this, storyId, store, research, config)
+        column.addView(placeMapPanel, blockMargins(top = 8))
         column.addView(identityLinkView, blockMargins(top = 8))
         column.addView(topicStatusView)
         identityProgressView = label("", 13, INK, Typeface.DEFAULT).apply {
@@ -466,6 +496,9 @@ class MainActivity : Activity() {
         chatBox?.addView(conceptBlock, blockMargins(top = 10))
 
         column.addView(chatBox, blockMargins(top = 12))
+        column.addView(secondaryButton("Сохранить черновик") { editOwnerDraft(storyId) }.apply {
+            contentDescription = "owner-save-draft"
+        }, blockMargins(top = 8))
 
         literalBanner = label(
             "Дословная диктовка · ещё не применено",
@@ -570,6 +603,7 @@ class MainActivity : Activity() {
 
     private fun refreshTopicDetail() {
         val id = activeStoryId ?: return
+        placeMapPanel?.refresh()
         live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
 
@@ -1290,6 +1324,8 @@ class MainActivity : Activity() {
     }
 
     private fun clearTopicRefs() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
         previewImage?.apply {
             animate().cancel()
             alpha = 1f
@@ -1846,6 +1882,39 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun editOwnerDraft(storyId: String) {
+        val story = store.story(storyId) ?: return
+        val selected = store.facts(storyId).filter { it.selected && it.evidenceSupported }
+        if (selected.isEmpty()) {
+            Toast.makeText(this, "Выберите хотя бы один подтверждённый факт", Toast.LENGTH_LONG).show()
+            return
+        }
+        val editor = EditText(this).apply {
+            minLines = 5
+            gravity = Gravity.TOP
+            setText(story.draftText?.takeIf(String::isNotBlank) ?: selected.joinToString("\n\n") { it.text })
+            contentDescription = "owner-draft-editor"
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Черновик материала")
+            .setView(editor).setNegativeButton("Назад", null).setPositiveButton("Сохранить", null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val text = editor.text.toString().trim()
+            if (text.isBlank()) { editor.error = "Введите текст черновика"; return@setOnClickListener }
+            val state = research.get(storyId)
+            store.setDraftText(storyId, text)
+            // Checkbox writes precede this draft in the existing durable outbox.
+            // Generation provides the house boundary; no Live session is required.
+            store.enqueueOperation(storyId, "draft", newRequestKey("draft-ui", "$storyId-${java.util.UUID.randomUUID()}"),
+                gson.toJson(mapOf("text" to text, "selected_fact_ids" to selected.map { it.factId },
+                    "expected_identity_generation" to (state?.identityGeneration ?: 0))))
+            SyncScheduler.enqueue(this)
+            dialog.dismiss()
+            refreshTopicDetail()
+            Toast.makeText(this, "Черновик сохранён на устройстве и отправляется на сервер", Toast.LENGTH_LONG).show()
+        } }
+        dialog.show()
+    }
+
     private fun enqueueFactSelection(storyId: String) {
         val selected = store.facts(storyId)
             .filter { it.selected && it.evidenceSupported }
@@ -1854,7 +1923,8 @@ class MainActivity : Activity() {
             storyId,
             "facts",
             newRequestKey("facts-ui", "$storyId-${java.util.UUID.randomUUID()}"),
-            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true)),
+            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true,
+                "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))),
         )
         SyncScheduler.enqueue(this)
     }

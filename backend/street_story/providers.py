@@ -103,6 +103,7 @@ class OSMClient:
             ways = {x['id']: x for x in data['elements'] if isinstance(x, dict)
                     and x.get('type') == 'way' and 'id' in x}
             elements = []
+            incomplete_building_ids = []
             for item in data['elements']:
                 if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
                     continue
@@ -120,9 +121,13 @@ class OSMClient:
                     if item.get('type') == 'relation':
                         members = item.get('members', [])
                         if not members or any(m.get('type') != 'way' or m.get('ref') not in ways for m in members):
+                            if tags.get('building') not in {None, '', 'no'}:
+                                incomplete_building_ids.append(f"osm:relation:{item['id']}")
                             continue  # Partial relations never acquire an invented center.
                         refs = [n for m in members for n in ways[m['ref']].get('nodes', [])]
                     if not refs or any(n not in nodes for n in refs):
+                        if tags.get('building') not in {None, '', 'no'}:
+                            incomplete_building_ids.append(f"osm:{item.get('type')}:{item.get('id')}")
                         continue
                     positions = [nodes[n] for n in refs]
                     if item.get('type') == 'way':
@@ -139,7 +144,7 @@ class OSMClient:
                             if (nodes[node_id].get('tags') or {}).get('entrance') not in {None, '', 'no'}]
                 elements.append(entry)
             receipt.update(outcome='success', element_count=len(elements))
-            return {'elements': elements}
+            return {'elements': elements, 'incomplete_building_ids': incomplete_building_ids}
         except (httpx.TransportError, httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
             receipt.update(outcome='failed', error_type=type(exc).__name__)
             raise RetryableProviderError('OSM map routes unavailable') from exc

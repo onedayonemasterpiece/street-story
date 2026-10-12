@@ -823,7 +823,7 @@ async def test_completed_empty_discovery_finishes_without_polling_or_resending(t
         assert outcome == {'outcome': 'no_supported_facts', 'reason': 'search_exhausted',
                            'coverage_complete': False, 'eligible_count': 0}
         assert await harness.run(job, 'headless-run', 'Find historical facts', 'history') == outcome
-        assert researcher.searches == 1 and not researcher.pages
+        assert researcher.searches == 2 and not researcher.pages
     finally:
         await reader.search_http.aclose()
 

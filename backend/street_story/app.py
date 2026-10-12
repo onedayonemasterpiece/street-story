@@ -17,6 +17,7 @@ from .config import Settings, reveal
 from .live import create_live_host, live_history, record_live_diagnostic
 from .live_socket import install_live_socket_routes, start_live_socket
 from .runtime import RuntimeStreetStoryService
+from .providers import RetryableProviderError
 from live_interaction import LiveError
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
@@ -232,10 +233,12 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         created = service.create_story(
             key=idem(idempotency_key), client_story_id=client_story_id, photo_sha256=photo_sha256,
             photo_mime_type=mime, photo_bytes=data,
-            voice_protocol=voice_protocol, lat=lat, lon=lon,
+            voice_protocol=voice_protocol, lat=lat, lon=lon, identity_mode=form.get("identity_mode", "auto"),
             **({'location_provenance': {'kind': form['camera_coordinate_source']}}
                 if form.get('camera_coordinate_source') else {}),
         )
+        if created.get("identity_mode") == "manual":
+            return created
         ensure_identity = getattr(service, "ensure_identity", None)
         return ensure_identity(created["id"]) if callable(ensure_identity) else created
 
@@ -247,6 +250,46 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def get_story(story_id: str):
         return service.story(story_id)
 
+    @app.get('/v1/stories/{story_id}/place-map', dependencies=[Depends(auth)])
+    async def story_place_map(story_id: str, latitude: float | None = None,
+                              longitude: float | None = None, radius_m: float = 350, zoom: float | None = None):
+        from .place_selection import place_map
+        try:
+            return await place_map(service, story_id, latitude=latitude, longitude=longitude,
+                                   radius_m=radius_m, zoom=zoom)
+        except RetryableProviderError:
+            return error_response(503, 'place_map_unavailable', 'Карта временно недоступна. Повторите запрос или укажите адрес явно.')
+
+    @app.post('/v1/stories/{story_id}/place', dependencies=[Depends(auth)])
+    async def story_confirm_place(story_id: str, request: Request,
+                                  idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        from .place_selection import confirm_place
+        body_bytes = await request.body()
+        if len(body_bytes) > 8192:
+            raise HTTPException(status_code=413, detail='Place command too large')
+        try:
+            body = json.loads(body_bytes)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail='Invalid place command')
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail='Invalid place command')
+        return confirm_place(service, story_id, idem(idempotency_key or body.get('command_id')), body)
+
+    @app.post('/v1/stories/{story_id}/draft', dependencies=[Depends(auth)])
+    async def story_save_draft(story_id: str, request: Request,
+                               idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        from .place_selection import save_draft
+        raw = await request.body()
+        if len(raw) > 24000:
+            raise HTTPException(status_code=413, detail='Draft too large')
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='Invalid draft')
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail='Invalid draft')
+        return save_draft(service, story_id, idem(idempotency_key), body)
+
     @app.delete("/v1/stories/{story_id}", dependencies=[Depends(auth)])
     async def delete_story(story_id: str):
         return service.delete_story(story_id)
@@ -256,6 +299,12 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         ensure_identity = getattr(service, "ensure_identity", None)
         if not callable(ensure_identity):
             raise ConflictError("identity_unavailable", "Automatic identity is unavailable")
+        with service.store.tx() as db:
+            row = service._story_row(db, story_id)
+            research = json.loads(row['research_json'] or '{}')
+            research['identity_mode'] = 'auto'
+            db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                       (json.dumps(research, ensure_ascii=False), story_id))
         return ensure_identity(story_id)
 
     @app.post('/v1/stories/{story_id}/identity-hint', dependencies=[Depends(auth)])

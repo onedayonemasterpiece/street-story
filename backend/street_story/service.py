@@ -345,6 +345,7 @@ class StreetStoryService:
         return {"ok": True, "story_id": story_id}
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        from .place_selection import camera_point
         from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
         from .research_control import KINDS, PURPOSES, research_stopped
         if research is None:
@@ -428,6 +429,10 @@ class StreetStoryService:
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
             "source_available": self._source_photo_available(row['id']),
+            "camera_point": camera_point(row, research),
+            "identity_mode": research.get("identity_mode", "auto"),
+            "place_selection": research.get("place_selection"),
+            "place_map": research.get("place_map"),
             "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
@@ -454,7 +459,10 @@ class StreetStoryService:
         lat: float | None,
         lon: float | None,
         location_provenance: dict | None = None,
+        identity_mode: str = "auto",
     ) -> dict[str, Any]:
+        if identity_mode not in {"auto", "manual"}:
+            raise ConflictError("identity_mode_invalid", "Выберите ручной или автоматический поиск объекта.")
         # Legacy API field is an opaque upload token, never an image checksum.
         if not photo_bytes:
             raise ConflictError('photo_empty', 'Uploaded photo is empty')
@@ -462,7 +470,7 @@ class StreetStoryService:
             raise ConflictError("voice_protocol_unsupported", "voice-chunks-v2 is required")
         identity = {
             "client_story_id": client_story_id, "photo_sha256": photo_sha256.lower(), "photo_mime_type": photo_mime_type,
-            "voice_protocol": voice_protocol, "lat": lat, "lon": lon,
+            "voice_protocol": voice_protocol, "lat": lat, "lon": lon, "identity_mode": identity_mode,
         }
         if location_provenance is not None:
             import math
@@ -507,6 +515,7 @@ class StreetStoryService:
                 (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
             self._restore_source_photo(db, story_id, photo_bytes)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical({'identity_mode': identity_mode}), story_id))
             if location_provenance is not None:
                 current = self._story_row(db, story_id)
                 research = json.loads(current['research_json'] or '{}')

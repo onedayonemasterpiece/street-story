@@ -1,0 +1,188 @@
+package com.onedayonemasterpiece.streetstory
+
+import android.content.Context
+import android.net.Uri
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.testing.TestListenableWorkerBuilder
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.util.concurrent.CopyOnWriteArrayList
+
+@RunWith(AndroidJUnit4::class)
+class OwnerPlaceInstrumentedTest {
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+
+    @Test fun manualSyncSkipsIdentificationAndPlaceChangeDetachesDraftAndLateFacts() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val research = ResearchProjectionStore(context)
+        val feed = FeedProjectionStore(context)
+        val photo = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = photo.clientStoryId
+        val gson = Gson()
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        val wire = StoryWire().apply {
+            this.id = "server-$id"; clientStoryId = id; photoSha256 = photo.sha256
+            identityMode = "manual"; identityGeneration = 0; revision = 1
+            state = StoryStage.PHOTO_READY; sourceAvailable = true
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    if (request.method == "POST" && request.path!!.endsWith("/place")) {
+                        wire.identityGeneration = 2; wire.revision = 3; wire.state = StoryStage.RESEARCHING
+                        wire.visualIdentity = VisualIdentityWire().apply { status = "owner_confirmed"; candidateId = "osm:way:B"; candidateName = "Дом B" }
+                        wire.placeName = "Дом B"; wire.draftText = null
+                        wire.cameraPoint = PlaceCameraWire().apply { latitude = 54.7; longitude = 20.5; origin = "exif" }
+                        wire.placeSelection = JsonParser.parseString("""{"candidate_id":"osm:way:B","mode":"exact"}""").asJsonObject
+                        wire.placeMap = Gson().fromJson("""{"snapshot_id":"map-B","identity_generation":2,
+                            "center":{"latitude":54.701,"longitude":20.501},"zoom":18,
+                            "camera":{"latitude":54.7,"longitude":20.5,"origin":"exif"},
+                            "buildings":{"type":"FeatureCollection","features":[]}}""", PlaceMapWire::class.java)
+                        wire.facts = arrayListOf(FactWire().apply { factId = "fact-B"; text = "Факт дома B"; evidenceSupported = true; eligibility = "eligible" })
+                    }
+                    return MockResponse().setHeader("Content-Type", "application/json").setBody(gson.toJson(wire))
+                }
+            }; start()
+        }
+        try {
+            store.createStory(photo); store.setServerIdentity(id, wire.id)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only")
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null)
+            assertTrue("manual intake must never implicitly start identity", calls.none { it.path!!.endsWith("/identity") })
+            wire.identityGeneration = 1; wire.revision = 2; wire.state = StoryStage.REVIEW
+            wire.visualIdentity = VisualIdentityWire().apply { status = "owner_confirmed"; candidateId = "osm:way:A" }
+            wire.draftText = "Черновик A"
+            worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null)
+            store.setDraftText(id, "Локальный черновик A")
+            store.enqueueOperation(id, "place", "instrumentation-place-$id", """{"mode":"exact","candidate_id":"osm:way:B","expected_identity_generation":1}""")
+            worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null)
+            assertNull("draft A must not survive selection B", store.story(id)?.draftText)
+            assertEquals(listOf("fact-B"), store.facts(id).map { it.factId })
+            val reopened = ResearchProjectionStore(context).get(id)!!
+            assertEquals("osm:way:B", reopened.candidateId)
+            assertEquals(18.0, reopened.placeMap?.zoom)
+            assertEquals("exif", reopened.cameraPoint?.origin)
+            research.replace(id, StoryWire().apply { identityGeneration = 1; revision = 99; visualIdentity = VisualIdentityWire().apply { candidateId = "osm:way:A" } })
+            assertEquals("osm:way:B", research.get(id)?.candidateId)
+        } finally {
+            store.deleteStory(id); research.clear(id); PhotoAssets.releaseTemporary(photo.path)
+            server.shutdown(); config.backendUrl = previousBackend
+        }
+    }
+
+    @Test fun nativeMapRendersSelectableContourAlongsidePhotoAndKeepsScrollDuringPan() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val photo = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = photo.clientStoryId
+        val store = AppGraph.store(context)
+        val research = ResearchProjectionStore(context)
+        val priorActive = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).getString("active_story_id", null)
+        val gson = Gson()
+        try {
+            store.createStory(photo)
+            research.replace(id, StoryWire().apply {
+                identityMode = "manual"; identityGeneration = 0; revision = 1
+                placeMap = gson.fromJson("""{"snapshot_id":"ui-map","photo_sha256":"${photo.sha256}","identity_generation":0,
+                  "camera":{"latitude":54.7,"longitude":20.5,"origin":"exif"},
+                  "center":{"latitude":54.7,"longitude":20.5},"zoom":18,
+                  "buildings":{"type":"FeatureCollection","features":[{"type":"Feature","id":"osm:way:fixture",
+                    "properties":{"candidate_id":"osm:way:fixture","poi_id":"osm:way:fixture","label":"Дом карты"},
+                    "geometry":{"type":"Polygon","coordinates":[[[20.4998,54.6998],[20.5002,54.6998],[20.5002,54.7002],[20.4998,54.7002],[20.4998,54.6998]]]}}]}}""", PlaceMapWire::class.java)
+            })
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit().putString("active_story_id", id).commit()
+            androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                var map: org.maplibre.android.maps.MapLibreMap? = null
+                var mapView: org.maplibre.android.maps.MapView? = null
+                scenario.onActivity { activity ->
+                    val views = descendants(activity.findViewById(android.R.id.content)).toList()
+                    mapView = views.filterIsInstance<org.maplibre.android.maps.MapView>().single()
+                    mapView!!.getMapAsync { map = it }
+                    listOf("publication-image", "owner-place-map", "owner-place-confirm", "owner-place-point").forEach { description ->
+                        val view = views.single { it.contentDescription?.toString() == description }
+                        assertTrue("$description must be visible with the other selection controls", view.getGlobalVisibleRect(android.graphics.Rect()))
+                    }
+                }
+                val deadline = android.os.SystemClock.elapsedRealtime() + 12000
+                var rendered = false
+                var targetX = 0; var targetY = 0
+                while (!rendered && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    scenario.onActivity {
+                        val current = map
+                        if (current?.style != null) {
+                            val point = current.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(54.7, 20.5))
+                            rendered = current.queryRenderedFeatures(point, "owner-buildings-fill").isNotEmpty()
+                            val origin = IntArray(2); mapView!!.getLocationOnScreen(origin)
+                            targetX = origin[0] + point.x.toInt(); targetY = origin[1] + point.y.toInt()
+                        }
+                    }
+                    if (!rendered) android.os.SystemClock.sleep(100)
+                }
+                assertTrue("native renderer must expose the server contour for hit testing", rendered)
+                val device = androidx.test.uiautomator.UiDevice.getInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation())
+                device.click(targetX, targetY)
+                assertNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("Дом карты")), 3000))
+                var scrollBefore = 0; var centerBefore: org.maplibre.android.geometry.LatLng? = null
+                scenario.onActivity { activity ->
+                    scrollBefore = descendants(activity.findViewById(android.R.id.content)).filterIsInstance<android.widget.ScrollView>().single().scrollY
+                    centerBefore = map!!.cameraPosition.target
+                }
+                device.swipe(targetX - 45, targetY, targetX + 45, targetY, 20)
+                scenario.onActivity { activity ->
+                    assertEquals("panning the map must not scroll the story", scrollBefore, descendants(activity.findViewById(android.R.id.content)).filterIsInstance<android.widget.ScrollView>().single().scrollY)
+                    assertTrue("pan moves native camera", centerBefore!!.distanceTo(map!!.cameraPosition.target!!) > 1)
+                }
+                var zoomBefore = 0.0
+                scenario.onActivity { zoomBefore = map!!.cameraPosition.zoom }
+                requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-map"))).pinchOpen(.6f)
+                android.os.SystemClock.sleep(400)
+                scenario.onActivity { assertTrue("pinch changes native zoom", map!!.cameraPosition.zoom > zoomBefore) }
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    assertEquals(1, descendants(activity.findViewById(android.R.id.content)).filterIsInstance<org.maplibre.android.maps.MapView>().count())
+                }
+            }
+        } finally {
+            store.deleteStory(id); research.clear(id); PhotoAssets.releaseTemporary(photo.path)
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit().putString("active_story_id", priorActive).commit()
+            config.backendUrl = previousBackend
+        }
+    }
+
+    private fun descendants(view: android.view.View): Sequence<android.view.View> = sequence {
+        yield(view)
+        if (view is android.view.ViewGroup) for (index in 0 until view.childCount) yieldAll(descendants(view.getChildAt(index)))
+    }
+
+    @Test fun pointFallbackUsesOwnerCoordinatesAndPlaceReadbackWithoutLive() {
+        val server = MockWebServer().apply { start() }
+        try {
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"id":"s","identity_mode":"manual","identity_generation":1,
+                "camera_point":{"latitude":54.7,"longitude":20.5,"origin":"manual"},
+                "place_selection":{"candidate_id":"owner:point"}}"""))
+            val payload = """{"mode":"exact","fallback":{"latitude":54.7,"longitude":20.5,"city":"Калининград","address":"Клиническая 19А"},"expected_identity_generation":0}"""
+            val wire = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only").mutate("s", "place", payload, "point-command")
+            val request = server.takeRequest()
+            assertEquals("/v1/stories/s/place", request.path)
+            assertEquals("point-command", request.getHeader("Idempotency-Key"))
+            assertEquals(54.7, JsonParser.parseString(request.body.readUtf8()).asJsonObject.getAsJsonObject("fallback")["latitude"].asDouble, 0.0)
+            assertEquals("manual", wire.cameraPoint?.origin)
+            assertEquals("owner:point", wire.placeSelection?.get("candidate_id")?.asString)
+        } finally { server.shutdown() }
+    }
+}

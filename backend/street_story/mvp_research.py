@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from typing import Any
@@ -237,6 +238,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         Recovery may call this once no active research job remains. The normal
         worker calls it after its final commit, before marking its job done.
         """
+        from .research_control import research_stopped
         story = self._story_row(db, story_id)
         research = json.loads(story["research_json"] or "{}")
         intent = research.get('pending_fact_request') or {}
@@ -257,7 +259,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         current_generation = int(research.get("identity_generation") or 0)
         valid = (int(pending.get("identity_generation") or 0) == current_generation
                  and pending.get("photo_sha256") == story["photo_sha256"]
-                 and not research.get("fact_research_cancelled")
+                 and not research_stopped(research, 'facts', photo_sha256=story['photo_sha256'],
+                                          identity_generation=current_generation)
                  and (not admitted or admitted.get('control_revision') == int(
                      ((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)))
         if valid:
@@ -316,6 +319,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             story = self._story_row(db, story_id)
             if self._idem(db, key, "facts", req_digest, "story", story_id):
                 return self._story_repr(db, self._story_row(db, story_id))
+            research = json.loads(story["research_json"] or "{}")
+            if (body.get('expected_identity_generation') is not None
+                    and body['expected_identity_generation'] != int(research.get('identity_generation') or 0)):
+                raise ConflictError('fact_selection_stale', 'Объект изменился; выберите факты для текущего дома.')
             facts = list(db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,)))
             valid = {row["fact_id"] for row in facts}
             unknown = selected_set - valid
@@ -1073,7 +1080,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 or payload.get("identity_generation") is not None
                 and int(payload["identity_generation"]) != int(prior.get("identity_generation") or 0)):
             return
-        if prior.get('fact_research_cancelled'):
+        from .research_control import research_stopped
+        if research_stopped(prior, 'facts', photo_sha256=story['photo_sha256'],
+                            identity_generation=int(prior.get('identity_generation') or 0)):
             return
         if not session_ids and not live_transcript and (prior.get('visual_identity') or {}).get('status') not in {'match','owner_confirmed'}:
             raise PermanentProviderError('Explicit unidentified research requires initial author context')
@@ -1112,80 +1121,95 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             from .headless_facts import HeadlessFacts
             return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
 
-        lat, lon = story["latitude"], story["longitude"]
-        osm: dict[str, Any] = {"reverse": {}, "nearby": []}
-        wikipedia: list[dict[str, Any]] = []
-        if lat is not None and lon is not None:
-            osm = self.store.checkpoint_get(job["id"], "osm")
-            if osm is None:
-                osm = await self.providers.osm.lookup(float(lat), float(lon))
-                self.store.checkpoint_put(job["id"], "osm", osm)
-            wikipedia = self.store.checkpoint_get(job["id"], "wikipedia")
-            if wikipedia is None:
-                wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
-                self.store.checkpoint_put(job["id"], "wikipedia", wikipedia)
-        excluded = set(prior.get("identity_rejected_ids") or [])
-        candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
-        binding = prior.get("visual_identity") or {}
-        if binding.get("status") in {"match", "owner_confirmed"}:
-            saved_candidate = next((item for item in binding.get("candidates", []) if item.get("candidate_id") == binding.get("candidate_id")), None)
-            if saved_candidate and saved_candidate["candidate_id"] not in {item["candidate_id"] for item in candidates}:
-                candidates.append(saved_candidate)
-
-        confirmed_candidate_id = str(payload.get("confirmed_candidate_id") or "")
-        previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
-        catalog = {item["candidate_id"]: item for item in candidates}
-        if confirmed_candidate_id:
-            chosen = catalog.get(confirmed_candidate_id)
-            if not chosen:
-                raise ConflictError("candidate_id_unknown", "Selected place candidate is not available")
-            identity = {
-                "status": "owner_confirmed",
-                "candidate_id": confirmed_candidate_id,
-                "candidate_name": chosen["name"],
-                "confidence": None,
-                "observations": ["Кандидат выбран владельцем; это подтверждение, а не результат visual match."],
-                "candidates": candidates,
-            }
-        elif (
-            previous_identity
-            and previous_identity.get("status") in {"match", "owner_confirmed"}
-            and previous_identity.get("candidate_id") in catalog
-        ):
-            identity = {**previous_identity, "candidates": candidates}
-        elif not candidates:
-            identity = {
-                "status": "uncertain",
-                "candidate_id": None,
-                "candidate_name": None,
-                "confidence": 0.0,
-                "observations": ["Нет GPS-кандидатов: требуется название/адрес от владельца."],
-                "candidates": [],
-            }
+        previous_identity = prior.get("visual_identity") or {}
+        if previous_identity.get("status") == "owner_confirmed":
+            from .identity_proof import accepted_identity
+            generation = int(prior.get("identity_generation") or 0)
+            if not accepted_identity(previous_identity, photo_sha256=story['photo_sha256'], generation=generation):
+                raise ConflictError("owner_place_scope_changed", "Подтверждённый объект изменился; обновите историю.")
+            identity = dict(previous_identity)
+            candidates = [item for item in identity.get('candidates', []) if isinstance(item, dict)]
+            # Author identity stays frozen even with no GPS or catalog entry.
+            osm = prior.get('osm') or {"reverse": {}, "nearby": []}
+            wikipedia = prior.get('wikipedia') or []
+            logging.getLogger(__name__).info(
+                'street_story_owner_fact_identity story_id=%s generation=%s candidate_id=%s lookup_skipped=true',
+                story_id, generation, identity.get('candidate_id'))
         else:
-            raw_identity = self.store.checkpoint_get(job["id"], "visual_identity")
-            if raw_identity is None:
-                raw_identity = await self._identify_photo(story, transcript, candidates)
-                self.store.checkpoint_put(job["id"], "visual_identity", raw_identity)
-            candidate_id = str(raw_identity.get("candidate_id") or "")
-            status = str(raw_identity.get("status") or "uncertain")
-            if candidate_id not in catalog:
-                status = "uncertain"
-                candidate_id = ""
-            chosen = catalog.get(candidate_id)
-            identity = {
-                "status": status,
-                "candidate_id": candidate_id or None,
-                "candidate_name": chosen["name"] if chosen else None,
-                "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
-                "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
-                "alternative_candidate_ids": [
-                    str(value)
-                    for value in raw_identity.get("alternative_candidate_ids", [])[:6]
-                    if str(value) in catalog
-                ],
-                "candidates": candidates,
-            }
+            lat, lon = story["latitude"], story["longitude"]
+            osm: dict[str, Any] = {"reverse": {}, "nearby": []}
+            wikipedia: list[dict[str, Any]] = []
+            if lat is not None and lon is not None:
+                osm = self.store.checkpoint_get(job["id"], "osm")
+                if osm is None:
+                    osm = await self.providers.osm.lookup(float(lat), float(lon))
+                    self.store.checkpoint_put(job["id"], "osm", osm)
+                wikipedia = self.store.checkpoint_get(job["id"], "wikipedia")
+                if wikipedia is None:
+                    wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
+                    self.store.checkpoint_put(job["id"], "wikipedia", wikipedia)
+            excluded = set(prior.get("identity_rejected_ids") or [])
+            candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
+            binding = prior.get("visual_identity") or {}
+            if binding.get("status") in {"match", "owner_confirmed"}:
+                saved_candidate = next((item for item in binding.get("candidates", []) if item.get("candidate_id") == binding.get("candidate_id")), None)
+                if saved_candidate and saved_candidate["candidate_id"] not in {item["candidate_id"] for item in candidates}:
+                    candidates.append(saved_candidate)
+
+            confirmed_candidate_id = str(payload.get("confirmed_candidate_id") or "")
+            previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
+            catalog = {item["candidate_id"]: item for item in candidates}
+            if confirmed_candidate_id:
+                chosen = catalog.get(confirmed_candidate_id)
+                if not chosen:
+                    raise ConflictError("candidate_id_unknown", "Selected place candidate is not available")
+                identity = {
+                    "status": "owner_confirmed",
+                    "candidate_id": confirmed_candidate_id,
+                    "candidate_name": chosen["name"],
+                    "confidence": None,
+                    "observations": ["Кандидат выбран владельцем; это подтверждение, а не результат visual match."],
+                    "candidates": candidates,
+                }
+            elif (
+                previous_identity
+                and previous_identity.get("status") in {"match", "owner_confirmed"}
+                and previous_identity.get("candidate_id") in catalog
+            ):
+                identity = {**previous_identity, "candidates": candidates}
+            elif not candidates:
+                identity = {
+                    "status": "uncertain",
+                    "candidate_id": None,
+                    "candidate_name": None,
+                    "confidence": 0.0,
+                    "observations": ["Нет GPS-кандидатов: требуется название/адрес от владельца."],
+                    "candidates": [],
+                }
+            else:
+                raw_identity = self.store.checkpoint_get(job["id"], "visual_identity")
+                if raw_identity is None:
+                    raw_identity = await self._identify_photo(story, transcript, candidates)
+                    self.store.checkpoint_put(job["id"], "visual_identity", raw_identity)
+                candidate_id = str(raw_identity.get("candidate_id") or "")
+                status = str(raw_identity.get("status") or "uncertain")
+                if candidate_id not in catalog:
+                    status = "uncertain"
+                    candidate_id = ""
+                chosen = catalog.get(candidate_id)
+                identity = {
+                    "status": status,
+                    "candidate_id": candidate_id or None,
+                    "candidate_name": chosen["name"] if chosen else None,
+                    "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
+                    "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
+                    "alternative_candidate_ids": [
+                        str(value)
+                        for value in raw_identity.get("alternative_candidate_ids", [])[:6]
+                        if str(value) in catalog
+                    ],
+                    "candidates": candidates,
+                }
 
         if identity["status"] not in {"match", "owner_confirmed"}:
             research = {

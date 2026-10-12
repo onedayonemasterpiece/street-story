@@ -352,7 +352,9 @@ class HeadlessFacts:
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
-        story, _, _ = snapshot
+        story, research, _ = snapshot
+        story['_fact_research_goal'] = goal
+        story['_confirmed_fact_identity'] = compact_physical_identity(research['visual_identity'])
         # Keep the accepted model discovery decision across a route failure.
         with self.service.store.tx() as db:
             if self._snapshot(job, run_id, control_revision) is None:
@@ -678,16 +680,30 @@ class HeadlessFacts:
                 raise RetryableProviderError('research_search_unavailable', retry_at=self.service.store.now() + 60)
             identity = research['visual_identity']
             payload = json.loads(job.get('payload_json') or '{}')
-            query = str(payload.get('research_query') or ' '.join(
-                str(value or '').strip() for value in (identity.get('candidate_name'), goal))).strip()
-            if self._snapshot(job, run_id, control_revision) is None:
-                return
-            found = await search(query, story)
-            snapshot = self._snapshot(job, run_id, control_revision)
-            if snapshot is None:
-                return
-            sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
-            search_receipt = found.get('receipt') or {}
+            from .fact_search_context import fact_search_queries
+            queries = fact_search_queries(identity, payload.get('research_query'))
+            story['_fact_research_goal'] = goal
+            story['_confirmed_fact_identity'] = compact_physical_identity(identity)
+            attempts = []
+            found = {'outcome': 'completed_empty'}
+            for query in queries:
+                if self._snapshot(job, run_id, control_revision) is None:
+                    return
+                stage = 'headless_fact_search:' + hashlib.sha256(query.encode()).hexdigest()
+                found = self.service.store.checkpoint_get(job['id'], stage)
+                if found is None:
+                    found = await search(query, story)
+                    if self._snapshot(job, run_id, control_revision) is None:
+                        return
+                    self.service.store.checkpoint_put(job['id'], stage, found)
+                sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
+                attempts.append({'query': query, 'outcome': found.get('outcome', 'completed'),
+                                 'source_count': len(sources), 'receipt': found.get('receipt') or {}})
+                if sources or found.get('outcome', 'completed_empty') != 'completed_empty':
+                    break
+                LOG.info('street_story_fact_search_empty story_id=%s run_id=%s attempt=%s continuation=%s',
+                         story['id'], run_id, len(attempts), len(attempts) < len(queries))
+            search_receipt = {**(found.get('receipt') or {}), 'query_attempts': attempts}
             if not sources and found.get('outcome', 'completed_empty') == 'completed_empty':
                 self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
                 return self._finish(job, run_id, control_revision, 'search_exhausted')
@@ -1189,6 +1205,12 @@ class HeadlessFacts:
             extracted = isolated
         result = extracted['result']
         claims = result['facts'] if result['source_matches_poi'] and result['source_content_valid'] else []
+        if not result['source_matches_poi'] or not result['source_content_valid']:
+            LOG.info('street_story_fact_source_rejected story_id=%s run_id=%s generation=%s '
+                     'candidate_id=%s chunk_id=%s reason=%s',
+                     story['id'], run_id, story['_identity_generation'],
+                     research['visual_identity'].get('candidate_id'), page['chunk_id'],
+                     'source_subject_mismatch' if not result['source_matches_poi'] else 'source_content_invalid')
         if any(not isinstance(fact, dict) for fact in claims):
             raise MalformedProviderResponse('research_fact_page_claim_invalid')
         receipt = extracted.get('receipt') or {}

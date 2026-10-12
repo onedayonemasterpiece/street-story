@@ -398,6 +398,16 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     @Synchronized
+    fun clearPlaceMaterial(id: String) {
+        check(draftOverrides.edit().remove(id).commit())
+        story(id)?.processedImagePath?.let(PhotoAssets::releaseTemporary)
+        writableDatabase.update("stories", ContentValues().apply {
+            putNull("draft_text"); putNull("summary")
+            putNull("processed_image_path"); putNull("processed_image_url"); putNull("processed_image_bytes_url")
+        }, "client_story_id=?", arrayOf(id))
+    }
+
+    @Synchronized
     fun setDraftText(id: String, text: String) {
         check(draftOverrides.edit().putString(id, text).commit()) { "local draft override was not persisted" }
         writableDatabase.update("stories", ContentValues().apply {

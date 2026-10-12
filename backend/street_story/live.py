@@ -2550,59 +2550,33 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 {"candidate_id": chosen.get("candidate_id"), "reason": "no_fresh_explicit_named_author_consent"})
             raise ConflictError("live_place_author_consent_required", "Нужно явное подтверждение автора с названием объекта. Шум, приветствие и догадка модели не являются согласием.")
         approval = consent_receipt(session)
-        confirmed = {
-            **identity,
-            "approval_evidence": approval,
-            "status": "owner_confirmed",
-            "candidate_id": str(chosen.get("candidate_id") or ""),
-            "candidate_name": str(chosen.get("name") or ""),
-            "confidence": None,
-            "photo_sha256": row["photo_sha256"],
-            "candidate_url": chosen.get("url"),
-            "source_links": [chosen["url"]] if chosen.get("url") else [],
-            "generation": int(research.get("identity_generation") or 0),
-            "observations": ["Объект явно подтверждён автором в текущем Live-разговоре."],
-            "candidates": candidates,
-        }
-        research["visual_identity"] = confirmed
-        transcript = self._recent_transcript(session, candidate_name)
-        if transcript:
-            research["transcript"] = transcript
         with self.service.store.tx() as db:
             current = self.service._story_row(db, story_id)
-            current_research = json.loads(current["research_json"] or "{}")
-            if current["photo_sha256"] != row["photo_sha256"] or int(current_research.get("identity_generation") or 0) != int(research.get("identity_generation") or 0):
-                raise ConflictError("identity_candidate_changed", "Объект изменился; проверьте актуальный вариант.")
-            from .poi_memory import ensure_poi_identity, hydrate_story_facts
-            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
-            now = self.service.store.now()
-            poi_id = ensure_poi_identity(
-                db,
-                confirmed,
-                latitude=current["latitude"],
-                longitude=current["longitude"],
-                now=now,
-            )
-            reused = hydrate_story_facts(db, confirmed, story_id)
-            research["poi_id"] = poi_id
-            research["poi_reused_fact_count"] = reused
-            db.execute(
-                "UPDATE stories SET place_name=?,research_json=?,state='identity_ready',"
-                "error_code=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_code END,"
-                "error_message=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_message END,"
-                "revision=revision+1,updated_at=? WHERE id=?",
-                (
-                    confirmed["candidate_name"],
-                    canonical(research),
-                    self.service.store.now(),
-                    story_id,
-                ),
-            )
-            result = {
-                "visual_identity": confirmed,
-                "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
-            }
-            self._store_command(db, story_id, command_id, "confirm_place", args, result)
+            current_research = json.loads(current['research_json'] or '{}')
+            if (current['photo_sha256'] != row['photo_sha256']
+                    or int(current_research.get('identity_generation') or 0) != int(research.get('identity_generation') or 0)):
+                raise ConflictError('identity_candidate_changed', 'Объект изменился; проверьте актуальный вариант.')
+            from .place_selection import transition_owner_selection
+            story_result = transition_owner_selection(self.service, db, current, current_research, chosen,
+                command_id, selection_basis='owner_live', approval=approval,
+                body={'owner_comment': self._recent_transcript(session, candidate_name)})
+            confirmed = story_result['visual_identity']
+            result = {'visual_identity': confirmed, 'story': story_result}
+            self._store_command(db, story_id, command_id, 'confirm_place', args, result)
+        session.state['research_control_scope'] = {
+            'expected_photo_sha256': story_result['photo_sha256'],
+            'expected_identity_generation': story_result['identity_generation'],
+        }
+        session.state['fact_research_control_revision'] = story_result['research_controls']['facts']['revision']
+        session.state['research_cancelled'] = False
+        session.state['research_discovery_without_save'] = 0
+        session.state['research_author_interrupted'] = False
+        session.state['research_continuation_queued'] = False
+        # Keep run receipts keyed by their original run; detach only the active
+        # cursor so future author requests adopt B while late A remains fenced.
+        for name in ('research_run_id', 'research_pause_reason', 'research_current_chunk_id',
+                     'research_pending_page', 'research_page_cursor'):
+            session.state.pop(name, None)
         session.state["author_turn"]["consumed"] = True
         from .identity_telemetry import record_identity_event
         record_identity_event(self.service, story_id, "identity_owner_confirmed", {"generation": confirmed["generation"], "candidate_id": confirmed["candidate_id"]})
