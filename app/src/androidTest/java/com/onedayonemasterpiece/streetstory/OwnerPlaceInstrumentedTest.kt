@@ -148,7 +148,17 @@ class OwnerPlaceInstrumentedTest {
                 requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-address"))).text = "Клиническая 19А"
                 requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-name"))).text = "Дом карты"
                 requireNotNull(device.findObject(androidx.test.uiautomator.By.res("android:id/button1"))).click()
-                val queued = store.pendingOperations(id).single { it.kind == "place" }
+                val confirmDeadline = android.os.SystemClock.elapsedRealtime() + 3000
+                var queuedPlace: PendingOperation? = null
+                while (queuedPlace == null && android.os.SystemClock.elapsedRealtime() < confirmDeadline) {
+                    queuedPlace = store.pendingOperations(id).firstOrNull { it.kind == "place" }
+                    if (queuedPlace == null) android.os.SystemClock.sleep(50)
+                }
+                if (queuedPlace == null) {
+                    device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.png"))
+                    device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.xml"))
+                }
+                val queued = requireNotNull(queuedPlace) { "owner context confirmation must persist the place outbox command" }
                 val payload = JsonParser.parseString(queued.payloadJson).asJsonObject
                 assertEquals("osm:way:fixture", payload["candidate_id"].asString)
                 assertEquals("ui-map", payload["snapshot_id"].asString)

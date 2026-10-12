@@ -39,6 +39,7 @@ data class ResearchProjectionSnapshot(
     val placeMap: PlaceMapWire? = null,
     val placeSelection: com.google.gson.JsonObject? = null,
     val cameraPoint: PlaceCameraWire? = null,
+    val identityMode: String? = null,
 
 )
 
@@ -57,6 +58,7 @@ class ResearchProjectionStore(context: Context) {
             placeMap = wire.placeMap,
             placeSelection = wire.placeSelection,
             cameraPoint = wire.cameraPoint,
+            identityMode = wire.identityMode,
             candidateId = identity?.candidateId?.takeIf { !it.isNullOrBlank() },
             candidateName = identity?.candidateName?.takeIf { !it.isNullOrBlank() },
             observations = identity?.observations?.filter { it.isNotBlank() } ?: emptyList(),

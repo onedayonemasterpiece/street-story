@@ -1041,6 +1041,33 @@ class ProductResearchAdapter:
                 route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
         return routes
 
+    @staticmethod
+    def _owner_exact_fact_scope(story):
+        try:
+            research = json.loads(story.get('research_json') or '{}')
+        except (ValueError, TypeError):
+            research = {}
+        identity = research.get('visual_identity') or story.get('_confirmed_fact_identity') or {}
+        return identity.get('status') == 'owner_confirmed' and identity.get('selection_basis') == 'owner_exact'
+
+    def new_fact_routes(self, story, routes):
+        """Choose the qualified primary text reader for new owner-exact work.
+
+        Original operation observation is selected before this policy. Provider
+        qualification, availability and admission remain their existing gates.
+        """
+        if not self._owner_exact_fact_scope(story):
+            return routes
+        primary = getattr(self, 'client', None)
+        selected = [route for route in routes if route.get('role') == 'facts'
+                and route.get('provider_id') == 'opencode'
+                and route.get('model_id') == 'mimo-v2.6-flash-free'
+                and route.get('client') is primary and route.get('qualified')]
+        LOG.info('street_story_fact_route_selection story_id=%s policy=owner_exact_quality_fallback '
+                 'model_id=%s qualified_routes=%s', story.get('id'),
+                 getattr(primary, 'model_id', None), len(selected))
+        return selected
+
     def order_fact_routes(self, routes, ordinal=0, *, review=False):
         """Assign new units using observed service time and outstanding work.
 
@@ -1185,7 +1212,8 @@ class ProductResearchAdapter:
                 raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
             return await self._extract_fact_route(route, fact_page_capsule(page, context), page,
                 {**story, '_fact_pool_unit_id': unit}, context)
-        if not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None:
+        if (not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None
+                and not self._owner_exact_fact_scope(story)):
             # Preserve legacy single-client installations until explicit rollout.
             return await self._extract_giga_page(page, story, context)
         for receipt in prior.values():
@@ -1195,7 +1223,7 @@ class ProductResearchAdapter:
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
         owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest,
                  '_fact_semantic_contract': FACT_READING_CONTRACT}
-        all_routes = self._fact_pool_routes()
+        all_routes = self.new_fact_routes(story, self._fact_pool_routes())
         qualified = [route for route in all_routes if route['qualified']]
         if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):
             raise PermanentProviderError('research_fact_routes_exhausted')

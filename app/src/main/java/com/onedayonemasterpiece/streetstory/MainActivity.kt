@@ -705,6 +705,16 @@ class MainActivity : Activity() {
     }
 
     private fun renderIdentityProgress(progress: IdentityProgressWire?, waiting: Boolean) {
+        val storyId = activeStoryId
+        val projection = storyId?.let(research::get)
+        val ownerMapMode = projection?.identityMode == "manual" || (projection == null && placeMapPanel != null)
+        val explicitRecognition = projection?.researchPending?.get("identity") == true ||
+            storyId?.let { store.pendingOperations(it).any { operation -> operation.kind == "identity" } } == true
+        if (ownerMapMode && !explicitRecognition) {
+            identityProgressView?.visibility = View.GONE
+            stickyComparison?.visibility = View.GONE
+            return
+        }
         stickyComparison?.apply {
             text = progress?.let {
                 "${if (it.visualComparisonVerified) "☑" else "☐"} Визуальное сравнение\nПросмотрено иллюстраций: ${it.imagesReviewedCount}"

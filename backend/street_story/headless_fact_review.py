@@ -249,6 +249,12 @@ class HeadlessFactReview:
             if not routes:
                 return None  # Changed configuration cannot replace an original operation.
         provider = getattr(self.service.providers, 'research', None)
+        snapshot = self.harness._snapshot(job, packet['run_id'])
+        if snapshot is None:
+            return None
+        select_new = getattr(provider, 'new_fact_routes', None)
+        if not observing and callable(select_new):
+            routes = select_new(snapshot[0], routes)
         order = getattr(provider, 'order_fact_routes', None)
         if routes and not observing and callable(order):
             routes = order(routes, ordinal, review=True)
@@ -270,6 +276,8 @@ class HeadlessFactReview:
         prompt = verifier_prompt + canonical(model_view)
         closed_routes = set(saved.get('closed_routes') or [])
         all_routes = self._qualified_routes(available=False)
+        if not observing and callable(select_new):
+            all_routes = select_new(story, all_routes)
         # Preferred packet size never removes qualified routes. Original
         # requests retain their frozen input and original reader after restart.
         temporary = any(not route.get('available', True) for route in all_routes)
