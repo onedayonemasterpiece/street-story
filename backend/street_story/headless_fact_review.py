@@ -112,7 +112,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v17-own-addresses:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v18-complete-relations:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
@@ -724,6 +724,12 @@ class HeadlessFactReview:
                 packet = headless_review_quotes.with_quote_catalog(packet)
                 with self.service.store.connection() as db:
                     from .headless_review_context import source_context
+                    # Public pages bound transport, not the private operation's
+                    # relationship scope. Restore the actual issued dictionary,
+                    # never a newer live inventory or another packet's claims.
+                    _, frozen_payload = review_packets.load(self.harness.adapter, session, db, packet['packet_ref'])
+                    if frozen_payload.get('candidate_scope') is not None:
+                        packet['nearby_existing_claims'] = frozen_payload.get('nearby_existing_claims', [])
                     packet['own_source_context'] = source_context(db, packet['packet_ref'], job['story_id'])
                     goal = db.execute('SELECT goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0]
                 inventory = self.harness.adapter._get_facts(job['story_id'], {'eligibility': 'eligible', 'limit': 50})

@@ -258,6 +258,21 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             raise ConflictError("identity_unavailable", "Automatic identity is unavailable")
         return ensure_identity(story_id)
 
+    @app.post('/v1/stories/{story_id}/identity-hint', dependencies=[Depends(auth)])
+    async def identity_hint(story_id: str, request: Request,
+                            idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {'text'} or not isinstance(body['text'], str):
+            raise ConflictError('identity_hint_invalid', 'Нужен короткий буквальный ответ владельца.')
+        accept = getattr(service, 'accept_identity_hint', None)
+        if not callable(accept):
+            raise ConflictError('identity_unavailable', 'Automatic identity is unavailable')
+        from .research_budget import ResearchTerminated
+        try:
+            return accept(story_id, idem(idempotency_key), body['text'])
+        except ResearchTerminated as exc:
+            raise ConflictError(exc.reason, 'Исследование остановлено; подсказка не принята.') from exc
+
     @app.post("/v1/stories/{story_id}/photo-location", dependencies=[Depends(auth)])
     async def recover_photo_location(story_id: str, request: Request):
         form, original, _ = await photo_form(request)

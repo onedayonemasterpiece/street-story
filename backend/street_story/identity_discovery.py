@@ -133,6 +133,11 @@ def _geometry_plan_result(story, payload, candidates):
     return raw if geometry_result_valid(raw, candidates, story) else None
 
 
+def _conditional_material_ids(prior):
+    prior = prior or {}
+    return prior.get('material_alternative_candidate_ids', prior.get('candidate_ids')) or []
+
+
 def _conditional_text_prior(payload, nomination_ids):
     """Carry the first model decision as hypotheses, never acquired evidence."""
     if not isinstance(payload, dict):
@@ -175,6 +180,18 @@ def _conditional_text_prior(payload, nomination_ids):
     }
     prior.update(policy='conditional-initial-joint-v1', input_kind='model_hypothesis_not_evidence',
         candidate_ids=list(dict.fromkeys(cid for cid in declared if isinstance(cid, str) and cid in allowed)))
+    # A typed closed-model contradiction is part of the received comparison,
+    # not a permanent nomination. Preserve its basis rather than silently
+    # making the same excluded body mandatory again. Conflicting active
+    # nominations keep it unresolved; the host never interprets free text.
+    active = {geometry.get('candidate_id'), text.get('candidate_id'), *targets,
+              *((payload.get('research_priority') or {}).get('candidate_ids') or [])}
+    exclusions = [copy.deepcopy(item) for item in spatial if isinstance(item, dict)
+        and item.get('candidate_id') in allowed and item.get('support_status') == 'contradicted'
+        and item.get('counterevidence') and item.get('candidate_id') not in active]
+    excluded_ids = {item['candidate_id'] for item in exclusions}
+    prior['previous_model_exclusions_not_identity_proof'] = exclusions
+    prior['material_alternative_candidate_ids'] = [cid for cid in prior['candidate_ids'] if cid not in excluded_ids]
     return prior
 
 
@@ -781,6 +798,12 @@ async def _suggest(service, story, transcript, candidates):
     if fresh_initial_resolution:
         from .identity_subject_resolution import INSTRUCTIONS as RESOLUTION_INSTRUCTIONS
         prompt = RESOLUTION_INSTRUCTIONS + '\n' + prompt
+    if scene and not frozen_initial and not native_original and not addressed_initial:
+        from .identity_geometry_contract import CONTRACT, with_received_comparison_scope
+        prompt = with_received_comparison_scope(prompt, {
+            'geometry_contract': CONTRACT,
+            'physical_body_candidate_ids': [row[1] for row in physical_context['rows']],
+            'material_alternative_candidate_ids': []})
     response_contract = identity_transport_schema(schema, map_label_references=bool(scene))
     literal_names = []
     if scene:
@@ -869,6 +892,7 @@ async def _suggest(service, story, transcript, candidates):
     initial_outcome = addressed_initial.get('phase') if addressed_initial else None
     joint_model_id = None
     native_source_map_receipt = None
+    issued_followup_source_map_receipt = None
     original_followup_context = {}
     joint_resolution_required = 'subject_resolution' in schema['properties']
     response_id_resolutions = []
@@ -886,6 +910,8 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_subject_resolution import CONTRACT as RESOLUTION_CONTRACT
         if original_followup_context:
             return original_followup_context['source_map_receipt']
+        if issued_followup_source_map_receipt is not None and joint_followup_used and not current_scene:
+            return {**issued_followup_source_map_receipt, 'model_id': joint_model_id}
         if native_source_map_receipt is not None and not joint_followup_used and not current_scene:
             return native_source_map_receipt
         return ({'source_photo_sha256': story.get('photo_sha256'),
@@ -897,7 +923,7 @@ async def _suggest(service, story, transcript, candidates):
             'model_id': joint_model_id,
             'physical_body_candidate_ids': [row[1] for row in physical_context['rows']],
             'material_alternative_candidate_ids': list(dict.fromkeys([*geometry_prior_ids,
-                *((source_text_receipt.get('conditional_initial_decision') or {}).get('candidate_ids') or [])])),
+                *(_conditional_material_ids(source_text_receipt.get('conditional_initial_decision')))])),
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene else {})
     def closed_text_proof(payload):
@@ -1315,6 +1341,7 @@ async def _suggest(service, story, transcript, candidates):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
         nonlocal joint_resolution_required
+        nonlocal issued_followup_source_map_receipt
         story['_identity_search_plan_route'] = initial_route
         component_rejections = {}
         decode_error = False
@@ -1586,7 +1613,7 @@ async def _suggest(service, story, transcript, candidates):
                 detail_candidate_ids=action['target_candidate_ids'])
             if expanded:
                 prior = _conditional_text_prior(payload, observed_ids)
-                geometry_prior_ids = prior['candidate_ids'] if prior else []
+                geometry_prior_ids = _conditional_material_ids(prior)
                 scene = expanded
                 scene_manifest = compact_scene_manifest(scene['manifest'])
                 from .identity_architectural_comparison import (
@@ -1687,7 +1714,7 @@ async def _suggest(service, story, transcript, candidates):
                     counterpoints = received_map_counterpoints(story, [*observed, *candidates], source_text_receipt)
                     source_text_receipt['required_map_counterpoints'] = counterpoints
                     require_material_alternative_coverage(schema['properties']['accepted_architectural_text'],
-                        observed_ids, (conditional_prior or {}).get('candidate_ids') or [], counterpoints)
+                        observed_ids, _conditional_material_ids(conditional_prior), counterpoints)
                     followup_prompt += ('\nReceived MAP counterpoints, not identity; accepted T must address '
                         'the chosen body’s paired alternatives:\n' + json.dumps(counterpoints, ensure_ascii=False))
                 followup_contract = identity_transport_schema(schema, map_label_references=bool(scene))
@@ -1730,7 +1757,7 @@ async def _suggest(service, story, transcript, candidates):
                         + '\nRe-evaluate these SOURCE observations, uncertainty and candidate alternatives '
                         'against actual SOURCE+MAP+TEXT. An initial positive or negative assertion is not proof. '
                         'Before accepting architectural identity, material_alternatives must explicitly address '
-                        'every declared candidate_ids entry other than the final subject, using distinguishing '
+                        'every declared material_alternative_candidate_ids entry other than the final subject, using distinguishing '
                         'SOURCE/text relations or explaining why it is no longer a material alternative. '
                         'Shared generic elements or the sole available article do not resolve alternatives. '
                         'If a material alternative remains unresolved, return uncertain; do not invent '
@@ -1869,6 +1896,12 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_t_ready_article_references', {
                     'article_count': len(text_articles), 'reference_count': len(article_reference_images),
                     'additional_model_calls': 0, 'text_work_preserved': True})
+            if scene and not native_readback_only:
+                from .identity_geometry_contract import with_received_comparison_scope
+                # Freeze the same scope for the issued input and subsequent
+                # admission, after detail/conditional prior preparation.
+                issued_followup_source_map_receipt = copy.deepcopy(joint_source_map_receipt(current_scene=True))
+                followup_prompt = with_received_comparison_scope(followup_prompt, issued_followup_source_map_receipt)
             if hasattr(service, 'settings') and not native_readback_only:
                 from .research_budget import reserve_work, ResearchWorkExhausted
                 from .service import digest
@@ -1928,6 +1961,8 @@ async def _suggest(service, story, transcript, candidates):
                 'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                 'map_image_sha256': (scene or {}).get('manifest', {}).get('image_sha256'),
                 'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
+            if issued_followup_source_map_receipt is not None:
+                prepared_request['source_map_receipt'] = copy.deepcopy(issued_followup_source_map_receipt)
             if compact_t and compact_t.get('received_candidate_ids') is not None:
                 # Host-only pointer membership for addressed reserve requests.
                 # Freeze it with the same request so UNKNOWN never rebinds to a new catalog.

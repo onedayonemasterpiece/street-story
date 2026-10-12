@@ -189,8 +189,9 @@ class IdentityLifecycleMixin:
                 and question.get('generation') == generation and question.get('control_revision') == epoch)
             legacy_question = not question and epoch == 0 and row['latitude'] is None and row['longitude'] is None
             finished = research.get('automatic_research_outcome') or {}
-            answering = (finished.get('outcome') == 'clarification_required' and not question.get('answered')
-                         and (current_question or legacy_question))
+            answering = ((not finished or finished.get('outcome') == 'clarification_required')
+                         and not question.get('answered') and (current_question
+                         or finished.get('outcome') == 'clarification_required' and legacy_question))
             if finished and not answering:
                 raise ResearchTerminated(finished['outcome'], 'research_attempt_already_finished')
             budget = research.get('research_budget') or ensure_budget(self, story_id, db=db)
@@ -209,7 +210,7 @@ class IdentityLifecycleMixin:
             for control in (research.get('research_controls') or {}).values():
                 if control.get('photo_sha256') == row['photo_sha256'] and control.get('identity_generation') == generation - 1:
                     control['identity_generation'] = generation
-            late_reply = answering
+            late_reply = answering and finished.get('outcome') == 'clarification_required'
             # An owner reply changes input generation, never SOURCE lifetime.
             # Archive the closed question while keeping the original work journal.
             research['research_budget'] = {**budget, 'identity_generation': generation,
@@ -617,19 +618,17 @@ class IdentityLifecycleMixin:
                 question = ((latest.get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload', {}).get('clarification_question')
                 pending_visual = reference_work_pending and bool(
                     getattr(getattr(self.providers, 'research', None), 'vision_available', False))
-                if not valid and not pending_visual and not (isinstance(question, str) and question.strip()):
+                if not valid and not (isinstance(question, str) and question.strip()):
                     # Missing coordinates are an observed input limitation,
                     # independent of semantic identity or provider availability.
                     question = 'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.'
                 if not valid and isinstance(question, str) and question.strip():
                     latest['identity_clarification'] = {'question': question.strip()[:200],
                         'reason': 'geographic_context_missing', 'photo_sha256': story['photo_sha256'],
-                        'generation': generation, 'control_revision': control_revision}
-                elif not valid and pending_visual:
-                    # Acquired references already have a bounded continuation.
-                    # A host-created location question must not seal that wave
-                    # before the shared visual worker can compare them.
-                    deferred_location_question = True
+                        'generation': generation, 'control_revision': control_revision,
+                        'background_continuation_pending': pending_visual}
+                    # Show the current question without sealing acquired work.
+                    deferred_location_question = pending_visual
                 # Keep successful discovery available to the SAME visual queue,
                 # but do not seal a generation while providers are unavailable.
                 if waiting:

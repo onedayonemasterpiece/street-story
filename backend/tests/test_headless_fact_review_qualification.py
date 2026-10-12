@@ -139,7 +139,7 @@ async def original_fixture(tmp_path):
         next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review'))
     live = route()
     args = {'packet_ref': packet['packet_ref'], 'decisions': [
-        {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+        {'fact': item['fact'], 'verdict': 'supported',
          'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
          'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own literal evidence.'}
         for item in packet['items']], 'relations_complete': True, 'conflicts': [],
@@ -300,7 +300,7 @@ async def test_withdrawn_review_proof_before_commit_cannot_promote_valid_closed_
     class WithdrawnReview(HeadlessFactReview):
         async def _infer(self, packet, job, unit, saved, ordinal=0):
             args = {'packet_ref': packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+                {'fact': item['fact'], 'verdict': 'supported',
                  'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
                  'claims': [item['text']], 'basis_quotes': [item['quote_ref']]}
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],

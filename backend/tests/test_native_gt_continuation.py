@@ -295,6 +295,10 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         assert retained['state'] == 'unconfirmed_physical_hypothesis' and not retained['identity_accepted']
         assert retained['initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
         assert retained['source_map_receipt']['model_id'] == 'gpt-6-luna'
+        from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS, received_comparison_scope
+        scope, _ = json.JSONDecoder().raw_decode(contents[-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+        frozen_receipt = joint_followup_marker(svc, snapshot)['prepared_request']['source_map_receipt']
+        assert scope == received_comparison_scope(frozen_receipt)
         if outcome == 'map_detail_text':
             assert retained['reason']['code'] == 'identity_geometry_uncertain'
         else:

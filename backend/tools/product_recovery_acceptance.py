@@ -714,15 +714,26 @@ async def observe_continuation(app, service, selected, cases, report, output, re
                 if threshold == 600:
                     for message_id, hint in (owner_hints or {}).items():
                         case = cases[message_id]
-                        if (case.get('product_outcome') or {}).get('outcome') != 'clarification_required':
+                        current, research = service._identity_snapshot(case['story_id'])
+                        question = research.get('identity_clarification') or {}
+                        epoch = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+                        current_question = (bool(question.get('question')) and not question.get('answered')
+                            and question.get('photo_sha256') == current['photo_sha256']
+                            and question.get('generation') == int(research.get('identity_generation') or 0)
+                            and question.get('control_revision') == epoch)
+                        if not current_question and (case.get('product_outcome') or {}).get('outcome') != 'clarification_required':
                             continue
                         # Reuse only an actual owner's literal answer. This is
                         # ordinary durable backend acceptance, recorded separately
                         # from the TCP/Android/voice delivery observations.
                         key = 'corpus-owner-hint:' + digest([case['story_id'], hint])
-                        service.accept_identity_hint(case['story_id'], key, hint)
-                        case['owner_hint_delivery'] = {'mode': 'ordinary_backend_accept_identity_hint',
+                        async with httpx.AsyncClient(base_url=base, headers=headers, trust_env=False, timeout=30) as client:
+                            reply = await client.post('/v1/stories/' + case['story_id'] + '/identity-hint',
+                                headers={'Idempotency-Key': key}, json={'text': hint})
+                            reply.raise_for_status()
+                        case['owner_hint_delivery'] = {'mode': 'ordinary_authenticated_HTTP_identity_hint',
                             'actual_owner_literal': hint, 'after_client_close_seconds': elapsed,
+                            'current_question': current_question,
                             'request_key': key, 'android_or_voice_claim': False}
             save(report_path, report)
             if not due:

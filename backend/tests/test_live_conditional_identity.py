@@ -258,15 +258,22 @@ def test_new_current_model_question_is_not_hidden_by_retained_owner_hint(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_city_reply_marks_only_existing_question_answered(tmp_path):
+@pytest.mark.parametrize('finished', [False, True])
+async def test_city_reply_marks_only_existing_question_answered(tmp_path, finished):
     svc, adapter, session, _ = fixtures.make_service(tmp_path)
     ensure_budget(svc, session.resource_id)
     with svc.store.tx() as db:
         row = svc._story_row(db, session.resource_id)
         research = json.loads(row['research_json'])
-        research.update(automatic_research_outcome={'outcome': 'clarification_required'},
-            identity_clarification={'photo_sha256': row['photo_sha256'], 'generation': 0,
-                'control_revision': 0, 'question': 'В каком городе этот дом?'})
+        research.update(identity_clarification={'photo_sha256': row['photo_sha256'], 'generation': 0,
+                'control_revision': 0, 'question': 'В каком городе этот дом?',
+                'background_continuation_pending': not finished})
+        if finished:
+            research['automatic_research_outcome'] = {'outcome': 'clarification_required'}
+        else:
+            from street_story.research_budget import finish_requested_clarification
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), session.resource_id))
+            assert not finish_requested_clarification(svc, db, session.resource_id)
         db.execute('UPDATE stories SET latitude=NULL,longitude=NULL,research_json=? WHERE id=?',
             (json.dumps(research), session.resource_id))
     async def geocode(text):

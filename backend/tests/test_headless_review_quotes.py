@@ -18,6 +18,30 @@ def packet_fixture():
         {'fact': 1, 'evidence': 0, 'offset': 0, 'passage': 'Названа в честь генерала.'}]})
 
 
+@pytest.mark.asyncio
+async def test_private_relations_include_every_frozen_claim_despite_public_page_limit(tmp_path):
+    from test_headless_fact_review_parallel import ControlledReview
+    texts = [f'Independent historical account {i}. ' + 'Own literal detail. ' * 18 for i in range(10)]
+    svc, job, harness = await candidates(tmp_path, source_texts=texts)
+    engine = ControlledReview(harness)
+    with svc.store.connection() as db:
+        ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+    assert len(ids) == 10
+    await engine.run(job, RUN, 0, fact_ids=ids[1:])
+    session = SimpleNamespace(id='complete-relations', resource_id=job['story_id'], actor=None,
+                             closed=False, state={})
+    packet, _, _ = engine._prepare_packet(job, RUN, session, ids[:1])
+    with svc.store.connection() as db:
+        _, frozen = review_packets.load(harness.adapter, session, db, packet['packet_ref'])
+    assert len(frozen['nearby_existing_claims']) == 9
+    assert packet['nearby_existing_claims'] == frozen['nearby_existing_claims']
+    public_page = review_packets.read(harness.adapter, session, {'packet_ref': packet['packet_ref']})
+    assert len(public_page['nearby_existing_claims']) < 9
+    schema = headless_review_quotes.response_schema(packet, public_schema())
+    allowed = schema['properties']['decisions']['items']['properties']['equivalent_to_existing']['enum']
+    assert set(allowed) == set(ids[1:])
+
+
 @pytest.mark.parametrize('mutation', ['foreign_fact', 'unselected_evidence', 'unknown', 'other_packet', 'changed_passage', 'changed_catalog'])
 def test_quote_labels_cannot_cross_or_change_frozen_scope(mutation):
     packet = packet_fixture()

@@ -354,7 +354,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     observed = story.get('_identity_observed_candidates') or []
     catalog = {item.get('candidate_id'): item for item in [*candidates, *observed] if isinstance(item, dict)}
     prior = receipt.get('conditional_initial_decision')
-    prior_ids = prior.get('candidate_ids') if isinstance(prior, dict) else None
+    prior_ids = prior.get('material_alternative_candidate_ids', prior.get('candidate_ids')) if isinstance(prior, dict) else None
     structural = receipt.get('text_contract') == TEXT_CONTRACT
     inventory = receipt.get('physical_link_inventory')
     link_proof = None
@@ -457,7 +457,18 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             return None
         # This checks pointer coverage only. A previous model rejection is
         # conditional context, never proof of architectural discrimination.
-        required = set(prior['candidate_ids']) - {cid}
+        if 'material_alternative_candidate_ids' in prior:
+            material = prior['material_alternative_candidate_ids']
+            exclusions = prior.get('previous_model_exclusions_not_identity_proof')
+            if (not isinstance(material, list) or any(not isinstance(value, str) for value in material)
+                    or len(set(material)) != len(material) or not set(material) <= set(prior['candidate_ids'])
+                    or not isinstance(exclusions, list)
+                    or any(not isinstance(item, dict) or not isinstance(item.get('candidate_id'), str)
+                           or item.get('support_status') != 'contradicted'
+                           or not item.get('counterevidence') for item in exclusions)
+                    or set(prior['candidate_ids']) - set(material) != {item.get('candidate_id') for item in exclusions}):
+                return None
+        required = set(prior_ids) - {cid}
         addressed = {item['candidate_id'] for item in decision['material_alternatives']}
         if not required <= addressed:
             return None

@@ -5,10 +5,38 @@ computes their relations and checks the stated pose scenarios. No target score,
 new inference or independent semantic judge is introduced.
 """
 from __future__ import annotations
+import json
 
 LEGACY_CONTRACT = 'source-map-spatial-correspondence-v2'
 INDEXED_CONTRACT = 'source-map-spatial-correspondence-v3'
 CONTRACT = 'source-map-spatial-correspondence-v4'
+
+
+def received_comparison_scope(receipt):
+    """Expose the exact host address dictionary; prior IDs are hypotheses."""
+    return {key: receipt.get(key, []) if key.endswith('_ids') else receipt.get(key)
+        for key in ('geometry_contract', 'physical_body_candidate_ids', 'material_alternative_candidate_ids')}
+
+
+COMPARISON_SCOPE_INSTRUCTIONS = (
+    '\nReceived comparison scope (exact host dictionary, not an identity verdict):\n'
+    'physical_body_candidate_ids names the received mapped bodies. '
+    'material_alternative_candidate_ids retains unresolved model hypotheses, not accepted truth. '
+    'For a positive G decision address every listed material alternative other than the chosen body '
+    'in rejected_alternatives with actual received SOURCE/MAP relations, or retain uncertainty. '
+    'Preserve supplied previous exclusions and their received basis; exclusion is not identity proof. '
+    'Other side-pair counterpoints do not substitute for unresolved hypotheses.\n')
+
+
+def with_received_comparison_scope(prompt, receipt):
+    # Replace only our prior host-owned scope header, retaining the original
+    # context JSON framing and all received evidence/instructions unchanged.
+    if COMPARISON_SCOPE_INSTRUCTIONS in prompt:
+        prefix, remainder = prompt.split(COMPARISON_SCOPE_INSTRUCTIONS, 1)
+        _, end = json.JSONDecoder().raw_decode(remainder)
+        prompt = prefix + remainder[end:].lstrip('\n')
+    return (COMPARISON_SCOPE_INSTRUCTIONS + json.dumps(received_comparison_scope(receipt),
+        ensure_ascii=False, separators=(',', ':')) + '\n' + prompt)
 
 GEOMETRY_COMPARISON_INSTRUCTIONS = (
     'Compare the photographed projection with the received MAP geometry, not image size with '

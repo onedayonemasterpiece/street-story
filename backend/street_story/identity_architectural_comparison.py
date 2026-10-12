@@ -610,6 +610,10 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
     initial = {}
     if prior:
         initial['candidate_ids'] = list(prior['candidate_ids'])
+        if 'material_alternative_candidate_ids' in prior:
+            initial['material_alternative_candidate_ids'] = copy.deepcopy(prior['material_alternative_candidate_ids'])
+            initial['previous_model_exclusions_not_identity_proof'] = copy.deepcopy(
+                prior.get('previous_model_exclusions_not_identity_proof') or [])
         initial['source_scene_observations'] = {
             key: [str(text)[:300] for text in values[:6] if isinstance(text, str)]
             for key, values in (prior.get('source_scene_observations') or {}).items()
@@ -696,9 +700,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *, 
     # nothing about unreceived bodies or whether the hypothesis is correct.
     schema['properties']['material_alternatives']['description'] = (
         'Other received physical candidates only; never include the chosen candidate_id. '
-        'For an accepted decision, address EVERY earlier nominated candidate except the chosen one, '
-        'including a reason when it is not a material alternative. Otherwise use uncertain.')
-    required_prior_ids = [cid for cid in initial.get('candidate_ids', []) if cid in ids]
+        'For an accepted decision, address every unresolved received material alternative except the chosen one, '
+        'preserving supplied exclusion bases. Otherwise use uncertain.')
+    required_prior_ids = [cid for cid in initial.get('material_alternative_candidate_ids', initial.get('candidate_ids', [])) if cid in ids]
     require_material_alternative_coverage(schema, ids, required_prior_ids, map_counterpoints)
     if len(comparison_ids) == 1:
         schema['properties']['material_alternatives']['maxItems'] = 0

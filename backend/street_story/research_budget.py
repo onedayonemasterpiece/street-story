@@ -183,6 +183,7 @@ def finish_requested_clarification(service, db, story_id, *, job=None):
     question = research.get('identity_clarification') or {}
     revision = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
     if (research.get('automatic_research_outcome') or question.get('answered')
+            or question.get('background_continuation_pending') is True
             or (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
             or question.get('photo_sha256') != row['photo_sha256']
             or question.get('generation') != int(research.get('identity_generation') or 0)

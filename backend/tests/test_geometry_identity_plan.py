@@ -24,6 +24,24 @@ def cache_ready_articles(service, articles):
              'final_url': article['url'], 'mime': 'text/html', 'acquired_at': service.store.now()}, 600)
 
 
+@pytest.mark.parametrize('status,active,expected', [
+    ('unknown', False, ['osm:way:2', 'osm:way:3']),
+    ('contradicted', False, ['osm:way:2']),
+    ('contradicted', True, ['osm:way:2', 'osm:way:3'])])
+def test_material_scope_preserves_exclusion_basis_without_interpreting_its_text(status, active, expected):
+    initial = {'observed_candidate_ids': ['osm:way:2'], 'spatial_hypotheses': [
+        {'candidate_id': 'osm:way:3', 'support_status': status, 'basis': ['Received MAP body.'],
+         'counterevidence': ['Received SOURCE number disagrees with this own MAP record.']}],
+        'research_priority': {'candidate_ids': ['osm:way:3'] if active else ['osm:way:2']}}
+    original = copy.deepcopy(initial)
+    prior = identity_discovery._conditional_text_prior(initial, ['osm:way:2', 'osm:way:3'])
+    assert initial == original
+    assert set(prior['candidate_ids']) == {'osm:way:2', 'osm:way:3'}
+    assert set(prior['material_alternative_candidate_ids']) == set(expected)
+    exclusions = prior['previous_model_exclusions_not_identity_proof']
+    assert exclusions == ([initial['spatial_hypotheses'][0]] if status == 'contradicted' and not active else [])
+
+
 def geometry_setup(tmp_path):
     service, _adapter, story, _sessions = prepared(tmp_path)
     first, other = building(2, 20), building(3, 50)
@@ -243,6 +261,10 @@ async def test_joint_repairs_one_unreceived_alternative_without_another_judge_or
         calls.append(contents)
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(payload(bad)))
+        from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS
+        scope, _ = json.JSONDecoder().raw_decode(contents[-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+        assert 'osm:way:3' in scope['physical_body_candidate_ids']
+        assert scope['material_alternative_candidate_ids'] == []
         assert 'unreceived_alternative_ids' in contents[-1] and 'osm:way:999' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
@@ -253,6 +275,10 @@ async def test_joint_repairs_one_unreceived_alternative_without_another_judge_or
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(calls) == 2 and story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    from street_story.identity_geometry_contract import COMPARISON_SCOPE_INSTRUCTIONS, received_comparison_scope
+    issued, _ = json.JSONDecoder().raw_decode(calls[-1][-1].split(COMPARISON_SCOPE_INSTRUCTIONS, 1)[1])
+    admitted = received_comparison_scope(story['_identity_geometry_result']['geometry_proof']['source_map_receipt'])
+    assert issued == admitted
 
 
 @pytest.mark.asyncio

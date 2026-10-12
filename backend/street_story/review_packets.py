@@ -374,8 +374,8 @@ def read(adapter, session, args):
                     "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
                     "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' "
                     f"AND a.assertion_id NOT IN ({scope_slots}) "
-                    f"AND length(f.text)<=500 ORDER BY CASE WHEN f.fact_id IN ({hint_slots}) THEN 0 ELSE 1 END, "
-                    "a.owner_selected DESC,f.rowid DESC LIMIT 8", (session.resource_id, *candidate_ids, *hints))]
+                    f"ORDER BY CASE WHEN f.fact_id IN ({hint_slots}) THEN 0 ELSE 1 END, "
+                    "a.owner_selected DESC,f.rowid DESC", (session.resource_id, *candidate_ids, *hints))]
             items = []
             for fact_id in exact:
                 text = db.execute('SELECT text FROM facts WHERE story_id=? AND fact_id=?', (session.resource_id, fact_id)).fetchone()[0]
