@@ -209,7 +209,7 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
             return False
     eligible = db.execute("SELECT count(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                           (story_id,)).fetchone()[0]
-    incomplete = reason == 'source_selection_unavailable' or bool(outcome == 'resource_blocked' and db.execute(
+    incomplete = reason == 'source_selection_unavailable' or bool(outcome in {'resource_blocked', 'useful_partial'} and db.execute(
         "SELECT 1 FROM research_runs WHERE story_id=? AND identity_generation=? AND state='partial' "
         "AND status_detail=? LIMIT 1", (story_id, int(research.get('identity_generation') or 0), reason)).fetchone())
     matched = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
