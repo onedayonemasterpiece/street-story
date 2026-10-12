@@ -14,6 +14,7 @@ import httpx
 from .gemini import GeminiUnavailable
 from .identity_candidate_policy import wikipedia_coordinate_context, wikipedia_identity_eligible
 from .identity_telemetry import record_identity_event
+from .identity_geometry_contract import GEOMETRY_COMPARISON_INSTRUCTIONS
 from .identity_references import canonical_reference, original_reference
 from .providers import WIKIPEDIA_USER_AGENT, PermanentProviderError, RetryableProviderError
 
@@ -265,11 +266,8 @@ def _compact_geometry_followup(schema, manifest, physical_context, detail_reques
     prompt = ('Compare attached SOURCE and current MAP. Return only accepted_geometry under the issued '
         'G contract; the search plan is already retained. The full received body overview and requested '
         'detail remain below. Nomination/lookup are hypotheses; empty text retrieval is neutral. '
-        'Address, name, proximity or one rectangle alone is not identity. Distinguish the main physical '
-        'volume from adjoining bodies; allow crop, yaw and obscuration. Missing heading/height stays '
-        'unmeasured. A pose hypothesized from visible SOURCE/MAP relations may be tested as an explicit '
-        'conditional scenario, never presented as supplied EXIF or measured camera direction. Test '
-        'material alternatives and pose sensitivity; unknown heading alone neither accepts nor rejects identity. '
+        'Address, name, proximity or one rectangle alone is not identity. '
+        + GEOMETRY_COMPARISON_INSTRUCTIONS +
         'The requested_detail.physical_bodies now exposes all observed sides of the nominated bodies '
         'and their directly issued side-pair counterpoints. Initial statements that these contours '
         'were deferred describe the earlier input, not missing data in this detailed packet. '
@@ -647,7 +645,7 @@ async def _suggest(service, story, transcript, candidates):
     if scene:
         packet = compact_planner_packet(packet)
     resolution_packet = {**packet, 'map_scene': scene_manifest} if scene else packet
-    prompt = (
+    prompt = (GEOMETRY_COMPARISON_INSTRUCTIONS +
         'Явно читаемую надпись/имя используй как точную поисковую фразу: это сильная '
         'подсказка, но отличай имя самого объекта от вывески арендатора, рекламы и фона. '
         'Сначала прочитай SOURCE без имени ближайшего объекта. Перед выбором активных '
@@ -1724,7 +1722,7 @@ async def _suggest(service, story, transcript, candidates):
                         'unrelated/absent article support does not invalidate sufficient geometry. '
                         'A number/address alone cannot establish the whole body. Use actual '
                         'received primitives, visible SOURCE relations and explicit uncertainty. '
-                        'Do not invent a camera heading or measured facade relation. '
+                        + GEOMETRY_COMPARISON_INSTRUCTIONS +
                         'The capture context retains its original approximate/unverified status; '
                         'it is not a measured pose or identity.\n'
                         'Original SOURCE capture context (data, not identity):\n'

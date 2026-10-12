@@ -9,6 +9,23 @@ from __future__ import annotations
 LEGACY_CONTRACT = 'source-map-spatial-correspondence-v2'
 CONTRACT = 'source-map-spatial-correspondence-v3'
 
+GEOMETRY_COMPARISON_INSTRUCTIONS = (
+    'Compare the photographed projection with the received MAP geometry, not image size with '
+    'plan area. A nearby compact footprint can occupy most of SOURCE; a large complex can recede '
+    'or be partly hidden. Roof dormers, projecting bays and facade decoration do not by themselves '
+    'establish extra ground-plan wings. Distinguish actual attached volumes from facade/roof '
+    'articulation and background neighbors. Missing heading or height stays unmeasured. '
+    'A pose hypothesized from visible SOURCE/MAP relations may be tested as an explicit conditional '
+    'scenario, never presented as supplied EXIF or measured camera direction. Test material '
+    'alternatives and pose sensitivity; unknown heading alone neither accepts nor rejects identity. '
+    'Use camera_pose and decisive_relations to explain which observed relations distinguish the '
+    'photographed body under the plausible views, and what remains unobserved. Mere apparent size '
+    'or resemblance of the whole image to one outline does not resolve an alternative. Use '
+    'general_relations or existing quantitative scenarios without inventing measurements. '
+    'When sufficient discriminating geometry exists, accept G independently; otherwise retain '
+    'uncertainty and one useful next_action for existing text/REF. No mandatory REF or second judge. '
+)
+
 
 def _measured_schema(feature):
     text = {'type': 'string', 'minLength': 1, 'maxLength': 300}

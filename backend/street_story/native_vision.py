@@ -42,6 +42,19 @@ def native_text_envelope(input_parts, contract):
             'developerInstructions': DEVELOPER_INSTRUCTIONS}
 
 
+def native_turn_error_reported(error):
+    """Empty error envelopes do not establish a closed provider rejection."""
+    if not isinstance(error, dict):
+        return bool(error)
+    message = error.get('message')
+    code = error.get('codexErrorInfo')
+    if isinstance(message, str) and message.strip():
+        return True
+    if isinstance(code, dict):
+        return any(key != 'other' or bool(value) for key, value in code.items())
+    return bool(code) and code != 'other'
+
+
 def visual_request(schema, supplied):
     """The exact inference contract, also used to validate persisted answers."""
     references = supplied.get('references') or []
@@ -564,20 +577,28 @@ class NativeVisionProvider:
                                 # projection. Read this same turn; never resend.
                                 await asyncio.sleep(self.poll_seconds)
                                 continue
-                            if turn.get('status') == 'failed' and not turn.get('error'):
+                            cached = getattr(client, 'cached_status', None)
+                            notification = cached(receipt['thread_id'])[1] if callable(cached) else None
+                            completed_notification = (isinstance(notification, dict)
+                                and notification.get('id') == receipt['turn_id']
+                                and notification.get('status') == 'completed')
+                            reported_error = native_turn_error_reported(turn.get('error'))
+                            terminal_conflict = (completed_notification
+                                and not receipt.get('terminal_conflict_observed'))
+                            if turn.get('status') == 'failed' and (not reported_error or terminal_conflict):
                                 # A transient thread/read projection may claim
                                 # failure while turn/completed already says
                                 # completed. An empty error is not a closed
                                 # provider rejection; observe the original turn.
-                                cached = getattr(client, 'cached_status', None)
-                                notification = cached(receipt['thread_id'])[1] if callable(cached) else None
+                                if terminal_conflict:
+                                    receipt['terminal_conflict_observed'] = True
                                 receipt['terminal_readback_pending'] = {
-                                    'read_status': 'failed', 'error_present': False,
+                                    'read_status': 'failed', 'error_present': reported_error,
                                     'notification_status': (notification.get('status') if isinstance(notification, dict)
                                         and notification.get('id') == receipt['turn_id'] else None)}
                                 receipt['phase'] = 'submitted'
                                 await self._save(binding, receipt)
-                                logger.info('native_visual_readback_pending story_id=%s attempt_id=%s thread_id=%s turn_id=%s reason=failed_without_error notification_status=%s',
+                                logger.info('native_visual_readback_pending story_id=%s attempt_id=%s thread_id=%s turn_id=%s reason=terminal_projection_unconfirmed notification_status=%s',
                                             story['id'], binding['attempt_id'], receipt['thread_id'], receipt['turn_id'],
                                             receipt['terminal_readback_pending']['notification_status'])
                                 await asyncio.sleep(self.poll_seconds)

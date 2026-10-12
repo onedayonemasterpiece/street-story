@@ -35,11 +35,15 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
     calls, saved = [], {}
     async def primary(s, prompt, schema, images, host_context):
         calls.append('G')
+        from street_story.identity_geometry_contract import GEOMETRY_COMPARISON_INSTRUCTIONS
+        assert GEOMETRY_COMPARISON_INSTRUCTIONS in prompt
         saved.update(phase='completed', turn_id='original-G', result=copy.deepcopy(initial),
             frozen_source_map={'host_context': copy.deepcopy(host_context)})
         return {'result': initial, 'receipt': saved, 'host_context': host_context}
     async def followup(s, prompt, schema, images, host_context):
         calls.append('joint2')
+        from street_story.identity_geometry_contract import GEOMETRY_COMPARISON_INSTRUCTIONS
+        assert GEOMETRY_COMPARISON_INSTRUCTIONS in prompt
         assert ('address_text_with_deferred_geometry' if outcome.endswith('_with_text')
             else 'address_text_without_acquired_body') in prompt
         assert 'osm:way:2' in prompt and 'physical_bodies' in prompt
