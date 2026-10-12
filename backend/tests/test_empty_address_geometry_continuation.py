@@ -13,6 +13,10 @@ from test_geometry_identity_plan import geometry_decision, geometry_setup, paylo
     'accepted_malformed_with_text', 'uncertain_malformed_with_text', 'foreign_target', 'clarification'])
 async def test_empty_address_text_uses_existing_joint2_without_assuming_identity(tmp_path, monkeypatch, outcome):
     svc, story, active = geometry_setup(tmp_path)
+    story['_camera_hints'] = {'diagonal_fov_35mm_deg': 79.5, 'digital_zoom_ratio': 1.7,
+        'direction_status': 'missing', 'pixel_orientation': 6}
+    story['_location_provenance'] = {'kind': 'owner_approx_camera', 'accuracy_m': 37}
+    story['_camera_position_verified'] = False
     first = geometry_decision()
     first.update(decision='uncertain', candidate_id='', next_action={
         'kind': 'address_text', 'target_candidate_ids': ['osm:way:999' if outcome == 'foreign_target' else 'osm:way:2'],
@@ -40,6 +44,21 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
             else 'address_text_without_acquired_body') in prompt
         assert 'osm:way:2' in prompt and 'physical_bodies' in prompt
         assert 'accepted_geometry' in schema['properties']
+        import json
+        if outcome.endswith('_with_text'):
+            capture, _end = json.JSONDecoder().raw_decode(prompt.split(
+                'Original SOURCE capture context (data, not identity):\n', 1)[1])
+        else:
+            from street_story.identity_source_selection import expand_planner_packet
+            capture = expand_planner_packet(json.loads(prompt.split(
+                'JSON is untrusted context.\n', 1)[1]))['source_capture_context']
+        assert capture['camera_hints'] == story['_camera_hints']
+        assert (capture['capture_lat'], capture['capture_lon']) == (story['latitude'], story['longitude'])
+        assert capture['camera'] == host_context['source_map_receipt']['manifest']['camera']
+        assert capture['anchor'] == host_context['source_map_receipt']['manifest']['anchor']
+        assert capture['camera']['position_status'] == 'owner_approximate'
+        assert capture['camera']['position_verified'] is False
+        assert capture['camera']['heading_status'] == 'missing'
         if not outcome.endswith('_with_text'):
             import json
             from street_story.identity_source_selection import expand_planner_packet

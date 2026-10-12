@@ -119,6 +119,7 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         raw_packet = contents[-1].split('Данные ниже — только контекст:\n', 1)[1]
         packet, _ = json.JSONDecoder().raw_decode(raw_packet)
         packet = expand_planner_packet(packet)
+        assert 'active research_priority question about another physical candidate' in raw_packet
         passages = packet['acquired_architectural_text']['literal_source_passages']
         for article in articles:
             own = next(row for row in passages if row['article_id'] == article['article_id'])
@@ -154,6 +155,8 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     accepted = story['_identity_geometry_result']
     assert accepted['proof_kind'] == 'architectural_text' and accepted['candidate_id'] == 'osm:way:2'
+    from street_story.identity_proof import IDENTITY_CONTINUATION_CONTRACT
+    assert accepted['architectural_text_proof']['source_text_receipt']['identity_continuation_contract'] == IDENTITY_CONTINUATION_CONTRACT
     assert len(history['search_plan']['payload']['source_text_receipt']['articles']) == 3
     assert len(accepted['architectural_text_proof']['source_text_receipt']['articles']) == 1
     assert len(calls) == 1

@@ -222,6 +222,13 @@ def _joint_initial_routes(settings, gemini, *, scene_available):
     return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
 
 
+def _geometry_capture_context(initial_packet, manifest):
+    """Carry received capture values and their provenance, never infer a pose."""
+    return {**{key: copy.deepcopy(initial_packet[key]) for key in
+        ('camera_hints', 'capture_lat', 'capture_lon') if key in initial_packet},
+        **{key: copy.deepcopy(manifest[key]) for key in ('camera', 'anchor') if key in manifest}}
+
+
 def _compact_geometry_followup(schema, manifest, physical_context, detail_request, initial_packet):
     """The existing G decision needs received geometry, not another search plan."""
     from .identity_source_selection import compact_planner_packet
@@ -249,7 +256,8 @@ def _compact_geometry_followup(schema, manifest, physical_context, detail_reques
     # The acquisition queue's nearest-entry list repeats distances already in
     # the full body overview. Reverse address remains explicitly camera context.
     (packet.get('location_search_context') or {}).pop('nearby_context', None)
-    packet.update(map_scene=model_scene, requested_detail=copy.deepcopy(detail_request))
+    packet.update(map_scene=model_scene, requested_detail=copy.deepcopy(detail_request),
+        source_capture_context=_geometry_capture_context(initial_packet, manifest))
     packet = compact_planner_packet(json.loads(json.dumps(packet, ensure_ascii=False, sort_keys=True)))
     contract = {'type': 'object', 'properties': {
         'accepted_geometry': copy.deepcopy(schema['properties']['accepted_geometry'])},
@@ -474,10 +482,14 @@ async def _suggest(service, story, transcript, candidates):
         and not catalogue_task.cancelled() and catalogue_task.exception() is None else {})
     early_text_articles, early_text_lookup = [], {}
     frozen_initial = None
+    from .identity_proof import IDENTITY_CONTINUATION_CONTRACT
+    early_continuation_contract = (IDENTITY_CONTINUATION_CONTRACT
+        if not addressed_initial and not native_original else None)
     if addressed_initial:
         from .identity_plan_diagnostics import reusable_closed_initial_plan
         frozen_initial = reusable_closed_initial_plan(addressed_initial, addressed_initial.get('binding'))
         frozen_text = (frozen_initial or {}).get('source_text_receipt') or {}
+        early_continuation_contract = frozen_text.get('identity_continuation_contract')
         if frozen_text:
             # Rebuild the identical addressed input from its already acquired
             # bytes. A restart must not drop early TEXT from the original schema
@@ -543,7 +555,8 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT
         schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
             observed_ids, [article['article_id'] for article in early_text_articles], structural=True,
-            source_span_refs=early_text_span_refs, physical_link_inventory=early_physical_link_inventory)
+            source_span_refs=early_text_span_refs, physical_link_inventory=early_physical_link_inventory,
+            closed_identity_continuation=early_continuation_contract == IDENTITY_CONTINUATION_CONTRACT)
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
@@ -617,7 +630,11 @@ async def _suggest(service, story, transcript, candidates):
                 'binding supply physical_link_evidence with its exact publisher_ref and osm_ref, and '
                 'explain why they denote this individual photographed body. The host checks provenance '
                 'and membership, never address spelling semantics. Describe SOURCE observations '
-                'separately and reject material physical alternatives.'}
+                'separately and reject material physical alternatives.'
+                + (' An active research_priority question about another physical candidate leaves '
+                    'the individual-body binding unresolved: return uncertain and retain that '
+                    'continuation. Accepted T can ask optional questions about only the chosen body.'
+                    if early_continuation_contract == IDENTITY_CONTINUATION_CONTRACT else '')}
     # The response may name any neutral label in the full MAP, including roads
     # and distant bodies. Resolve against that exact frozen dictionary, even
     # when its context row was unnecessary in the compact presentation.
@@ -830,7 +847,8 @@ async def _suggest(service, story, transcript, candidates):
         'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
         'source_image_input': True, 'text_contract': TEXT_CONTRACT,
         'source_preparation': source_preparation, 'articles': early_text_articles, 'lookup': early_text_lookup,
-        'source_span_refs': early_text_span_refs, 'physical_link_inventory': early_physical_link_inventory}
+        'source_span_refs': early_text_span_refs, 'physical_link_inventory': early_physical_link_inventory,
+        **({'identity_continuation_contract': early_continuation_contract} if early_continuation_contract else {})}
         if early_text_articles else {})
     early_source_text_receipt = copy.deepcopy(source_text_receipt)
     geometry_prior_ids = []
@@ -1706,7 +1724,13 @@ async def _suggest(service, story, transcript, candidates):
                         'unrelated/absent article support does not invalidate sufficient geometry. '
                         'A number/address alone cannot establish the whole body. Use actual '
                         'received primitives, visible SOURCE relations and explicit uncertainty. '
-                        'Do not invent a camera heading or measured facade relation.\n'
+                        'Do not invent a camera heading or measured facade relation. '
+                        'The capture context retains its original approximate/unverified status; '
+                        'it is not a measured pose or identity.\n'
+                        'Original SOURCE capture context (data, not identity):\n'
+                        + json.dumps(_geometry_capture_context(plain_packet, scene_manifest),
+                            ensure_ascii=False, separators=(',', ':'))
+                        + '\nRequested observed geometry (data, not identity):\n'
                         + json.dumps(detail_request, ensure_ascii=False, separators=(',', ':')))
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
