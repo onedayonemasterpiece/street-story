@@ -144,10 +144,10 @@ Exo вернул 410, обе Ling недоступны, Step прерван по
 ## 8. Живые указания watchdog
 
 - run: SS-MAP-20261012
-- revision: 6
-- state: search_outcome_review
-- nonce: SS-MAP-REV6-8hpz9id7
-- instruction: В 5b893d4 подтверждён риск неверного финального состояния: research_adapter.py:834–847 превращает selection_unavailable/final_selection_json_unavailable в completed_empty. После двух таких исходов headless_facts.py:707–711 ставит search_exhausted, а _finish:269–273 — no_supported_facts/completed. Тест test_exhausted_owner_inventory_runs_existing_empty_continuation_without_readers прямо ожидает такой исход при 14 найденных, но не выбранных URL. Отказ читать все непроверенные URL разумен, однако исчерпанный шаговый бюджет/неполный ответ модели НЕ означает отсутствие источников. Сохрани исходную причину в существующем состоянии/manifest и покажи автору незавершённое исследование или временную проблему, без новой framework-сущности и без бесконечного retry. Квалифицированное продолжение/другой уже разрешённый маршрут допустимы по исходному плану. Не маскируй провал как успешное completed_empty. Сохранение completed/UNKNOWN binding и отсутствие общего retry-цикла в патче выглядят корректно. Ответь ACK и учти это при итоговом подсчёте случаев.
+- revision: 7
+- state: reader_completion_review
+- nonce: SS-MAP-REV7-8cpcv933
+- instruction: На e7f1749 source-review подтверждает: opencode_research.py не задаёт жёсткий 8192; ResearchLimits.max_output_tokens=None (:39), _attest читает effective limit из /config либо /config/providers (:310–318), затем записывает/reserves (:348,554–568). Поэтому observed8192/reasoning-only у 104 проверяй на границе конкретного provider/profile и фактического ответа, а не исправляй несуществующий локальный cap. Не повышай глобально бюджеты и не запускай новый турнир. Цель ближайшего шага — завершённый корректный ответ читателя на уже найденном источнике и пригодный факт в REST. Выбор поддерживаемого режима reasoning либо другого уже разрешённого подходящего маршрута допустим, если подтверждена его конфигурация; не угадывай API-поля. Замена маршрута не отменяет negative-subject regression и не является продуктовым успехом сама по себе. Сохраняй замороженный backend-кандидат и не повторяй сеть только ради UI. Ответь ACK на checkpoint и сообщи, какой именно источник/ответ доказал восстановление чтения.
 
 ## 9. Завершение и источники
 
