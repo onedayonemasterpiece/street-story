@@ -46,6 +46,11 @@ class SourceRecoveryInstrumentedTest {
                 evidenceSupported = true
                 eligibility = "eligible"
                 selected = true
+                sources = arrayListOf(Gson().fromJson("""{"type":"web","url":"https://archive.example/history",
+                    "title":"Собственный архив","origin":"rkb","revision":"rev-17","rkb_entity_id":"record-17",
+                    "source_ref":"knowledge://chunks/own","supports":[{"kind":"verified_page_span",
+                    "source_version_id":"version-17","page_number":17,"text":"Ремонт только планировался в 2009 году."}],
+                    "bibliography":[{"author":"Автор описания","title":"Каталог","year":2005,"pages":"17"}]}""", SourceWire::class.java))
             })
         }
         val server = MockWebServer().apply {
@@ -77,6 +82,14 @@ class SourceRecoveryInstrumentedTest {
             assertEquals("GET", calls.single().method)
             assertTrue(store.facts(id).single().selected)
             assertEquals("Сохранённый черновик", store.story(id)?.draftText)
+            StoryStore(context).use { reopened ->
+                val own = Gson().fromJson(reopened.facts(id).single().sourcesJson, Array<SourceWire>::class.java).toList()
+                val detail = FactPresentation.sourceDetails(own)
+                listOf("version-17", "Страница 17", "только планировался", "rev-17", "record-17", "Автор описания").forEach {
+                    assertTrue(detail.contains(it))
+                }
+                assertTrue(FactPresentation.rkbOrigin(own.single()))
+            }
             val operation = store.enqueueOperation(id, "facts", "select-$id", "{\"selected_fact_ids\":[]}")
             assertFalse(worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
             assertEquals(3, calls.count { it.method == "GET" })

@@ -1677,10 +1677,12 @@ class MainActivity : Activity() {
             item.addView(label(FactPresentation.statusLabel(fact), 11, MUTED, Typeface.DEFAULT).apply {
                 setPadding(dp(48), 0, dp(4), dp(2))
             })
-            val sources = runCatching {
+            val ownSources = runCatching {
                 gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
             }.getOrDefault(emptyList())
-                .filter { it.url.startsWith("https://") }
+                .filter { it.url.startsWith("https://") || (FactPresentation.rkbOrigin(it) &&
+                    it.sourceRef?.startsWith("knowledge://chunks/") == true) }
+            val sources = ownSources
                 .distinctBy { it.url.trimEnd('/') }
                 .sortedWith(
                     compareByDescending<SourceWire> { it.type == "official" }
@@ -1691,14 +1693,31 @@ class MainActivity : Activity() {
                 val sourceText = SpannableStringBuilder()
                 sources.forEachIndexed { sourceIndex, source ->
                     if (sourceIndex > 0) sourceText.append(" · ")
-                    val sourceLabel = FactPresentation.sourceLabel(source)
+                    val versions = ownSources.filter { it.url.trimEnd('/') == source.url.trimEnd('/') }
+                    val rkb = versions.any { FactPresentation.rkbOrigin(it) }
+                    val sourceLabel = FactPresentation.sourceLabel(source) + if (rkb) " · RKB" else ""
                     val start = sourceText.length
                     sourceText.append(sourceLabel)
                     sourceText.setSpan(
                         object : ClickableSpan() {
                             override fun onClick(widget: View) {
-                                val uri = Uri.parse(source.url)
-                                if (uri.scheme == "https") startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                val details = label(FactPresentation.sourceDetails(versions), 14, INK, Typeface.DEFAULT).apply {
+                                    setPadding(dp(20), dp(12), dp(20), dp(12))
+                                    setTextIsSelectable(true)
+                                }
+                                val dialog = AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Источник утверждения")
+                                    .setView(ScrollView(this@MainActivity).apply { addView(details) })
+                                    .setNegativeButton("Закрыть", null)
+                                if (source.url.startsWith("https://")) dialog.setPositiveButton("Открыть страницу") { _, _ ->
+                                        val uri = Uri.parse(source.url)
+                                        if (uri.scheme == "https") startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                    }
+                                dialog.show()
+                            }
+                            override fun updateDrawState(ds: android.text.TextPaint) {
+                                super.updateDrawState(ds)
+                                ds.color = if (rkb) 0xFF1565C0.toInt() else ACCENT
                             }
                         },
                         start,

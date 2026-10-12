@@ -29,6 +29,54 @@ import java.util.Base64
 class OwnerReviewUiInstrumentedTest {
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun own_source_dialog_keeps_versions_and_quotes_after_reopen() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val storyId = "own-source-dialog-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
+        )), "image/png", storyId)
+        try {
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.replaceFacts(storyId, listOf(FactSnapshot("own-fact", "В 2009 году планировали ремонт.", .9, false, false,
+                    """[{"type":"web","origin":"rkb","revision":"own-rev","url":"https://archive.example/history",
+                      "supports":[{"source_version_id":"version-A","page_number":17,"text":"В 2009 году планировали ремонт."}]},
+                      {"type":"web","url":"https://archive.example/history","supports":[{"source_version_id":"version-B",
+                      "text":"Работы ещё не начались."}]}]""", "withheld")))
+                store.setDraftText(storyId, "Сохранённый авторский черновик")
+            }
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+                .putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
+                    assertTrue(descendants(root).filterIsInstance<CheckBox>().none { it.isEnabled })
+                    val link = descendants(root).filterIsInstance<TextView>().single { it.text.toString().contains("· RKB") }
+                    val spans = link.text as Spanned
+                    spans.getSpans(0, spans.length, ClickableSpan::class.java).single().onClick(link)
+                }
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                val content = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("version-A")), 3000))
+                assertTrue(content.text.contains("version-B") && content.text.contains("Страница 17"))
+                assertTrue(content.text.contains("планировали ремонт"))
+                assertTrue(content.text.contains("Работы ещё не начались"))
+                device.pressBack()
+            }
+            StoryStore(context).use { store ->
+                assertEquals("Сохранённый авторский черновик", store.story(storyId)?.draftText)
+                assertTrue(!store.facts(storyId).single().evidenceSupported && !store.facts(storyId).single().selected)
+            }
+        } finally {
+            StoryStore(context).use { it.deleteStory(storyId) }
+            ResearchProjectionStore(context).clear(storyId)
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            config.backendUrl = previousBackend
+        }
+    }
+
     @Test fun pending_facts_and_status_reason_survive_store_reopen_without_live_session() {
         val storyId = "durable-research-ui-" + System.nanoTime()
         val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(

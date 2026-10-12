@@ -129,6 +129,25 @@ class SourceWire {
     var type: String = ""
     var title: String? = null
     var url: String = ""
+    var origin: String? = null
+    @SerializedName("source_version_id") var sourceVersionId: String? = null
+    @SerializedName("source_ref") var sourceRef: String? = null
+    var revision: String? = null
+    @SerializedName("rkb_entity_id") var rkbEntityId: String? = null
+    var supports: ArrayList<SourceSupportWire> = arrayListOf()
+    var bibliography: com.google.gson.JsonElement? = null
+}
+
+class SourceSupportWire {
+    var kind: String = ""
+    var text: String = ""
+    @SerializedName("source_url") var sourceUrl: String? = null
+    @SerializedName("source_version_id") var sourceVersionId: String? = null
+    @SerializedName("chunk_id") var chunkId: String? = null
+    @SerializedName("span_start") var spanStart: Int? = null
+    @SerializedName("span_end") var spanEnd: Int? = null
+    var page: String? = null
+    @SerializedName("page_number") var pageNumber: String? = null
 }
 
 class PlaceCandidateWire {
