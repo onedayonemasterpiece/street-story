@@ -1,5 +1,9 @@
 # Documentation authority
 
+## Current night implementation entrypoint — 12 October 2026
+
+The [unified map → facts → saved material night task](prompts/street-story-map-facts-night-delivery-20261012.md) is the single execution entrypoint for the owner's next coding-agent run. It reconciles the map design, Claude delivery audit, actual model experiments and the existing GitHub guidance/ACK mechanism. It takes precedence over conflicting execution plans below, while retaining safety, evidence and unchanged product requirements. Its two explicitly pending owner decisions are not silently approved. The design and audits below remain evidence; the new task is not proof of implementation or deployment.
+
 [Test-photo registry](testing/photo-registry.md) is the persistent original-byte, EXIF/provenance and evaluator inventory. It links back to the [acceptance procedure](testing/street-story-product-acceptance-20261010.md); frozen inputs and historical results are unchanged.
 
 Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
