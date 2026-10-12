@@ -147,6 +147,80 @@ def _intersection(a, b, c, d):
     return ((p*v-q*u)/cross, (p*y-q*x)/cross)
 
 
+def observed_boundary_view(entry, origin, *, pose=None):
+    """Conditional plan projection of received walls, never facade recognition.
+
+    Midpoint rays describe self-occlusion in the received 2D outline only.
+    They cannot establish visibility of a whole wall, height or other bodies.
+    The original anchor and explicit offsets remain unverified scenarios.
+    """
+    origin = _point(origin)
+    if pose is not None and not isinstance(pose, dict):
+        return None
+    pose = pose or {}
+    east, north = pose.get('east_m', 0), pose.get('north_m', 0)
+    if origin is None or any(isinstance(v, bool) or not isinstance(v, (int, float))
+            or not math.isfinite(v) for v in (east, north)):
+        return None
+    camera = (east, north)
+    geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+    rings, walls, rows, incomplete = [], [], [], False
+    for ri, ring in enumerate(geometry.get('rings') or []):
+        points = [_point(p) for p in ring.get('points') or []]
+        if len(points) < 2 or any(p is None for p in points):
+            incomplete = True
+            continue
+        points = [_local(p, origin) for p in points]
+        closed = ring.get('closed') is True and len(points) >= 4 and points[0] == points[-1]
+        rings.append((points, ring.get('role'), closed))
+        for si, (a, b) in enumerate(zip(points, points[1:])):
+            if a != b:
+                walls.append((ri, si, a, b))
+    if not walls:
+        return None
+    # Ray crossing uses only observed closure. A missing outer/inner ring is
+    # unknown, never an inferred exterior view or an identity exclusion.
+    complete = bool(rings) and not incomplete and all(closed and role in {'outer', 'inner'}
+                                  for _, role, closed in rings)
+    inside_outer = inside_inner = on_boundary = False
+    if complete:
+        for points, role, _ in rings:
+            inside = False
+            for a, b in zip(points, points[1:]):
+                on_boundary |= _distance(camera, a, b) <= 1e-8
+                if (a[1] > north) != (b[1] > north):
+                    crossing = a[0] + (north-a[1]) * (b[0]-a[0]) / (b[1]-a[1])
+                    if east < crossing:
+                        inside = not inside
+            if role == 'outer':
+                inside_outer |= inside
+            else:
+                inside_inner |= inside
+    anchor_relation = ('unknown' if not complete else 'on_boundary' if on_boundary else
+                       'inside' if inside_outer and not inside_inner else 'outside')
+    for ri, si, a, b in walls:
+        start, end = (_bearing((p[0]-east, p[1]-north)) if p != camera else None for p in (a, b))
+        span = abs((end-start+180) % 360-180) if start is not None and end is not None else None
+        midpoint = ((a[0]+b[0])/2, (a[1]+b[1])/2)
+        occluded = None
+        if anchor_relation == 'outside' and midpoint != camera:
+            occluded = any(hit is not None and 1e-9 < hit[0] < 1-1e-9
+                and -1e-9 <= hit[1] <= 1+1e-9
+                for rj, sj, c, d in walls if (rj, sj) != (ri, si)
+                for hit in [_intersection(camera, midpoint, c, d)])
+        rows.append([ri, si, *(round(value, 2) if value is not None else None
+                              for value in (start, end, span)), occluded])
+    return {'anchor_relation': anchor_relation, 'pose_scenario': {
+        'east_m': east, 'north_m': north, 'is_measured_camera_pose': False},
+        'side_columns': ['ring_index', 'segment_index', 'start_bearing_degrees',
+            'end_bearing_degrees', 'angular_span_degrees', 'midpoint_self_occluded'],
+        'sides': rows,
+        'policy': 'Conditional 2D rays from the supplied anchor plus explicit offsets. '
+            'Inside/on-boundary is relative to received OSM contours, not verified camera position. '
+            'Midpoint self-occlusion is not whole-wall visibility; other buildings, height, yaw, '
+            'photo crop and actual facade correspondence remain unknown. No body is ranked or excluded.'}
+
+
 def measure_spatial_relations(story, candidates, candidate_ids, *, pose=None, front_segments=(), street_axis=None):
     """Measure at most six nominated objects and one explicit pose/axis scenario.
 

@@ -51,7 +51,7 @@ def physical_decision_context(story, candidates, manifest, *, include_plan_morph
     from .identity_scene import scene_entries
     from .identity_source_selection import observed_address_context
     from .identity_map_context import osm_geometry_context
-    from .identity_spatial_features import _local, _point
+    from .identity_spatial_features import _local, _point, observed_boundary_view
     from .identity_shape_context import observed_plan_shape, SHAPE_COLUMNS, POLICY as SHAPE_POLICY
     import math
     entries = scene_entries(story, candidates)
@@ -106,13 +106,17 @@ def physical_decision_context(story, candidates, manifest, *, include_plan_morph
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
             selected_sides, len(sides) - len(selected_sides),
             _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal)]
+        body.append(observed_boundary_view(entry, manifest.get('anchor') or story)
+                    if cid in expanded_ids and (manifest.get('camera') or {}).get('position_status')
+                    in {'original_exif', 'owner_approximate'} else None)
         if include_plan_morphology:
             body.append(observed_plan_shape(entry))
         result.append(body)
     context = {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
-        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal'],
+        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal',
+        'conditional_boundary_view'],
         'source_angular_reference': {
             'diagonal_fov_35mm_deg': reference_diagonal,
             'camera_position_status': (manifest.get('camera') or {}).get('position_status'),

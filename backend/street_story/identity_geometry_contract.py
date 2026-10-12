@@ -22,6 +22,12 @@ GEOMETRY_COMPARISON_INSTRUCTIONS = (
     'photographed body under the plausible views, and what remains unobserved. Mere apparent size '
     'or resemblance of the whole image to one outline does not resolve an alternative. Use '
     'general_relations or existing quantitative scenarios without inventing measurements. '
+    'Requested conditional_boundary_view supplies actual side bearings, angular spans and '
+    'midpoint self-occlusion from the nominal anchor. Compare the visible adjoining SOURCE '
+    'faces with those sides; a whole footprint is not its visible projection. Inside/on-boundary '
+    'means an exterior view is undefined at that scenario, not that the body is excluded: '
+    'an approximate anchor may need an explicit offset scenario. These 2D rays do not measure '
+    'heading, height or visibility past other bodies. '
     'When sufficient discriminating geometry exists, accept G independently; otherwise retain '
     'uncertainty and one useful next_action for existing text/REF. No mandatory REF or second judge. '
 )

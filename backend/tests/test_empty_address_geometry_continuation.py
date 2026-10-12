@@ -63,6 +63,21 @@ async def test_empty_address_text_uses_existing_joint2_without_assuming_identity
         assert capture['camera']['position_status'] == 'owner_approximate'
         assert capture['camera']['position_verified'] is False
         assert capture['camera']['heading_status'] == 'missing'
+        if outcome.endswith('_with_text'):
+            detail, _end = json.JSONDecoder().raw_decode(prompt.split(
+                'Requested observed geometry (data, not identity):\n', 1)[1])
+        else:
+            from street_story.identity_source_selection import expand_planner_packet
+            detail = expand_planner_packet(json.loads(prompt.split(
+                'JSON is untrusted context.\n', 1)[1]))['requested_detail']
+        body_table = detail['physical_bodies']
+        for body_values in body_table['rows']:
+            body = dict(zip(body_table['columns'], body_values, strict=True))
+            view = body['conditional_boundary_view']
+            assert view is not None and view['pose_scenario']['is_measured_camera_pose'] is False
+            assert {tuple(row[:2]) for row in view['sides']} == {
+                tuple(row[:2]) for row in body['observed_side_segments']}
+            assert 'heading_degrees' not in view['pose_scenario']
         if not outcome.endswith('_with_text'):
             import json
             from street_story.identity_source_selection import expand_planner_packet
