@@ -229,7 +229,9 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
             elapsed_ms=max(0, round((service.store.now() - budget['started_at']) * 1000)))
         steps = [dict(step, status='warning') if step.get('status') == 'working' else dict(step)
                  for step in progress.get('steps') or []]
-        message = ('Найдены подтверждённые факты · исследование завершено' if matched and eligible else
+        message = ('Исследование не завершено · временная проблема с выбором источников'
+                       if reason == 'source_selection_unavailable' else
+                   'Найдены подтверждённые факты · исследование завершено' if matched and eligible else
                    'Объект определён · подтверждённых фактов пока нет' if matched else
                    str((research.get('identity_clarification') or {}).get('question') or '')[:500]
                        if outcome == 'clarification_required' else
@@ -245,9 +247,11 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
                "AND state IN ('ready','retry','running')", (reason, service.store.now(), story_id, *kinds))
     # Frozen provider receipts and reservations intentionally remain untouched.
     if not identity_already_proved:
-        db.execute("UPDATE research_runs SET state='completed',status_detail=?,updated_at=? "
+        db.execute("UPDATE research_runs SET state=?,status_detail=?,updated_at=? "
                    "WHERE story_id=? AND identity_generation=? AND state NOT IN ('completed','cancelled')",
-                   (outcome, service.store.now(), story_id, int(research.get('identity_generation') or 0)))
+                   ('partial' if reason == 'source_selection_unavailable' else 'completed',
+                    reason if reason == 'source_selection_unavailable' else outcome,
+                    service.store.now(), story_id, int(research.get('identity_generation') or 0)))
     state = row['state']
     if not identity_already_proved and state in {'photo_ready', 'identifying', 'needs_review', 'identity_ready', 'researching'}:
         state = 'facts_ready' if matched and eligible else 'identity_ready' if matched else 'needs_review'

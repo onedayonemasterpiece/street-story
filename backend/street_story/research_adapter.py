@@ -802,6 +802,8 @@ class ProductResearchAdapter:
             if independent.get('sources'):
                 return {**independent, 'outcome': 'completed'}
             independent_error = None
+        strict_selection = ((independent or {}).get('receipt', {}).get('binding', {}).get(
+            'search_selection_contract') == 'owner-exact-selected-urls-v1')
         direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
         if not callable(direct):
             if independent_error:
@@ -819,27 +821,35 @@ class ProductResearchAdapter:
                          if error is not None and error.retry_at is not None]
                 LOG.warning('street_story_fact_search_waiting story_id=%s routes=%s',
                             story['id'], canonical(codes))
-                failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
-                    retry_at=min(retry) if retry else self.service.store.now()+30)
-                failure.route_failures = codes
-                raise failure from fallback
-            result = {'sources': found.grounding_sources, 'outcome': 'completed' if found.grounding_sources else 'completed_empty',
-                'receipt': {'provider': 'gemini_google_search', 'backend': 'google_search',
-                    'independent_failure': _failure_code(independent_error) if independent_error else 'completed_empty',
-                    'outcome': 'completed' if found.grounding_sources else 'completed_empty'}}
-            if (getattr(found, 'payload', {}) or {}).get('status') == 'selection_unavailable':
-                result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
-                              source_selection=found.payload.get('source_selection', {}))
-                result['receipt']['outcome'] = 'selection_unavailable'
-        strict_selection = ((independent or {}).get('receipt', {}).get('binding', {}).get(
-            'search_selection_contract') == 'owner-exact-selected-urls-v1')
+                if strict_selection and codes['google'] == 'gemini:article_url_discovery_unavailable':
+                    # The closed primary query has consumed its optional route.
+                    # Persist known fallback unavailability; do not retry this
+                    # same query on every wakeup. UNKNOWN is never closed here.
+                    result = {'sources': [], 'outcome': 'selection_unavailable', 'receipt': {
+                        'backend': 'google_search', 'outcome': 'selection_unavailable',
+                        'route_failures': codes, 'reason': 'optional_search_fallback_unavailable'}}
+                else:
+                    failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
+                        retry_at=min(retry) if retry else self.service.store.now()+30)
+                    failure.route_failures = codes
+                    raise failure from fallback
+            else:
+                result = {'sources': found.grounding_sources, 'outcome': 'completed' if found.grounding_sources else 'completed_empty',
+                    'receipt': {'provider': 'gemini_google_search', 'backend': 'google_search',
+                        'independent_failure': _failure_code(independent_error) if independent_error else 'completed_empty',
+                        'outcome': 'completed' if found.grounding_sources else 'completed_empty'}}
+                if (getattr(found, 'payload', {}) or {}).get('status') == 'selection_unavailable':
+                    result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
+                                  source_selection=found.payload.get('source_selection', {}))
+                    result['receipt']['outcome'] = 'selection_unavailable'
         if strict_selection:
             if result.get('receipt') != independent.get('receipt'):
                 result['receipt']['independent_search'] = independent['receipt']
             if not result.get('sources'):
-                # A closed search without selected URLs consumes this query.
-                # The existing bounded empty continuation may try the next one.
-                result['outcome'] = 'completed_empty'
+                unresolved = (independent['receipt'].get('source_selection', {}).get('status') == 'selection_unavailable'
+                              or result.get('outcome') == 'selection_unavailable')
+                result['outcome'] = 'selection_unavailable' if unresolved else 'completed_empty'
+                result['receipt']['outcome'] = result['outcome']
                 inventory = [*independent['receipt'].get('discovered_sources', []),
                              *result.get('discovered_sources', [])]
                 result['discovered_sources'] = list({source['url']: source for source in inventory

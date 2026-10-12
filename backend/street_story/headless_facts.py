@@ -237,6 +237,11 @@ class HeadlessFacts:
                     if isinstance(item, dict) and item.get('research_run_id') == run_id:
                         item.update(search_provider=receipt['backend'], source_urls=list(stored),
                                     source_refs=[_search_source_ref(url) for url in stored])
+            if receipt.get('query_attempts'):
+                for item in history:
+                    if isinstance(item, dict) and item.get('research_run_id') == run_id:
+                        item['query_attempts'] = [{key: attempt.get(key) for key in
+                            ('query', 'outcome', 'source_count')} for attempt in receipt['query_attempts']]
             grounding = {str(item.get('url') or '').rstrip('/'): item
                          for item in research.get('grounding_sources') or [] if isinstance(item, dict)}
             for url, source in stored.items():
@@ -264,13 +269,15 @@ class HeadlessFacts:
             manifest = run_manifest(db, run_id)
             eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                                   (job['story_id'],)).fetchone()[0]
-            complete = (manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
+            selection_unavailable = reason == 'source_selection_unavailable'
+            complete = (not selection_unavailable and manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
                         and not review_packets.pending_candidates(db, job['story_id'], run_id))
             outcome = (('useful_complete' if complete else 'useful_partial') if eligible else
-                       'resource_blocked' if reason == 'live_research_original_outcome_unavailable' else
+                       'resource_blocked' if selection_unavailable or reason == 'live_research_original_outcome_unavailable' else
                        'no_supported_facts')
             value = {'outcome': outcome, 'reason': reason, 'coverage_complete': complete, 'eligible_count': eligible}
-            set_run_state(db, run_id, 'completed', detail=outcome, now=self.service.store.now(), completed=True)
+            set_run_state(db, run_id, 'partial' if selection_unavailable else 'completed',
+                          detail=reason if selection_unavailable else outcome, now=self.service.store.now(), completed=True)
             pending = snapshot[1].get('pending_fact_request')
             joined = (isinstance(pending, dict) and pending.get('photo_sha256', snapshot[0]['photo_sha256']) == snapshot[0]['photo_sha256']
                       and pending.get('identity_generation', snapshot[0]['_identity_generation']) == snapshot[0]['_identity_generation'])
@@ -371,6 +378,8 @@ class HeadlessFacts:
                          'backend': (found.get('receipt') or {}).get('backend', 'external_search')}
         if not self._bind_discovery(job, run_id, goal, scope, added, found_receipt, control_revision):
             return
+        if not added and found.get('outcome') == 'selection_unavailable':
+            return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
         with self.service.store.connection() as db:
             unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL "
                                 "AND status!='failed' LIMIT 1", (run_id,)).fetchone()
@@ -613,8 +622,9 @@ class HeadlessFacts:
         snapshot = self._snapshot(job, run_id)
         if snapshot is None:
             return None
-        if snapshot[2]['state'] == 'completed':
-            return self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
+        terminal = self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
+        if terminal or snapshot[2]['state'] == 'completed':
+            return terminal
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
         if self._model_sufficient(job, run_id, control_revision, []):
@@ -699,16 +709,19 @@ class HeadlessFacts:
                 sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
                 attempts.append({'query': query, 'outcome': found.get('outcome', 'completed'),
                                  'source_count': len(sources), 'receipt': found.get('receipt') or {}})
-                if sources or found.get('outcome', 'completed_empty') != 'completed_empty':
+                owner_exact = identity.get('status') == 'owner_confirmed' and identity.get('selection_basis') == 'owner_exact'
+                continuable = {'completed_empty', 'selection_unavailable'} if owner_exact else {'completed_empty'}
+                if sources or found.get('outcome', 'completed_empty') not in continuable:
                     break
                 LOG.info('street_story_fact_search_empty story_id=%s run_id=%s attempt=%s continuation=%s',
                          story['id'], run_id, len(attempts), len(attempts) < len(queries))
             search_receipt = {**(found.get('receipt') or {}), 'query_attempts': attempts}
+            if not sources and any(attempt['outcome'] == 'selection_unavailable' for attempt in attempts):
+                self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
+                return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
             if not sources and found.get('outcome', 'completed_empty') == 'completed_empty':
                 self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
                 return self._finish(job, run_id, control_revision, 'search_exhausted')
-            if not sources and found.get('outcome') == 'selection_unavailable':
-                return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
         if not self._bind_discovery(job, run_id, goal, scope, sources, search_receipt, control_revision):
             return
         snapshot = self._snapshot(job, run_id, control_revision)
