@@ -1,5 +1,7 @@
 # Photo search: concrete target methods
 
+[Test-photo registry](testing/photo-registry.md) stores original-byte and camera provenance separately from owner hints and evaluator answers; use it with the [acceptance procedure](testing/street-story-product-acceptance-20261010.md).
+
 Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
 This docs-only synchronization does not update product code or prove deployment.
 Target changes are identified separately and tracked in the [recovery brief](prompts/street-story-universal-product-recovery-20261010.md).

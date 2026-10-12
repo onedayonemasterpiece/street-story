@@ -1,5 +1,7 @@
 # Selected-photo GPS, persistent identity and immediate Live Stop
 
+[Persistent test-photo registry](testing/photo-registry.md) inventories the early14 originals, later corpora, duplicates and original-versus-redacted metadata.
+
 > Historical October1–2 implementation notes follow. Current G/T/REF and accepted-task
 > lifetime contracts are in [Photo search methods](photo-search-methods.md) and
 > [backend contract](backend-contract.md). Microphone Stop and explicit scoped

@@ -1,5 +1,7 @@
 # Street Story
 
+Test originals, metadata and evaluator answers: [documentation index](docs/README.md) → [persistent photo registry](docs/testing/photo-registry.md).
+
 Application chat: [Street Story in Telegram](https://t.me/c/4488229487/2). Agent delivery details: [Telegram routing](docs/telegram-routing.md).
 
 Street Story is a small Android product for the reliable path **city photo → long voice context → source-backed facts → VibePublish visual → provider-native scheduled publication**.
