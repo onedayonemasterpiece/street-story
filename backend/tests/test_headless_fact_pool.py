@@ -282,13 +282,18 @@ async def test_exhausted_article_ends_automatic_run_without_suppressing_other_su
         ControlledReview.mode = 'positive'
         assert await ControlledReview(harness).run(job, RUN, 0) == 1
         outcome = await harness.run(job, RUN, 'History', 'history')
-    assert outcome['outcome'] == ('useful_partial' if useful else 'no_supported_facts')
+    # No reader returned a valid empty assessment for the failed source.
+    # Exhausted routes prove unavailable processing, not absent supported facts.
+    assert outcome['outcome'] == ('useful_partial' if useful else 'resource_blocked')
+    assert outcome['reason'] == 'research_fact_routes_exhausted'
     assert outcome['coverage_complete'] is False
     assert outcome['eligible_count'] == (1 if useful else 0)
     before = list(calls)
     assert await harness.run(job, RUN, 'History', 'history') == outcome
     assert calls == before
     with svc.store.connection() as db:
+        run = db.execute('SELECT state,status_detail FROM research_runs WHERE run_id=?', (RUN,)).fetchone()
+        assert run['state'] == 'partial' and run['status_detail'] == 'research_fact_routes_exhausted'
         assert db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE status='failed'").fetchone()[0] == 1
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] in {0, None}
 
