@@ -154,6 +154,43 @@ def test_private_equivalence_schema_matches_host_optional_pointer_scope():
     assert original == public_schema()
 
 
+def test_private_conflict_schema_cannot_address_eligible_inventory_as_local_packet_facts():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet['items'] = packet['items'][:2]  # One local assertion, two own supports.
+    packet['nearby_existing_claims'] = [{'fact_id': 'existing-claim', 'text': 'An independently stored claim.'}]
+    packet['eligible_facts'] = [{'fact_id': 'existing-claim', 'text': 'An independently stored claim.'}]
+    args = answer(packet)
+    validate = Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid
+    assert validate(args)
+    args['conflicts'] = [{'left': 0, 'right': 3, 'relation': 'contradiction', 'resolution': 'unresolved',
+        'confidence': .9, 'rationale': 'Inventory index3 is not a local packet address.'}]
+    assert not validate(args)
+    args['conflicts'] = []
+    args['decisions'][0]['conflicts_with_existing'] = ['existing-claim']
+    assert validate(args)
+    args['decisions'][0]['conflicts_with_existing'] = ['foreign-claim']
+    assert not validate(args)
+
+
+def test_private_relations_use_only_received_local_numbers_and_existing_ids():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet['nearby_existing_claims'] = [{'fact_id': 'known-id', 'text': 'Known claim.'}]
+    args = answer(packet)
+    validate = Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid
+    args['conflicts'] = [{'left': 0, 'right': 1, 'relation': 'uncertain', 'resolution': 'unresolved',
+        'confidence': .5, 'rationale': 'Same received packet.'}]
+    assert validate(args)
+    args['conflicts'][0]['right'] = 2
+    assert not validate(args)
+    args['conflicts'] = []
+    args['decisions'][0]['equivalent_to_existing'] = 'known-id'
+    assert validate(args)
+    args['decisions'][0]['equivalent_to_existing'] = 'invented-id'
+    assert not validate(args)
+
+
 def test_private_schema_accepts_literal_quote_while_own_evidence_guard_remains():
     from jsonschema import Draft202012Validator
     packet = packet_fixture()

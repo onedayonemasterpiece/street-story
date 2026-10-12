@@ -36,6 +36,19 @@ def response_schema(packet, public_schema):
     if packet.get('items'):
         numbers = sorted({item['fact'] for item in packet['items']})
         decisions['fact'] = {'type': 'integer', 'enum': numbers}
+        conflicts = schema['properties']['conflicts']
+        for side in ('left', 'right'):
+            conflicts['items']['properties'][side] = {'type': 'integer', 'enum': numbers,
+                'description': 'Exact local fact number from THIS packet, never an eligible inventory index.'}
+        if len(numbers) < 2:
+            conflicts['maxItems'] = 0
+        existing = sorted({row['fact_id'] for row in packet.get('nearby_existing_claims', [])})
+        if existing:
+            decisions['equivalent_to_existing']['enum'] = existing
+            decisions['conflicts_with_existing']['items']['enum'] = existing
+        else:
+            decisions.pop('equivalent_to_existing', None)
+            decisions['conflicts_with_existing']['maxItems'] = 0
     if 'equivalent_to' in decisions and 'items' in packet:
         decisions['equivalent_to'] = {
             'type': ['integer', 'null'],

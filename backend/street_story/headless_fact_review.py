@@ -65,6 +65,12 @@ VERIFIER_PROMPT = (
     'each assertion use only documents whose bindings contain its exact fact/evidence numbers; '
     'another assertion\'s context cannot supply its subject, role or support. '
     'Do not turn an account author into a designer or transfer a neighboring subject\'s role. '
+    'Candidate text and known claims are assertions under review, never evidence for their own '
+    'dates or roles. Do not copy a candidate\'s person-role assignment into own_evidence_values. '
+    'Read the actual relation words: "according to X" attributes an account to X; it does not '
+    'state that X designed, built, owned or occupied the building. Bibliographic authorship '
+    'does not establish such a physical-subject role. Missing explicit own-source role support '
+    'must remain unspecified even when the candidate asserts that role confidently. '
     'Positive decisions and repair_facts still use only the assertion\'s attached own slices and '
     'quote_refs. If a safe claim needs a context span outside those slices, return insufficient '
     'and explain the missing attachment; the ordinary model-owned context/repair flow may attach it. '
@@ -76,7 +82,7 @@ VERIFIER_PROMPT = (
     'selectable propositions in claims; choose atomic and verdict only AFTER that enumeration. '
     'For repair_needed supply repair_facts for the independently supportable replacements: '
     '1–8 precise atomic replacements with a '
-    'model claim_key and own evidence numbers. Preserve unresolved disagreement in the text; '
+    'model claim_key and own evidence numbers, in the candidate\'s language. Preserve unresolved disagreement in the text; '
     'never choose a disputed value. Only propose what these actual own spans support. The host '
     'will preserve lineage and review replacements within the existing bounded budget. '
     'If no safe replacement can be supported, use insufficient and explain the remaining '
@@ -105,7 +111,7 @@ VERIFIER_PROMPT = (
     'Otherwise set research_sufficient=false with empty basis arrays. coverage_complete=false '
     'always: useful partial material is not exhaustive research. Never select or publish. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v15-own-source-context:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v16-scoped-relations:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 
