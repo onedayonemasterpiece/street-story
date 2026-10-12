@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://street-story/contracts/poi.semantic_review.v1",
+  "title": "POI semantic review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "candidate_id",
+    "classification",
+    "relation",
+    "suggested_resolution",
+    "confidence",
+    "rationale"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "poi.semantic_review.v1"
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "conflict",
+        "no_conflict"
+      ]
+    },
+    "relation": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "contradiction",
+        "scope_difference",
+        "temporal_sequence",
+        "source_disagreement",
+        "uncertain",
+        null
+      ]
+    },
+    "suggested_resolution": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "prefer_left",
+        "prefer_right",
+        "both_valid_scope",
+        "both_valid_temporal",
+        "unresolved",
+        "needs_more_sources",
+        "wrong_poi_link",
+        null
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 1200
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "classification": {
+            "const": "conflict"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "relation": {
+            "type": "string"
+          },
+          "suggested_resolution": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "classification": {
+            "const": "no_conflict"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "relation": {
+            "const": null
+          },
+          "suggested_resolution": {
+            "const": null
+          }
+        }
+      }
+    }
+  ]
+}

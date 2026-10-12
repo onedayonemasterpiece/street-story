@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "decision": "Keep Street Story/FastAPI and KenigEvents/aiohttp in Python; share versioned WSS and provider framework with Node consumers, not one running gateway.",
+  "runtime_source_sha": "490982b2d5439669b6efd7cfd079f8d271ad3862",
+  "framework_version": "0.3.7-rc.1",
+  "framework_source_sha": "4d16dc10ede1d7a649ca88049b0f558c32fe8f92",
+  "framework_archive_sha256": "f817bea35bb8d7d1e9778ba6dac9fb88a42e50c3f827b25aa025c6d25d8e7660",
+  "android_live_e2e": {
+    "run_id": 36784770077,
+    "result": "success",
+    "story_id": "story_616fec801ffd34cdc9db23e7",
+    "transport": "wss",
+    "completed_turns": 17,
+    "received_pcm_bytes": 1318562,
+    "http_audio_fallback": false,
+    "event_polling": false,
+    "physical_mic": false,
+    "prepared_pcm_after_capture_boundary": true,
+    "source_count": 7,
+    "visual_only_text_preserved": true,
+    "publication_id": "pub_d11378b1496f491c87ad5a59f8626018",
+    "destination_alias": "street_story_e2e_20260928_tg",
+    "scheduled_for": "2026-10-01T00:29:00+02:00",
+    "publication_kept": true,
+    "cancellation_tested": false
+  },
+  "result_readback": {
+    "run_id": 36785916632,
+    "result": "success",
+    "image_sha256": "09f951132bdc9d634685917a31e7465c12bb1bc84a8d634c11d1def0151b6ea9",
+    "image_dimensions": [1080, 1350],
+    "test_provider_feed_read_operation": "op_cbcf29318498415d8481374a63bffacf",
+    "provider_feed_observed_at": "2026-09-30T22:31:31.502102Z",
+    "matching_post_text_seen": true,
+    "provider_media_hash_proven": false
+  },
+  "backend_tests": {"passed": 219},
+  "android_build_unit_lint_emulator_release": {
+    "run_id": 36784440406,
+    "final_attempt": 2,
+    "result": "success",
+    "first_attempt_failure": "DebugProvisioningInstrumentedTest staged token wait; passed unchanged on retry. Intermittency is not proven fixed."
+  },
+  "observed_service": {
+    "at": "2026-10-01T04:27:49Z",
+    "active": true,
+    "start": "2026-09-30T22:15:32Z",
+    "supervisor_restarts": 0,
+    "availability_slo_proven": false
+  },
+  "remaining_acceptance": [
+    "Physical phone microphone and noisy/poor-network voice acceptance",
+    "Provider/media exact readback and durable published-state reconciliation",
+    "Resolve cancellation-policy incident separately; retained publication is not cancellation success",
+    "Research search snippets require semantic verification; URL presence alone is not fact truth",
+    "Long-running load, restoration drill and measured availability SLO",
+    "KenigEvents real public browser WSS and deployment acceptance"
+  ]
+}
