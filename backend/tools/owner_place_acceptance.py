@@ -31,6 +31,81 @@ from product_recovery_acceptance import (
 BACKEND = Path(__file__).resolve().parents[1]
 
 
+def load_research_qualification(installer, *, research_directory=None, qualification_path=None):
+    """Apply local overrides after environment loading; never relabel old proof."""
+    if research_directory is not None:
+        directory = managed(research_directory)
+        os.environ['STREET_STORY_RESEARCH_DIRECTORY'] = str(directory)
+    else:
+        directory = Path(os.environ.get('STREET_STORY_RESEARCH_DIRECTORY')
+                         or installer.RESEARCH_DIRECTORY).resolve()
+    if not directory.is_dir():
+        raise ValueError('Research capsule directory unavailable')
+    # The installer validator binds qualified routes to this exact directory.
+    installer.RESEARCH_DIRECTORY = directory
+    original_path = qualification_path or installer.RESEARCH_QUALIFICATION
+    if original_path.is_symlink():
+        raise ValueError('Provider qualification symlink is not accepted')
+    path = managed(original_path) if qualification_path is not None else original_path.resolve()
+    installer.require_mode(path, 0o600)
+    qualification = json.loads(path.read_text())
+    for evidence in qualification['evidence']:
+        evidence_path = Path(evidence['path'])
+        if evidence_path.is_symlink() or hashlib.sha256(evidence_path.read_bytes()).hexdigest() != evidence['sha256']:
+            raise ValueError('Provider qualification provenance mismatch')
+    caches = runtime_qualification_caches(qualification, installer)
+    profile = directory/'opencode.json'
+    if profile.is_symlink() or not profile.is_file():
+        raise ValueError('Research capsule profile unavailable')
+    profile_sha = hashlib.sha256(profile.read_bytes()).hexdigest()
+    if research_directory is not None:
+        text = caches.get('research-text-verification-v1') or {}
+        scoped = [route for route in text.get('extractors', [])
+                  if route.get('provider_id') == 'opencode']
+        if not scoped:
+            raise ValueError('Overridden research capsule requires scoped text qualification')
+        proofs = {item['path']: item['sha256'] for item in qualification['evidence']}
+        for route in scoped:
+            flags = ('semantic_contract_verified', 'source_subject_negative_verified',
+                     'planned_modality_verified', 'known_claim_reuse_verified')
+            if (route.get('directory') != str(directory)
+                    or not all(route.get(flag) is True for flag in flags)
+                    or route.get('profile_sha256') != profile_sha
+                    or not route.get('qualification_sha256')
+                    or proofs.get(route.get('qualification_receipt')) != route['qualification_sha256']):
+                raise ValueError('Scoped text qualification provenance mismatch')
+            report = json.loads(Path(route['qualification_receipt']).read_text())
+            measured = (report.get('model_routes') or {}).get(route['model_id']) or {}
+            controls = measured.get('controls') or {}
+            if (report.get('directory') != str(directory)
+                    or measured.get('qualified') is not True
+                    or measured.get('provider_id') != route['provider_id']
+                    or measured.get('model_id') != route['model_id']
+                    or set(controls) != {'negative_foreign_subject', 'positive_planned_modality_known_reuse'}):
+                raise ValueError('Scoped text qualification controls incomplete')
+            for control in controls.values():
+                receipt = control.get('receipt') or {}
+                if (control.get('passed') is not True or control.get('phase') != 'completed'
+                        or not control.get('checks') or not all(value is True for value in control['checks'].values())
+                        or receipt.get('phase') != 'completed'
+                        or receipt.get('provider_id') != route['provider_id']
+                        or receipt.get('model_id') != route['model_id']
+                        or (receipt.get('isolation') or {}).get('directory') != str(directory)):
+                    raise ValueError('Provider qualification receipt belongs to a different capsule or failed control')
+        # An optional background review pool must have independent actual proof.
+        for route in (caches.get('fact-semantic-verification-v1') or {}).get('routes', []):
+            if route.get('provider_id') == 'opencode':
+                report = json.loads(Path(route['qualification_receipt']).read_text())
+                if ((report.get('receipt') or {}).get('isolation') or {}).get('directory') != str(directory):
+                    raise ValueError('Semantic qualification receipt belongs to a different capsule')
+    provenance = {'research_directory': str(directory), 'qualification_path': str(path),
+        'research_profile_path': str(profile), 'research_profile_sha256': profile_sha,
+        'qualification_file_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'directory_override': research_directory is not None,
+        'qualification_override': qualification_path is not None}
+    return qualification, caches, provenance
+
+
 def registry_item(path, message):
     registry = json.loads(managed(path).read_text())
     matches = [row for row in registry['items'] if any(
@@ -147,21 +222,24 @@ async def run(args):
         os.environ.update(installer.parse_dotenv(config))
     os.environ.update(DATA_DIR=str(output/'data'), STREET_STORY_DEPLOY_SHA=sha,
                       VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='')
-    installer.require_mode(installer.RESEARCH_QUALIFICATION, 0o600)
-    qualification = json.loads(installer.RESEARCH_QUALIFICATION.read_text())
-    for evidence in qualification['evidence']:
-        path = Path(evidence['path'])
-        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
-            raise ValueError('Provider qualification provenance mismatch')
-    caches = runtime_qualification_caches(qualification, installer)
+    qualification, caches, research_provenance = load_research_qualification(installer,
+        research_directory=args.research_directory, qualification_path=args.qualification)
     from street_story.config import Settings, reveal
     settings = Settings.from_env()
+    from street_story.shared_devcoveer_research import SharedDevCoveerResearch
+    models = {settings.research_model, *(
+        route['model_id'] for route in (caches.get('fact-semantic-verification-v1') or {}).get('routes', [])
+        if route.get('provider_id') == 'opencode')}
+    research_provenance['runtime_profile_fingerprints'] = {model:
+        SharedDevCoveerResearch(research_provenance['research_directory'], model_id=model).profile_fingerprint
+        for model in sorted(models)}
     public = {field.name: str(getattr(settings, field.name))
               for field in fields(settings) if field.repr}
     frozen = {'source_sha': sha, 'registry_sha256': hashlib.sha256(args.registry.read_bytes()).hexdigest(),
         'original_sha256': item['sha256'], 'message_id': args.message,
         'environment_sha256': env_hashes, 'qualification_sha256': digest(qualification),
         'runtime_qualification_caches_sha256': digest(caches), 'public_settings': public,
+        'research_provenance': research_provenance,
         'harness_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'observation_seconds': args.observe_seconds, 'product_deadline': None,
         'provider_reference_or_expected_facts_supplied': False,
@@ -318,6 +396,10 @@ if __name__ == '__main__':
     parser.add_argument('--message', type=int, required=True)
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--allow-wip', action='store_true', help='Prerelease canary only; retain full source hashes')
+    parser.add_argument('--research-directory', type=Path,
+        help='Managed task capsule override, applied after the dev environment')
+    parser.add_argument('--qualification', type=Path,
+        help='Managed task qualification override; immutable evidence is verified')
     parser.add_argument('--observe-seconds', type=float, default=300)
     args = parser.parse_args()
     if not 0 < args.observe_seconds <= 300:
