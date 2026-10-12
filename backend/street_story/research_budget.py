@@ -209,6 +209,9 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
             return False
     eligible = db.execute("SELECT count(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                           (story_id,)).fetchone()[0]
+    incomplete = reason == 'source_selection_unavailable' or bool(outcome == 'resource_blocked' and db.execute(
+        "SELECT 1 FROM research_runs WHERE story_id=? AND identity_generation=? AND state='partial' "
+        "AND status_detail=? LIMIT 1", (story_id, int(research.get('identity_generation') or 0), reason)).fetchone())
     matched = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
     if matched and eligible:
         outcome = 'useful_complete' if coverage_complete else 'useful_partial'
@@ -231,6 +234,7 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
                  for step in progress.get('steps') or []]
         message = ('Исследование не завершено · временная проблема с выбором источников'
                        if reason == 'source_selection_unavailable' else
+                   'Исследование не завершено · временная проблема при чтении источников' if incomplete else
                    'Найдены подтверждённые факты · исследование завершено' if matched and eligible else
                    'Объект определён · подтверждённых фактов пока нет' if matched else
                    str((research.get('identity_clarification') or {}).get('question') or '')[:500]
@@ -249,8 +253,7 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
     if not identity_already_proved:
         db.execute("UPDATE research_runs SET state=?,status_detail=?,updated_at=? "
                    "WHERE story_id=? AND identity_generation=? AND state NOT IN ('completed','cancelled')",
-                   ('partial' if reason == 'source_selection_unavailable' else 'completed',
-                    reason if reason == 'source_selection_unavailable' else outcome,
+                   ('partial' if incomplete else 'completed', reason if incomplete else outcome,
                     service.store.now(), story_id, int(research.get('identity_generation') or 0)))
     state = row['state']
     if not identity_already_proved and state in {'photo_ready', 'identifying', 'needs_review', 'identity_ready', 'researching'}:

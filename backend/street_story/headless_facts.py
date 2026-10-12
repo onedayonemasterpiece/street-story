@@ -261,23 +261,52 @@ class HeadlessFacts:
         due = self.service.store.now() + delay if retry_at is None else max(self.service.store.now() + 1, retry_at)
         raise RetryableProviderError(reason, retry_at=due)
 
+    def _reader_failure_reason(self, job, story, manifest):
+        failed = {chunk['chunk_id'] for chunk in manifest.get('chunks') or []
+                  if chunk['status'] == 'failed' and chunk.get('error_code') == 'research_fact_routes_exhausted'}
+        if not failed:
+            return None
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? "
+                              "AND stage LIKE 'headless_fact_unit:%'", (job['id'],)).fetchall()
+        from .fact_unit_receipts import unit_attempt_rows
+        for row in rows:
+            if json.loads(row['value_json']).get('chunk_id') not in failed:
+                continue
+            unit = row['stage'].removeprefix('headless_fact_unit:')
+            seen = set()
+            for attempt in unit_attempt_rows(self.service.store, story, unit, legacy_binding=True):
+                if attempt['logical_id'] in seen:
+                    continue
+                seen.add(attempt['logical_id'])
+                receipt = json.loads(attempt['receipt_json'])
+                if receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') in {'not_sent', 'response_closed'}
+                                                        or receipt.get('retry_safe') is True):
+                    return str(receipt.get('error_code') or receipt.get('error_type') or
+                               'research_fact_routes_exhausted')[:1000]
+        return 'research_fact_routes_exhausted'
+
     def _finish(self, job, run_id, control_revision, reason):
         with self.service.store.tx() as db:
             snapshot = self._snapshot(job, run_id, control_revision)
             if snapshot is None:
                 return None
             manifest = run_manifest(db, run_id)
+            reader_failure = (self._reader_failure_reason(job, snapshot[0], manifest)
+                              if reason == 'source_manifest_exhausted' else None)
+            if reader_failure:
+                reason = reader_failure
             eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                                   (job['story_id'],)).fetchone()[0]
-            selection_unavailable = reason == 'source_selection_unavailable'
-            complete = (not selection_unavailable and manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
+            incomplete = reason == 'source_selection_unavailable' or bool(reader_failure)
+            complete = (not incomplete and manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
                         and not review_packets.pending_candidates(db, job['story_id'], run_id))
             outcome = (('useful_complete' if complete else 'useful_partial') if eligible else
-                       'resource_blocked' if selection_unavailable or reason == 'live_research_original_outcome_unavailable' else
+                       'resource_blocked' if incomplete or reason == 'live_research_original_outcome_unavailable' else
                        'no_supported_facts')
             value = {'outcome': outcome, 'reason': reason, 'coverage_complete': complete, 'eligible_count': eligible}
-            set_run_state(db, run_id, 'partial' if selection_unavailable else 'completed',
-                          detail=reason if selection_unavailable else outcome, now=self.service.store.now(), completed=True)
+            set_run_state(db, run_id, 'partial' if incomplete else 'completed',
+                          detail=reason if incomplete else outcome, now=self.service.store.now(), completed=True)
             pending = snapshot[1].get('pending_fact_request')
             joined = (isinstance(pending, dict) and pending.get('photo_sha256', snapshot[0]['photo_sha256']) == snapshot[0]['photo_sha256']
                       and pending.get('identity_generation', snapshot[0]['_identity_generation']) == snapshot[0]['_identity_generation'])
