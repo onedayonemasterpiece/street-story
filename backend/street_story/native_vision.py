@@ -197,10 +197,12 @@ def platform_client():
 
 
 class NativeVisionProvider:
-    def __init__(self, service, *, admission, checkpoint, client_factory=platform_client, permission=None, public_image_loader=native_public_image):
+    def __init__(self, service, *, admission, checkpoint, client_factory=platform_client, permission=None, public_image_loader=native_public_image,
+                 scope_guard=None):
         self.service, self.admission, self.checkpoint = service, admission, checkpoint
         self.client_factory, self.client = client_factory, None
         self.public_image_loader = public_image_loader
+        self.scope_guard = scope_guard
         self.permission = permission or NativeQuotaPermission(service.store)
         self.timeout, self.poll_seconds = 120, 1
         self.setup_timeout = 15
@@ -220,6 +222,25 @@ class NativeVisionProvider:
 
     async def _save(self, binding, receipt):
         await self.checkpoint(binding, dict(receipt))
+
+    async def _retain_pending(self, binding, receipt, reason):
+        receipt.update(phase='unknown', pending_reason=reason, error_code='native_turn_outcome_unknown')
+        await self._save(binding, receipt)
+        logger.info('native_visual_observation_yield story_id=%s attempt_id=%s thread_id=%s turn_id=%s reason=%s resend=false abort=false',
+            binding.get('story_id'), binding.get('attempt_id'), receipt.get('thread_id'), receipt.get('turn_id'), reason)
+
+    async def _interrupt_superseded(self, client, binding, receipt):
+        # Stop/SOURCE supersession alone may interrupt the owned remote turn.
+        # An interrupt RPC response is not proof of a terminal provider outcome.
+        receipt.update(phase='unknown', abort_requested=True, abort_reason='scope_superseded')
+        await self._save(binding, receipt)
+        if receipt.get('turn_id'):
+            try:
+                await client.request('turn/interrupt', {
+                    'threadId': receipt['thread_id'], 'turnId': receipt['turn_id']}, timeout=10)
+            except Exception as exc:
+                logger.warning('native_visual_interrupt_wait attempt_id=%s error_type=%s',
+                    binding.get('attempt_id'), type(exc).__name__)
 
     async def compare_visual(self, snapshot, story, schema, context, binding):
         try:
@@ -411,14 +432,18 @@ class NativeVisionProvider:
         except (httpx.HTTPError, ValueError, PermanentProviderError) as exc:
             # A public REF download is before Native admission/turn submission.
             # Reject only this unsent reference, not the POI or independent peers.
-            logger.warning('native_visual_reference_unavailable story_id=%s attempt_id=%s comparison_id=%s phase=%s submitted=%s error_type=%s',
-                story['id'], binding.get('attempt_id'), receipt['comparison_id'], receipt['phase'], submitted, type(exc).__name__)
+            code = str(exc)
+            code = code if re.fullmatch(r'(?:native_vision:|reference_|article_media_|article_browser_)[a-z_]{1,100}', code) else type(exc).__name__
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.warning('native_visual_reference_unavailable story_id=%s attempt_id=%s comparison_id=%s phase=%s submitted=%s error_type=%s reference_code=%s http_status=%s',
+                story['id'], binding.get('attempt_id'), receipt['comparison_id'], receipt['phase'], submitted, type(exc).__name__, code, status)
             if submitted:
                 # Reconstructing inputs failed; it says nothing about the saved
                 # turn. Preserve its original durable receipt and send fence.
                 raise RetryableProviderError('native_reference_readback_waiting', retry_at=self.service.store.now() + 60) from exc
             receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
                 error_type='PermanentProviderError', reference_error_type=type(exc).__name__,
+                reference_error_code=code, reference_http_status=status,
                 error_code='native_vision:reference_unavailable')
             await self._save(binding, receipt)
             raise PermanentProviderError('native_vision:reference_unavailable') from exc
@@ -538,6 +563,13 @@ class NativeVisionProvider:
                         await self._save(binding, receipt)
                     read_failures = 0
                     while time.monotonic() - started < self.timeout:
+                        if self.scope_guard is not None:
+                            from .service import ConflictError
+                            try:
+                                self.scope_guard(binding)
+                            except ConflictError:
+                                await self._interrupt_superseded(client, binding, receipt)
+                                raise
                         try:
                             read = await client.request('thread/read', {'threadId': receipt['thread_id'], 'includeTurns': True}, timeout=10)
                         except Exception as exc:
@@ -643,19 +675,22 @@ class NativeVisionProvider:
                                 'quota_expires_at': receipt.get('quota_permission', {}).get('expires_at')}))
                             return {'result': result, 'receipt': receipt}
                         await asyncio.sleep(self.poll_seconds)
-                    receipt['phase'] = 'unknown'
-                    if receipt['turn_id']:
-                        await client.request('turn/interrupt', {'threadId': receipt['thread_id'], 'turnId': receipt['turn_id']}, timeout=10)
+                    await self._retain_pending(binding, receipt, 'read_slice_elapsed')
                     raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now() + 60)
                 except asyncio.CancelledError:
                     if receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}:
-                        receipt['phase'] = 'unknown'
-                        if receipt.get('turn_id'):
+                        from .service import ConflictError
+                        stopped = False
+                        if self.scope_guard is not None:
                             try:
-                                await asyncio.shield(client.request('turn/interrupt', {
-                                    'threadId': receipt['thread_id'], 'turnId': receipt['turn_id']}, timeout=10))
-                            except Exception:
-                                pass  # An interrupt response never proves a terminal outcome.
+                                self.scope_guard(binding)
+                            except ConflictError:
+                                stopped = True
+                            except Exception as exc:
+                                logger.warning('native_visual_cancel_scope_unavailable attempt_id=%s error_type=%s',
+                                    binding.get('attempt_id'), type(exc).__name__)
+                        await asyncio.shield(self._interrupt_superseded(client, binding, receipt) if stopped else
+                            self._retain_pending(binding, receipt, 'worker_cancelled'))
                     raise
                 finally:
                     usage = receipt['usage']

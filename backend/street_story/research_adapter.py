@@ -214,7 +214,7 @@ class ProductResearchAdapter:
             from ai_resource_control.workload import WorkloadAdmission
             from .native_vision import NativeVisionProvider, ACCOUNT_SCOPE
             self.native_vision = NativeVisionProvider(service, admission=self.fenced_admission(WorkloadAdmission(self.control, ACCOUNT_SCOPE)),
-                checkpoint=self.checkpoint)
+                checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
         self.giga = None
         if reveal(service.settings.research_gigachat_key):
             from ai_resource_control.workload import WorkloadAdmission

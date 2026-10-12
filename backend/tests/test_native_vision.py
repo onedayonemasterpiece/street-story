@@ -338,6 +338,7 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     assert pixels == [i[2] for i in images]
     receipt = receipts[-1]
     assert receipt['phase'] == 'unknown'
+    assert not any(method == 'turn/interrupt' for method, _ in client.calls)
     assert 'frozen_source_map' not in receipt['binding']
     frozen = copy.deepcopy(receipt['frozen_source_map'])
     if legacy_duplicate:
@@ -572,6 +573,7 @@ async def test_recovered_unsent_admission_cannot_keep_not_sent_after_actual_turn
     assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
     assert finalized[-1][1] == 'unknown'
     assert finalized[-1][0]['actual_total_tokens'] is None
+    assert not any(method == 'turn/interrupt' for method, _ in client.calls)
     await provider.close()
 
 
@@ -694,16 +696,50 @@ async def test_partial_native_readback_waits_on_same_turn_without_new_send(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_cancellation_interrupts_owned_turn_and_keeps_unknown_receipt(tmp_path):
+@pytest.mark.parametrize('stopped', [False, True])
+async def test_worker_cancellation_retains_owned_turn_unless_source_control_is_superseded(tmp_path, stopped):
+    from street_story.service import ConflictError
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.block_read = True
     task = asyncio.create_task(provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'}))
     await client.read_started.wait()
+    def guard(binding):
+        if stopped:
+            raise ConflictError('research_scope_superseded', 'Owner stopped this SOURCE.')
+    provider.scope_guard = guard
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
+    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == int(stopped)
     assert receipts[-1]['phase'] == 'unknown' and finalized[-1][1] == 'unknown'
+    assert receipts[-1].get('abort_requested', False) is stopped
+    if not stopped:
+        assert receipts[-1]['pending_reason'] == 'worker_cancelled'
+        client.block_read = False
+        binding = {**receipts[-1]['binding'], **{key: receipts[-1][key] for key in
+            ('thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport')}}
+        client.calls.clear()
+        response = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+        assert response['receipt']['phase'] == 'completed'
+        assert all(method == 'thread/read' for method, _ in client.calls)
+        assert len(sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_poll_interrupts_only_explicit_superseded_source_scope(tmp_path):
+    from street_story.service import ConflictError
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    client.turn_status = 'inProgress'
+    def guard(binding):
+        if client.read_started.is_set():
+            raise ConflictError('research_scope_superseded', 'SOURCE replaced or owner Stop.')
+    provider.scope_guard = guard
+    with pytest.raises(RetryableProviderError):
+        await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'stopped'})
+    assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
+    assert receipts[-1]['phase'] == 'unknown' and receipts[-1]['abort_reason'] == 'scope_superseded'
+    assert len(sends) == 1 and finalized[-1][1] == 'unknown'
 
 
 @pytest.mark.asyncio
