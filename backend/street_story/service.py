@@ -432,6 +432,7 @@ class StreetStoryService:
             "camera_point": camera_point(row, research),
             "identity_mode": research.get("identity_mode", "auto"),
             "place_selection": research.get("place_selection"),
+            "identity_clarification": research.get("identity_clarification"),
             "place_map": research.get("place_map"),
             "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {

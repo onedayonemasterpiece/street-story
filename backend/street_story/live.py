@@ -2557,6 +2557,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     or int(current_research.get('identity_generation') or 0) != int(research.get('identity_generation') or 0)):
                 raise ConflictError('identity_candidate_changed', 'Объект изменился; проверьте актуальный вариант.')
             from .place_selection import transition_owner_selection
+            from .owner_group_identity import selected_group
+            group = selected_group(current_research, photo_sha256=current['photo_sha256'],
+                                   generation=int(current_research.get('identity_generation') or 0))
+            if group and chosen['candidate_id'] not in group['candidate_ids']:
+                raise ConflictError('place_group_member_required', 'Подтверждение должно относиться к выбранной группе зданий.')
             story_result = transition_owner_selection(self.service, db, current, current_research, chosen,
                 command_id, selection_basis='owner_live', approval=approval,
                 body={'owner_comment': self._recent_transcript(session, candidate_name)})

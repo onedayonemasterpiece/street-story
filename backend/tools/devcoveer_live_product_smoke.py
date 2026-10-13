@@ -242,6 +242,7 @@ def poll_events(
                     for key in (
                         "confirmation_id",
                         "text_revision",
+                        "text",
                         "visual_revision",
                         "asset_ref",
                         "image_url",

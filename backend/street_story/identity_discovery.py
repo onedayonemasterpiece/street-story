@@ -89,6 +89,11 @@ def _map_query_context(story, candidates):
             anchors.append(anchor)
     context['nearby_address_hypotheses'] = anchors
     context['observed_address_context'] = observed_address_context(story, candidates)
+    if story.get('_owner_selected_group'):
+        context['owner_selected_group'] = story['_owner_selected_group']
+        context['group_instruction'] = ('Only these owner-selected physical members may become the identity. '
+            'Sources/REFs may support a member but cannot add another physical candidate. '
+            'Unresolved member binding requires uncertainty or a contextual question.')
     return context
 
 
@@ -3741,6 +3746,10 @@ async def recover(service, story, transcript, candidates, excluded):
         if web_hints:
             record_identity_event(service, story['id'], 'identity_web_search_hints', {
                 'hint_count': len(web_hints)})
+        if story.get('_owner_selected_group'):
+            # Exhausting member reference acquisition cannot authorize a new
+            # Wiki/Commons physical-hypothesis fallback outside the group.
+            return None
         discovered = await retrieve(
             service, search_queries, commons_query, excluded, entity_name=entity_name, story=story)
         record_identity_event(service, story['id'], 'identity_discovery_candidates', {

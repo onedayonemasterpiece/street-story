@@ -1122,10 +1122,21 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
 
         previous_identity = prior.get("visual_identity") or {}
-        if previous_identity.get("status") == "owner_confirmed":
+        from .owner_group_identity import selected_group
+        group = selected_group(prior, photo_sha256=story['photo_sha256'],
+                               generation=int(prior.get('identity_generation') or 0))
+        group_resolved = (group and group.get('status') == 'resolved'
+            and previous_identity.get('status') == 'match'
+            and previous_identity.get('selection_basis') == 'automatic_within_owner_group'
+            and previous_identity.get('candidate_id') in group['candidate_ids']
+            and group.get('narrowed_candidate_id') == previous_identity.get('candidate_id'))
+        if group and not group_resolved:
+            raise ConflictError('place_group_identity_required', 'Сначала нужно различить здания выбранной группы.')
+        if previous_identity.get("status") == "owner_confirmed" or group_resolved:
             from .identity_proof import accepted_identity
             generation = int(prior.get("identity_generation") or 0)
-            if not accepted_identity(previous_identity, photo_sha256=story['photo_sha256'], generation=generation):
+            if not accepted_identity(previous_identity, photo_sha256=story['photo_sha256'], generation=generation,
+                    control_revision=int(((prior.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise ConflictError("owner_place_scope_changed", "Подтверждённый объект изменился; обновите историю.")
             identity = dict(previous_identity)
             candidates = [item for item in identity.get('candidates', []) if isinstance(item, dict)]

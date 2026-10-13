@@ -175,8 +175,10 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
 
 
 def confirm_place(service, story_id, key, body):
-    if body.get('mode') != 'exact':
-        raise ConflictError('place_mode_unsupported', 'Для этого пути выберите один конкретный дом.')
+    if body.get('mode') not in {'exact', 'rough'}:
+        raise ConflictError('place_mode_unsupported', 'Выберите точный дом или приблизительную группу.')
+    if body.get('mode') == 'exact' and body.get('candidate_ids'):
+        raise ConflictError('place_exact_cardinality', 'В точном режиме подтвердите только один дом.')
     command = body.get('command_id') or key
     if command != key:
         raise ConflictError('place_command_conflict', 'Идентификатор команды не совпадает.')
@@ -193,6 +195,8 @@ def confirm_place(service, story_id, key, body):
         if (body.get('expected_photo_sha256') != row['photo_sha256'] or expected_generation != generation
                 or 'expected_candidate_id' not in body or body['expected_candidate_id'] != active):
             raise ConflictError('place_selection_stale', 'Фото или объект изменился. Обновите историю.')
+        if body['mode'] == 'rough':
+            return confirm_group(service, db, row, research, command, body)
         fallback = body.get('fallback')
         if fallback is not None:
             if not isinstance(fallback, dict) or body.get('candidate_id') or body.get('poi_id'):
@@ -243,20 +247,66 @@ def confirm_place(service, story_id, key, body):
                                           body=body, snapshot=None if fallback else snapshot, fallback=bool(fallback))
 
 
-def transition_owner_selection(service, db, row, research, chosen, command, *, body=None,
-                               snapshot=None, fallback=False, selection_basis='owner_exact', approval=None):
-    """Shared atomic domain transition after UI or named Live consent checks."""
-    body = body or {}
+def confirm_group(service, db, row, research, command, body):
+    ids = body.get('candidate_ids')
+    if (not isinstance(ids, list) or not 2 <= len(ids) <= 16
+            or any(not isinstance(cid, str) for cid in ids) or len(set(ids)) != len(ids)
+            or body.get('candidate_id') or body.get('poi_id') or body.get('fallback')):
+        raise ConflictError('place_group_invalid', 'Выберите от 2 до 16 разных показанных зданий.')
+    generation = int(research.get('identity_generation') or 0)
+    snapshot = next((s for s in research.get('place_map_snapshots') or []
+                     if s['snapshot_id'] == body.get('snapshot_id')), None)
+    if not snapshot or snapshot['photo_sha256'] != row['photo_sha256'] or snapshot['identity_generation'] != generation:
+        raise ConflictError('place_snapshot_stale', 'Обновите карту перед подтверждением группы.')
+    catalog = {c['candidate_id']: c for c in snapshot['candidates']}
+    if any(cid not in catalog for cid in ids):
+        raise ConflictError('place_candidate_unknown', 'Группа должна состоять из показанных контуров зданий.')
+    context = body.get('owner_context') or {}
+    if (not isinstance(context, dict) or any(k not in {'city', 'address', 'name'}
+            or not isinstance(v, str) or len(v) > 300 for k, v in context.items())):
+        raise ConflictError('place_owner_context_invalid', 'Нужны короткие сведения автора о группе.')
+    members = json.loads(canonical([catalog[cid] for cid in ids]))
+    for member in members:
+        if context.get('city') and not member['search_anchor'].get('city'):
+            member['search_anchor'].update(city=context['city'].strip(), city_provenance='owner.explicit_group_context')
+    camera = body.get('camera') or snapshot['center']
+    camera = point(camera.get('latitude'), camera.get('longitude'))
+    research, generation, now = detach_place_material(service, db, row, research)
+    group = {'mode': 'rough', 'group_id': 'group_' + digest([row['id'], command, generation, ids])[:24],
+        'status': 'identifying', 'candidate_id': None, 'narrowed_candidate_id': None,
+        'candidate_ids': ids, 'candidates': members, 'snapshot_id': snapshot['snapshot_id'],
+        'features': {'type': 'FeatureCollection', 'features': [feature for feature in snapshot['buildings']['features']
+            if feature['id'] in ids]}, 'owner_context': context,
+        'context_provenance': 'owner.explicit_group_context', 'basis': 'owner_rough_osm_group',
+        'generation': generation, 'photo_sha256': row['photo_sha256'], 'command_id': command, 'confirmed_at': now}
+    research['place_selection'] = group
+    research['visual_identity'] = {'status': 'uncertain', 'selection_basis': 'owner_rough_group',
+        'candidate_id': None, 'candidate_name': None, 'candidates': members, 'observed_candidates': members,
+        'owner_group_id': group['group_id'], 'photo_sha256': row['photo_sha256'], 'generation': generation}
+    if body.get('owner_comment'):
+        research['transcript'] = str(body['owner_comment'])[:5000]
+    if row['latitude'] is None:
+        research['manual_camera_point'] = {**camera, 'origin': 'manual'}
+        research['location_provenance'] = {'kind': 'owner_approx_camera', 'not_device_current_location': True}
+    db.execute("UPDATE stories SET place_name=NULL,state='identifying',summary=NULL,draft_text=NULL,"
+        "processed_image_path=NULL,processed_image_url=NULL,vibepublish_asset_ref=NULL,visual_context_json='{}',"
+        "research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
+        (canonical(research), now, row['id']))
+    from .research_budget import ensure_budget
+    ensure_budget(service, row['id'], db=db, explicit=True)
+    jid = service._enqueue_job(db, row['id'], 'identity', 'owner-group:' + digest([row['id'], command, generation]),
+        {'identity_generation': generation, 'photo_sha256': row['photo_sha256'], 'owner_group_id': group['group_id'],
+         'queue_priority': 'interactive'})
+    LOG.info('street_story_map stage=group_confirmed story_id=%s generation=%s group_id=%s members=%s job_id=%s',
+             row['id'], generation, group['group_id'], len(ids), jid)
+    return service._story_repr(db, service._story_row(db, row['id']))
+
+
+def detach_place_material(service, db, row, research):
+    """Detach the prior target through the same generation, jobs and leases."""
     story_id = row['id']
     generation = int(research.get('identity_generation') or 0)
-    cid = chosen['candidate_id']
-    if not chosen.get('search_anchor'):
-        address = chosen.get('map_address') or {}
-        chosen = {**chosen, 'search_anchor': {'city': address.get('city', ''),
-            'street': address.get('street', ''), 'house_number': address.get('house_number', ''),
-            'names': [chosen['name']], 'candidate_id': cid, 'coordinates': chosen.get('map_coordinates') or {},
-            'provenance': 'owner.named_confirmation', 'source': 'owner.named_confirmation'}}
-    from .poi_memory import ensure_poi_identity, hydrate_story_facts, sync_poi_review_from_story
+    from .poi_memory import sync_poi_review_from_story
     sync_poi_review_from_story(db, story_id, service.store.now())
     now = service.store.now()
     old_visual = json.loads(row['visual_context_json'] or '{}')
@@ -292,6 +342,24 @@ def transition_owner_selection(service, db, row, research, chosen, command, *, b
     research['identity_generation'] = generation
     research['fact_research_cancelled'] = False
     research['identity_research_cancelled'] = False
+    return research, generation, now
+
+
+def transition_owner_selection(service, db, row, research, chosen, command, *, body=None,
+                               snapshot=None, fallback=False, selection_basis='owner_exact', approval=None):
+    """Shared atomic domain transition after UI or named Live consent checks."""
+    body = body or {}
+    story_id = row['id']
+    generation = int(research.get('identity_generation') or 0)
+    cid = chosen['candidate_id']
+    if not chosen.get('search_anchor'):
+        address = chosen.get('map_address') or {}
+        chosen = {**chosen, 'search_anchor': {'city': address.get('city', ''),
+            'street': address.get('street', ''), 'house_number': address.get('house_number', ''),
+            'names': [chosen['name']], 'candidate_id': cid, 'coordinates': chosen.get('map_coordinates') or {},
+            'provenance': 'owner.named_confirmation', 'source': 'owner.named_confirmation'}}
+    from .poi_memory import ensure_poi_identity, hydrate_story_facts
+    research, generation, now = detach_place_material(service, db, row, research)
     confirmed = {'status': 'owner_confirmed', 'selection_basis': selection_basis, 'owner_selected': True,
         'candidate_id': cid, 'candidate_name': chosen['name'], 'candidate_name_provenance': chosen.get('name_provenance'),
         'candidate_url': chosen.get('url'),

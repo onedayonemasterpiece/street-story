@@ -41,6 +41,8 @@ data class ResearchProjectionSnapshot(
     val cameraPoint: PlaceCameraWire? = null,
     val identityMode: String? = null,
     val researchOutcome: ResearchOutcomeWire? = null,
+    val identityClarification: com.google.gson.JsonObject? = null,
+    val sourceAvailable: Boolean? = null,
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -57,6 +59,12 @@ class ResearchProjectionStore(context: Context) {
             backendRevision = wire.revision,
             placeMap = wire.placeMap,
             placeSelection = wire.placeSelection,
+            sourceAvailable = wire.sourceAvailable,
+            identityClarification = wire.identityClarification?.takeIf {
+                runCatching { !wire.photoSha256.isNullOrBlank() && wire.identityGeneration != null &&
+                    it["photo_sha256"]?.asString == wire.photoSha256 &&
+                    it["generation"]?.asInt == wire.identityGeneration }.getOrDefault(false)
+            },
             cameraPoint = wire.cameraPoint,
             identityMode = wire.identityMode,
             candidateId = identity?.candidateId?.takeIf { !it.isNullOrBlank() },

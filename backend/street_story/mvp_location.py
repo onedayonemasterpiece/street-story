@@ -119,7 +119,11 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
             story = dict(self._story_row(db, job["story_id"]))
 
         identity = (json.loads(story.get('research_json') or '{}').get('visual_identity') or {})
-        if identity.get('status') == 'owner_confirmed':
+        selection = json.loads(story.get('research_json') or '{}').get('place_selection') or {}
+        resolved_group = (selection.get('mode') == 'rough' and selection.get('status') == 'resolved'
+            and identity.get('status') == 'match' and identity.get('selection_basis') == 'automatic_within_owner_group'
+            and identity.get('candidate_id') in selection.get('candidate_ids', []))
+        if identity.get('status') == 'owner_confirmed' or resolved_group:
             # A named owner point is a valid target even with no camera GPS.
             # Voice geocoding must not replace the selected object or camera.
             return await super()._run_research(job)

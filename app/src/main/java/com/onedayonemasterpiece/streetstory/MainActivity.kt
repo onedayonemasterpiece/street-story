@@ -87,6 +87,9 @@ class MainActivity : Activity() {
     private var sourceButton: Button? = null
     private var undoButton: Button? = null
     private var publishButton: Button? = null
+    private var ownerVisualButton: Button? = null
+    private var ownerVisualRequest: OwnerVisualRequest? = null
+    private var ownerVisualSent = false
     private var confirmationBox: LinearLayout? = null
     private var dockTopic: TextView? = null
     private var dockStatus: TextView? = null
@@ -499,6 +502,11 @@ class MainActivity : Activity() {
         column.addView(secondaryButton("Сохранить черновик") { editOwnerDraft(storyId) }.apply {
             contentDescription = "owner-save-draft"
         }, blockMargins(top = 8))
+        ownerVisualButton = secondaryButton("Создать визуал") { createOwnerVisual(storyId) }.apply {
+            contentDescription = "owner-create-visual"
+            visibility = View.GONE
+        }
+        column.addView(ownerVisualButton, blockMargins(top = 8))
 
         literalBanner = label(
             "Дословная диктовка · ещё не применено",
@@ -641,12 +649,13 @@ class MainActivity : Activity() {
             visibility = if (draft == null) View.GONE else View.VISIBLE
         }
 
+        val projection = research.get(id)
         photoRecoveryButton?.apply {
-            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE
+            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE ||
+                (projection?.photoSha256 == story.photoSha256 && projection?.sourceAvailable == false && !PhotoAssets.available(story.photoPath))
             text = if (sourceMissing) "Повторно открыть исходное фото" else "Выбрать оригинал с геометкой"
             visibility = if (sourceMissing || ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW)) View.VISIBLE else View.GONE
         }
-        val projection = research.get(id)
         renderResearchControls(id, projection)
         renderFactsIsland(id)
         conceptBlock?.apply {
@@ -694,6 +703,15 @@ class MainActivity : Activity() {
             visibility = if (text.isBlank()) View.GONE else View.VISIBLE
         }
         updateStickyPhoto()
+
+        val visualScope = OwnerVisualRequest.capture(story, projection, facts, PhotoAssets.available(story.photoPath))
+        if (ownerVisualRequest != visualScope) ownerVisualRequest = null
+        ownerVisualButton?.apply {
+            visibility = if (visualScope != null) View.VISIBLE else View.GONE
+            isEnabled = visualScope != null && ownerVisualRequest == null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+            text = if (ownerVisualRequest != null) "Визуал запрошен" else "Создать визуал"
+        }
 
         publishButton?.apply {
             val hasResult = !story.draftText.isNullOrBlank() &&
@@ -743,6 +761,14 @@ class MainActivity : Activity() {
 
     private fun applyLiveState(state: LiveUiState) {
         val id = activeStoryId ?: return
+        if (ownerVisualSent && !state.active && !state.connecting) {
+            ownerVisualSent = false
+            ownerVisualRequest = null
+            ownerVisualButton?.text = "Создать визуал"
+            ownerVisualButton?.isEnabled = OwnerVisualRequest.capture(store.story(id), research.get(id), store.facts(id),
+                store.story(id)?.let { PhotoAssets.available(it.photoPath) } == true) != null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        }
         if (state.storyId != null && state.storyId != id) {
             dockStatus?.text = "Live идёт в другой теме"
             chatStatus?.text = "• Live идёт в другой теме"
@@ -1160,6 +1186,40 @@ class MainActivity : Activity() {
             }.show()
     }
 
+    private fun createOwnerVisual(storyId: String) {
+        val story = store.story(storyId) ?: return
+        val request = OwnerVisualRequest.capture(story, research.get(storyId), store.facts(storyId), PhotoAssets.available(story.photoPath)) ?: return
+        fun current(): Boolean = request.matches(activeStoryId, store.story(storyId), research.get(storyId), store.facts(storyId),
+            store.story(storyId)?.let { PhotoAssets.available(it.photoPath) } == true) &&
+            store.pendingOperations(storyId).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        if (!current() || ownerVisualRequest != null) return
+        ownerVisualRequest = request
+        ownerVisualSent = false
+        refreshTopicDetail()
+        fun send() {
+            if (current() && live.isActiveFor(storyId)) {
+                ownerVisualSent = true
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=requested story_id=$storyId generation=${request.generation} selected_fact_count=${request.selectedFacts.size}")
+                live.sendText("Создай визуал для текущего сохранённого черновика из оригинальной фотографии этого сюжета. " +
+                    "Используй только текущие выбранные подтверждённые факты: ${request.selectedFacts.joinToString(", ") { it.first }}. " +
+                    "Сохрани текст черновика и авторский выбор фактов. Покажи результат для проверки. Ничего не публикуй и не планируй публикацию.")
+            } else {
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=not_sent story_id=$storyId reason=scope_or_session_changed")
+                ownerVisualRequest = null
+                refreshTopicDetail()
+            }
+        }
+        if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
+            runOnUiThread {
+                if (ready) send() else {
+                    ownerVisualRequest = null
+                    refreshTopicDetail()
+                    if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     private fun maybeCheckForUpdate() {
         val now = System.currentTimeMillis()
         val last = prefs.getLong("update_checked_at", 0L)
@@ -1365,6 +1425,7 @@ class MainActivity : Activity() {
         sourceButton = null
         undoButton = null
         publishButton = null
+        ownerVisualButton = null
         confirmationBox = null
         dockTopic = null
         dockStatus = null

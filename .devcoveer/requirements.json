@@ -4,12 +4,13 @@
   "requirements": [
     {
       "id": "CORE-PHOTO-IDENTITY",
-      "statement": "Street Story retains automatic identification of the depicted place or object through product automation/Mira. In the owner-requested exact map-selection path authorized on 2026-10-12, the owner may instead select and confirm one building or an explicit point with address/name; this selection is final and does not require model re-identification. This limited path does not replace the automatic product or authorize reducing the voice, visual or publication requirements.",
+      "statement": "Street Story retains automatic identification of the depicted place or object through product automation/Mira. In the owner-requested exact map-selection path authorized on 2026-10-12, the owner may instead select and confirm one building or an explicit point with address/name; this selection is final and does not require model re-identification. This limited path does not replace the automatic product or authorize reducing the voice, visual or publication requirements. In the owner-approved approximate mode authorized on 2026-10-13, the product automatically narrows the depicted object only within the explicitly selected building group; the group is not itself accepted as one identified POI.",
       "critical": true,
       "acceptance": [
         "The automatic path evaluates the source photo before research and publication work depends on its identity.",
         "Uncertain automatic identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity.",
-        "The exact owner path preserves the photo, selected physical object and literal address provenance; fact evidence must still belong to that object. The owner can change A to B without old facts, drafts or late results entering B."
+        "The exact owner path preserves the photo, selected physical object and literal address provenance; fact evidence must still belong to that object. The owner can change A to B without old facts, drafts or late results entering B.",
+        "The approximate mode preserves the owner-selected snapshot and group, constrains automatic candidate admission and identity rebinding to that group, and keeps unresolved identity visible without choosing an arbitrary member. Exact selection remains available as an owner correction."
       ]
     },
     {
