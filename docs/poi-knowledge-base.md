@@ -35,6 +35,19 @@ without a second model call. It must address its own actually received frozen
 chunks and establish physical subject, relationship to the selected house,
 scope, time/modality and semantic justification. Such sources explicitly retain
 `verification_level=one_model`; this is not independent verification. Incomplete
+assessments stay unverified. Each complete source assessment supplies the exact
+claim it assessed; an incorrect outer grouping cannot replace that claim with
+its summary or discard other complete assessments. The original container and
+all assessments remain in the native receipt. Caller changes to the assessed
+claim, unread versions, another POI/generation/control or foreign chunks fail
+admission. An explicit write-only recovery may reuse a closed original packet
+in a current leased job for the same story and POI, recording the original run;
+it neither repeats inference nor alters original accounting. Confirmation IDs
+include the current job/run so recovery preserves earlier confirmation history.
+Whole-turn usage comes from cumulative deltas in authenticated native journals;
+the SDK's last-response usage is retained separately, and money remains unknown.
+
+Incomplete
 assessments stay unverified. The existing conflict journal, arbitration history,
 revision staleness and eligibility rules still apply. A fact keeps all source
 supports, including different frozen versions of the same URL.

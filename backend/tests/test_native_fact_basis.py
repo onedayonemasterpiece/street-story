@@ -118,7 +118,7 @@ async def test_incomplete_foreign_or_unusable_basis_does_not_enter_ledger(tmp_pa
     elif change == 'unread_source':
         receipt['native_tool_calls'] = {}
     elif change == 'changed_claim':
-        fact['sources'][0]['assessment']['text'] = 'An unassessed different claim'
+        pass  # Change the caller's claim after preserving the model's receipt.
     elif change == 'foreign_chunk':
         fact['sources'][0]['assessment']['chunk_ids'] = ['foreign-chunk']
     elif change == 'reference_only':
@@ -130,7 +130,64 @@ async def test_incomplete_foreign_or_unusable_basis_does_not_enter_ledger(tmp_pa
     save()
     try:
         candidate = copy.deepcopy(source_candidates(receipt['raw_result'])['facts'][0])
+        if change == 'changed_claim':
+            candidate['text'] = 'An unassessed different claim'
         outcome = await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
         assert outcome['status'] == 'unverified' and service.story(job['story_id'])['facts'] == []
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_independent_complete_assessment_survives_mistaken_outer_grouping(tmp_path):
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path)
+    try:
+        fact = receipt['raw_result']['facts'][0]
+        fact.update(text='Unassessed outer summary', claim_key='outer-summary', source_date='2026')
+        save()
+        candidate = source_candidates(receipt['raw_result'])['facts'][0]
+        assert candidate['text'] == fact['sources'][0]['assessment']['text']
+        outcome = await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
+        assert outcome['status'] == 'supported'
+        admitted = service.story(job['story_id'])['facts'][0]
+        assert admitted['text'] == 'В 2005 году в выбранных воротах открылся музей.'
+        assert admitted['text'] != fact['text']
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('foreign_poi', [False, True])
+async def test_closed_assessment_write_recovery_is_scoped_to_original_poi_and_current_worker(tmp_path, foreign_poi):
+    from street_story.research_runs import begin_research_run
+    service, old_job, reader, _, agent, receipt, save = await setup(tmp_path)
+    receipt['frozen_prompt'] = 'Original\nINPUT=' + json.dumps({'run_id': 'headless-run'})
+    save()
+    try:
+        with service.store.tx() as db:
+            sid = old_job['story_id']
+            story = service._story_row(db, sid)
+            db.execute("UPDATE jobs SET state='done' WHERE id=?", (old_job['id'],))
+            jid = service._enqueue_job(db, sid, 'research', 'write-recovery', {
+                'identity_generation': 0, 'photo_sha256': story['photo_sha256']})
+            db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (jid,))
+            job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+            begin_research_run(db, story_id=sid, poi_key='wiki:77', goal='Write the original closed assessment',
+                scope='write-recovery', expected_story_revision=story['revision'], identity_generation=0,
+                run_id='recovery-run', now=service.store.now())
+            if foreign_poi:
+                db.execute("UPDATE research_runs SET poi_key='foreign' WHERE run_id='headless-run'")
+        agent = {**agent, 'recovery_origin_run_id': 'headless-run'}
+        candidate = source_candidates(receipt['raw_result'])['facts'][0]
+        outcome = await service.confirm_agent_fact(job, 'recovery-run', candidate, agent)
+        assert outcome['status'] == ('unverified' if foreign_poi else 'supported')
+        if foreign_poi:
+            assert outcome['reason'] == 'native_fact_recovery_origin_unverified'
+        else:
+            assert outcome['confirmation']['recovery_origin_run_id'] == 'headless-run'
+        with service.store.connection() as db:
+            original = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                (receipt['binding'].get('attempt_id') or agent['attempt_id'],)).fetchone()[0])
+            assert original == receipt
     finally:
         await reader.search_http.aclose()

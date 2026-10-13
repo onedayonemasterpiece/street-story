@@ -24,6 +24,103 @@ from product_recovery_acceptance import managed, require_frozen_checkout, save
 BACKEND = Path(__file__).resolve().parents[1]
 
 
+async def recover_assessments(args):
+    """An explicit write-only segment over the original closed native output."""
+    sys.path.insert(0, str(BACKEND))
+    sha = require_frozen_checkout(args.expected_sha)
+    source, output = managed(args.recover_assessments_from), managed(args.output)
+    if output.exists() or not args.attempt_id:
+        raise ValueError('Use a fresh segment and an explicit original native attempt')
+    output.mkdir(mode=0o700)
+    installer = load_installer()
+    for path in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
+        installer.require_mode(path, 0o600)
+        os.environ.update(installer.parse_dotenv(path))
+    os.environ.update(DATA_DIR=str(source/'data'), STREET_STORY_DEPLOY_SHA=sha,
+        STREET_STORY_FACT_AGENT_ROUTES=json.dumps([{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'}]),
+        VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='', STREET_STORY_NATIVE_VISION_RESERVE='0')
+    logging.basicConfig(filename=output/'writes.log', level=logging.INFO)
+    from street_story.config import Settings
+    from street_story.runtime import RuntimeStreetStoryService
+    from street_story.native_fact_contract import source_candidates
+    from street_story.fact_agents import _finish
+    from street_story.headless_facts import HeadlessFacts
+    from street_story.research_runs import begin_research_run
+    from street_story.research_budget import finish_attempt
+    service = RuntimeStreetStoryService(Settings.from_env())
+    service.providers.vibepublish = NoPublication()
+    report = {'status': 'PREPARING', 'mode': 'closed_native_assessment_write_recovery',
+        'source_sha': sha, 'original_campaign': str(source), 'original_attempt_id': args.attempt_id,
+        'new_inference_sent': False, 'new_search_or_fetch': False, 'cold_acceptance': False}
+    try:
+        with service.store.connection() as db:
+            row = db.execute('SELECT receipt_json,story_id FROM research_provider_attempts WHERE attempt_id=?',
+                (args.attempt_id,)).fetchone()
+            if not row:
+                raise ValueError('Original native receipt missing')
+            original_bytes = row['receipt_json']
+            receipt, sid = json.loads(original_bytes), row['story_id']
+            active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND state IN ('ready','retry','running')",
+                (sid,)).fetchone()
+            if active or receipt.get('phase') != 'completed' or receipt.get('native_terminal_status') != 'completed':
+                raise ValueError('Finish the original native operation before write recovery')
+        item, _ = registry_item(args.registry, args.message)
+        if receipt['binding']['photo_sha256'] != item['sha256']:
+            raise ValueError('Recovery does not belong to the selected registry original')
+        context = json.loads(receipt['frozen_prompt'].split('\nINPUT=', 1)[1])
+        origin_run = context['run_id']
+        with service.store.connection() as db:
+            run = dict(db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?', (origin_run, sid)).fetchone())
+        before = {fact['fact_id'] for fact in service.story(sid)['facts']}
+        key = 'native-closed-write:' + hashlib.sha256(str(output).encode()).hexdigest()
+        goal = 'Сохрани законченные подтверждения исходного исследования без повторного поиска или проверки моделью.'
+        service._research_request(sid, key, {'coverage_goal': goal, 'extraction_scope': key,
+            'expected_identity_generation': receipt['binding']['generation'],
+            'expected_research_control_revision': receipt['binding']['control_revision']})
+        job = service._claim(claim_kind='research', claim_story_id=sid)
+        if not job:
+            raise ValueError('Normal write-recovery request was not claimed')
+        with service.store.tx() as db:
+            current = service._story_row(db, sid)
+            run_id = begin_research_run(db, story_id=sid, poi_key=run['poi_key'], goal=goal, scope=key,
+                expected_story_revision=current['revision'], identity_generation=receipt['binding']['generation'],
+                run_id=None, now=service.store.now())
+        headless = HeadlessFacts(service)
+        snapshot = headless._snapshot(job, run_id)
+        if not snapshot:
+            raise ValueError('Write-recovery owner is stale')
+        epoch = snapshot[0]['_fact_research_control_revision']
+        report.update(status='WRITING', story_id=sid, job_id=job['id'], run_id=run_id,
+            origin_run_id=origin_run, before_fact_ids=sorted(before))
+        save(output/'segment.json', report)
+        agent = {'provider_id': 'codex_native', 'model_id': 'gpt-6-luna',
+            'attempt_id': args.attempt_id, 'route_id': json.loads((source/'campaign.json').read_text())['route_id'],
+            'prompt_sha256': receipt['prompt_sha256'], 'recovery_origin_run_id': origin_run}
+        outcomes = [await service.confirm_agent_fact(job, run_id, candidate, agent)
+            for candidate in source_candidates(receipt['raw_result'])['facts']]
+        pending = any(value['status'] == 'unverified' for value in outcomes)
+        outcome = _finish(service.providers.research, job, run_id, headless, epoch,
+            'original_native_assessments_written', pending=pending)
+        with service.store.tx() as db:
+            finish_attempt(service, db, sid, outcome=outcome['outcome'], reason=outcome['reason'],
+                job=job, purpose='facts', coverage_complete=not pending)
+        current = service.story(sid)
+        after = {fact['fact_id'] for fact in current['facts']}
+        with service.store.connection() as db:
+            unchanged = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                (args.attempt_id,)).fetchone()[0] == original_bytes
+        report.update(status='RECOVERED' if unchanged and not pending else 'INCOMPLETE', outcomes=outcomes,
+            added_fact_ids=sorted(after-before), total=len(after), preserved_previous=before.issubset(after),
+            original_native_receipt_unchanged=unchanged)
+        save(output/'material.json', current)
+    except BaseException as exc:
+        report.update(status='INCOMPLETE', error_type=type(exc).__name__)
+        raise
+    finally:
+        save(output/'segment.json', report)
+        await service.providers.research.close()
+
+
 async def run(args):
     sys.path.insert(0, str(BACKEND))
     sha = require_frozen_checkout(args.expected_sha)
@@ -218,4 +315,8 @@ if __name__ == '__main__':
     parser.add_argument('--additions', type=int, choices=[0, 1, 2], default=0)
     parser.add_argument('--resume-closed-native', action='store_true',
         help='Observe the original completed turn after a local input-readback projection failure; never resend it')
-    asyncio.run(run(parser.parse_args()))
+    parser.add_argument('--recover-assessments-from', type=Path,
+        help='Write complete original native assessments in a separate measured segment; no inference or source replay')
+    parser.add_argument('--attempt-id')
+    args = parser.parse_args()
+    asyncio.run(recover_assessments(args) if args.recover_assessments_from else run(args))

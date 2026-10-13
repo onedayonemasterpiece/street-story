@@ -10,6 +10,8 @@ from jsonschema import Draft202012Validator
 from .agent_evidence import NETWORK_SCHEMA
 from .native_fact_research import CONTRACT
 
+PROJECTION_CONTRACT = 'native-complete-assessment-claims-v2'
+
 SOURCE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
     'url': {'type': 'string'}, 'source_version_id': {'type': 'string'},
     'content_sha256': {'type': 'string'}, 'assessment': copy.deepcopy(NETWORK_SCHEMA)},
@@ -56,7 +58,13 @@ FINAL_INSTRUCTIONS = (
 
 
 def source_candidates(raw):
-    """Project sources for the existing admission without multiplying claims."""
+    """Project complete assessed claims, preserving the original container.
+
+    NETWORK_SCHEMA already carries the exact claim the model assessed. A
+    mistaken outer grouping must neither replace that claim with an unassessed
+    summary nor discard independent complete assessments. Ordinary ledger
+    admission still owns semantic reuse and source union.
+    """
     Draft202012Validator(RESULT_SCHEMA).validate(raw)
     result = []
     for fact in raw['facts']:
@@ -66,9 +74,10 @@ def source_candidates(raw):
                 'url': '', 'quote': '', 'source_date': fact['source_date'],
                 'native_fact': copy.deepcopy(fact), 'native_basis': None})
         for source in fact['sources']:
-            result.append({'text': fact['text'], 'subject_scope': fact['subject_scope'],
+            claim = source['assessment']
+            result.append({'text': claim['text'], 'subject_scope': claim['subject_scope'],
                 'url': source['url'], 'quote': source['assessment']['confirmed_fragment'],
-                'source_date': fact['source_date'], 'native_fact': copy.deepcopy(fact),
+                'source_date': claim['source_date'], 'native_fact': copy.deepcopy(fact),
                 'native_basis': copy.deepcopy(source)})
     return {'facts': result}
 
@@ -84,6 +93,23 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
         raise ValueError('native_fact_attempt_missing')
     receipt = json.loads(attempt['receipt_json'])
     binding = receipt.get('binding') or {}
+    origin_run_id = agent.get('recovery_origin_run_id')
+    if origin_run_id:
+        try:
+            original_context = json.loads(receipt['frozen_prompt'].split('\nINPUT=', 1)[1])
+        except (KeyError, IndexError, ValueError) as exc:
+            raise ValueError('native_fact_recovery_origin_unverified') from exc
+        origin = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+            (origin_run_id, story['id'])).fetchone()
+        current = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+            (run_id, story['id'])).fetchone()
+        original_job = db.execute('SELECT 1 FROM jobs WHERE id=? AND story_id=? AND kind=?',
+            (binding.get('job_id'), story['id'], 'research')).fetchone()
+        if (not origin or not current or not original_job
+                or original_context.get('run_id') != origin_run_id
+                or origin['poi_key'] != current['poi_key']
+                or origin['identity_generation'] != current['identity_generation']):
+            raise ValueError('native_fact_recovery_origin_unverified')
     if (not attempt['role'].startswith('facts_agent_') or receipt.get('native_contract') != CONTRACT
             or receipt.get('phase') != 'completed' or receipt.get('provider_send_state') != 'response_closed'
             or receipt.get('provider_id') != 'codex_native' or receipt.get('model_id') != 'gpt-6-luna'
@@ -91,7 +117,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
             or any(binding.get(key) != value for key, value in {
                 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
                 'generation': story['_identity_generation'], 'control_revision': story['_fact_research_control_revision'],
-                'job_id': story['_research_job_id']}.items())
+                **({} if origin_run_id else {'job_id': story['_research_job_id']})}.items())
             or receipt.get('native_terminal_status') != 'completed'
             or fact not in (receipt.get('raw_result') or {}).get('facts', [])
             or basis not in fact.get('sources', [])):
@@ -103,7 +129,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     row = basis['assessment']
     if not Draft202012Validator(NETWORK_SCHEMA).is_valid(row):
         raise ValueError('native_fact_assessment_incomplete')
-    if any(row[key] != fact[key] for key in ('text', 'claim_key', 'subject_scope', 'source_date')):
+    if any(row[key] != candidate[key] for key in ('text', 'subject_scope', 'source_date')):
         raise ValueError('native_fact_assessment_claim_changed')
     version = basis['source_version_id']
     read = next((doc for call in receipt.get('native_tool_calls', {}).values()
@@ -116,7 +142,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     frozen = db.execute('SELECT * FROM source_versions WHERE source_version_id=?', (version,)).fetchone()
     chunks = {row[0] for row in db.execute('SELECT c.chunk_id FROM source_chunks c '
         'JOIN research_chunk_runs r ON r.chunk_id=c.chunk_id WHERE r.run_id=? AND c.source_version_id=?',
-        (run_id, version))}
+        (origin_run_id or run_id, version))}
     received = {chunk.get('chunk_id') for chunk in (read or {}).get('chunks', [])}
     required = set(row['chunk_ids']) | set(row['checks']['relation_basis']['chunk_ids'])
     if (not read or not frozen or frozen['access_scope'] != 'public' or not chunks
@@ -125,7 +151,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
             or frozen['content_sha256'] != basis['content_sha256']
             or hashlib.sha256(frozen['normalized_text'].encode()).hexdigest() != basis['content_sha256']):
         raise ValueError('native_fact_source_not_owned_read')
-    digest = hashlib.sha256(json.dumps([agent['attempt_id'], basis, fact],
+    digest = hashlib.sha256(json.dumps([agent['attempt_id'], basis, fact, run_id, story['_research_job_id']],
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
     assessment = {'attempt_id': 'rattempt_' + digest, 'phase': 'completed',
         'provider_send_state': 'response_closed', 'provider_id': 'codex_native', 'model_id': 'gpt-6-luna',
@@ -134,5 +160,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
         'turn_id': receipt['turn_id'], 'source_version_id': version,
         'source_content_sha256': basis['content_sha256'], 'result': copy.deepcopy(row),
         'verification_level': 'one_model', 'new_inference_sent': False}
+    if origin_run_id:
+        assessment['recovery_origin_run_id'] = origin_run_id
     return {**dict(frozen), 'title': read.get('title') or basis['url']}, {
         'result': copy.deepcopy(row), 'receipt': assessment}

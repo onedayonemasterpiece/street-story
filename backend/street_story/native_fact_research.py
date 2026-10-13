@@ -52,10 +52,11 @@ class NativeFactResearch:
 
     @property
     def profile_fingerprint(self):
-        from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA
+        from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA, PROJECTION_CONTRACT
         from .fact_agent_providers import TOOLS
         return hashlib.sha256(json.dumps({'contract': CONTRACT, 'instructions': INSTRUCTIONS,
             'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': TOOLS,
+            'projection_contract': PROJECTION_CONTRACT,
             'transport': TRANSPORT, 'timeout_seconds': self.timeout,
             'max_tool_calls': self.max_tool_calls}, sort_keys=True).encode()).hexdigest()
 
@@ -307,6 +308,7 @@ class NativeFactResearch:
 
     async def _execution_readback(self, client, receipt):
         usage = {}
+        last_inference_usage = {}
         root = receipt['thread_id']
         for tid, observed in receipt['native_threads'].items():
             thread = (await client.request('thread/read', {'threadId': tid, 'includeTurns': False}))['thread']
@@ -329,18 +331,60 @@ class NativeFactResearch:
             observed['model_id'] = expected
             observed['execution_contexts'] = [{key: row.get(key) for key in ('turn_id', 'model', 'effort')}
                 for row in contexts]
-            values = [client.turn_token_usage(tid, turn) for turn in dict.fromkeys(row['turn_id'] for row in contexts)]
+            turns = list(dict.fromkeys(row['turn_id'] for row in contexts))
+            last_inference_usage[tid] = [client.turn_token_usage(tid, turn) for turn in turns]
+            # The platform notification exposes the last model response, not
+            # the whole tool-loop turn. Use exact cumulative journal deltas.
+            values = [self._journal_turn_usage(thread, turn) for turn in turns]
             usage[tid] = values
         known = all(values and all(isinstance(value, dict) and type(value.get('totalTokens')) is int
             for value in values) for values in usage.values())
         receipt['usage'] = {'by_thread': usage, 'total_tokens': sum(value['totalTokens']
             for values in usage.values() for value in values) if known else None,
-            'usage_known': known, 'cost': 'unknown'}
+            'usage_known': known, 'measurement': 'owned_journal_cumulative_turn_delta',
+            'reported_last_inference_usage': last_inference_usage, 'cost': 'unknown'}
         receipt['model_attempts'] = [{'thread_id': tid, 'turn_id': turn,
             'provider_id': 'codex_native', 'model_id': observed['model_id'],
-            'usage': client.turn_token_usage(tid, turn), 'cost': 'unknown'}
+            'usage': usage[tid][index], 'cost': 'unknown'}
             for tid, observed in receipt['native_threads'].items()
-            for turn in dict.fromkeys(row['turn_id'] for row in observed['execution_contexts'])]
+            for index, turn in enumerate(dict.fromkeys(row['turn_id'] for row in observed['execution_contexts']))]
+
+    @staticmethod
+    def _journal_turn_usage(thread, turn_id):
+        from pathlib import Path
+        names = {'input_tokens': 'inputTokens', 'cached_input_tokens': 'cachedInputTokens',
+            'output_tokens': 'outputTokens', 'reasoning_output_tokens': 'reasoningOutputTokens',
+            'total_tokens': 'totalTokens'}
+        # _execution_contexts has already authenticated this owned journal.
+        active, previous, baseline, total = None, None, None, None
+        prior_turn, found, completed = False, False, False
+        for line in Path(thread['path']).open():
+            row = json.loads(line)
+            payload = row.get('payload') or {}
+            if row.get('type') == 'event_msg' and payload.get('type') == 'task_started':
+                active = payload.get('turn_id')
+                if found and active != turn_id:
+                    break
+                if active == turn_id and not found:
+                    baseline = previous if prior_turn else {key: 0 for key in names}
+                    found = True
+                elif active != turn_id:
+                    prior_turn = True
+            if row.get('type') != 'event_msg':
+                continue
+            if payload.get('type') == 'token_count':
+                value = (payload.get('info') or {}).get('total_token_usage')
+                if not isinstance(value, dict) or any(type(value.get(key)) is not int or value[key] < 0 for key in names):
+                    continue
+                previous = {key: value[key] for key in names}
+                if active == turn_id:
+                    total = previous
+            if payload.get('type') == 'task_complete' and payload.get('turn_id') == turn_id:
+                completed = True
+        if not completed or baseline is None or total is None:
+            return None
+        delta = {names[key]: total[key] - baseline[key] for key in names}
+        return delta if all(value >= 0 for value in delta.values()) else None
 
     @staticmethod
     def _input_matches(actual, expected):

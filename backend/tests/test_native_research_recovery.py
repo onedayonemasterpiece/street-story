@@ -1,4 +1,5 @@
 import copy
+import json
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -12,7 +13,15 @@ from test_native_rollout_readback import INPUT, THREAD, TURN, journal
 
 
 def setup(tmp_path, monkeypatch, *, receipt=None):
-    thread, _ = journal(tmp_path, monkeypatch)
+    thread, rows = journal(tmp_path, monkeypatch)
+    def count(total):
+        return {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {'total_token_usage': {
+            'input_tokens': total-19 if total else 0, 'cached_input_tokens': 0,
+            'output_tokens': 19 if total else 0, 'reasoning_output_tokens': 0, 'total_tokens': total}}}}
+    rows.insert(3, count(0))
+    rows.insert(-1, count(119))
+    from pathlib import Path
+    Path(thread['path']).write_text(''.join(json.dumps(row)+'\n' for row in rows))
     calls, saved = [], []
     class NativeAppServerError(RuntimeError):
         code = -32601
@@ -111,6 +120,25 @@ def test_native_v2_empty_annotation_projection_preserves_exact_input_binding():
     assert not NativeFactResearch._input_matches([{**projected[0], 'text': 'Another operation'}], INPUT)
     assert not NativeFactResearch._input_matches([{**projected[0], 'text_elements': [{'label': 'foreign-file'}]}], INPUT)
     assert not NativeFactResearch._input_matches([*projected, projected[0]], INPUT)
+
+
+def test_turn_usage_is_cumulative_delta_not_last_response_or_next_turn(tmp_path, monkeypatch):
+    from pathlib import Path
+    thread, rows = journal(tmp_path, monkeypatch)
+    def count(total):
+        return {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {'total_token_usage': {
+            'input_tokens': total-20, 'cached_input_tokens': 20, 'output_tokens': 20,
+            'reasoning_output_tokens': 0, 'total_tokens': total}}}}
+    rows.insert(3, count(100))
+    rows.insert(-1, count(550))
+    rows.insert(-1, count(550))  # A repeated notification is not extra usage.
+    rows += [{'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'next'}}, count(9999)]
+    Path(thread['path']).write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    usage = NativeFactResearch._journal_turn_usage(thread, TURN)
+    assert usage['totalTokens'] == 450 and usage['inputTokens'] == 450
+    rows = [row for row in rows if not (row.get('payload') or {}).get('type') == 'task_complete']
+    Path(thread['path']).write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    assert NativeFactResearch._journal_turn_usage(thread, TURN) is None
 
 
 @pytest.mark.asyncio
