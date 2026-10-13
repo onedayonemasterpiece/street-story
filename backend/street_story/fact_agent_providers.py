@@ -139,7 +139,7 @@ class AgentRoute:
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
             'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
-                else 'agent-tools-per-turn-admission-v7-supported-schema-strict-final' if self.provider_id == 'google'
+                else 'agent-tools-per-turn-admission-v8-closed-key-failover-strict-final' if self.provider_id == 'google'
                 else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
@@ -299,10 +299,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                             failure = classify_error(exc, now=adapter.service.store.now())
                             receipt['sdk_error'] = {'type': type(exc).__name__, 'code': failure.code,
                                 'message': adapter.service.settings.redact(str(exc))}
-                            adapter._checkpoint_receipt(binding, receipt)
                             if failure.code or getattr(exc, 'provider_send_state', None) == 'not_sent':
                                 sent = False
+                                receipt['last_request_sent'] = False
                                 receipt['provider_status'] = failure.code
+                                receipt['provider_send_state'] = 'response_closed' if failure.code else 'not_sent'
+                            adapter._checkpoint_receipt(binding, receipt)
                             raise
                     response = await executor.execute('grounded_research', call,
                         can_failover=lambda: not receipt['last_request_sent'])
@@ -426,7 +428,8 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
         if route.provider_id == 'gigachat' and receipt['model_attempts'] and receipt['model_attempts'][-1].get('http_status') is not None:
             sent = False
         receipt.update(phase='unknown' if sent else 'failed',
-            provider_send_state='possibly_sent' if sent else 'response_closed' if receipt.get('last_request_sent') or receipt['model_attempts'] else 'not_sent',
+            provider_send_state='possibly_sent' if sent else 'response_closed' if receipt.get('provider_status')
+                or receipt.get('last_request_sent') or receipt['model_attempts'] else 'not_sent',
             retry_safe=False, error_code=failure_code(exc),
             elapsed_seconds=time.monotonic()-started)
         adapter._checkpoint_receipt(binding, receipt)

@@ -93,7 +93,7 @@ def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
     assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
     proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
         'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
-        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v6-separate-read-url-strict-final')), (giga, giga.profile_fingerprint)]]
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v7-supported-schema-strict-final')), (giga, giga.profile_fingerprint)]]
     settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
     adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
         providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
