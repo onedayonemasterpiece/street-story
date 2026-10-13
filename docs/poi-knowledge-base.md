@@ -47,10 +47,15 @@ include the current job/run so recovery preserves earlier confirmation history.
 Whole-turn usage comes from cumulative deltas in authenticated native journals;
 the SDK's last-response usage is retained separately, and money remains unknown.
 
-Incomplete
-assessments stay unverified. The existing conflict journal, arbitration history,
+The existing conflict journal, arbitration history,
 revision staleness and eligibility rules still apply. A fact keeps all source
 supports, including different frozen versions of the same URL.
+
+Native assessments use the same semantic instructions as the existing verifier,
+including undated mutable states and physical subject boundaries. Public HTML
+reads expose bounded literal discovery links from the same acquired bytes;
+these links are not evidence. Reused documents gain this metadata only when
+the cached raw page reproduces the frozen text hash, without another fetch.
 
 `backend/tools/native_facts_acceptance.py` measures an unqualified native route
 on an isolated managed Store through normal EXIF intake, exact mapped selection,

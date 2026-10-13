@@ -471,6 +471,9 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
             if route.provider_id == 'codex_native':
+                for document, source in zip(value['documents'], docs):
+                    document.update({key: source[key] for key in
+                        ('discovery_links', 'discovery_links_provenance') if key in source})
                 with adapter.service.store.connection() as db:
                     attempted = db.execute('SELECT status,error_code,source_version_id FROM research_run_sources '
                         'WHERE run_id=? AND url=?', (context['run_id'], args['url'].rstrip('/'))).fetchone()

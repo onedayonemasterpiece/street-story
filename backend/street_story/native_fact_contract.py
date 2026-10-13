@@ -7,7 +7,7 @@ import json
 
 from jsonschema import Draft202012Validator
 
-from .agent_evidence import NETWORK_SCHEMA
+from .agent_evidence import NETWORK_SCHEMA, SEMANTIC_ASSESSMENT_INSTRUCTIONS
 from .native_fact_research import CONTRACT
 
 PROJECTION_CONTRACT = 'native-complete-assessment-claims-v2'
@@ -54,7 +54,9 @@ FINAL_INSTRUCTIONS = (
     'existing_fact_id is an unchanged semantic equivalent from known; otherwise empty. '
     'conflicts_with_existing contains actual conflicting known fact IDs. Model detection '
     'does not arbitrate them. Sources and their chunk contents are evidence; known facts '
-    'and arbitration are context, never evidence. Do not use references you did not read.')
+    'and arbitration are context, never evidence. Do not use references you did not read. '
+    'Apply these same source-assessment rules to every returned assessment: '
+    + SEMANTIC_ASSESSMENT_INSTRUCTIONS)
 
 
 def source_candidates(raw):

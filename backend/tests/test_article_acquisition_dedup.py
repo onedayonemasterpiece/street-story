@@ -17,6 +17,64 @@ BODY = '<main><h1>Gate archive</h1><p>A sufficiently long literal public article
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('cache_change', [None, 'other_text', 'corrupt_bytes', 'missing'])
+async def test_frozen_reader_detail_links_require_same_acquisition_without_refetch(tmp_path, cache_change):
+    from street_story.providers import GeminiClient
+    svc, _, session, _ = make_service(tmp_path)
+    reader = GeminiClient(svc.settings, svc.store)
+    raw = (BODY.replace('</main>', '<section><h2>Literal catalog entry</h2>'
+        '<a href="/detail?id=7">Read more</a></section>'
+        '<a href="http://example.org/unsafe">Insecure</a>'
+        '<a href="https://127.0.0.1/private">Private</a>'
+        '<a href="javascript:alert(1)">Script</a></main>')).encode()
+    key = 'public-article-acquisition-v1:' + hashlib.sha256(URL.encode()).hexdigest()
+    entry = {'body': base64.b64encode(raw).decode(), 'sha256': hashlib.sha256(raw).hexdigest(),
+        'final_url': URL, 'mime': 'text/html'}
+    svc.store.cache_put(key, entry, 86400)
+    with svc.store.tx() as db:
+        story = svc._story_row(db, session.resource_id)
+        begin_research_run(db, story_id=story['id'], poi_key='wiki:77', goal='History',
+            expected_story_revision=story['revision'], identity_generation=0, run_id='links-run', now=svc.store.now())
+    async def forbidden(request):
+        pytest.fail('Detail-link metadata must not fetch an existing acquisition')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as client:
+        reader.search_http = client
+        original = (await reader._fetch_page_documents([URL], {'research_run_id': 'links-run'}))[URL]
+        assert original['discovery_links'] == [{'url': 'https://archive.example/detail?id=7',
+            'label': 'Read more', 'context': 'Literal catalog entry Read more'}]
+        provenance = original['discovery_links_provenance']
+        assert provenance['raw_content_sha256'] == hashlib.sha256(raw).hexdigest()
+        assert provenance['kind'] == 'unverified_discovery' and provenance['omitted_count'] == 0
+        if cache_change == 'other_text':
+            changed = raw.replace(b'Gate archive', b'Other source')
+            entry.update(body=base64.b64encode(changed).decode(), sha256=hashlib.sha256(changed).hexdigest())
+        elif cache_change == 'corrupt_bytes':
+            entry['body'] = base64.b64encode(b'corrupt').decode()
+        elif cache_change == 'missing':
+            svc.store.cache_put(key, entry, -1)
+        if cache_change != 'missing':
+            svc.store.cache_put(key, entry, 86400)
+        reused = (await reader._fetch_page_documents([URL], {'research_run_id': 'links-run'}))[URL]
+    assert reused['source_version_id'] == original['source_version_id']
+    assert reused['content_sha256'] == original['content_sha256']
+    assert reused['normalized_text'] == original['normalized_text']
+    if cache_change is None:
+        assert reused['discovery_links'] == original['discovery_links']
+        assert reused['discovery_links_provenance'] == provenance
+    else:
+        assert 'discovery_links' not in reused
+
+
+def test_discovery_link_budget_reports_omitted_public_locations():
+    from street_story.providers import _page_discovery_links
+    page = '<main>' + ''.join(f'<a href="/detail/{n}">Detail {n}</a>' for n in range(200)) + '</main>'
+    metadata = _page_discovery_links(page, URL, page.encode())
+    assert len(metadata['discovery_links']) == 128
+    assert metadata['discovery_links_provenance']['public_link_count'] == 200
+    assert metadata['discovery_links_provenance']['omitted_count'] == 72
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('failure', [None, 'empty', 'encoding', 'no_body', 'short_body', 'redirect'])
 async def test_cached_publisher_body_uses_actual_article_structure_or_fails_closed(tmp_path, failure):
     from street_story.providers import GeminiClient

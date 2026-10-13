@@ -40,7 +40,16 @@ INSTRUCTIONS = (
     'resources permit; do not stop merely because one address query or reader '
     'failed. Prior search leads are unverified discovery, never source proof. '
     'Use their possible historical names only as search hypotheses; assess '
-    'physical relationship from actual reads. You decide substantive Sol help.')
+    'physical relationship from actual reads. Search snippets can be stale or describe '
+    'a different catalog item: never transfer their statements into an assessment '
+    'of a fetched page that lacks them. HTML discovery_links are unverified locations '
+    'from that same acquisition, not supporting evidence; follow promising detail '
+    'links and read their own documents. When using exec, print one webfetch result '
+    'directly per cell (text(result), without JSON double-encoding), with an adequate '
+    'max_output_tokens budget (start with 32000 for a single document). '
+    'If output is truncated or metadata/chunks are missing, '
+    'read that same cached source separately before assessing it; never invent a '
+    'hash or rely on an unseen portion. You decide substantive Sol help.')
 
 
 class NativeFactResearch:

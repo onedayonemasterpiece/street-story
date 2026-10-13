@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, UnicodeDammit
@@ -682,6 +682,80 @@ def _read_article_text(html: str, *, limit: int = 120_000) -> tuple[str, bool]:
     for root in roots:
         parser.feed(str(root))
     return parser.finish(), parser.truncated
+
+
+def _page_discovery_links(page: str, final_url: str, raw_bytes: bytes) -> dict:
+    """Literal public hrefs from this acquisition; never source support or identity."""
+    from .article_media import public_url
+    soup = BeautifulSoup(str(page), 'html.parser')
+    for node in soup.select('script, style, noscript, template'):
+        node.decompose()
+    links, seen, omitted, used = [], set(), 0, 0
+    for anchor in soup.find_all('a', href=True):
+        target = public_url(urljoin(final_url, str(anchor['href'])))
+        if not target or target == public_url(final_url) or target in seen:
+            continue
+        seen.add(target)
+        label = anchor.get_text(' ', strip=True)
+        context = label
+        for parent in list(anchor.parents)[:3]:
+            if parent.name in {'body', 'html', '[document]'}:
+                break
+            literal = parent.get_text(' ', strip=True)
+            if len(label) + 5 < len(literal) <= 800:
+                context = literal
+                break
+        item = {'url': target, 'label': label[:120], 'context': context[:360]}
+        size = len(json.dumps(item, ensure_ascii=False))
+        if len(links) >= 128 or used + size > 65_536:
+            omitted += 1
+            continue
+        used += size
+        links.append(item)
+    return {'discovery_links': links, 'discovery_links_provenance': {
+        'contract': 'same-acquisition-public-hrefs-v1', 'kind': 'unverified_discovery',
+        'final_url': final_url, 'raw_content_sha256': hashlib.sha256(raw_bytes).hexdigest(),
+        'public_link_count': len(seen), 'omitted_count': omitted}}
+
+
+def _cached_document_discovery(store, requested_url: str, document: dict) -> dict:
+    """Enrich reused text only when existing raw bytes reproduce its frozen hash."""
+    import base64
+    from .article_media import public_url
+    from .prussia39 import canonical_article, _decode, parse_article
+    target = public_url(requested_url)
+    if not target:
+        return {}
+    saved = store.cache_get('public-article-acquisition-v1:' + hashlib.sha256(target.encode()).hexdigest())
+    if not saved:
+        return {}
+    try:
+        raw = base64.b64decode(saved['body'], validate=True)
+        final_url = saved['final_url']
+        if (hashlib.sha256(raw).hexdigest() != saved['sha256']
+                or final_url != document.get('final_url')
+                or saved['mime'] not in {'text/html', 'application/xhtml+xml'}):
+            return {}
+        try:
+            sid, _ = canonical_article(requested_url)
+        except ValueError:
+            sid = None
+        if sid is not None:
+            final_sid, _ = canonical_article(final_url)
+            if sid != final_sid:
+                return {}
+            page, _ = _decode(raw)
+            text = parse_article(page)['text'][:120_000]
+        else:
+            page = UnicodeDammit(raw, is_html=True).unicode_markup
+            if page is None:
+                return {}
+            text, _ = _read_article_text(page)
+        if hashlib.sha256(text.encode()).hexdigest() != document.get('content_sha256'):
+            return {}
+        return _page_discovery_links(page, final_url, raw)
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        return {}
 
 
 class GeminiClient:
@@ -1524,7 +1598,8 @@ class GeminiClient:
                     with self.store.connection() as db:
                         saved = reusable_source_document(db, run_id=run_id, url=requested_url, now=self.store.now())
                     if saved is not None:
-                        documents[requested_url] = saved
+                        documents[requested_url] = {**saved,
+                            **_cached_document_discovery(self.store, requested_url, saved)}
                         continue
                 now = self.store.now()
                 if run_id:
@@ -1596,6 +1671,7 @@ class GeminiClient:
                             raise ValueError('article_encoding_unreadable')
                         normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
                         source_encoding = decoded.original_encoding
+                        page = decoded.unicode_markup
                     if len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
@@ -1657,6 +1733,8 @@ class GeminiClient:
                         "redirect_chain": redirect_chain,
                         "source_encoding": source_encoding,
                         "raw_content_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                        **(_page_discovery_links(page, current_url, raw_bytes)
+                            if any(kind in content_type for kind in ('text/html', 'application/xhtml+xml')) else {}),
                     }
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:
                     if isinstance(exc,httpx.HTTPStatusError):
