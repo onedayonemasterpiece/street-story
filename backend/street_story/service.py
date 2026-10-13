@@ -444,7 +444,8 @@ class StreetStoryService:
                 'photo_sha256': row['photo_sha256'], 'identity_generation': generation,
             } for purpose in PURPOSES},
             "research_pending": pending_research,
-            "research_outcome": research.get('automatic_research_outcome'),
+            "research_outcome": (research.get('automatic_research_outcome')
+                if research.get('automatic_research_outcome') is not None else research.get('research_outcome')),
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
