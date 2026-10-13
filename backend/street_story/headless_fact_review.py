@@ -746,7 +746,9 @@ class HeadlessFactReview:
                     pending_relation_context=pending_context,
                     eligible_facts=[{'fact_id': f['fact_id'], 'text': f['text']} for f in inventory['facts']],
                     eligible_inventory_complete=not inventory['has_more'])
-        except ConflictError:
-            self._put(job, unit, {'phase': 'stale'})
+        except ConflictError as exc:
+            LOG.warning('fact_review_packet_preparation_failed job_id=%s run_id=%s unit_id=%s error_code=%s',
+                job['id'], run_id, unit, exc.code)
+            self._put(job, unit, {'phase': 'stale', 'error_code': exc.code})
             return None, unit, saved
         return packet, unit, saved

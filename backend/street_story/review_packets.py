@@ -280,6 +280,40 @@ def load(adapter, session, db, ref):
     return row, payload
 
 
+REVIEW_SLICE_CONTRACT = 'byte-bounded-own-passages-v2'
+
+
+def bounded_review_slices(page, slices):
+    """Fit each own passage beside the complete claim and selected identity.
+
+    Split text at character boundaries, preserving every offset and final-tail
+    marker. The frozen packet and existing public response limit stay intact.
+    """
+    result = []
+
+    def append(item):
+        cursor = len(result) + 1
+        probe = {**page, 'items': [item], 'next_cursor': cursor, 'has_more': True,
+            'next_tool': 'get_review_packet',
+            'next_args': {'packet_ref': page['packet_ref'], 'cursor': cursor}}
+        if 'nearby_existing_claims' in probe:
+            probe['nearby_existing_claims'] = []  # Existing pagination trims context separately.
+        if response_units('get_review_packet', probe) <= PAGE_UNITS:
+            result.append(item)
+            return
+        passage = item['passage']
+        if len(passage) <= 1:
+            raise ConflictError('live_review_item_oversize',
+                'Assertion text exceeds a bounded review operation; all data preserved.')
+        midpoint = len(passage) // 2
+        append({**item, 'passage': passage[:midpoint], 'passage_complete': False})
+        append({**item, 'passage': passage[midpoint:], 'offset': item['offset'] + midpoint})
+
+    for item in slices:
+        append(item)
+    return result
+
+
 def read(adapter, session, args):
     with adapter.service.store.tx() as db:
         ref = str(args.get('packet_ref') or '')
@@ -470,6 +504,7 @@ def read(adapter, session, args):
             'the new candidate pending later arbitration. Require explicit atomic, support_complete '
             'and qualifiers_preserved checks plus own literal basis_quotes. This is partial candidate '
             'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
+    slices = bounded_review_slices(page, slices)
     if page.get('nearby_existing_claims') and cursor < len(slices):
         while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
             page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
