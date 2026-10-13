@@ -290,6 +290,18 @@ class GigaChatResearchClient:
                 'source_matches_poi concerns the confirmed physical subject. Menus/challenges are invalid '
                 'source content; navigation/photo metadata is not building history. '
                 'continuation_needed concerns unread evidence, separately from research sufficiency. '
+                'Use the frozen context.review_as_of_date_utc as the review date, not as a source date. '
+                'A dated article describes its own time: mutable states such as repair progress, condition, '
+                'ownership, registration or use require the source publication/event date explicitly in '
+                'fact.text unless own evidence verifies that state as of the review date. Keep supported '
+                'historical states as dated facts; do not discard useful history because its source is old. '
+                'Resolve relative dates such as now, last summer or this year against the source publication '
+                'date, never the review or retrieval date. A past dated plan remains a plan reported at that '
+                'date, not a current plan or completed work. If the source date or relative-date antecedent '
+                'is unavailable, preserve the ambiguity with a nonpositive assessment; do not invent a date. '
+                'For an existing unqualified current-state claim, return its unchanged text and ID as '
+                'nonpositive; a supported dated replacement is a new claim with existing_fact_id="". '
+                'Preserve independently supported historical events and their dates, including approximate dates. '
                 'No selection, draft edits, images, new URLs or publication.')
             public_capsule = source_first_input(public_capsule)
         schema = response_schema(FINDINGS_SCHEMA, capsule.get('semantic_contract'))
