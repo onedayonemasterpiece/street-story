@@ -13,6 +13,21 @@ from street_story.fact_agents import QUALIFICATION_KEY
 from street_story.fact_agent_providers import INSTRUCTIONS, RESULT_SCHEMA
 
 
+@pytest.fixture(autouse=True)
+def controlled_managed_root(tmp_path, monkeypatch):
+    """Use this test's managed tree on CI; production guard stays untouched."""
+    import owner_place_acceptance
+    (tmp_path / '.artifact.json').write_text('{"class":"temporary","purpose":"controlled receipt fixture"}')
+    def managed_test(path):
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(tmp_path.resolve()):
+            raise ValueError('Acceptance artifacts must be under managed test root')
+        if not any((parent / '.artifact.json').is_file() for parent in (resolved, *resolved.parents)):
+            raise ValueError('Acceptance artifacts require a managed task ancestor')
+        return resolved
+    monkeypatch.setattr(owner_place_acceptance, 'managed', managed_test)
+
+
 def fixture(tmp_path):
     routes, proofs = [], []
     for provider in ('google', 'gigachat'):
@@ -74,4 +89,13 @@ def test_receipt_flags_cannot_replace_actual_read_only_role_integrity(tmp_path, 
         evidence['sha256'] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     path.write_text(json.dumps(proof))
     with pytest.raises(ValueError):
+        load_agent_qualification(path, routes=routes)
+
+
+def test_receipt_path_cannot_escape_controlled_managed_root(tmp_path):
+    path, routes = fixture(tmp_path)
+    proof = json.loads(path.read_text())
+    proof['routes'][0]['qualification_receipts'][0]['path'] = str(tmp_path.parent / 'foreign.json')
+    path.write_text(json.dumps(proof))
+    with pytest.raises(ValueError, match='managed test root'):
         load_agent_qualification(path, routes=routes)

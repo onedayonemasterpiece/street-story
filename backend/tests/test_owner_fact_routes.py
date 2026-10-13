@@ -23,22 +23,22 @@ def prepared(tmp_path, *, owner=True):
 
 
 @pytest.mark.asyncio
-async def test_new_owner_exact_units_use_only_qualified_primary_mimo(tmp_path):
+async def test_new_owner_exact_units_use_available_qualified_pool_without_model_exclusivity(tmp_path):
     adapter, extra, live, story, _ = prepared(tmp_path)
     result = await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Own subject'})
-    assert result['receipt']['model_id'] == 'mimo-v2.6-flash-free'
-    assert len(adapter.client.calls) == 1
-    assert not live.calls and not adapter.giga.calls and not extra.calls
+    assert result['receipt']['model_id'] == live.model_id
+    assert len(live.calls) == 1
+    assert not adapter.client.calls and not adapter.giga.calls and not extra.calls
 
 
 @pytest.mark.asyncio
-async def test_owner_exact_without_qualified_mimo_waits_without_other_send(tmp_path):
+async def test_owner_exact_without_primary_text_proof_uses_other_qualified_route(tmp_path):
     adapter, extra, live, story, entries = prepared(tmp_path)
     adapter.service.store.cache_put('research-text-verification-v1', {'extractors': [e for e in entries
         if e['model_id'] != 'mimo-v2.6-flash-free']}, 3600)
-    with pytest.raises(RetryableProviderError, match='pool_unverified'):
-        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Own subject'})
-    assert not adapter.client.calls and not live.calls and not adapter.giga.calls and not extra.calls
+    result = await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Own subject'})
+    assert result['receipt']['model_id'] == live.model_id and len(live.calls) == 1
+    assert not adapter.client.calls and not adapter.giga.calls and not extra.calls
 
 
 @pytest.mark.asyncio
@@ -96,6 +96,7 @@ async def test_addressed_readback_binding_failure_retains_original_guard(tmp_pat
     from street_story.opencode_research import ResearchUnavailable
 
     adapter, extra, live, story, _ = prepared(tmp_path)
+    adapter.order_fact_routes = lambda routes, ordinal=0, **kwargs: sorted(routes, key=lambda r: r['role'] != 'facts')
     adapter.client.mode = 'submitted'
     with pytest.raises(RetryableProviderError, match='unit_outcome_unknown'):
         await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Original'})
@@ -123,7 +124,7 @@ async def test_automatic_and_voice_owner_routes_keep_existing_assignment(tmp_pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('observing', [False, True])
-async def test_review_new_owner_packet_uses_mimo_but_original_live_is_observed(tmp_path, observing):
+async def test_review_owner_packet_uses_qualified_pool_and_original_live_is_observed(tmp_path, observing):
     from test_headless_fact_review_qualification import original_fixture, proof
     svc, job, harness, reviewer, packet, unit, saved, live, _, args = await original_fixture(tmp_path)
     with svc.store.tx() as db:
@@ -150,5 +151,4 @@ async def test_review_new_owner_packet_uses_mimo_but_original_live_is_observed(t
         new_fact_routes=selector.new_fact_routes, extract_fact_page=svc.providers.research.extract_fact_page)
     result = await reviewer._infer(packet, job, unit, {**saved, 'phase': 'observe_original'} if observing else {})
     assert result == args
-    assert sends == [('facts_review_' + (live['model_id'] if observing else 'mimo-v2.6-flash-free'),
-                      live['model_id'] if observing else 'mimo-v2.6-flash-free')]
+    assert sends == [('facts_review_' + live['model_id'], live['model_id'])]

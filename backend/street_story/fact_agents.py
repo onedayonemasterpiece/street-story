@@ -84,7 +84,11 @@ def agent_context(identity, goal, run_id, now):
     # Explicit allowlist prevents prior facts, URLs and camera context entering discovery.
     selected = {key: identity[key] for key in ('candidate_id', 'name', 'names', 'address',
         'city', 'search_anchor', 'owner_context', 'building_polygon') if key in identity}
-    return {'selected_object': selected, 'editorial_goal': goal, 'run_id': run_id,
+    task_goal = (goal + '\nAim for six distinct useful facts when public sources support them. '
+        'If fewer than three useful building facts are supported, try another concise search or article. '
+        'Vary street-type suffixes and quoted versus unquoted address queries when needed. '
+        'Read the full page before citing it. Never invent facts to meet a count.')
+    return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
 
 

@@ -1059,10 +1059,12 @@ class ProductResearchAdapter:
                     if not hasattr(primary, 'fact_extractor'):
                         continue
                     extra = clients[model] = primary.fact_extractor(model)
-                # Historical journal role is retained for original addressed receipts.
-                role = 'facts_opencode_nemotron' if model == 'nemotron-3-ultra-free' else 'facts_opencode_' + hashlib.sha256(model.encode()).hexdigest()[:12]
-                routes.append({'role': role, 'provider_id': extra.provider_id,
-                    'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
+        # Expiring admission proof removes permission for new sends, not the
+        # pinned transport needed to observe an already addressed operation.
+        for model, extra in self.__dict__.get('_fact_extractor_clients', {}).items():
+            role = 'facts_opencode_nemotron' if model == 'nemotron-3-ultra-free' else 'facts_opencode_' + hashlib.sha256(model.encode()).hexdigest()[:12]
+            routes.append({'role': role, 'provider_id': extra.provider_id,
+                'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
         entries = proof.get('extractors') or []
         for route in routes:

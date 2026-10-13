@@ -40,6 +40,18 @@ def test_candidate_format_has_no_semantic_regex_gate():
         validate_result({'facts': [{**item, 'quote': ' '.join(['word']*26)}]})
 
 
+@pytest.mark.parametrize('candidate_url', ['https://example.org/article?value=/',
+    'https://example.org/article?value=#/', 'https://EXAMPLE.org/article?value=',
+    'HTTPS://example.org/article?value='])
+def test_read_alias_never_normalizes_query_fragment_host_or_scheme(candidate_url):
+    from street_story.fact_agent_providers import partition_result
+    item = {'text': 'Факт', 'subject_scope': 'selected_building', 'url': candidate_url,
+        'quote': 'Short quote', 'source_date': None}
+    result, rejected = partition_result({'facts': [item]}, fetched={'https://example.org/article?value='})
+    assert result == {'facts': []}
+    assert rejected[0]['reason'] == 'agent_source_not_read'
+
+
 def test_agent_capsule_does_not_change_existing_reader_guard(tmp_path):
     normal = scoped_research_config('arbitrary-model', directory=tmp_path)
     limits = ResearchLimits(timeout_seconds=720, max_steps=4, max_output_tokens=4096)
@@ -63,6 +75,31 @@ def test_old_reader_qualification_is_not_agent_tool_proof():
     assert len(configured_routes(adapter, include_unqualified=True)) == 1
 
 
+def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
+    import hashlib
+    import json
+    from street_story.fact_agent_providers import INSTRUCTIONS, RESULT_SCHEMA, TOOLS, wire_tools
+    from street_story.fact_agents import QUALIFICATION_KEY
+    gemini = SimpleNamespace(research_routes=[('configured-google', None, None, None)])
+    google = AgentRoute('google', 'configured-google', 'https://generativelanguage.googleapis.com', gemini)
+    giga_client = SimpleNamespace(binding={'model': 'GigaChat-2'})
+    giga = AgentRoute('gigachat', 'GigaChat-2', 'https://api.giga.chat/v1/chat/completions', giga_client)
+    manifest = {'instructions': INSTRUCTIONS, 'tools': TOOLS, 'schema': RESULT_SCHEMA, 'wire_tools': wire_tools()}
+    def old_fingerprint(contract):
+        return hashlib.sha256(json.dumps({**manifest, 'transport_contract': contract}, sort_keys=True).encode()).hexdigest()
+    assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
+    proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
+        'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v2')), (giga, giga.profile_fingerprint)]]
+    settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
+    adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
+        providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
+    assert [row.provider_id for row in configured_routes(adapter)] == ['gigachat']
+    assert len(configured_routes(adapter, include_unqualified=True)) == 2
+    proofs[0]['profile_sha256'] = google.profile_fingerprint
+    assert [row.provider_id for row in configured_routes(adapter)] == ['google', 'gigachat']
+
+
 @pytest.mark.asyncio
 async def test_unknown_synchronous_binding_is_not_sent_or_rewritten():
     from street_story.fact_agent_providers import run_tool_agent
@@ -77,16 +114,29 @@ async def test_unknown_synchronous_binding_is_not_sent_or_rewritten():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('variant', ['valid', 'mixed', 'search_error', 'unsafe_error', 'empty_then_valid'])
-async def test_tool_loop_reads_real_document_mapping_and_preserves_version(variant):
+@pytest.mark.parametrize('variant', ['valid', 'mixed', 'search_error', 'unsafe_error', 'empty_then_valid', 'slash_alias'])
+async def test_tool_loop_reads_real_document_mapping_and_preserves_version(variant, monkeypatch):
     import json
+    import sys
+    from types import ModuleType
     from contextlib import asynccontextmanager
     from street_story.fact_agent_providers import run_tool_agent
+    # This is a controlled loop/admission fixture, independent of the private
+    # deployed quota SDK; exercise the complete envelope passed to its estimator.
+    sdk = ModuleType('ai_resource_control.client')
+    estimated_bodies = []
+    def estimate(body):
+        estimated_bodies.append(body)
+        return len(json.dumps(body, ensure_ascii=False).encode())
+    sdk.estimate_input_tokens = estimate
+    monkeypatch.setitem(sys.modules, 'ai_resource_control.client', sdk)
     source = {'requested_url': 'https://source.example/article', 'final_url': 'https://source.example/article',
         'source_version_id': 'srcv1', 'normalized_text': 'Actual source article text.',
         'content_sha256': 'digest', 'read_status': 'complete'}
     candidate = {'text': 'Здание построено в 1901 году.', 'subject_scope': 'selected_building',
         'url': source['final_url'], 'quote': 'constructed in 1901', 'source_date': None}
+    if variant == 'slash_alias':
+        candidate = {**candidate, 'url': candidate['url'] + '/'}
     raw_result = {'facts': [candidate]}
     if variant == 'mixed':
         raw_result['facts'].extend([
@@ -153,13 +203,15 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version(varia
         return
     result = await run_tool_agent(adapter, AgentRoute('gigachat', 'test', 'https://api.example', giga), {},
         {'run_id': 'run1'}, binding={'attempt_id': 'one'}, guard=lambda: None)
-    assert result['result']['facts'] == [candidate]
+    assert result['result']['facts'] == [{**candidate, 'url': source['final_url']}]
     assert result['sources'][0]['source_version_id'] == 'srcv1'
     assert fetched == [([source['requested_url']], {'research_run_id': 'run1'})]
     assert finalized[0][1] == 'completed'
     assert len(finalized) == (5 if variant == 'empty_then_valid' else 4)
     assert sum(item[0]['input_tokens'] for item in finalized) == len(finalized) * 10
     assert saved[-1]['phase'] == 'completed'
+    assert len(estimated_bodies) == len(finalized)
+    assert all(body['model'] == 'test' and body['messages'] for body in estimated_bodies)
     assert saved[-1]['raw_result'] == raw_result
     assert json.loads(saved[-1]['raw_result_text']) == raw_result
     assert [item['reason'] for item in saved[-1]['rejected_candidates']] == ([
@@ -169,6 +221,53 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version(varia
     if variant == 'empty_then_valid':
         assert searches == ['selected building history', 'different selected building query']
         assert [row['name'] for row in saved[-1]['tool_receipts']] == ['websearch', 'websearch', 'webfetch']
+    if variant == 'slash_alias':
+        assert saved[-1]['raw_result']['facts'][0]['url'].endswith('/article/')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('empty_first', [False, True])
+async def test_google_requires_search_then_own_fetch_before_automatic_final(empty_first):
+    import json
+    from google.genai import types
+    from street_story.fact_agent_providers import run_tool_agent
+    source = {'requested_url': 'https://source.example/article', 'final_url': 'https://source.example/article',
+        'source_version_id': 'version', 'content_sha256': 'content', 'normalized_text': 'Read actual source text.'}
+    candidate = {'text': 'Здание построено в 1901 году.', 'subject_scope': 'selected_building',
+        'url': source['final_url'] + '/', 'quote': 'built in 1901', 'source_date': None}
+    stages, searches, saved = [], [], []
+    async def search(query):
+        searches.append(query)
+        if empty_first and len(searches) == 1:
+            from street_story.errors import RetryableProviderError
+            raise RetryableProviderError('public_web_search_no_https_results')
+        return SimpleNamespace(grounding_sources=[{'url': source['final_url']}])
+    async def fetch(urls, context):
+        assert urls == [source['final_url']] and context == {'research_run_id': 'run1'}
+        return {source['requested_url']: source}
+    async def generate(_key, _timeout, contents, config, **kwargs):
+        tool_config = config.tool_config.function_calling_config
+        forced = (tool_config.allowed_function_names or [None])[0]
+        stages.append(forced)
+        assert tool_config.mode.value == ('ANY' if forced else 'AUTO')
+        kwargs['before_provider_send']({'request_body_sha256': 'wire'})
+        if forced:
+            args = {'query': 'different query' if searches else 'first query'} if forced == 'websearch' else {'url': source['final_url']}
+            part = types.Part(function_call=types.FunctionCall(name=forced, args=args))
+        else:
+            part = types.Part(text=json.dumps({'facts': [candidate]}))
+        return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role='model', parts=[part]))])
+    async def execute(_operation, call, **_kwargs):
+        return await call('controlled-key', 60)
+    gemini = SimpleNamespace(_public_web_search=search, _fetch_page_documents=fetch, _generate=generate,
+        research_routes=[('configured-google', None, None, SimpleNamespace(execute=execute))])
+    adapter = SimpleNamespace(service=SimpleNamespace(store=SimpleNamespace(now=lambda: 10), settings=SimpleNamespace(redact=str),
+        providers=SimpleNamespace(gemini=gemini)), _checkpoint_receipt=lambda _binding, receipt: saved.append(dict(receipt)))
+    result = await run_tool_agent(adapter, AgentRoute('google', 'configured-google', 'https://api.example', gemini), {},
+        {'run_id': 'run1'}, binding={'attempt_id': 'one'}, guard=lambda: None)
+    assert stages == (['websearch', 'websearch', 'webfetch', None] if empty_first else ['websearch', 'webfetch', None])
+    assert result['result']['facts'] == [{**candidate, 'url': source['final_url']}]
+    assert saved[-1]['raw_result']['facts'][0]['url'] == candidate['url']
 
 
 def test_provider_wire_schema_uses_supported_subset_host_stays_strict():

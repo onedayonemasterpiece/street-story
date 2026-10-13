@@ -1341,7 +1341,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             )
 
         researcher = getattr(self.providers, 'research', None)
-        if (previous_identity.get('status') == 'owner_confirmed' or group_resolved):
+        if ((previous_identity or {}).get('status') == 'owner_confirmed' or group_resolved):
             if (payload.get('mode') == 'initial' and not session_ids and not live_transcript
                     and int(prior.get('poi_reused_fact_count') or 0) > 0
                     and not self.store.checkpoint_get(job['id'], 'fact_agent_plan:'+run_id)):

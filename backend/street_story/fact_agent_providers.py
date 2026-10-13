@@ -10,6 +10,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 
@@ -58,6 +59,14 @@ def validate_result(raw):
     return raw
 
 
+def _read_url_key(url):
+    try:
+        parts = urlsplit(url)
+        return (url.partition(':')[0], parts.netloc, parts.path.removesuffix('/'), parts.query, parts.fragment)
+    except ValueError:
+        return None
+
+
 def partition_result(raw, *, fetched=None):
     """Reject individual format/transport failures without losing siblings."""
     envelope = {**RESULT_SCHEMA, 'properties': {'facts': {'type': 'array', 'maxItems': 24}}}
@@ -72,10 +81,16 @@ def partition_result(raw, *, fetched=None):
                 'field': '.'.join(str(part) for part in error.path), 'validator': error.validator})
         elif len(item['quote'].split()) > 25:
             rejected.append({'candidate_index': index, 'reason': 'agent_quote_too_long', 'field': 'quote'})
-        elif fetched is not None and item['url'] not in fetched:
-            rejected.append({'candidate_index': index, 'reason': 'agent_source_not_read', 'field': 'url'})
         else:
-            accepted.append(item)
+            observed = item['url'] if fetched is None or item['url'] in fetched else next((url for url in sorted(
+                value for value in fetched if isinstance(value, str))
+                if _read_url_key(url) is not None and _read_url_key(url) == _read_url_key(item['url'])), None)
+            if observed is None:
+                rejected.append({'candidate_index': index, 'reason': 'agent_source_not_read', 'field': 'url'})
+            else:
+                # Project only an actually observed URL; preserve raw output in
+                # the receipt. No host/path/query or subject normalization.
+                accepted.append(item if observed == item['url'] else {**item, 'url': observed})
     return {'facts': accepted}, rejected
 
 
@@ -104,6 +119,7 @@ class AgentRoute:
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
             'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
+                else 'agent-tools-per-turn-admission-v4-mandatory-search-read' if self.provider_id == 'google'
                 else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
@@ -176,7 +192,9 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
             for doc in docs:
-                fetched.update([doc.get('requested_url'), doc.get('final_url')])
+                if doc.get('normalized_text') and doc.get('source_version_id') and doc.get('content_sha256'):
+                    fetched.update(value for value in (doc.get('requested_url'), doc.get('final_url'))
+                        if isinstance(value, str) and value)
                 receipt['sources'].append({key: doc.get(key) for key in ('requested_url', 'final_url',
                     'source_version_id', 'content_sha256', 'read_status')})
         guard()
@@ -210,6 +228,9 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     types.FunctionDeclaration(**item) for item in wire_tools()])], max_output_tokens=4096)
                 for _ in range(24):
                     guard()
+                    forced_tool = 'websearch' if not fetched and not search_has_sources else 'webfetch' if not fetched else None
+                    config.tool_config = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
+                        mode='ANY' if forced_tool else 'AUTO', allowed_function_names=[forced_tool] if forced_tool else None))
                     receipt['last_request_sent'] = False
                     async def call(key, timeout):
                         nonlocal sent
