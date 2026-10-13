@@ -465,6 +465,14 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                     raise
                 value = {'sources': [], 'error_code': str(exc)}
             search_has_sources = bool(value['sources'])
+            if route.provider_id == 'codex_native':
+                # Preserve discovery for audit, but do not put stale indexed prose
+                # beside frozen evidence: the actual fetched page may differ.
+                receipt.setdefault('raw_search_discovery', []).append({
+                    'query': args['query'], 'sources': copy.deepcopy(value['sources'])})
+                value = {**value, 'sources': [{'type': 'unverified_search_lead',
+                    'title': source.get('title'), 'url': source.get('url')}
+                    for source in value['sources']], 'evidence_role': 'discovery_only_read_before_support'}
         else:
             docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
             docs = list(docs.values())

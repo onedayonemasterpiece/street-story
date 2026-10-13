@@ -64,6 +64,10 @@ New native responses also carry a model completion decision and concrete
 remaining gaps, including an explanation for empty results. Positive fact counts
 do not override reported gaps. Original closed facts-only packets retain their
 schema for exact write recovery; new operations require the current full schema.
+Native search delivers discovery titles and URLs; the original indexed snippets
+remain in the audit receipt. Frozen fetched chunks supply the supporting prose.
+The model also sees the remaining existing tool/observation allowance, with no
+increase in bounds or quota and no forced Sol delegation.
 
 `backend/tools/native_facts_acceptance.py` measures an unqualified native route
 on an isolated managed Store through normal EXIF intake, exact mapped selection,

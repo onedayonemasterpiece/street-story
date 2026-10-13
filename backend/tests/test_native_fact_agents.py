@@ -47,6 +47,33 @@ async def test_native_model_receives_exact_failed_read_outcome_from_its_run(tmp_
 
 
 @pytest.mark.asyncio
+async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as_source_text(tmp_path):
+    service, job, _, reader, _ = await fixture(tmp_path)
+    raw = {'type': 'web_search', 'title': 'Catalog', 'url': 'https://example.org/catalog',
+        'supports': [{'kind': 'search_snippet', 'text': 'A stale statement absent from the actual page.'}]}
+    async def search(query):
+        return SimpleNamespace(grounding_sources=[raw])
+    service.providers.gemini._public_web_search = search
+    received, saved = [], []
+    class Native:
+        async def run(self, **kwargs):
+            received.append(await kwargs['callback']('websearch', {'query': 'Selected building'}))
+            kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')
+            return {'text': '{"facts":[]}', 'receipt': kwargs['receipt']}
+    adapter = SimpleNamespace(service=service,
+        _checkpoint_receipt=lambda binding, receipt: saved.append(copy.deepcopy(receipt)))
+    try:
+        await run_tool_agent(adapter, AgentRoute('codex_native', 'gpt-6-luna', 'native', Native()),
+            {}, {'run_id': 'headless-run'}, binding={'attempt_id': 'own'}, guard=lambda: None)
+        assert received == [{'sources': [{'type': 'unverified_search_lead', 'title': 'Catalog',
+            'url': 'https://example.org/catalog'}], 'evidence_role': 'discovery_only_read_before_support'}]
+        assert saved[-1]['raw_search_discovery'] == [{'query': 'Selected building', 'sources': [raw]}]
+        assert saved[-1]['completed_tool_transcript'][0]['result'] == received[0]
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_native_continuation_receives_own_failed_leads_but_excludes_foreign_generation(tmp_path):
     from street_story.fact_agents import native_agent_context
     from street_story.headless_facts import HeadlessFacts

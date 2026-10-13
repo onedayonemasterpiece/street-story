@@ -237,7 +237,10 @@ async def run(args):
             if recovery_segment and job['id'] != original_receipt['binding']['job_id']:
                 raise ValueError('Original native job changed')
             payload = json.loads(job['payload_json'])
-            goal = payload.get('coverage_goal') or 'Исследуй содержательную историю выбранного здания.'
+            goal = payload.get('coverage_goal') or (
+                'Исследуй полезные сведения о выбранном физическом здании: историю, '
+                'архитектуру, строительство, документированные события и прежних пользователей. '
+                'Сохраняй дату и модальность; метаданные адреса и история соседей не заменяют эти сведения.')
             if recovery_segment:
                 run_id = campaign['attempts'][0]['run_id']
             else:

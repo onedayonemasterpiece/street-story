@@ -81,6 +81,7 @@ class NativeFactResearch:
             'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': TOOLS,
             'source_read_contract': SOURCE_READ_CONTRACT,
             'resource_reporting_contract': 'native-existing-allowance-v1',
+            'search_delivery_contract': 'native-discovery-locations-only-v1',
             'projection_contract': PROJECTION_CONTRACT,
             'transport': TRANSPORT, 'timeout_seconds': self.timeout,
             'max_tool_calls': self.max_tool_calls}, sort_keys=True).encode()).hexdigest()
