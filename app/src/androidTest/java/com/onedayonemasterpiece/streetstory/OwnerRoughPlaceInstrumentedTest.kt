@@ -100,7 +100,7 @@ class OwnerRoughPlaceInstrumentedTest {
                     instrumentation.waitForIdleSync(); device.waitForIdle()
                     EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-group")
                 }
-                fun tapMember(name: String, longitude: Double) {
+                fun tapMember(name: String, longitude: Double, expectedCount: Int) {
                     EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-group")
                     var x = 0; var y = 0
                     scenario.onActivity {
@@ -113,6 +113,18 @@ class OwnerRoughPlaceInstrumentedTest {
                     }
                     assertTrue("inject one intentional member-toggle tap", device.click(x, y))
                     instrumentation.waitForIdleSync(); device.waitForIdle()
+                    // Android idleness does not fence the native map-click callback.
+                    // Observe its product effect after this single tap; never inject a retry.
+                    val selectionDeadline = SystemClock.elapsedRealtime() + 3000
+                    var selectionApplied = false
+                    while (!selectionApplied && SystemClock.elapsedRealtime() < selectionDeadline) {
+                        val status = device.findObject(By.desc("owner-place-group-status"))
+                        val confirm = device.findObject(By.desc("owner-place-confirm"))
+                        selectionApplied = status?.text?.startsWith("Выбрано домов: $expectedCount ·") == true &&
+                            confirm?.isEnabled == (expectedCount >= 2)
+                        if (!selectionApplied) SystemClock.sleep(50)
+                    }
+                    assertTrue("single member toggle must apply count=$expectedCount and its confirmation state", selectionApplied)
                 }
                 fun capture(filename: String) {
                     instrumentation.waitForIdleSync(); device.waitForIdle()
@@ -122,14 +134,14 @@ class OwnerRoughPlaceInstrumentedTest {
                 try {
                     bindMap(); awaitNative(false)
                     requireNotNull(device.findObject(By.desc("owner-place-mode-rough"))).click()
-                    tapMember("A", 20.4996)
+                    tapMember("A", 20.4996, 1)
                     assertFalse(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
-                    tapMember("B", 20.5004)
+                    tapMember("B", 20.5004, 2)
                     assertTrue(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
                     // These are deliberate toggle-off/on interactions, not retries of a failed tap.
-                    tapMember("A", 20.4996)
+                    tapMember("A", 20.4996, 1)
                     assertFalse(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
-                    tapMember("A", 20.4996); awaitNative(true)
+                    tapMember("A", 20.4996, 2); awaitNative(true)
                     assertFalse(requireNotNull(device.findObject(By.desc("owner-place-point"))).isEnabled)
                     requireNotNull(device.findObject(By.desc("owner-place-confirm"))).click()
                     assertNotNull(device.wait(Until.findObject(By.desc("owner-place-city")), 3000))
