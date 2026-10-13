@@ -5649,6 +5649,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
         if parsed.tzinfo is None:
             raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
+        if parsed.astimezone(timezone.utc).microsecond:
+            raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
         if parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc):
             raise ConflictError("publish_time_past", "scheduled_for must be in the future")
 

@@ -746,8 +746,10 @@ class StreetStoryService:
     def _rejected_publication_can_be_reconfirmed(self, db, story) -> bool:
         """Only definite pre-dispatch rejection permits a new intent after review.
 
-        A lost response, accepted operation or generic provider failure is NOT
-        evidence that publication did not happen. Never replay those here.
+        An accepted command or generic failure is not evidence of no delivery.
+        Only a bound completed native preflight receipt with every destination
+        not_attempted can permit a distinct owner-confirmed corrected intent.
+        Never replay the original operation here.
         """
         if story["state"] != "needs_review" or story["error_code"] != "provider_permanent_error":
             return False
@@ -755,11 +757,62 @@ class StreetStoryService:
             "SELECT * FROM jobs WHERE story_id=? AND kind='publish' ORDER BY created_at DESC LIMIT 1",
             (story["id"],),
         ).fetchone()
-        if not job or job["state"] != "failed" or job["last_error"] != "VibePublish request failed: HTTP 422":
+        if not job or job["state"] != "failed":
             return False
         intent_id = json.loads(job["payload_json"] or "{}").get("intent_id")
         intent = db.execute("SELECT * FROM publish_intents WHERE id=? AND story_id=?", (intent_id, story["id"])).fetchone()
-        return bool(intent and not intent["vibepublish_operation_id"])
+        if not intent:
+            return False
+        intent = dict(intent)
+        if not intent['vibepublish_operation_id']:
+            return job['last_error'] == 'VibePublish request failed: HTTP 422'
+        # An accepted VibePublish command is normally not safely repeatable.
+        # This one typed, CLOSED preflight result proves every native delivery
+        # was not attempted. Keep the original operation/key/receipt unchanged;
+        # the owner must confirm a distinct corrected publication intent.
+        try:
+            receipt = json.loads(intent.get('receipt_json') or '{}')
+            request = json.loads(intent['request_json'] or '{}')
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(receipt, dict) or not isinstance(request, dict) or not isinstance(receipt.get('error'), dict):
+            return False
+        if (intent['state'] != 'blocked'
+                or receipt.get('operation_id') != intent['vibepublish_operation_id']
+                or receipt.get('resource_id') != intent['vibepublish_publication_id']
+                or not intent['vibepublish_publication_id']
+                or receipt.get('action') != 'publish' or receipt.get('operation_complete') is not True
+                or receipt.get('state') != 'blocked'
+                or (receipt.get('error') or {}).get('code') != 'native_time_precision'):
+            return False
+        try:
+            prior_time = datetime.fromisoformat(str(request.get('scheduled_for') or '').replace('Z', '+00:00'))
+        except ValueError:
+            return False
+        if prior_time.tzinfo is None or not prior_time.astimezone(timezone.utc).microsecond:
+            return False
+        destinations = request.get('destinations')
+        deliveries = receipt.get('deliveries')
+        if (not isinstance(destinations, list) or not destinations or not all(isinstance(item, str) and item for item in destinations)
+                or len(set(destinations)) != len(destinations) or not isinstance(deliveries, list)
+                or len(deliveries) != len(destinations)):
+            return False
+        seen, attempts = set(), set()
+        for delivery in deliveries:
+            if (not isinstance(delivery, dict) or delivery.get('destination') not in destinations
+                    or delivery['destination'] in seen or delivery.get('provider') != 'telegram'
+                    or delivery.get('state') != 'blocked' or delivery.get('stage') != 'blocked'
+                    or delivery.get('observed') != 'not_attempted'
+                    or delivery.get('missing_checks') != ['native_time_precision']
+                    or 'applied_revision' not in delivery or delivery['applied_revision'] is not None
+                    or not isinstance(delivery.get('attempt_id'), str) or not delivery['attempt_id']
+                    or delivery['attempt_id'] in attempts):
+                return False
+            seen.add(delivery['destination'])
+            attempts.add(delivery['attempt_id'])
+        logging.getLogger(__name__).info('street_story_publication_reconfirmation story_id=%s operation_id=%s basis=closed_native_time_precision_not_attempted',
+                 story['id'], intent['vibepublish_operation_id'])
+        return True
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
@@ -771,6 +824,8 @@ class StreetStoryService:
                 raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
             if scheduled_dt.tzinfo is None:
                 raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
+            if scheduled_dt.astimezone(timezone.utc).microsecond:
+                raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
             now_dt = datetime.now(timezone.utc)
             scheduled_utc = scheduled_dt.astimezone(timezone.utc)
             if scheduled_utc <= now_dt or scheduled_utc > now_dt + timedelta(days=90):
@@ -780,7 +835,7 @@ class StreetStoryService:
             delay = int(body.get("delay_minutes", 60))
             if delay < 1 or delay > 24 * 60:
                 raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
-            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).isoformat().replace("+00:00", "Z")
+            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         if datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=90):
             raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
         with self.store.tx() as db:
