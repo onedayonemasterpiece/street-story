@@ -32,7 +32,15 @@ INSTRUCTIONS = (
     'start an alternative operation over UNKNOWN. No shell, local files, MCP, apps, '
     'publication, image generation or other actions. No count target determines when '
     'research is complete. Return the supplied JSON contract; incomplete claims remain '
-    'candidates. Only actually completed own reads can support a claim.')
+    'candidates. Only actually completed own reads can support a claim. '
+    'A blocked or empty read is a technical outcome, not evidence that building '
+    'history is absent. Use the returned read_attempts to distinguish HTTP, '
+    'transport and unreadable-content failures. Investigate other plausible '
+    'public sources and remaining historical/architectural/use/event gaps when '
+    'resources permit; do not stop merely because one address query or reader '
+    'failed. Prior search leads are unverified discovery, never source proof. '
+    'Use their possible historical names only as search hypotheses; assess '
+    'physical relationship from actual reads. You decide substantive Sol help.')
 
 
 class NativeFactResearch:

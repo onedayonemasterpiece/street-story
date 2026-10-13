@@ -472,6 +472,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
             if route.provider_id == 'codex_native':
                 with adapter.service.store.connection() as db:
+                    attempted = db.execute('SELECT status,error_code,source_version_id FROM research_run_sources '
+                        'WHERE run_id=? AND url=?', (context['run_id'], args['url'].rstrip('/'))).fetchone()
+                    value['read_attempts'] = [{'requested_url': args['url'],
+                        'status': attempted['status'] if attempted else 'rejected',
+                        'error_code': attempted['error_code'] if attempted else 'source_url_not_read',
+                        'source_version_id': attempted['source_version_id'] if attempted else None}]
                     for document in value['documents']:
                         document['chunks'] = [{'chunk_id': row['chunk_id'], 'text': row['chunk_text']}
                             for row in db.execute('SELECT chunk_id,chunk_text FROM source_chunks '

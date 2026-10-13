@@ -166,6 +166,8 @@ def _coverage_gaps(state):
         gaps.append('original_' + state['phase'])
     if state.get('phase') == 'completed' and not state.get('candidate_count', len(state.get('outcomes', []))):
         gaps.append('no_source_backed_candidates')
+        if state.get('source_read_failures'):
+            gaps.append('source_read_unavailable')
     if state.get('rejected_candidate_count'):
         gaps.append('candidate_format_rejections')
     if state.get('unproposed_source_version_ids'):
@@ -193,6 +195,10 @@ def _source_coverage(receipt):
             unproposed.add(source['source_version_id'])
     return {'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
         'unproposed_source_version_ids': sorted(unproposed),
+        'source_read_failures': [attempt for call in receipt.get('native_tool_calls', {}).values()
+            if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
+            for attempt in (call.get('result') or {}).get('read_attempts', [])
+            if attempt.get('status') in {'failed', 'rejected'}],
         'original_send_unresolved': receipt.get('phase') == 'unknown'
             or receipt.get('provider_send_state') == 'possibly_sent'
             or receipt.get('error_code') == 'CancelledError' and receipt.get('last_request_sent') is True}
@@ -373,6 +379,30 @@ def native_agent_context(service, story, identity, goal, run_id):
                 'WHERE a.story_id=? ORDER BY a.assertion_id', (story['id'],))]
         for item in context['known']:
             item.pop('sources_json', None)
+        prior, leads = [], []
+        for record in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
+                "AND role LIKE 'facts_agent_%' ORDER BY created_at", (story['id'],)):
+            receipt = json.loads(record[0])
+            binding = receipt.get('binding') or {}
+            if (binding.get('photo_sha256') != story['photo_sha256']
+                    or binding.get('generation') != story['_identity_generation']
+                    or receipt.get('provider_id') != 'codex_native'):
+                continue
+            for call in receipt.get('native_tool_calls', {}).values():
+                if call.get('phase') != 'completed':
+                    continue
+                value = call.get('result') or {}
+                if (call.get('input') or {}).get('name') == 'websearch':
+                    for source in value.get('sources', []):
+                        leads.append({'title': source.get('title'), 'url': source.get('url'),
+                            'original_attempt_id': binding.get('attempt_id'), 'kind': 'unverified_search_lead'})
+            prior.append(binding.get('attempt_id'))
+        context['prior_search_leads'] = leads
+        context['prior_read_outcomes'] = [dict(row) for row in db.execute(
+            'SELECT s.url,s.status,s.error_code,s.source_version_id,r.run_id FROM research_run_sources s '
+            'JOIN research_runs r ON r.run_id=s.run_id WHERE r.story_id=? AND r.identity_generation=? '
+            "AND r.run_id!=? ORDER BY s.updated_at", (story['id'], story['_identity_generation'], run_id))]
+        context['prior_native_attempt_ids'] = prior
     conflicts, cursor = [], None
     while True:
         page = conflict_journal(service, story['id'], cursor)

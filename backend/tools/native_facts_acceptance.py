@@ -130,17 +130,21 @@ async def run(args):
         raise ValueError('Existing original operation must be reconciled; never replay this campaign')
     if not recovering:
         output.mkdir(mode=0o700)
+    continuation = json.loads((managed(args.continue_from)/'campaign.json').read_text()) if args.continue_from else None
+    if continuation and (recovering or continuation.get('message_id') != args.message):
+        raise ValueError('Continuation must use the original selected message and no competing recovery')
     installer = load_installer()
     for path in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
         installer.require_mode(path, 0o600)
         os.environ.update(installer.parse_dotenv(path))
-    os.environ.update(DATA_DIR=str(output/'data'), STREET_STORY_DEPLOY_SHA=sha,
+    data_dir = managed(args.continue_from)/'data' if continuation else output/'data'
+    os.environ.update(DATA_DIR=str(data_dir), STREET_STORY_DEPLOY_SHA=sha,
         STREET_STORY_FACT_AGENT_ROUTES=json.dumps([{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'}]),
         VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='', STREET_STORY_NATIVE_VISION_RESERVE='0')
     logging.basicConfig(filename=output/'research.log', level=logging.INFO)
     from street_story.config import Settings
     from street_story.runtime import RuntimeStreetStoryService
-    from street_story.fact_agents import configured_routes, native_agent_context, _finish
+    from street_story.fact_agents import configured_routes, native_agent_context, _finish, _source_coverage, _coverage_gaps
     from street_story.fact_agent_providers import run_tool_agent
     from street_story.headless_facts import HeadlessFacts
     from street_story.place_selection import place_map, prepare_place_context, confirm_place
@@ -160,6 +164,17 @@ async def run(args):
         'profile_sha256': route.profile_fingerprint, 'attempts': [], 'publication_dispatches': 0,
         'app_e2e': False, 'reference_facts_or_urls_supplied': False, 'cost': 'unknown'}
     original_receipt = None
+    if continuation:
+        campaign.update(mode='native_fact_only_explicit_continuation', cold_acceptance=False,
+            continuation_origin=str(managed(args.continue_from)), original_source_sha=continuation['source_sha'])
+        with service.store.connection() as db:
+            original_story = dict(service._story_row(db, continuation['story_id']))
+            original_research = json.loads(original_story['research_json'])
+            active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND state IN ('ready','retry','running')",
+                (original_story['id'],)).fetchone()
+            if (active or original_story['photo_sha256'] != item['sha256']
+                    or original_research['visual_identity']['candidate_id'] != continuation['selected_candidate_id']):
+                raise ValueError('Continue only the unchanged selected object after the original operation closes')
     if recovering:
         from street_story.research_adapter import _closed_native_input_readback
         campaign = json.loads((output/'campaign.json').read_text())
@@ -182,10 +197,12 @@ async def run(args):
     save(output/'campaign.json', campaign)
     try:
         token = 'native-fact-only:' + hashlib.sha256(str(output).encode()).hexdigest()
-        if recovering:
-            sid, selected = campaign['story_id'], campaign['selected_candidate_id']
+        if recovering or continuation:
+            existing = continuation or campaign
+            sid, selected = existing['story_id'], existing['selected_candidate_id']
             if service.story(sid)['photo_sha256'] != item['sha256']:
                 raise ValueError('Original selected photo changed')
+            campaign.update(story_id=sid, selected_candidate_id=selected)
         else:
             story = service.create_story(key=token, client_story_id=token, photo_sha256=item['sha256'],
                 photo_mime_type=item['mime'], photo_bytes=data, voice_protocol='voice-chunks-v2',
@@ -204,7 +221,7 @@ async def run(args):
             save(output/'selection.json', confirmed)
         save(output/'campaign.json', campaign)
         for ordinal in range(args.additions+1):
-            if ordinal:
+            if ordinal or continuation:
                 key = token+':more:'+str(ordinal)
                 request = {'coverage_goal': 'Найди ещё полезные сведения о выбранном здании. '
                     'Сохрани известные факты и все источники, исследуй содержательные пробелы, '
@@ -279,8 +296,13 @@ async def run(args):
                 outcomes = []
                 for candidate in result['result']['facts']:
                     outcomes.append(await service.confirm_agent_fact(job, run_id, candidate, agent))
-                pending = any(row['status'] == 'unverified' for row in outcomes)
-                outcome = _finish(adapter, job, run_id, headless, epoch, 'native_fact_only_completed', pending=pending)
+                coverage = _source_coverage(receipt)
+                gaps = _coverage_gaps({'phase': 'completed', 'candidate_count': len(outcomes),
+                    'outcomes': outcomes, **coverage})
+                pending = bool(gaps)
+                reason = 'native_source_read_unavailable' if 'source_read_unavailable' in gaps else (
+                    'native_fact_only_content_gaps' if pending else 'native_fact_only_completed')
+                outcome = _finish(adapter, job, run_id, headless, epoch, reason, pending=pending, content_gaps=gaps)
                 with service.store.tx() as db:
                     finish_attempt(service, db, sid, outcome=outcome['outcome'], reason=outcome['reason'],
                         job=job, purpose='facts', coverage_complete=not pending)
@@ -318,5 +340,7 @@ if __name__ == '__main__':
     parser.add_argument('--recover-assessments-from', type=Path,
         help='Write complete original native assessments in a separate measured segment; no inference or source replay')
     parser.add_argument('--attempt-id')
+    parser.add_argument('--continue-from', type=Path,
+        help='An explicit new linked command in the original selected story, retaining failed reads and discovered leads')
     args = parser.parse_args()
     asyncio.run(recover_assessments(args) if args.recover_assessments_from else run(args))

@@ -14,6 +14,20 @@ from street_story.research_adapter import ProductResearchAdapter
 from test_headless_facts import fixture
 
 
+def test_failed_native_reads_are_resource_gaps_and_not_source_poverty():
+    from street_story.fact_agents import _source_coverage, _coverage_gaps
+    failed = {'requested_url': 'https://example.org/history', 'status': 'failed', 'error_code': 'http_403'}
+    receipt = {'provider_id': 'codex_native', 'phase': 'completed', 'result': {'facts': []},
+        'native_tool_calls': {'original-read': {'phase': 'completed', 'input': {'name': 'webfetch'},
+            'result': {'documents': [], 'read_attempts': [failed]}}}}
+    coverage = _source_coverage(receipt)
+    assert coverage['source_read_failures'] == [failed]
+    gaps = _coverage_gaps({'phase': 'completed', 'candidate_count': 0, **coverage})
+    assert 'source_read_unavailable' in gaps
+    # A usable independent alternative is not invalidated by an earlier HTTP failure.
+    assert 'source_read_unavailable' not in _coverage_gaps({'phase': 'completed', 'candidate_count': 1, **coverage})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['single_clean', 'many_rejected', 'many_unverified', 'empty_first', 'unknown', 'empty_pool'])
 async def test_qualified_work_and_reserves_follow_closed_evidence_gaps(tmp_path, monkeypatch, mode):

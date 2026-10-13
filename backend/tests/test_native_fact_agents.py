@@ -16,6 +16,60 @@ from test_opencode_research import Harness
 from test_shared_devcoveer_research import Backend
 
 
+@pytest.mark.asyncio
+async def test_native_model_receives_exact_failed_read_outcome_from_its_run(tmp_path):
+    from street_story.research_runs import register_discovered_source
+    service, job, _, reader, _ = await fixture(tmp_path)
+    url = 'https://example.org/blocked/'
+    received, saved = [], []
+    async def blocked(urls, context):
+        assert urls == [url] and context['research_run_id'] == 'headless-run'
+        with service.store.tx() as db:
+            register_discovered_source(db, run_id='headless-run', url=url.rstrip('/'), title='Blocked source',
+                status='failed', error_code='http_403', now=service.store.now())
+        return {}
+    service.providers.gemini._fetch_page_documents = blocked
+    class Native:
+        async def run(self, **kwargs):
+            received.append(await kwargs['callback']('webfetch', {'url': url}))
+            kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')
+            return {'text': '{"facts":[]}', 'receipt': kwargs['receipt']}
+    adapter = SimpleNamespace(service=service,
+        _checkpoint_receipt=lambda binding, receipt: saved.append(copy.deepcopy(receipt)))
+    try:
+        await run_tool_agent(adapter, AgentRoute('codex_native', 'gpt-6-luna', 'native', Native()),
+            {}, {'run_id': 'headless-run'}, binding={'attempt_id': 'own'}, guard=lambda: None)
+        assert received == [{'documents': [], 'read_attempts': [{'requested_url': url,
+            'status': 'failed', 'error_code': 'http_403', 'source_version_id': None}]}]
+        assert saved[-1]['completed_tool_transcript'][0]['result'] == received[0]
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_continuation_receives_own_failed_leads_but_excludes_foreign_generation(tmp_path):
+    from street_story.fact_agents import native_agent_context
+    from street_story.headless_facts import HeadlessFacts
+    service, job, _, reader, _ = await fixture(tmp_path)
+    story, research, _ = HeadlessFacts(service)._snapshot(job, 'headless-run')
+    try:
+        with service.store.tx() as db:
+            for attempt, generation, url in [('own', 0, 'https://example.org/own'),
+                    ('foreign', 5, 'https://example.org/foreign')]:
+                receipt = {'provider_id': 'codex_native', 'binding': {'attempt_id': attempt,
+                    'photo_sha256': story['photo_sha256'], 'generation': generation},
+                    'native_tool_calls': {'original-search': {'phase': 'completed',
+                        'input': {'name': 'websearch'}, 'result': {'sources': [{'title': attempt, 'url': url}]}}}}
+                db.execute('INSERT INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) '
+                    'VALUES(?,?,?,?,?,?,?)', (attempt, attempt, story['id'], 'facts_agent_native', json.dumps(receipt), 1, 1))
+        context = native_agent_context(service, story, research['visual_identity'], 'Continue actual source gaps', 'headless-run')
+        assert context['prior_search_leads'] == [{'title': 'own', 'url': 'https://example.org/own',
+            'original_attempt_id': 'own', 'kind': 'unverified_search_lead'}]
+        assert context['prior_native_attempt_ids'] == ['own']
+    finally:
+        await reader.search_http.aclose()
+
+
 def test_native_agent_mask_is_ordered_and_profile_bound_without_changing_legacy(tmp_path):
     legacy = scoped_research_config('configured-model')
     assert 'permission' not in legacy['agent']['plan']
