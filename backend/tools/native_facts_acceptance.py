@@ -131,6 +131,8 @@ async def run(args):
     if not recovering:
         output.mkdir(mode=0o700)
     continuation = json.loads((managed(args.continue_from)/'campaign.json').read_text()) if args.continue_from else None
+    if args.coverage_goal and not continuation:
+        raise ValueError('A focused new question requires the existing selected story continuation')
     if continuation and (recovering or continuation.get('message_id') != args.message):
         raise ValueError('Continuation must use the original selected message and no competing recovery')
     installer = load_installer()
@@ -163,6 +165,8 @@ async def run(args):
         'message_id': args.message, 'photo_sha256': item['sha256'], 'route_id': route.route_id,
         'profile_sha256': route.profile_fingerprint, 'attempts': [], 'publication_dispatches': 0,
         'app_e2e': False, 'reference_facts_or_urls_supplied': False, 'cost': 'unknown'}
+    if args.coverage_goal:
+        campaign['explicit_new_coverage_goal'] = args.coverage_goal
     original_receipt = None
     if continuation:
         campaign.update(mode='native_fact_only_explicit_continuation', cold_acceptance=False,
@@ -226,6 +230,8 @@ async def run(args):
                 request = {'coverage_goal': 'Найди ещё полезные сведения о выбранном здании. '
                     'Сохрани известные факты и все источники, исследуй содержательные пробелы, '
                     'не выдавай перефразирование за новый факт.', 'extraction_scope': key}
+                if args.coverage_goal:
+                    request['coverage_goal'] = args.coverage_goal
                 service._research_request(sid, key, request)
                 service._research_request(sid, key, request)  # Same delivered command joins.
             else:
@@ -345,5 +351,12 @@ if __name__ == '__main__':
     parser.add_argument('--attempt-id')
     parser.add_argument('--continue-from', type=Path,
         help='An explicit new linked command in the original selected story, retaining failed reads and discovered leads')
+    parser.add_argument('--coverage-goal',
+        help='A distinct explicit question about a model-reported gap; requires --continue-from, not initial/recovery replay')
     args = parser.parse_args()
+    if args.coverage_goal:
+        args.coverage_goal = args.coverage_goal.strip()
+        if (not args.continue_from or args.resume_closed_native or args.recover_assessments_from
+                or not 1 <= len(args.coverage_goal) <= 1600):
+            parser.error('A 1–1600 character coverage goal requires an explicit continuation, never recovery')
     asyncio.run(recover_assessments(args) if args.recover_assessments_from else run(args))
