@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "Persistent test-photo inventory; evaluator metadata NEVER used as blind recognition input",
-  "updated_at": "2026-10-12",
+  "updated_at": "2026-10-13",
   "source_baseline": "f59dd73e28f6264a5c3a056eb21ff0c276c23c5c",
   "historical_manifest_sources": [
     "https://github.com/onedayonemasterpiece/street-story/blob/9e7e511d0901a799c14ac6ab82b17dd41efa2d1b/docs/research/20261008-gps-osm/geo_originals/gps-manifest.json",
@@ -2217,22 +2217,19 @@
         }
       },
       "owner_hint": {
-        "status": "not_documented",
-        "reason": "No sourced owner hint found"
+        "status": "owner_confirmed_address",
+        "source": "owner correction in Codex conversation, 2026-10-13",
+        "address": "Калининград, улица Профессора Севастьянова, 3",
+        "original_owner_text": "На 105 дом с адресом Проффесора Севастьянова 3",
+        "camera_point_note": "Owner confirms original EXIF GPS is the shooting point, approximately 50–80 m from the photographed building; this estimate is not GPS accuracy and does not replace EXIF."
       },
       "expected": {
-        "status": "historical_research_label",
-        "object_or_address": "Университетская, 3",
+        "status": "owner_confirmed_address",
+        "object_or_address": "Калининград, Профессора Севастьянова, 3",
         "physical_ids": [],
-        "source": "https://github.com/onedayonemasterpiece/street-story/blob/9e7e511d0901a799c14ac6ab82b17dd41efa2d1b/docs/research/20261008-prussia-text/cases.json",
-        "grade": "N",
-        "assessment": "target_not_found_in_bounded_lookup",
-        "limitations": "Пять адресных результатов не включают нужный дом; отсутствие статьи во всём сайте не доказано.",
-        "observations": "Для цели нет прочитанного текста.",
-        "article_url": null,
-        "research_osm_ref": "way/105154961",
-        "evaluation_status": "frozen_evaluator_truth_unresolved",
-        "reason": "Historical research and evaluator labels have separate scopes; no pipeline verdict used as oracle"
+        "source": "owner correction in Codex conversation, 2026-10-13",
+        "evaluation_status": "owner_address_confirmed_physical_contour_pending",
+        "limitations": "OSM contour binding requires map verification. Historical Университетская, 3 / way/105154961 is superseded, not an evaluator target. Existing finished stories are not rebound."
       },
       "historical_metadata": [
         {
@@ -2254,6 +2251,27 @@
               "FocalLengthIn35mmFilm": 72,
               "DigitalZoomRatio": 3
             }
+          }
+        },
+        {
+          "status": "superseded_wrong_test_target",
+          "source": "owner correction in Codex conversation, 2026-10-13",
+          "data": {
+            "expected_before_correction": {
+              "status": "historical_research_label",
+              "object_or_address": "Университетская, 3",
+              "physical_ids": [],
+              "source": "https://github.com/onedayonemasterpiece/street-story/blob/9e7e511d0901a799c14ac6ab82b17dd41efa2d1b/docs/research/20261008-prussia-text/cases.json",
+              "grade": "N",
+              "assessment": "target_not_found_in_bounded_lookup",
+              "limitations": "Пять адресных результатов не включают нужный дом; отсутствие статьи во всём сайте не доказано.",
+              "observations": "Для цели нет прочитанного текста.",
+              "article_url": null,
+              "research_osm_ref": "way/105154961",
+              "evaluation_status": "frozen_evaluator_truth_unresolved",
+              "reason": "Historical research and evaluator labels have separate scopes; no pipeline verdict used as oracle"
+            },
+            "reason": "Owner identifies photo 105 as Профессора Севастьянова, 3; prior Университетская, 3 runs concern the wrong test target."
           }
         }
       ],
