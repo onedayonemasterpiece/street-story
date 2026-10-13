@@ -77,7 +77,8 @@ async def test_unknown_synchronous_binding_is_not_sent_or_rewritten():
 
 
 @pytest.mark.asyncio
-async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
+@pytest.mark.parametrize('variant', ['valid', 'mixed', 'search_error', 'unsafe_error', 'empty_then_valid'])
+async def test_tool_loop_reads_real_document_mapping_and_preserves_version(variant):
     import json
     from contextlib import asynccontextmanager
     from street_story.fact_agent_providers import run_tool_agent
@@ -86,16 +87,34 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
         'content_sha256': 'digest', 'read_status': 'complete'}
     candidate = {'text': 'Здание построено в 1901 году.', 'subject_scope': 'selected_building',
         'url': source['final_url'], 'quote': 'constructed in 1901', 'source_date': None}
+    raw_result = {'facts': [candidate]}
+    if variant == 'mixed':
+        raw_result['facts'].extend([
+            {**candidate, 'quote': ' '.join(['word'] * 29)},
+            {**candidate, 'subject_scope': 'literal building name'},
+            {**candidate, 'url': 'https://unread.example/article'}])
     messages = [
         {'role': 'assistant', 'function_call': {'name': 'websearch', 'arguments': {'query': 'selected building history'}}},
         {'role': 'assistant', 'function_call': {'name': 'webfetch', 'arguments': {'url': source['final_url']}}},
-        {'role': 'assistant', 'content': json.dumps({'facts': [candidate]})},
-        {'role': 'assistant', 'content': json.dumps({'facts': [candidate]})}]
+        {'role': 'assistant', 'content': json.dumps(raw_result)},
+        {'role': 'assistant', 'content': json.dumps(raw_result)}]
     fetched, finalized, saved = [], [], []
+    if variant == 'empty_then_valid':
+        messages.insert(1, {'role': 'assistant', 'function_call': {'name': 'websearch',
+            'arguments': {'query': 'different selected building query'}}})
+    searches = []
     async def fetch(urls, context):
         fetched.append((urls, context))
         return {source['requested_url']: source}
     async def search(query):
+        searches.append(query)
+        if variant == 'empty_then_valid' and len(searches) == 1:
+            from street_story.errors import RetryableProviderError
+            raise RetryableProviderError('public_web_search_empty')
+        if variant in {'search_error', 'unsafe_error'}:
+            from street_story.errors import RetryableProviderError
+            raise RetryableProviderError('grounded_search_sources_unavailable' if variant == 'search_error'
+                else 'private provider detail must not enter error_code')
         return SimpleNamespace(grounding_sources=[{'url': source['requested_url']}])
     async def finalize(usage, status):
         finalized.append((usage, status))
@@ -105,6 +124,10 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
         assert _workload['estimated_input_tokens'] > 0
         yield SimpleNamespace(finalize=finalize)
     async def completion(_lease, body, receipts, _purpose, _output, before):
+        if variant == 'empty_then_valid' and len(messages) == 4:
+            tool_result = json.loads(body['messages'][-1]['content'])
+            assert tool_result == {'sources': [], 'error_code': 'public_web_search_empty'}
+            assert body['function_call'] == {'name': 'websearch'}
         if len(messages) == 1:
             assert body['function_call'] == 'none'
             assert body['response_format']['strict'] is True
@@ -118,15 +141,34 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
     adapter = SimpleNamespace(service=SimpleNamespace(store=SimpleNamespace(now=lambda: 10),
         providers=SimpleNamespace(gemini=gemini)), _checkpoint_receipt=lambda _binding, receipt: saved.append(dict(receipt)),
         attempt=lambda _story, _role, unit: ({'attempt_id': 'turn'+str(unit['turn'])}, None))
+    if variant in {'search_error', 'unsafe_error'}:
+        from street_story.opencode_research import ResearchUnavailable
+        expected_code = 'grounded_search_sources_unavailable' if variant == 'search_error' else 'RetryableProviderError'
+        with pytest.raises(ResearchUnavailable, match=expected_code) as failure:
+            await run_tool_agent(adapter, AgentRoute('gigachat', 'test', 'https://api.example', giga), {},
+                {'run_id': 'run1'}, binding={'attempt_id': 'one'}, guard=lambda: None)
+        assert failure.value.receipt['error_code'] == expected_code
+        assert saved[-1]['phase'] == 'failed'
+        assert len(finalized) == 1 and not fetched
+        return
     result = await run_tool_agent(adapter, AgentRoute('gigachat', 'test', 'https://api.example', giga), {},
         {'run_id': 'run1'}, binding={'attempt_id': 'one'}, guard=lambda: None)
     assert result['result']['facts'] == [candidate]
     assert result['sources'][0]['source_version_id'] == 'srcv1'
     assert fetched == [([source['requested_url']], {'research_run_id': 'run1'})]
     assert finalized[0][1] == 'completed'
-    assert len(finalized) == 4
-    assert sum(item[0]['input_tokens'] for item in finalized) == 40
+    assert len(finalized) == (5 if variant == 'empty_then_valid' else 4)
+    assert sum(item[0]['input_tokens'] for item in finalized) == len(finalized) * 10
     assert saved[-1]['phase'] == 'completed'
+    assert saved[-1]['raw_result'] == raw_result
+    assert json.loads(saved[-1]['raw_result_text']) == raw_result
+    assert [item['reason'] for item in saved[-1]['rejected_candidates']] == ([
+        'agent_quote_too_long', 'agent_candidate_malformed', 'agent_source_not_read'] if variant == 'mixed' else [])
+    if variant == 'mixed':
+        assert saved[-1]['raw_result']['facts'][1]['quote'].split() == ['word'] * 29
+    if variant == 'empty_then_valid':
+        assert searches == ['selected building history', 'different selected building query']
+        assert [row['name'] for row in saved[-1]['tool_receipts']] == ['websearch', 'websearch', 'webfetch']
 
 
 def test_provider_wire_schema_uses_supported_subset_host_stays_strict():

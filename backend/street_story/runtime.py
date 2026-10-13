@@ -33,6 +33,9 @@ class RuntimeStreetStoryService(AgentEvidenceMixin, MvpLocationStreetStoryServic
                                    (row['id'], fact['fact_id'])).fetchone()
             basis = json.loads(assertion[0] or '{}') if assertion else {}
             operation = basis.get('operation') or {}
+            inherited = operation.get('canonical_admission')
+            if isinstance(inherited, dict):
+                operation = inherited.get('operation') or {}
             if operation.get('contract') == 'agent-source-confirmation-v1':
                 fact['subject_scope'] = operation.get('subject_scope')
                 fact['confirmation'] = {key: operation.get(key) for key in

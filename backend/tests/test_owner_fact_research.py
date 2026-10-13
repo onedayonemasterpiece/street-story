@@ -94,3 +94,78 @@ async def test_empty_first_discovery_continues_with_short_address_query(tmp_path
         assert researcher.identity_contexts[0]['search_anchor']['house_number'] == '22–24'
     finally:
         await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_initial_warm_poi_uses_canonical_basis_without_network_and_followup_still_runs(tmp_path):
+    import hashlib
+    from street_story.fact_ledger import accept_fact_basis, refresh_review_status
+    from street_story.poi_memory import hydrate_story_facts, persist_research_memory, sync_poi_review_from_story
+    from test_fact_ledger import fact, persist
+    service, _, session, _ = make_service(tmp_path)
+    original_id = session.resource_id
+    mark_identity_ready(service, original_id)
+    item = fact('museum', 'Музей открыт в 2005 году.', 'https://source.example/history', 'Museum opened in 2005.')
+    fact_id = persist(service.store, original_id, [item], 'original-run', 'original-batch')[0]
+    with service.store.tx() as db:
+        own = [row[0] for row in db.execute('SELECT evidence_id FROM fact_evidence_spans')]
+        accept_fact_basis(db, original_id, fact_id, own, operation={'confirmation_model': 'controlled'}, now=service.store.now())
+        refresh_review_status(db, original_id, service.store.now())
+        identity = json.loads(service._story_row(db, original_id)['research_json'])['visual_identity']
+        persist_research_memory(db, identity, [{**item, 'fact_id': fact_id}], item['sources'], 'original', service.store.now())
+        assert sync_poi_review_from_story(db, original_id, service.store.now()) == 1
+    photo = b'new-photo-same-poi'
+    sid = service.create_story(key='warm-new', client_story_id='warm-new',
+        photo_sha256=hashlib.sha256(photo).hexdigest(), photo_mime_type='image/jpeg', photo_bytes=photo,
+        voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)['id']
+    mark_identity_ready(service, sid)
+    with service.store.tx() as db:
+        row = service._story_row(db, sid)
+        research = json.loads(row['research_json'])
+        research['poi_reused_fact_count'] = hydrate_story_facts(db, research['visual_identity'], sid)
+        assert research['poi_reused_fact_count'] == 1
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), sid))
+        payload = {'input_revision': 'warm-initial', 'identity_generation': 0,
+            'photo_sha256': row['photo_sha256'], 'mode': 'initial'}
+        jid = service._enqueue_job(db, sid, 'research', 'warm-initial', payload)
+        db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (jid,))
+        job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail('Warm admitted POI initial intake must not use the network')
+    service.providers.osm.lookup = forbidden
+    service.providers.wikipedia.nearby = forbidden
+    service.providers.gemini._fetch_page_documents = forbidden
+    service.providers.research = SimpleNamespace(research_agent_facts=forbidden)
+    await service._run_research(job)
+    with service.store.connection() as db:
+        outcome = json.loads(service._story_row(db, sid)['research_json'])['research_outcome']
+    assert outcome['reason'] == 'validated_poi_memory_reuse'
+    assert outcome['coverage_complete'] is False and outcome['reused_fact_ids'] == [fact_id]
+    assert service.story(sid)['facts'][0]['eligibility'] == 'eligible'
+    with service.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM research_provider_attempts WHERE story_id=?', (sid,)).fetchone()[0] == 0
+    calls = []
+    async def explicit(*args):
+        calls.append(args)
+    service.providers.research.research_agent_facts = explicit
+    job['payload_json'] = json.dumps({**payload, 'mode': 'followup', 'input_revision': 'explicit-followup'})
+    await service._run_research(job)
+    assert len(calls) == 1
+    with service.store.tx() as db:
+        # A technical count cannot turn missing own accepted evidence into reuse.
+        db.execute("UPDATE fact_assertions SET accepted_basis_json=NULL WHERE story_id=?", (sid,))
+    job['payload_json'] = json.dumps({**payload, 'input_revision': 'invalidated-basis'})
+    await service._run_research(job)
+    assert len(calls) == 2
+    with service.store.tx() as db:
+        row = service._story_row(db, sid)
+        research = json.loads(row['research_json'])
+        research['owner_research_waiting_context'] = {'photo_sha256': row['photo_sha256'],
+            'generation': 0, 'candidate_id': 'wiki:77'}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), sid))
+    await service._run_research(job)
+    assert len(calls) == 2
+    with service.store.connection() as db:
+        row = service._story_row(db, sid)
+        assert row['state'] == 'needs_review'
+        assert json.loads(row['research_json'])['research_outcome']['outcome'] == 'awaiting_owner_context'

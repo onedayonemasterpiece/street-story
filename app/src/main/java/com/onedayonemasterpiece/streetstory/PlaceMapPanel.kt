@@ -198,7 +198,7 @@ class PlaceMapPanel(
                     val hit = map.queryRenderedFeatures(map.projection.toScreenLocation(point), "owner-buildings-fill").firstOrNull()
                     if (hit != null) {
                         selectionDirty = true
-                                if (selectionMode == "rough") {
+                        if (selectionMode == "rough") {
                             val id = candidateId(hit)
                             if (selectedGroup.containsKey(id)) selectedGroup.remove(id)
                             else if (selectedGroup.size < 16) selectedGroup[id] = hit

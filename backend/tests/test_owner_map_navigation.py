@@ -288,3 +288,79 @@ async def test_relocated_ref_reply_ignores_original_camera_metadata(tmp_path):
     service._candidate_reference_images = images
     result = await adapter._compare_place_images(session(), {}, page_budget=0, search_budget=0)
     assert result['camera_hints'] == {} and not result['camera_position_verified']
+
+
+@pytest.mark.parametrize('invalid', ['', 'unproved', 'different_source', 'open_ring', 'off_ring', 'shop', 'unlinked'])
+def test_selected_address_comes_only_from_proved_own_closed_way_entrances(invalid):
+    from street_story.place_selection import _candidate, snapshot_member_address
+    points = [{'lat': 54.7106, 'lon': 20.5066}, {'lat': 54.7105, 'lon': 20.5063},
+              {'lat': 54.7107, 'lon': 20.5061}, {'lat': 54.7106, 'lon': 20.5066}]
+    way = _candidate({'type': 'way', 'id': 133035113, 'tags': {'building': 'yes'},
+        'geometry': points, 'building_entrance_node_ids': [1876020727, 1876020730]})
+    nodes = [_candidate({'type': 'node', 'id': nid, 'lat': points[i]['lat'], 'lon': points[i]['lon'],
+        'tags': {'entrance': 'staircase', 'addr:street': 'Житомирская улица', 'addr:housenumber': number}})
+        for i, (nid, number) in enumerate([(1876020727, '22'), (1876020730, '24')])]
+    receipt = way['map_object']['building_entrances']
+    if invalid == 'unproved':
+        receipt['proof'] = 'nearby'
+    elif invalid == 'different_source':
+        receipt['source_url'] = 'https://www.openstreetmap.org/way/999'
+    elif invalid == 'open_ring':
+        way['map_geometry']['rings'][0]['closed'] = False
+    elif invalid == 'off_ring':
+        for node in nodes:
+            node['map_coordinates']['latitude'] = 0
+    elif invalid == 'shop':
+        for node in nodes:
+            node['map_object']['tags']['shop'] = 'yes'
+    elif invalid == 'unlinked':
+        receipt['candidate_ids'] = ['osm:node:999']
+    geometry = __import__('copy').deepcopy(way['map_geometry'])
+    snapshot_member_address({'address_objects': nodes}, way)
+    assert way['candidate_id'] == 'osm:way:133035113' and way['map_geometry'] == geometry
+    assert way['map_object']['tags'] == {'building': 'yes'}
+    if invalid:
+        assert not way['search_anchor'].get('address')
+        assert way['name_provenance'] == 'map.placeholder'
+    else:
+        anchor = way['search_anchor']
+        assert anchor['street'] == 'Житомирская улица'
+        assert anchor['house_numbers'] == ['22', '24'] and anchor['house_number'] == '22, 24'
+        assert anchor['address_provenance'] == 'osm_closed_way_node_membership'
+        assert [e['candidate_id'] for e in anchor['address_entries']] == receipt['candidate_ids']
+        assert way['name'] == 'Житомирская улица 22, 24'
+
+
+@pytest.mark.asyncio
+async def test_nameless_selected_house_waits_for_voice_then_enqueues_once_same_identity(tmp_path):
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = NoCity()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    assert selected['state'] == 'needs_review'
+    assert selected['visual_identity']['status'] == 'owner_confirmed'
+    assert selected['identity_clarification']['reason'] == 'owner_selected_context_missing'
+    with service.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
+    # Even a recovered identity_ready projection must not silently bypass the hold.
+    service.providers.research = SimpleNamespace(facts_available=True)
+    with service.store.tx() as db:
+        db.execute("UPDATE stories SET state='identity_ready' WHERE id=?", (story['id'],))
+    service._schedule_confirmed_facts()
+    with service.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
+    adapter, session = live(service, selected)
+    begin_turn(session, 'Житомирская улица 22', origin='audio')
+    args = {'candidate_id': 'osm:way:2', 'address': 'Житомирская улица 22'}
+    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'describe', 'args': args})
+    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'describe', 'args': args})
+    current = service.story(story['id'])
+    assert current['state'] == 'researching' and current['identity_generation'] == selected['identity_generation']
+    assert current['visual_identity']['candidate_id'] == 'osm:way:2'
+    assert current['visual_identity']['candidate_name'] == 'Житомирская улица 22'
+    assert current['place_selection']['candidate']['map_geometry'] == selected['place_selection']['candidate']['map_geometry']
+    assert not current['identity_clarification']
+    with service.store.connection() as db:
+        jobs = list(db.execute('SELECT kind,payload_json FROM jobs'))
+    assert len(jobs) == 1 and jobs[0]['kind'] == 'research'

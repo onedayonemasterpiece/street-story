@@ -1043,7 +1043,8 @@ class StreetStoryService:
                 generation = int(research.get('identity_generation') or 0)
                 automatic = research.get('automatic_fact_request') or {}
                 from .identity_proof import accepted_identity
-                if (not accepted_identity(identity, photo_sha256=row['photo_sha256'], generation=generation,
+                if (research.get('owner_research_waiting_context')
+                        or not accepted_identity(identity, photo_sha256=row['photo_sha256'], generation=generation,
                         control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)) or research.get('input_revision')
                         or research.get('automatic_research_outcome')
                         or automatic.get('photo_sha256') == row['photo_sha256'] and automatic.get('identity_generation') == generation

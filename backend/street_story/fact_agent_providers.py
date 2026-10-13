@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from jsonschema import Draft202012Validator
 
+from .errors import RetryableProviderError
 from .opencode_research import ResearchUnavailable
 
 CANDIDATE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
@@ -57,6 +58,38 @@ def validate_result(raw):
     return raw
 
 
+def partition_result(raw, *, fetched=None):
+    """Reject individual format/transport failures without losing siblings."""
+    envelope = {**RESULT_SCHEMA, 'properties': {'facts': {'type': 'array', 'maxItems': 24}}}
+    if not Draft202012Validator(envelope).is_valid(raw):
+        raise ValueError('agent_result_malformed')
+    accepted, rejected = [], []
+    validator = Draft202012Validator(CANDIDATE_SCHEMA)
+    for index, item in enumerate(raw['facts']):
+        error = next(validator.iter_errors(item), None)
+        if error is not None:
+            rejected.append({'candidate_index': index, 'reason': 'agent_candidate_malformed',
+                'field': '.'.join(str(part) for part in error.path), 'validator': error.validator})
+        elif len(item['quote'].split()) > 25:
+            rejected.append({'candidate_index': index, 'reason': 'agent_quote_too_long', 'field': 'quote'})
+        elif fetched is not None and item['url'] not in fetched:
+            rejected.append({'candidate_index': index, 'reason': 'agent_source_not_read', 'field': 'url'})
+        else:
+            accepted.append(item)
+    return {'facts': accepted}, rejected
+
+
+def failure_code(exc):
+    code = getattr(exc, 'code', None)
+    if code:
+        return code
+    message = str(exc)
+    if isinstance(exc, RetryableProviderError) and 0 < len(message) <= 200 and all(
+            char.isascii() and (char.isalnum() or char in '_-') for char in message):
+        return message
+    return message[:200] if isinstance(exc, ValueError) else type(exc).__name__
+
+
 @dataclass
 class AgentRoute:
     provider_id: str
@@ -87,14 +120,19 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
     prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(context, ensure_ascii=False)
     if route.provider_id == 'opencode':
         native = await route.client._run('agent_research', prompt, binding, RESULT_SCHEMA)
+        receipt = {**native['receipt'], 'raw_result': native['result']}
         try:
-            raw = validate_result(native['result'])
+            raw, rejected = partition_result(native['result'])
+            receipt['rejected_candidates'] = rejected
+            if rejected and not raw['facts']:
+                raise ValueError('agent_result_no_valid_candidates')
         except (ValueError, TypeError) as exc:
-            receipt = {**native['receipt'], 'phase': 'failed', 'error_code': 'agent_result_malformed'}
+            receipt.update(phase='failed', error_code=failure_code(exc))
             adapter._checkpoint_receipt(binding, receipt)
-            raise ResearchUnavailable('agent_result_malformed', receipt) from exc
-        receipt = {**native['receipt'], 'prompt_sha256': hashlib.sha256(
-            str(native['receipt'].get('frozen_prompt') or prompt).encode()).hexdigest()}
+            raise ResearchUnavailable(receipt['error_code'], receipt) from exc
+        receipt.update(result=raw, prompt_sha256=hashlib.sha256(
+            str(native['receipt'].get('frozen_prompt') or prompt).encode()).hexdigest())
+        adapter._checkpoint_receipt(binding, receipt)
         return {**native, 'result': raw, 'receipt': receipt}
     receipt = {'binding': binding, 'phase': 'created', 'provider_id': route.provider_id,
         'model_id': route.model_id, 'frozen_prompt': prompt, 'frozen_schema': RESULT_SCHEMA,
@@ -103,6 +141,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
     adapter._checkpoint_receipt(binding, receipt)
     sent = False
     fetched = set()
+    search_has_sources = False
     started = time.monotonic()
 
     def checkpoint_send(metadata=None):
@@ -116,14 +155,21 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
         adapter._checkpoint_receipt(binding, receipt)
 
     async def tool(name, args):
+        nonlocal search_has_sources
         guard()
         declaration = next((item for item in TOOLS if item['name'] == name), None)
         if not declaration or not Draft202012Validator(declaration['parameters']).is_valid(args):
             raise ValueError('agent_tool_outside_scope')
         client = adapter.service.providers.gemini
         if name == 'websearch':
-            result = await client._public_web_search(args['query'])
-            value = {'sources': result.grounding_sources}
+            try:
+                result = await client._public_web_search(args['query'])
+                value = {'sources': result.grounding_sources}
+            except RetryableProviderError as exc:
+                if str(exc) not in {'public_web_search_empty', 'public_web_search_no_https_results'}:
+                    raise
+                value = {'sources': [], 'error_code': str(exc)}
+            search_has_sources = bool(value['sources'])
         else:
             docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
             docs = list(docs.values())
@@ -141,9 +187,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
         return value
 
     def final(text):
-        raw = validate_result(json.loads(text))
-        if any(item['url'] not in fetched for item in raw['facts']):
-            raise ValueError('agent_source_not_read')
+        receipt['raw_result_text'] = text
+        receipt['raw_result'] = json.loads(text)
+        raw, rejected = partition_result(receipt['raw_result'], fetched=fetched)
+        receipt['rejected_candidates'] = rejected
+        if rejected and not raw['facts']:
+            raise ValueError('agent_result_no_valid_candidates')
         guard()
         receipt.update(phase='completed', provider_send_state='response_closed', result=raw,
             elapsed_seconds=time.monotonic()-started)
@@ -208,7 +257,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     tool_names = {item['name'] for item in receipt.get('tool_receipts', [])}
                     body = {'model': route.model_id, 'messages': messages, 'stream': False,
                         'max_tokens': 4096, 'functions': wire_tools(),
-                        'function_call': 'none' if final_turn else {'name': 'websearch'} if not tool_names
+                        'function_call': 'none' if final_turn else {'name': 'websearch'} if not tool_names or (not fetched and not search_has_sources)
                             else {'name': 'webfetch'} if not fetched else 'auto'}
                     if final_turn:
                         body['response_format'] = {'type': 'json_schema', 'schema': RESULT_SCHEMA, 'strict': True}
@@ -286,7 +335,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
             sent = False
         receipt.update(phase='unknown' if sent else 'failed',
             provider_send_state='possibly_sent' if sent else 'response_closed' if receipt.get('last_request_sent') or receipt['model_attempts'] else 'not_sent',
-            retry_safe=False, error_code=getattr(exc, 'code', None) or (str(exc)[:200] if isinstance(exc, ValueError) else type(exc).__name__),
+            retry_safe=False, error_code=failure_code(exc),
             elapsed_seconds=time.monotonic()-started)
         adapter._checkpoint_receipt(binding, receipt)
         if isinstance(exc, asyncio.CancelledError):

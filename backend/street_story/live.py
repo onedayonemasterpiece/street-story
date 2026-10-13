@@ -2590,6 +2590,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             anchor.update(owner_context=context, owner_context_provenance='owner_voice')
             if values['address']:
                 anchor['address'] = values['address']
+                if not values['name'] and chosen.get('name_provenance') == 'map.placeholder':
+                    chosen.update(map_label=chosen['name'], name=values['address'], name_provenance='owner_voice')
             if values['name']:
                 anchor['names'] = list(dict.fromkeys([*anchor.get('names', []), values['name']]))
                 if not ((chosen.get('map_object') or {}).get('tags') or {}).get('name'):
@@ -2602,6 +2604,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             research['owner_place_hint'] = {**context, 'photo_sha256': row['photo_sha256'], 'generation': generation}
             db.execute('UPDATE stories SET place_name=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                        (chosen['name'], canonical(research), self.service.store.now(), row['id']))
+            waiting = research.get('owner_research_waiting_context') or {}
+            if waiting.get('photo_sha256') == row['photo_sha256'] and waiting.get('generation') == generation and waiting.get('candidate_id') == cid:
+                from .place_selection import enqueue_owner_research, owner_context_missing
+                if not owner_context_missing(chosen):
+                    research.pop('owner_research_waiting_context', None)
+                    enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
+                    db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (canonical(research), row['id']))
             result = {'story': self.service._story_repr(db, self.service._story_row(db, row['id'])),
                       'instruction': 'Контекст автора сохранён. Выбранный дом остался тем же; это не проверенный факт.'}
             self._store_command(db, row['id'], command_id, 'describe_owner_place', args, result)
