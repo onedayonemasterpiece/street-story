@@ -49,7 +49,13 @@ INSTRUCTIONS = (
     'max_output_tokens budget (start with 32000 for a single document). '
     'If output is truncated or metadata/chunks are missing, '
     'read that same cached source separately before assessing it; never invent a '
-    'hash or rely on an unseen portion. You decide substantive Sol help.')
+    'hash or rely on an unseen portion. Each reply reports research_resources '
+    'from the existing allowance. Use the remaining tools and observation time '
+    'to choose worthwhile independent discovery, detail-link follow-ups or scoped '
+    'Sol help. A few unsuccessful queries do not exhaust that allowance or the '
+    'material. Before ending with unresolved_gap while resources remain, assess '
+    'those options and explain concretely why further own exploration or Sol '
+    'would not help. You decide substantive Sol help; no mandatory delegation.')
 
 
 class NativeFactResearch:
@@ -74,6 +80,7 @@ class NativeFactResearch:
         return hashlib.sha256(json.dumps({'contract': CONTRACT, 'instructions': INSTRUCTIONS,
             'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': TOOLS,
             'source_read_contract': SOURCE_READ_CONTRACT,
+            'resource_reporting_contract': 'native-existing-allowance-v1',
             'projection_contract': PROJECTION_CONTRACT,
             'transport': TRANSPORT, 'timeout_seconds': self.timeout,
             'max_tool_calls': self.max_tool_calls}, sort_keys=True).encode()).hexdigest()
@@ -159,7 +166,16 @@ class NativeFactResearch:
             await save()
             result = await self.owner_callbacks[key]['callback'](frozen['name'], frozen['arguments'])
             guard()
-            call.update(phase='completed', result=result, completed_at=self.service.store.now())
+            result = {**result, 'research_resources': {
+                'contract': 'native-existing-allowance-v1',
+                'as_of_call_id': cid,
+                'public_tool_calls_remaining': max(0, self.max_tool_calls-len(receipt['native_tool_calls'])),
+                'public_tool_call_limit': self.max_tool_calls,
+                'observation_seconds_remaining': max(0, self.timeout-(time.monotonic()-started)),
+                'observation_seconds_limit': self.timeout,
+                'meaning': 'Existing observation/tool bounds; not a fact target, quota grant or new permission.'}}
+            call.update(phase='completed', result=result, completed_at=self.service.store.now(),
+                result_sha256=hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()).hexdigest())
             await save()
             return result
 
