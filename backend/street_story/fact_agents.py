@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from random import SystemRandom
 
 from .errors import RetryableProviderError
 from .fact_agent_providers import AgentRoute, run_tool_agent
@@ -70,6 +71,8 @@ def configured_routes(adapter, *, include_unqualified=False):
 
 def route_plan(routes):
     """First two independent services, then at most two unused route fallbacks."""
+    routes = list(routes)
+    SystemRandom().shuffle(routes)
     primary, tail, seen = [], [], set()
     for route in routes:
         if route.provider_id not in seen and len(primary) < 2:
@@ -78,6 +81,55 @@ def route_plan(routes):
         else:
             tail.append(route)
     return primary + tail[:max(0, 4-len(primary))] if len(primary) == 2 else []
+
+
+def _healthy_routes(adapter, routes):
+    from .research_adapter import LOCAL_IMAGE_FAILURES
+    from .service import canonical
+    store = adapter.service.store
+    healthy = []
+    for route in routes:
+        route_key = 'research-route-health:' + hashlib.sha256(canonical([
+            route.endpoint, route.model_id, route.directory, route.profile_fingerprint]).encode()).hexdigest()
+        quota_key = 'research-quota-health:' + route.provider_id + ':' + route.model_id
+        blocked = False
+        for key in (route_key, quota_key):
+            health = store.cache_get(key) or {}
+            if (key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET'
+                    or health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None):
+                continue
+            if health.get('retry_at', 0) > store.now():
+                blocked = True
+        if not blocked:
+            healthy.append(route)
+    return healthy
+
+
+def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_id=None, state=None):
+    """Freeze discovery inputs once; merge only route progress under owner fences."""
+    from .service import ConflictError, canonical
+    store = adapter.service.store
+    stage = 'fact_agent_plan:' + run_id
+    with store.tx() as db:
+        if headless._snapshot(job, run_id, epoch) is None:
+            raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
+        if initial is not None:
+            db.execute('INSERT OR IGNORE INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)',
+                (job['id'], stage, canonical(initial), store.now()))
+        row = db.execute('SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?',
+            (job['id'], stage)).fetchone()
+        if row is None:
+            raise ConflictError('agent_research_plan_missing', 'The original agent plan is unavailable.')
+        saved = json.loads(row[0])
+        if route_id is not None:
+            if route_id not in saved['route_ids']:
+                raise ConflictError('agent_research_plan_changed', 'The route is outside the original agent plan.')
+            routes = saved.setdefault('routes', {})
+            if routes.get(route_id, {}).get('phase') not in {'completed', 'failed'}:
+                routes[route_id] = state
+                db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
+                    (canonical(saved), job['id'], stage))
+        return saved
 
 
 def agent_context(identity, goal, run_id, now):
@@ -105,14 +157,14 @@ async def run_fact_agents(adapter, job, run_id, goal):
     available = configured_routes(adapter)
     routes_by_id = {route.route_id: route for route in available}
     if saved is None:
-        plan = route_plan(available)
+        plan = route_plan(_healthy_routes(adapter, available))
         if not plan:
             _finish(adapter, job, run_id, headless, epoch, 'research_routes_unavailable', pending=True)
             return {'outcome': 'resource_blocked', 'reason': 'research_routes_unavailable'}
         saved = {'pipeline': QUALIFICATION_KEY, 'route_ids': [r.route_id for r in plan],
             'context': agent_context(research['visual_identity'], goal, run_id, adapter.service.store.now()),
             'routes': {}}
-        adapter.service.store.checkpoint_put(job['id'], stage, saved)
+        saved = _persist_plan(adapter, job, run_id, headless, epoch, initial=saved)
     context = saved['context']
 
     def guard():
@@ -168,10 +220,10 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 receipt = json.loads(row[0]) if row else {}
                 state = {'phase': 'unknown' if receipt.get('phase') not in {'failed', 'completed', 'created'} else 'failed',
                     'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id')}
-            saved['routes'][route_id] = state
-            adapter.service.store.checkpoint_put(job['id'], stage, saved)
-            LOG.info('street_story_fact_agent run_id=%s route_id=%s phase=%s candidates=%s',
-                run_id, route_id, state['phase'], state.get('candidate_count', 0))
+        persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state)
+        state = saved['routes'][route_id] = persisted['routes'][route_id]
+        LOG.info('street_story_fact_agent run_id=%s route_id=%s phase=%s candidates=%s',
+            run_id, route_id, state['phase'], state.get('candidate_count', 0))
         return state
 
     ids = saved['route_ids']

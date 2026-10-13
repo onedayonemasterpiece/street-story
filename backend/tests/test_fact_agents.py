@@ -13,7 +13,9 @@ def route(provider, model):
     return AgentRoute(provider, model, 'https://example.org', object())
 
 
-def test_plan_needs_independent_services_and_does_not_require_named_models():
+def test_plan_needs_independent_services_and_does_not_require_named_models(monkeypatch):
+    monkeypatch.setattr('street_story.fact_agents.SystemRandom',
+        lambda: SimpleNamespace(shuffle=lambda _rows: None))
     assert route_plan([route('opencode', 'a'), route('opencode', 'b')]) == []
     rows = [route('opencode', 'new-model'), route('opencode', 'another'),
         route('google', 'custom-google'), route('gigachat', 'custom-giga'), route('google', 'last')]
