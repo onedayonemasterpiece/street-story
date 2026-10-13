@@ -263,23 +263,22 @@ def enrich_evidence(service, case, visible):
     case['rest_eligible_proved_facts'] = usable
     case['rest_eligible_proved_count'] = len(usable)
     case['own_read_source_count'] = len({span['source_url'] for fact in usable for span in fact['read_spans']})
-    from street_story.agent_evidence import CONTRACT
-    from street_story.fact_ledger import accepted_basis_valid
+    from street_story.runtime import confirmed_fact_operation
     with service.store.connection() as db:
         def model_confirmed(fact, span):
             if span['support_kind'] != 'model_confirmed_source_chunk':
                 return False
             assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
                 (case['story_id'], fact['assertion_id'])).fetchone()
-            if not assertion or not accepted_basis_valid(db, case['story_id'], assertion):
+            operation = confirmed_fact_operation(db, case['story_id'], assertion)
+            if not operation:
                 return False
             basis = json.loads(assertion['accepted_basis_json'] or '{}')
-            operation = basis.get('operation') or {}
             metadata = facts[fact['assertion_id']].get('confirmation') or {}
             version = db.execute('SELECT * FROM source_versions WHERE source_version_id=?', (span['source_version_id'],)).fetchone()
             chunk = db.execute('SELECT * FROM source_chunks WHERE source_version_id=? AND chunk_id=?',
                 (span['source_version_id'], span['chunk_id'])).fetchone()
-            return bool(operation.get('contract') == CONTRACT and operation.get('confirmation_attempt_id')
+            return bool(operation.get('confirmation_attempt_id')
                 and operation.get('confirmation_model') and operation.get('confirmed_fragment') and operation.get('reason')
                 and (operation.get('agent') or {}).get('route_id')
                 and metadata.get('confirmation_attempt_id') == operation['confirmation_attempt_id']
