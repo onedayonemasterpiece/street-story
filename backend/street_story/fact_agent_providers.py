@@ -40,6 +40,21 @@ def wire_tools():
         'required': item['parameters']['required']}} for item in TOOLS]
 
 
+def _giga_failure_metadata(exc, now):
+    """Typed SDK diagnostics only; no exception body, credentials or prose."""
+    from .gigachat_research import GigaChatProviderError
+    if not isinstance(exc, GigaChatProviderError):
+        return {}
+    metadata = {}
+    if isinstance(exc.category, str) and exc.category.replace('_', '').isalnum() and len(exc.category) <= 100:
+        metadata.update(provider_category=exc.category, error_code='gigachat_' + exc.category)
+    if type(exc.status) is int and 100 <= exc.status <= 599:
+        metadata['provider_status'] = exc.status
+    if isinstance(exc.retry_at, (int, float)) and exc.retry_at > now:
+        metadata['provider_retry_after'] = exc.retry_at - now
+    return metadata
+
+
 def _google_output_schema(schema):
     """Project the host contract onto Google's documented JSON Schema subset."""
     def project(value):
@@ -602,11 +617,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                             child_receipt.update(phase='completed', provider_send_state='response_closed',
                                 result={'message': message}, model_attempts=turn_receipts)
                             adapter._checkpoint_receipt(child, child_receipt)
-                        except BaseException:
+                        except BaseException as exc:
                             closed = bool(turn_receipts) and turn_receipts[-1].get('http_status') is not None
                             child_receipt.update(phase='failed' if closed or not sent else 'unknown',
                                 provider_send_state='response_closed' if closed else 'possibly_sent' if sent else 'not_sent',
                                 model_attempts=turn_receipts, retry_safe=False)
+                            child_receipt.update(_giga_failure_metadata(exc, adapter.service.store.now()))
                             adapter._checkpoint_receipt(child, child_receipt)
                             raise
                         finally:
@@ -651,6 +667,8 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 or receipt.get('last_request_sent') or receipt['model_attempts'] else 'not_sent',
             retry_safe=False, error_code=failure_code(exc),
             elapsed_seconds=time.monotonic()-started)
+        if route.provider_id == 'gigachat':
+            receipt.update(_giga_failure_metadata(exc, adapter.service.store.now()))
         adapter._checkpoint_receipt(binding, receipt)
         if isinstance(exc, asyncio.CancelledError):
             raise

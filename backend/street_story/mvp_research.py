@@ -140,6 +140,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         req_digest = digest({"story_id": story_id, **body})
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
+            current_research = json.loads(story['research_json'] or '{}')
+            if (body.get('expected_identity_generation') is not None and body['expected_identity_generation']
+                    != int(current_research.get('identity_generation') or 0)):
+                raise ConflictError('fact_selection_stale', 'Объект изменился; обновите историю.')
+            if (body.get('expected_research_control_revision') is not None
+                    and body['expected_research_control_revision'] != int(
+                        ((current_research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)):
+                raise ConflictError('research_control_stale', 'Управление исследованием изменилось; обновите историю.')
             if self._idem(db, key, "research", req_digest, "story", story_id):
                 return self._story_repr(db, self._story_row(db, story_id))
             research = json.loads(story["research_json"] or "{}")
@@ -156,6 +164,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "research_voice_required", "At least one completed voice message is required"
                 )
             ordered_ids = [row["session_id"] for row in sessions]
+            if self._resume_unsent_retained_research(db, story, research, body, ordered_ids):
+                return self._story_repr(db, self._story_row(db, story_id))
             request_revision = int(research.get("fact_request_revision") or 0) + 1
             request_goal = str(body.get("coverage_goal") or body.get("goal") or "").strip()[:1600]
             request_scope = str(body.get("extraction_scope") or "").strip()[:1600] or None
@@ -231,6 +241,87 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             ensure_budget(self, story_id, db=db, explicit=True)
             self._enqueue_job(db, story_id, "research", f"research-explicit:{input_revision}", request_payload)
             return self._story_repr(db, self._story_row(db, story_id))
+
+    def _resume_unsent_retained_research(self, db, story, research, body, voice_ids):
+        """An explicit same-scope request continues admission on its saved job."""
+        from .fact_agents import retained_plan_scope_matches, retained_retry_waits
+        from .research_budget import archive_attempt
+        from .research_control import research_stopped
+        generation = int(research.get('identity_generation') or 0)
+        epoch = int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        identity = research.get('visual_identity') or {}
+        stopped = (research_stopped(research, 'facts', photo_sha256=story['photo_sha256'], identity_generation=generation)
+            or research.get('research_cancelled') or research.get('fact_research_cancelled'))
+        job = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='research' "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story['id'],)).fetchone()
+        if not job or job['state'] not in ({'done', 'ready', 'retry', 'running', 'cancelled'} if stopped
+                else {'done', 'ready', 'retry', 'running'}):
+            return False
+        job = dict(job)
+        payload = json.loads(job['payload_json'])
+        if (payload.get('photo_sha256') != story['photo_sha256']
+                or payload.get('identity_generation') != generation
+                or list(payload.get('voice_session_ids') or []) != voice_ids):
+            return False
+        run_id = payload.get('resume_run_id') or 'research_' + hashlib.sha256(
+            f"{job['id']}:{payload.get('input_revision') or ''}".encode()).hexdigest()[:24]
+        run = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+            (run_id, story['id'])).fetchone()
+        checkpoint = db.execute('SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?',
+            (job['id'], 'fact_agent_plan:'+run_id)).fetchone()
+        if not run or not checkpoint:
+            return False
+        plan = json.loads(checkpoint[0])
+        if not any(state.get('retained') for state in plan.get('routes', {}).values()):
+            return False
+        selected = (plan.get('context') or {}).get('selected_object') or {}
+        requested_goal = str(body.get('coverage_goal') or body.get('goal') or '').strip()[:1600]
+        requested_scope = str(body.get('extraction_scope') or '').strip()[:1600] or None
+        if (run['poi_key'] != identity.get('candidate_id') or selected.get('candidate_id') != identity.get('candidate_id')
+                or int(run['identity_generation']) != generation
+                or body.get('candidate_id') and body['candidate_id'] != identity.get('candidate_id')
+                or requested_goal and requested_goal not in {str(payload.get('coverage_goal') or ''), run['goal']}
+                or requested_scope and requested_scope != run['extraction_scope']):
+            return False
+        if research.get('input_revision') is not None and research['input_revision'] != payload.get('input_revision'):
+            raise ConflictError('research_input_changed', 'Исходный запрос изменился; обновите историю.')
+        if stopped:
+            return True
+        if run['state'] in {'failed', 'cancelled'}:
+            return False
+        if not retained_plan_scope_matches(db, job, plan, photo_sha256=story['photo_sha256'],
+                generation=generation, control_revision=epoch):
+            raise ConflictError('agent_research_original_binding_invalid', 'Сохранённый запрос относится к другому состоянию объекта.')
+        if job['state'] in {'ready', 'retry', 'running'}:
+            # A second owner key joins the already accepted continuation,
+            # including a live inference; it never queues a cold follow-up.
+            return True
+        if run['state'] != 'partial' or db.execute("SELECT 1 FROM jobs WHERE story_id=? "
+                "AND kind IN ('research','refinement') AND state IN ('ready','retry','running')", (story['id'],)).fetchone():
+            return False
+        waits = retained_retry_waits(db, job, plan, photo_sha256=story['photo_sha256'],
+            generation=generation, control_revision=epoch)
+        if not waits:
+            # Same frozen task has no safe admission retry: ACK its existing
+            # result instead of disguising a resend as a new cold wave.
+            return True
+        now = self.store.now()
+        retry_at = max(now, *(row['retry_at'] for row in waits))
+        archive_attempt(research, now)
+        research.pop('automatic_research_outcome', None)
+        research['input_revision'] = payload['input_revision']
+        research['retained_admission_continuation'] = {'job_id': job['id'], 'run_id': run_id,
+            'control_revision': epoch, 'generation': generation, 'photo_sha256': story['photo_sha256']}
+        research['research_outcome'] = {**(research.get('research_outcome') or {}),
+            'reason': 'research_agent_retained_waiting', 'coverage_complete': False,
+            'retry_at': retry_at, 'retained_waits': waits}
+        db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? "
+            "WHERE id=? AND state='done'", (retry_at, 'research_agent_retained_waiting', now, job['id']))
+        db.execute("UPDATE stories SET research_json=?,state='researching',revision=revision+1,updated_at=? WHERE id=?",
+            (canonical(research), now, story['id']))
+        logging.getLogger(__name__).info('street_story_retained_research_resumed story_id=%s job_id=%s run_id=%s retry_at=%s',
+            story['id'], job['id'], run_id, retry_at)
+        return True
 
     def _schedule_joined_fact_request(self, db, story_id: str) -> bool:
         """Consume one durable joined request after an attempt becomes terminal.
@@ -1086,6 +1177,17 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 story['id'], run_id, len(reused))
             return value
 
+    def _persist_agent_input_revision(self, job, run_id, input_revision, prior):
+        from .headless_facts import HeadlessFacts
+        epoch = int(((prior.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        with self.store.tx() as db:
+            snapshot = HeadlessFacts(self)._snapshot(job, run_id, epoch)
+            if snapshot is None:
+                raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
+            story, research, _ = snapshot
+            research['input_revision'] = input_revision
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+
     async def _run_research(self, job: dict[str, Any]) -> None:
         story_id = job["story_id"]
         payload = json.loads(job["payload_json"] or "{}")
@@ -1178,6 +1280,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 raise RetryableProviderError('research_original_operation_pending', retry_at=self.store.now()+30)
             researcher = getattr(self.providers, 'research', None)
             if self.store.checkpoint_get(job['id'], 'fact_agent_plan:'+resume_run_id):
+                self._persist_agent_input_revision(job, resume_run_id, input_revision, prior)
                 return await researcher.research_agent_facts(job, resume_run_id, run['goal'])
             from .headless_facts import HeadlessFacts
             return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
@@ -1349,6 +1452,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 if reused is not None:
                     return reused
             if callable(getattr(researcher, 'research_agent_facts', None)):
+                self._persist_agent_input_revision(job, run_id, input_revision, prior)
                 return await researcher.research_agent_facts(job, run_id, request_goal or 'source-backed research')
 
         with self.store.connection() as db:

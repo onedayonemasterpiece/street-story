@@ -16,6 +16,64 @@ LOG = logging.getLogger(__name__)
 QUALIFICATION_KEY = 'research-agent-verification-v1'
 
 
+def retained_plan_scope_matches(db, job, plan, *, photo_sha256, generation, control_revision):
+    """The saved original inputs and retained bindings belong to this owner epoch."""
+    expected = {'story_id': job['story_id'], 'job_id': job['id'], 'photo_sha256': photo_sha256,
+        'generation': generation, 'control_revision': control_revision}
+    found = False
+    for route_id, state in plan.get('routes', {}).items():
+        retained = state.get('retained') or {}
+        if not retained.get('attempt_id'):
+            continue
+        found = True
+        unit = {'run_id': plan.get('context', {}).get('run_id'), 'context': plan.get('context'), 'route_id': route_id}
+        digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        for attempt_id, binding_expected in ((state.get('attempt_id'),
+                {**expected, 'fact_input_sha256': digest, 'fact_unit_id': 'agent_'+digest[:24]}),
+                (retained['attempt_id'], expected)):
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
+            if not row or any((json.loads(row[0]).get('binding') or {}).get(key) != value
+                    for key, value in binding_expected.items()):
+                return False
+    return found
+
+
+def retained_retry_waits(db, job, plan, *, photo_sha256, generation, control_revision):
+    """Read authoritative unsent retained waits without authorizing any send."""
+    from .research_adapter import retained_not_sent_retry_at
+    waits = []
+    for original_route_id, state in plan.get('routes', {}).items():
+        retained = state.get('retained') or {}
+        row = db.execute('SELECT role,receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+            (retained.get('attempt_id'),)).fetchone()
+        if not row or not row['role'].startswith('facts_agent_retained_'):
+            continue
+        receipt = json.loads(row['receipt_json'])
+        binding = receipt.get('binding') or {}
+        original_row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+            (state.get('attempt_id'),)).fetchone()
+        original = json.loads(original_row[0]) if original_row else {}
+        original_binding = original.get('binding') or {}
+        original_unit = {'run_id': plan.get('context', {}).get('run_id'),
+            'context': plan.get('context'), 'route_id': original_route_id}
+        original_digest = hashlib.sha256(json.dumps(original_unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if (any(binding.get(key) != value for key, value in {
+                'story_id': job['story_id'], 'job_id': job['id'], 'photo_sha256': photo_sha256,
+                'generation': generation, 'control_revision': control_revision}.items())
+                or any(original_binding.get(key) != value for key, value in {
+                    'story_id': job['story_id'], 'job_id': job['id'], 'photo_sha256': photo_sha256,
+                    'generation': generation, 'control_revision': control_revision,
+                    'fact_input_sha256': original_digest, 'fact_unit_id': 'agent_'+original_digest[:24]}.items())
+                or receipt.get('source_cohort_sha256') != retained.get('source_cohort_sha256')
+                or receipt.get('original_attempt_id') != state.get('attempt_id')):
+            continue
+        deadline = retained_not_sent_retry_at(db, receipt)
+        if deadline is not None:
+            waits.append({'attempt_id': binding['attempt_id'], 'retry_at': deadline,
+                'code': receipt['route_failure']['code'], 'send_state': 'not_sent'})
+    return waits
+
+
 def configured_routes(adapter, *, include_unqualified=False):
     settings = adapter.service.settings
     config = list(settings.fact_agent_routes)
@@ -331,7 +389,28 @@ async def run_fact_agents(adapter, job, run_id, goal):
         """Extract the same owned cohort once before asking another discovery route."""
         from .fact_agent_providers import retained_source_cohort, run_retained_source_agent
         continuation = state.get('retained') or {}
-        if (continuation.get('phase') in {'failed', 'unknown'} or continuation.get('phase') == 'completed'
+        with adapter.service.store.connection() as db:
+            waits = retained_retry_waits(db, job, {'context': context, 'routes': {route_id: state}},
+                photo_sha256=story['photo_sha256'], generation=story['_identity_generation'], control_revision=epoch)
+            exhausted = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                (continuation.get('attempt_id'),)).fetchone()
+            if exhausted:
+                from .research_adapter import MAX_RETAINED_ADMISSION_ATTEMPTS, retained_admission_count, retained_not_sent_retry_at
+                exhausted = json.loads(exhausted[0])
+                if (retained_not_sent_retry_at(db, exhausted, enforce_limit=False) is not None
+                        and retained_admission_count(db, exhausted) >= MAX_RETAINED_ADMISSION_ATTEMPTS):
+                    state = {**state, 'retained': {**continuation, 'phase': 'failed',
+                        'reason': 'research_agent_retained_admission_exhausted',
+                        'admission_attempts': MAX_RETAINED_ADMISSION_ATTEMPTS}}
+                    persisted = _persist_plan(adapter, job, run_id, headless, epoch,
+                        route_id=route_id, state=state, recovery=True)
+                    saved['routes'][route_id] = persisted['routes'][route_id]
+                    return saved['routes'][route_id]
+        unsent = next(iter(waits), None)
+        if unsent and unsent['retry_at'] > adapter.service.store.now():
+            return state
+        if (continuation.get('phase') == 'failed' and not unsent or continuation.get('phase') == 'unknown'
+                or continuation.get('phase') == 'completed'
                 and not any(row.get('status') == 'unverified' for row in continuation.get('outcomes', []))):
             return state
         if (state.get('phase') not in {'failed', 'unknown'}
@@ -399,6 +478,15 @@ async def run_fact_agents(adapter, job, run_id, goal):
             continuation = {'phase': 'failed' if receipt.get('phase') in {'created', 'failed', 'completed'} else 'unknown',
                 'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id'),
                 **_source_coverage(receipt)}
+            with adapter.service.store.connection() as db:
+                from .research_adapter import MAX_RETAINED_ADMISSION_ATTEMPTS, retained_admission_count, retained_not_sent_retry_at
+                retry_at = retained_not_sent_retry_at(db, receipt)
+                if (retained_not_sent_retry_at(db, receipt, enforce_limit=False) is not None
+                        and retained_admission_count(db, receipt) >= MAX_RETAINED_ADMISSION_ATTEMPTS):
+                    continuation.update(reason='research_agent_retained_admission_exhausted',
+                        admission_attempts=MAX_RETAINED_ADMISSION_ATTEMPTS)
+            if retry_at is not None:
+                continuation.update(retry_at=retry_at, code=receipt['route_failure']['code'], send_state='not_sent')
         state = {**state, 'retained': {**continuation, 'extraction_route_id': route.route_id,
             'source_cohort_sha256': cohort['source_cohort_sha256']}}
         persisted = _persist_plan(adapter, job, run_id, headless, epoch,
@@ -505,11 +593,24 @@ async def run_fact_agents(adapter, job, run_id, goal):
         for outcome in result.get('outcomes', [])) for result in assessments)
     failed = any(result.get('phase') == 'failed' for result in outcomes)
     gaps = sorted({gap for result in outcomes for gap in _coverage_gaps(result)})
+    exhausted = any((row.get('retained') or {}).get('reason') == 'research_agent_retained_admission_exhausted'
+        for row in outcomes)
+    with adapter.service.store.connection() as db:
+        waits = retained_retry_waits(db, job, saved, photo_sha256=story['photo_sha256'],
+            generation=story['_identity_generation'], control_revision=epoch)
+    future_waits = [row for row in waits if row['retry_at'] > adapter.service.store.now()]
     outcome = _finish(adapter, job, run_id, headless, epoch,
+        'research_agent_retained_admission_exhausted' if exhausted else
+        'research_agent_retained_waiting' if future_waits else
         'research_agent_original_pending' if pending else 'research_agent_route_failed' if failed
             else 'research_agent_content_gaps' if gaps else 'research_agent_completed',
         pending=pending or failed or bool(gaps), content_gaps=gaps,
-        provider_availability=saved.get('provider_availability'))
+        provider_availability=saved.get('provider_availability'), retained_waits=waits)
+    if future_waits:
+        # The existing worker keeps the same job/run at the last outstanding
+        # refusal deadline; provider admission remains mandatory after waking.
+        raise RetryableProviderError('research_agent_retained_waiting',
+            retry_at=max(adapter.service.store.now()+1, *(row['retry_at'] for row in waits)))
     if pending:
         with adapter.service.store.connection() as db:
             addressed = db.execute("SELECT 1 FROM research_provider_attempts WHERE story_id=? "
@@ -522,7 +623,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
     return outcome
 
 
-def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_gaps=None, provider_availability=None):
+def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_gaps=None,
+            provider_availability=None, retained_waits=None):
     from .service import canonical
     with adapter.service.store.tx() as db:
         snapshot = headless._snapshot(job, run_id, epoch)
@@ -540,6 +642,8 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
             value['content_gaps'] = content_gaps
         if provider_availability:
             value['provider_availability'] = provider_availability
+        if retained_waits:
+            value.update(retained_waits=retained_waits, retry_at=max(row['retry_at'] for row in retained_waits))
         research['research_outcome'] = value
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,

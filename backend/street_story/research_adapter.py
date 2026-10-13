@@ -25,6 +25,59 @@ LOG = logging.getLogger(__name__)
 
 # A local SOURCE/REF acquisition failure describes this unit, not model health.
 LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
+MAX_RETAINED_ADMISSION_ATTEMPTS = 3
+
+
+def retained_admission_count(db, receipt):
+    """Count the immutable refusal chain; malformed links fail closed."""
+    binding = receipt.get('binding') or {}
+    seen = {binding.get('attempt_id')}
+    prior = binding.get('prior_not_sent_attempt_id')
+    while prior:
+        if prior in seen:
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        row = db.execute('SELECT logical_id,receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+            (prior,)).fetchone()
+        if not row or row['logical_id'] != binding.get('request_id'):
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        previous = json.loads(row['receipt_json'])
+        if (previous.get('provider_send_state') != 'not_sent' or previous.get('last_request_sent')
+                or previous.get('model_attempts') or previous.get('source_cohort_sha256') != receipt.get('source_cohort_sha256')):
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        seen.add(prior)
+        prior = (previous.get('binding') or {}).get('prior_not_sent_attempt_id')
+    return len(seen)
+
+
+def retained_not_sent_retry_at(db, receipt, *, enforce_limit=True):
+    """A frozen retained unit may re-enter admission only if inference never began."""
+    failure = receipt.get('route_failure') or {}
+    packet = receipt.get('retained_source_packet') or {}
+    deadline = failure.get('retry_at')
+    if (receipt.get('contract') != 'research-agent-owned-source-extraction-v1'
+            or receipt.get('phase') not in {'created', 'failed'}
+            or receipt.get('provider_send_state') != 'not_sent'
+            or receipt.get('last_request_sent') or receipt.get('model_attempts')
+            or failure.get('requires_binding_change') or not failure.get('code')
+            or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
+            or not math.isfinite(deadline)
+            or not re.fullmatch(r'[a-f0-9]{64}', str(receipt.get('source_cohort_sha256') or ''))
+            or packet.get('source_cohort_sha256') != receipt['source_cohort_sha256']):
+        return None
+    attempt_id = (receipt.get('binding') or {}).get('attempt_id')
+    if not attempt_id:
+        return None
+    if enforce_limit and retained_admission_count(db, receipt) >= MAX_RETAINED_ADMISSION_ATTEMPTS:
+        return None
+    # OAuth and admission may create a turn journal before an inference
+    # callback. A possibly sent child defeats the parent's NOT_SENT assertion.
+    for row in db.execute("SELECT receipt_json FROM research_provider_attempts "
+            "WHERE json_extract(receipt_json,'$.parent_attempt_id')=?", (attempt_id,)):
+        child = json.loads(row[0])
+        if (child.get('provider_send_state') != 'not_sent' or child.get('last_request_sent')
+                or child.get('model_attempts') or child.get('phase') not in {'created', 'failed'}):
+            return None
+    return deadline
 
 
 def identity_text_discovery_schema(joint_schema):
@@ -448,6 +501,16 @@ class ProductResearchAdapter:
         with self.service.store.tx() as db:
             rows = list(db.execute('SELECT * FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC,rowid DESC', (logical,)))
             old = json.loads(rows[0]['receipt_json']) if rows else {}
+            retained_retry = (retained_not_sent_retry_at(db, old)
+                if role.startswith('facts_agent_retained_') else None)
+            if retained_retry is not None and any((old.get('binding') or {}).get(key) != value
+                    for key, value in {'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                        'generation': story.get('_identity_generation', 0),
+                        'job_id': story.get('_research_job_id'),
+                        'control_revision': story.get('_fact_research_control_revision', 0)}.items()):
+                retained_retry = None
+            if retained_retry is not None and retained_retry > self.service.store.now():
+                raise RetryableProviderError('research_agent_retained_waiting', retry_at=retained_retry)
             if (role in {'vision_google_group', 'vision_google_pair'} and old.get('phase') == 'failed'
                     and old.get('fallback_mode') in {'pair', 'native'} and old.get('retry_safe') is True
                     and (role == 'vision_google_group' or any(
@@ -461,14 +524,15 @@ class ProductResearchAdapter:
                 raise PermanentProviderError('research_visual_group_pair_required')
             if rows and old.get('phase') == 'completed':
                 return None, old
-            if rows and role.startswith('facts_agent') and old.get('phase') in {'failed', 'aborted'}:
+            if (rows and role.startswith('facts_agent') and old.get('phase') in {'failed', 'aborted'}
+                    and retained_retry is None):
                 # A closed agent failure is a fallback signal to a different
                 # configured route, never permission to repeat this task.
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
                 ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
                  'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema', 'frozen_source_map') if k in old}}
-            if rows and old.get('phase') == 'created':
+            if rows and old.get('phase') == 'created' and retained_retry is None:
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
                 return resumed, None
@@ -486,6 +550,8 @@ class ProductResearchAdapter:
                 'purpose': 'identity' if visual else ('facts' if role.startswith('facts') or '_fact_research_control_revision' in story else 'identity'),
                 'control_revision': story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+            if retained_retry is not None:
+                binding['prior_not_sent_attempt_id'] = old['binding']['attempt_id']
             if (role == 'search' and binding['purpose'] == 'facts'
                     and self._owner_exact_fact_scope(story)):
                 # Version only a newly admitted operation. Original addressed
@@ -497,8 +563,15 @@ class ProductResearchAdapter:
                                **({'semantic_contract': story['_fact_semantic_contract']}
                                   if story.get('_fact_semantic_contract') else {}))
             now = self.service.store.now()
+            initial = {'binding': binding, 'phase': 'created'}
+            if retained_retry is not None:
+                initial.update({key: copy.deepcopy(old[key]) for key in (
+                    'contract', 'retained_source_packet', 'source_cohort_sha256', 'original_attempt_id',
+                    'frozen_prompt', 'prompt_sha256', 'frozen_schema', 'sources', 'provider_id', 'model_id',
+                    'route_id', 'profile_sha256') if key in old})
+                initial.update(provider_send_state='not_sent', model_attempts=[])
             db.execute('INSERT OR IGNORE INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
-                (attempt, logical, story['id'], role, canonical({'binding': binding, 'phase': 'created'}), now, now))
+                (attempt, logical, story['id'], role, canonical(initial), now, now))
             return binding, None
 
     async def run(self, story, role, unit, invoke, *, client=None):
@@ -546,6 +619,9 @@ class ProductResearchAdapter:
                 and (int(binding.get('control_revision', 0)) > 0
                      or prior_failure.get('code') == 'RESOURCE_DAILY_BUDGET' and prior_failure.get('wait_scope')))
             if health.get('retry_at', 0) > self.service.store.now() and not resumed_probe:
+                if role.startswith('facts_agent_retained_') and binding.get('prior_not_sent_attempt_id'):
+                    self._record_route_failure(binding, role, health.get('category', 'research_route_waiting'),
+                        health['retry_at'], wait_scope=wait_scope)
                 raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
         try:
             if story.get('_fact_pool_unit_id'):
