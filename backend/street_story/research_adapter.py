@@ -1673,7 +1673,7 @@ class ProductResearchAdapter:
                     return result
                 if (role == 'vision' and self.client is not None and binding.get('session_id')
                         and binding.get('message_id') and binding.get('phase') in {
-                            'prompt_intent', 'submitted', 'abort_intent', 'abort_outcome_unknown', 'aborted'}):
+                            'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown', 'aborted'}):
                     result = await self.compare_image(None, story, schema, context)
                     self.guard_binding(scope)
                     return result

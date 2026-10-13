@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from street_story.agent_evidence import AgentEvidenceMixin
+from street_story.agent_evidence import AgentEvidenceMixin, selected_object_context
 from street_story.service import ConflictError
 from test_headless_facts import URL, fixture
 
@@ -12,6 +12,33 @@ CANDIDATE = {'text': 'The gate opened as a museum in 2005.', 'url': URL,
     'subject_scope': 'selected_building', 'source_date': None}
 AGENT = {'route_id': 'controlled-google', 'model_id': 'agent-model',
          'provider_id': 'google', 'attempt_id': 'original-agent-attempt'}
+
+
+def test_judge_receives_selected_building_kind_and_position_not_neighbor_or_camera():
+    identity = {'candidate_id': 'selected-house', 'physical_identity_accepted': True,
+        'search_anchor': {'street': 'Same street', 'house_number': '3'},
+        'camera': {'latitude': 50.0, 'longitude': 10.0},
+        'candidates': [
+            {'candidate_id': 'neighbor-monument', 'type': 'monument',
+                'map_object': {'tags': {'historic': 'monument'}},
+                'map_coordinates': {'latitude': 51.0, 'longitude': 11.0}},
+            {'candidate_id': 'selected-house', 'type': 'building',
+                'map_object': {'tags': {'building': 'yes'}, 'provenance': 'osm.tags'},
+                'map_coordinates': {'latitude': 52.0, 'longitude': 12.0}}]}
+    context = selected_object_context(identity)
+    observed = context['selected_map_observations']
+    assert observed['candidate_id'] == 'selected-house'
+    assert observed['object_type'] == 'building'
+    assert observed['map_object']['tags'] == {'building': 'yes'}
+    assert observed['map_coordinates'] == {'latitude': 52.0, 'longitude': 12.0}
+    assert 'camera' not in context and 'neighbor-monument' not in json.dumps(context)
+
+
+def test_judge_does_not_borrow_observations_when_selected_candidate_is_absent():
+    context = selected_object_context({'candidate_id': 'selected-house',
+        'physical_identity_accepted': True, 'candidates': [{'candidate_id': 'other', 'type': 'building'}]})
+    assert 'selected_map_observations' not in context
+    assert context['candidate_id'] == 'selected-house'
 
 
 async def setup(tmp_path, verdict='supported', after=None):
