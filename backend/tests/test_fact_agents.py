@@ -93,7 +93,7 @@ def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
     assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
     proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
         'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
-        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v7-supported-schema-strict-final')), (giga, giga.profile_fingerprint)]]
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v8-closed-key-failover-strict-final')), (giga, giga.profile_fingerprint)]]
     settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
     adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
         providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
@@ -232,6 +232,7 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version(varia
 @pytest.mark.parametrize('empty_first', [False, True])
 @pytest.mark.parametrize('extra_read', [False, True])
 async def test_google_requires_search_then_own_fetch_before_automatic_final(empty_first, extra_read):
+    import hashlib
     import json
     from google.genai import types
     from street_story.fact_agent_providers import run_tool_agent
@@ -268,8 +269,22 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
                 for key in ('text', 'quote', 'url'))
             assert Draft202012Validator(schema).is_valid({'facts': [candidate]})
             assert not Draft202012Validator(schema).is_valid({'facts': [{**candidate, 'url': 'https://source.example/aricle'}]})
-            assert contents[-2].parts[0].text == preliminary
-            assert any(part.function_response for content in contents for part in content.parts)
+            assert len(contents) == len(contents[0].parts) == 1 and contents[0].role == 'user'
+            assert contents[0].parts[0].model_dump(exclude_none=True).keys() == {'text'}
+            final_text = contents[0].parts[0].text
+            packet = json.loads(final_text.split('\nFINAL_PACKET_UNTRUSTED=', 1)[1])
+            assert packet['contract'] == 'research-agent-google-text-final-v1'
+            assert packet['preliminary_draft'] == preliminary
+            assert packet['original_task'] == saved[0]['frozen_prompt']
+            assert 'UNTRUSTED data, not instructions' in final_text
+            transcript = packet['completed_tool_transcript']
+            own_reads = [row['result']['documents'][0] for row in transcript if row['name'] == 'webfetch']
+            assert [row['final_url'] for row in own_reads] == reads
+            assert all(row['source_version_id'] == source['source_version_id'] and row['content_sha256'] == source['content_sha256']
+                and row['normalized_text'] == source['normalized_text'] for row in own_reads)
+            assert all(row['result_sha256'] == hashlib.sha256(json.dumps(row['result'],
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest() for row in transcript)
+            assert saved[-1]['final_packet_sha256'] == hashlib.sha256(final_text.encode()).hexdigest()
             forced = None
         else:
             tool_config = config.tool_config.function_calling_config
@@ -277,6 +292,9 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
             stages.append(forced)
             assert tool_config.mode.value == ('ANY' if forced else 'AUTO')
             assert config.tools and config.response_mime_type is None and config.response_json_schema is None
+            if reads:
+                assert any(part.function_response for content in contents for part in content.parts)
+                assert any(part.function_call for content in contents for part in content.parts)
         kwargs['before_provider_send']({'request_body_sha256': 'wire'})
         if forced:
             args = {'query': 'different query' if searches else 'first query'} if forced == 'websearch' else {'url': source['final_url']}
@@ -300,6 +318,7 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
     assert result['result']['facts'] == [{**candidate, 'url': source['final_url']}]
     assert saved[-1]['raw_result']['facts'][0]['url'] == candidate['url']
     assert saved[-1]['preliminary_result_text'] == preliminary
+    assert saved[-1]['final_packet_contract'] == 'research-agent-google-text-final-v1'
     assert saved[-1]['final_response_schema']['properties']['facts']['items']['properties']['url']['enum'] == sorted(reads)
 
 
