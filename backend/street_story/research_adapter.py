@@ -152,6 +152,25 @@ def _closed_malformed_visual(receipt):
     return True
 
 
+def _closed_native_input_readback(receipt):
+    """Recover the original completed turn after a local input projection error.
+
+    This is observation, not retry permission for a closed model failure. The
+    native reader still verifies the frozen input, model and complete output.
+    """
+    from .native_fact_research import CONTRACT
+    return (receipt.get('native_contract') == CONTRACT
+        and receipt.get('provider_id') == 'codex_native'
+        and receipt.get('model_id') == 'gpt-6-luna'
+        and receipt.get('phase') == 'failed'
+        and receipt.get('provider_send_state') == 'response_closed'
+        and receipt.get('native_terminal_status') == 'completed'
+        and (receipt.get('route_failure') or {}).get('code') == 'native_research_input_unverified'
+        and isinstance(receipt.get('frozen_prompt'), str)
+        and isinstance(receipt.get('frozen_schema'), dict)
+        and bool(receipt.get('thread_id')) and bool(receipt.get('turn_id')))
+
+
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
     'research_sufficient_basis':{'description':
@@ -527,7 +546,7 @@ class ProductResearchAdapter:
             if rows and old.get('phase') == 'completed':
                 return None, old
             if (rows and role.startswith('facts_agent') and old.get('phase') in {'failed', 'aborted'}
-                    and retained_retry is None):
+                    and retained_retry is None and not _closed_native_input_readback(old)):
                 # A closed agent failure is a fallback signal to a different
                 # configured route, never permission to repeat this task.
                 return None, old
@@ -540,7 +559,8 @@ class ProductResearchAdapter:
                 return resumed, None
             # A timeout alone does not authorize another model request. Require
             # acknowledged abort; unaddressable creation/submit stays waiting.
-            if rows and old.get('phase') not in {'created', 'aborted', 'failed'}:
+            if rows and (old.get('phase') not in {'created', 'aborted', 'failed'}
+                    or _closed_native_input_readback(old)):
                 return resumed, None
             if rows and old.get('phase') == 'aborted' and not old.get('abort_acknowledged'):
                 raise RetryableProviderError('research_attempt_unknown', retry_at=self.service.store.now()+60)
@@ -589,7 +609,7 @@ class ProductResearchAdapter:
             return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
         readback = ((binding.get('session_id') and binding.get('message_id')
                     or binding.get('thread_id') and binding.get('turn_id'))
-                    and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
+                    and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown', 'failed'})
         # Existing receipt metadata is the durable wait fence. An explicit
         # Resume changes the owner epoch and permits one new admission probe;
         # it never authorizes a model send without the shared resource grant.

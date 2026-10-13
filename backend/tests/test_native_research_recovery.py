@@ -103,3 +103,53 @@ def test_only_direct_owned_sol_child_can_use_parent_source_tools():
             {'subAgent': {'thread_spawn': {'parent_thread_id': 'root', 'depth': 2}}}]:
         with pytest.raises(ValueError, match='child_parent_unverified'):
             NativeFactResearch._verify_thread({'id': 'child', 'source': source}, 'root')
+
+
+def test_native_v2_empty_annotation_projection_preserves_exact_input_binding():
+    projected = [{**INPUT[0], 'text_elements': []}]
+    assert NativeFactResearch._input_matches(projected, INPUT)
+    assert not NativeFactResearch._input_matches([{**projected[0], 'text': 'Another operation'}], INPUT)
+    assert not NativeFactResearch._input_matches([{**projected[0], 'text_elements': [{'label': 'foreign-file'}]}], INPUT)
+    assert not NativeFactResearch._input_matches([*projected, projected[0]], INPUT)
+
+
+@pytest.mark.asyncio
+async def test_original_completed_turn_with_local_readback_failure_is_observed_without_send(tmp_path, monkeypatch):
+    provider, receipt, calls, _ = setup(tmp_path, monkeypatch,
+        receipt={'phase': 'failed', 'thread_id': THREAD, 'turn_id': TURN,
+            'native_terminal_status': 'completed', 'provider_send_state': 'response_closed',
+            'route_failure': {'code': 'native_research_input_unverified'}})
+    await invoke(provider, receipt)
+    assert receipt['phase'] == 'completed'
+    assert receipt['closed_readback_recovery']['original_phase'] == 'failed'
+    assert receipt['closed_readback_recovery']['new_inference_sent'] is False
+    assert all(method == 'thread/read' for method, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_adapter_recovers_only_addressed_completed_native_projection_failure(tmp_path):
+    from street_story.native_fact_research import CONTRACT
+    from street_story.research_adapter import ProductResearchAdapter
+    from test_research_control import fixture
+    service, sid, photo = fixture(tmp_path)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.service = service
+    story = {'id': sid, 'photo_sha256': photo}
+    binding, _ = adapter.attempt(story, 'facts_agent_native', 'same-frozen-unit')
+    receipt = {'binding': binding, 'phase': 'failed', 'provider_id': 'codex_native',
+        'model_id': 'gpt-6-luna', 'native_contract': CONTRACT,
+        'thread_id': THREAD, 'turn_id': TURN, 'native_terminal_status': 'completed',
+        'provider_send_state': 'response_closed', 'frozen_prompt': 'original', 'frozen_schema': {},
+        'route_failure': {'code': 'native_research_input_unverified'}}
+    adapter._checkpoint_receipt(binding, receipt)
+    resumed, saved = adapter.attempt(story, 'facts_agent_native', 'same-frozen-unit')
+    assert saved is None and resumed['attempt_id'] == binding['attempt_id']
+    assert resumed['thread_id'] == THREAD and resumed['turn_id'] == TURN
+    for key, value in [('native_terminal_status', 'failed'), ('turn_id', None),
+            ('provider_id', 'opencode'), ('route_failure', {'code': 'malformed_response'})]:
+        changed = {**receipt, key: value}
+        adapter._checkpoint_receipt(binding, changed)
+        resumed, saved = adapter.attempt(story, 'facts_agent_native', 'same-frozen-unit')
+        assert resumed is None and saved == changed
+    with service.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM research_provider_attempts WHERE story_id=?', (sid,)).fetchone()[0] == 1

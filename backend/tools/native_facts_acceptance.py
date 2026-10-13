@@ -28,9 +28,11 @@ async def run(args):
     sys.path.insert(0, str(BACKEND))
     sha = require_frozen_checkout(args.expected_sha)
     output = managed(args.output)
-    if output.exists():
+    recovering = args.resume_closed_native
+    if output.exists() and not recovering:
         raise ValueError('Existing original operation must be reconciled; never replay this campaign')
-    output.mkdir(mode=0o700)
+    if not recovering:
+        output.mkdir(mode=0o700)
     installer = load_installer()
     for path in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
         installer.require_mode(path, 0o600)
@@ -60,24 +62,49 @@ async def run(args):
         'message_id': args.message, 'photo_sha256': item['sha256'], 'route_id': route.route_id,
         'profile_sha256': route.profile_fingerprint, 'attempts': [], 'publication_dispatches': 0,
         'app_e2e': False, 'reference_facts_or_urls_supplied': False, 'cost': 'unknown'}
+    original_receipt = None
+    if recovering:
+        from street_story.research_adapter import _closed_native_input_readback
+        campaign = json.loads((output/'campaign.json').read_text())
+        if (campaign.get('status') != 'INCOMPLETE' or campaign.get('message_id') != args.message
+                or campaign.get('profile_sha256') != route.profile_fingerprint
+                or len(campaign.get('attempts', [])) != 1):
+            raise ValueError('Only the original unchanged native input-readback failure may resume')
+        with service.store.connection() as db:
+            rows = list(db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? '
+                "AND role LIKE 'facts_agent_%'", (campaign['story_id'],)))
+        if len(rows) != 1:
+            raise ValueError('Original native operation is ambiguous')
+        original_receipt = json.loads(rows[0][0])
+        if not _closed_native_input_readback(original_receipt):
+            raise ValueError('Original native turn is not eligible for input-readback recovery')
+        save(output/'campaign-before-readback-recovery.json', campaign)
+        save(output/'receipt-before-readback-recovery.json', original_receipt)
+        campaign.update(status='RECOVERING_ORIGINAL_READBACK', recovery_code_sha=sha,
+            recovery_started_at=time.time(), recovery_new_inference_sent=False)
     save(output/'campaign.json', campaign)
     try:
         token = 'native-fact-only:' + hashlib.sha256(str(output).encode()).hexdigest()
-        story = service.create_story(key=token, client_story_id=token, photo_sha256=item['sha256'],
-            photo_mime_type=item['mime'], photo_bytes=data, voice_protocol='voice-chunks-v2',
-            lat=None, lon=None, identity_mode='manual')
-        sid = story['id']
-        campaign['story_id'] = sid
-        snapshot = await place_map(service, sid)
-        selected = next(feature['id'] for feature in snapshot['buildings']['features']
-            if feature['id'] in item['expected_physical_ids'])
-        body = {'mode': 'exact', 'command_id': token+':place', 'snapshot_id': snapshot['snapshot_id'],
-            'candidate_id': selected, 'expected_photo_sha256': item['sha256'],
-            'expected_identity_generation': story['identity_generation'], 'expected_candidate_id': None}
-        await prepare_place_context(service, sid, body)
-        confirmed = confirm_place(service, sid, body['command_id'], body)
-        campaign.update(selected_candidate_id=selected, status='RESEARCHING')
-        save(output/'selection.json', confirmed)
+        if recovering:
+            sid, selected = campaign['story_id'], campaign['selected_candidate_id']
+            if service.story(sid)['photo_sha256'] != item['sha256']:
+                raise ValueError('Original selected photo changed')
+        else:
+            story = service.create_story(key=token, client_story_id=token, photo_sha256=item['sha256'],
+                photo_mime_type=item['mime'], photo_bytes=data, voice_protocol='voice-chunks-v2',
+                lat=None, lon=None, identity_mode='manual')
+            sid = story['id']
+            campaign['story_id'] = sid
+            snapshot = await place_map(service, sid)
+            selected = next(feature['id'] for feature in snapshot['buildings']['features']
+                if feature['id'] in item['expected_physical_ids'])
+            body = {'mode': 'exact', 'command_id': token+':place', 'snapshot_id': snapshot['snapshot_id'],
+                'candidate_id': selected, 'expected_photo_sha256': item['sha256'],
+                'expected_identity_generation': story['identity_generation'], 'expected_candidate_id': None}
+            await prepare_place_context(service, sid, body)
+            confirmed = confirm_place(service, sid, body['command_id'], body)
+            campaign.update(selected_candidate_id=selected, status='RESEARCHING')
+            save(output/'selection.json', confirmed)
         save(output/'campaign.json', campaign)
         for ordinal in range(args.additions+1):
             if ordinal:
@@ -92,25 +119,38 @@ async def run(args):
             job = service._claim(claim_kind='research', claim_story_id=sid)
             if not job:
                 raise ValueError('Ordinary fact research request was not claimed')
+            recovery_segment = recovering and ordinal == 0
+            if recovery_segment and job['id'] != original_receipt['binding']['job_id']:
+                raise ValueError('Original native job changed')
             payload = json.loads(job['payload_json'])
             goal = payload.get('coverage_goal') or 'Исследуй содержательную историю выбранного здания.'
-            with service.store.tx() as db:
-                current = service._story_row(db, sid)
-                research = json.loads(current['research_json'])
-                run_id = begin_research_run(db, story_id=sid, poi_key=selected, goal=goal,
-                    scope=payload.get('extraction_scope'), expected_story_revision=current['revision'],
-                    identity_generation=research['identity_generation'], run_id=None, now=service.store.now())
+            if recovery_segment:
+                run_id = campaign['attempts'][0]['run_id']
+            else:
+                with service.store.tx() as db:
+                    current = service._story_row(db, sid)
+                    research = json.loads(current['research_json'])
+                    run_id = begin_research_run(db, story_id=sid, poi_key=selected, goal=goal,
+                        scope=payload.get('extraction_scope'), expected_story_revision=current['revision'],
+                        identity_generation=research['identity_generation'], run_id=None, now=service.store.now())
             headless = HeadlessFacts(service)
             owned, research, _ = headless._snapshot(job, run_id)
             epoch = owned['_fact_research_control_revision']
-            context = native_agent_context(service, owned, research['visual_identity'], goal, run_id)
+            context = (json.loads(original_receipt['frozen_prompt'].split('\nINPUT=', 1)[1])
+                if recovery_segment else native_agent_context(service, owned, research['visual_identity'], goal, run_id))
             unit = {'run_id': run_id, 'context': context, 'route_id': route.route_id}
             digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             owned.update(_fact_pool_unit_id='agent_'+digest[:24], _fact_pool_input_sha256=digest)
             before = {fact['fact_id'] for fact in service.story(sid)['facts']}
             record = {'ordinal': ordinal, 'job_id': job['id'], 'run_id': run_id,
                 'started_at': time.time(), 'before_fact_ids': sorted(before), 'status': 'RUNNING'}
-            campaign['attempts'].append(record)
+            if recovery_segment:
+                record.update(original_started_at=campaign['attempts'][0]['started_at'],
+                    mode='original_native_readback_and_write_recovery', new_inference_sent=False,
+                    original_research_sha=campaign['source_sha'], recovery_code_sha=sha)
+                campaign['attempts'][0] = record
+            else:
+                campaign['attempts'].append(record)
             save(output/'campaign.json', campaign)
             def guard():
                 if headless._snapshot(job, run_id, epoch) is None:
@@ -176,4 +216,6 @@ if __name__ == '__main__':
     parser.add_argument('--message', type=int, choices=[102, 105, 131], required=True)
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--additions', type=int, choices=[0, 1, 2], default=0)
+    parser.add_argument('--resume-closed-native', action='store_true',
+        help='Observe the original completed turn after a local input-readback projection failure; never resend it')
     asyncio.run(run(parser.parse_args()))

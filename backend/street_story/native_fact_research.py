@@ -85,6 +85,11 @@ class NativeFactResearch:
         if receipt['frozen_prompt'] != prompt or receipt['frozen_schema'] != schema:
             raise ValueError('native_research_frozen_input_changed')
         input_parts = [{'type': 'text', 'text': prompt}]
+        if receipt.get('phase') == 'failed' and receipt.get('turn_id'):
+            receipt.setdefault('closed_readback_recovery', {
+                'original_phase': 'failed', 'original_terminal_status': receipt.get('native_terminal_status'),
+                'original_failure': copy.deepcopy(receipt.get('route_failure')),
+                'new_inference_sent': False})
         sent = bool(receipt.get('turn_id')) or receipt.get('phase') in {'prompt_intent', 'submitted', 'unknown'}
         key = binding['attempt_id']
         self.owner_callbacks[key] = {'guard': guard, 'callback': callback}
@@ -255,7 +260,7 @@ class NativeFactResearch:
                             receipt.update(phase='failed', provider_send_state='response_closed')
                             raise ValueError('native_research_' + turn['status'])
                         users = [row for row in turn.get('items') or [] if row.get('type') == 'userMessage']
-                        if len(users) != 1 or users[0].get('content') != input_parts:
+                        if len(users) != 1 or not self._input_matches(users[0].get('content'), input_parts):
                             raise ValueError('native_research_input_unverified')
                         messages = [row['text'] for row in turn['items'] if row.get('type') == 'agentMessage']
                         receipt['raw_result_text'] = messages[-1] if messages else ''
@@ -336,6 +341,22 @@ class NativeFactResearch:
             'usage': client.turn_token_usage(tid, turn), 'cost': 'unknown'}
             for tid, observed in receipt['native_threads'].items()
             for turn in dict.fromkeys(row['turn_id'] for row in observed['execution_contexts'])]
+
+    @staticmethod
+    def _input_matches(actual, expected):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        for received, original in zip(actual, expected):
+            if not isinstance(received, dict):
+                return False
+            received = dict(received)
+            # Native v2 projects this default onto textual readback. Nonempty
+            # annotations are additional input and must remain unverified.
+            if received.get('type') == 'text' and received.get('text_elements') == []:
+                received.pop('text_elements')
+            if received != original:
+                return False
+        return True
 
     @staticmethod
     def _verify_thread(thread, root):
