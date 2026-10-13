@@ -11,6 +11,7 @@ from .agent_evidence import NETWORK_SCHEMA, SEMANTIC_ASSESSMENT_INSTRUCTIONS
 from .native_fact_research import CONTRACT
 
 PROJECTION_CONTRACT = 'native-complete-assessment-claims-v2'
+SOURCE_READ_CONTRACT = 'native-frozen-chunks-once-v1'
 
 SOURCE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
     'url': {'type': 'string'}, 'source_version_id': {'type': 'string'},
@@ -142,14 +143,18 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     # research_run_sources is a latest-per-URL pointer. The immutable chunk/run
     # relation retains earlier versions read in the same operation.
     frozen = db.execute('SELECT * FROM source_versions WHERE source_version_id=?', (version,)).fetchone()
-    chunks = {row[0] for row in db.execute('SELECT c.chunk_id FROM source_chunks c '
+    chunks = {row[0]: row[1] for row in db.execute('SELECT c.chunk_id,c.chunk_text FROM source_chunks c '
         'JOIN research_chunk_runs r ON r.chunk_id=c.chunk_id WHERE r.run_id=? AND c.source_version_id=?',
         (origin_run_id or run_id, version))}
-    received = {chunk.get('chunk_id') for chunk in (read or {}).get('chunks', [])}
+    received = {chunk.get('chunk_id'): chunk.get('text', chunk.get('chunk_text'))
+        for chunk in (read or {}).get('chunks', [])}
     required = set(row['chunk_ids']) | set(row['checks']['relation_basis']['chunk_ids'])
+    compact = (read or {}).get('read_contract') == SOURCE_READ_CONTRACT
     if (not read or not frozen or frozen['access_scope'] != 'public' or not chunks
-            or not required.issubset(chunks & received)
-            or read.get('normalized_text') != frozen['normalized_text']
+            or not required.issubset(chunks.keys() & received.keys())
+            or any(received[key] != chunks[key] for key in required)
+            or (compact and received != chunks)
+            or (not compact and read.get('normalized_text') != frozen['normalized_text'])
             or frozen['content_sha256'] != basis['content_sha256']
             or hashlib.sha256(frozen['normalized_text'].encode()).hexdigest() != basis['content_sha256']):
         raise ValueError('native_fact_source_not_owned_read')

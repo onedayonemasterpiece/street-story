@@ -104,6 +104,34 @@ async def test_one_claim_keeps_two_frozen_versions_of_same_url(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('damage', [None, 'changed_chunk', 'missing_chunk', 'unmarked'])
+async def test_compact_native_read_preserves_complete_frozen_chunks_or_fails_closed(tmp_path, damage):
+    from street_story.native_fact_contract import SOURCE_READ_CONTRACT
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path)
+    document = receipt['native_tool_calls']['original-read']['result']['documents'][0]
+    document.pop('normalized_text')
+    document['read_contract'] = SOURCE_READ_CONTRACT
+    if damage == 'changed_chunk':
+        document['chunks'][0]['chunk_text'] = 'A statement from a different page.'
+    elif damage == 'missing_chunk':
+        document['chunks'] = []
+    elif damage == 'unmarked':
+        document.pop('read_contract')
+    save()
+    try:
+        outcome = await service.confirm_agent_fact(job, 'headless-run',
+            source_candidates(receipt['raw_result'])['facts'][0], agent)
+        if damage is None:
+            assert outcome['status'] == 'supported'
+            assert service.story(job['story_id'])['facts'][0]['eligibility'] == 'eligible'
+        else:
+            assert outcome == {'status': 'unverified', 'reason': 'native_fact_source_not_owned_read'}
+            assert not service.story(job['story_id'])['facts']
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['unknown', 'wrong_model', 'wrong_photo', 'unread_source',
     'changed_claim', 'foreign_chunk', 'reference_only', 'unpreserved_time', 'unrelated_subject'])
 async def test_incomplete_foreign_or_unusable_basis_does_not_enter_ledger(tmp_path, change):

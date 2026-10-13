@@ -56,6 +56,10 @@ including undated mutable states and physical subject boundaries. Public HTML
 reads expose bounded literal discovery links from the same acquired bytes;
 these links are not evidence. Reused documents gain this metadata only when
 the cached raw page reproduces the frozen text hash, without another fetch.
+Native read responses carry the full text once in immutable chunks, with a
+versioned read contract; admission checks each delivered chunk against its
+frozen bytes as well as version/hash/run ownership. Navigation links carry
+their own literal labels, while a single-location container may add context.
 
 `backend/tools/native_facts_acceptance.py` measures an unqualified native route
 on an isolated managed Store through normal EXIF intake, exact mapped selection,

@@ -696,6 +696,9 @@ def _page_discovery_links(page: str, final_url: str, raw_bytes: bytes) -> dict:
         if not target or target == public_url(final_url) or target in seen:
             continue
         seen.add(target)
+        if len(links) >= 128:
+            omitted += 1
+            continue
         label = anchor.get_text(' ', strip=True)
         context = label
         for parent in list(anchor.parents)[:3]:
@@ -703,8 +706,11 @@ def _page_discovery_links(page: str, final_url: str, raw_bytes: bytes) -> dict:
                 break
             literal = parent.get_text(' ', strip=True)
             if len(label) + 5 < len(literal) <= 800:
-                context = literal
-                break
+                locations = {public_url(urljoin(final_url, str(link['href'])))
+                    for link in parent.find_all('a', href=True)} - {None}
+                if locations <= {target}:
+                    context = literal
+                    break
         item = {'url': target, 'label': label[:120], 'context': context[:360]}
         size = len(json.dumps(item, ensure_ascii=False))
         if len(links) >= 128 or used + size > 65_536:

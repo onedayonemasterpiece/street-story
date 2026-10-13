@@ -69,10 +69,11 @@ class NativeFactResearch:
 
     @property
     def profile_fingerprint(self):
-        from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA, PROJECTION_CONTRACT
+        from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA, PROJECTION_CONTRACT, SOURCE_READ_CONTRACT
         from .fact_agent_providers import TOOLS
         return hashlib.sha256(json.dumps({'contract': CONTRACT, 'instructions': INSTRUCTIONS,
             'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': TOOLS,
+            'source_read_contract': SOURCE_READ_CONTRACT,
             'projection_contract': PROJECTION_CONTRACT,
             'transport': TRANSPORT, 'timeout_seconds': self.timeout,
             'max_tool_calls': self.max_tool_calls}, sort_keys=True).encode()).hexdigest()

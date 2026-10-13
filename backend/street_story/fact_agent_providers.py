@@ -471,7 +471,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
             if route.provider_id == 'codex_native':
+                from .native_fact_contract import SOURCE_READ_CONTRACT
                 for document, source in zip(value['documents'], docs):
+                    # The full immutable text is already delivered in chunks.
+                    # Duplicating it makes code-mode output lose later metadata.
+                    document.pop('normalized_text', None)
+                    document['read_contract'] = SOURCE_READ_CONTRACT
                     document.update({key: source[key] for key in
                         ('discovery_links', 'discovery_links_provenance') if key in source})
                 with adapter.service.store.connection() as db:
