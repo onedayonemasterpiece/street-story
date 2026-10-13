@@ -36,7 +36,7 @@ def guard_profile(directory: Path, limits: ResearchLimits, *, agent_research=Fal
 
 def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
                            limits: ResearchLimits | None = None, directory: Path | None = None,
-                           agent_research: bool = False) -> dict:
+                           agent_research: bool = False, model_context: int | None = None) -> dict:
     """Data-only profile for a dedicated directory on the SAME existing server.
 
     Do not install at a repository root or in global config. Existing provider
@@ -51,8 +51,10 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
     # Inherit real model context/output limits. Explicit per-request profiles
     # can retain a smaller envelope, but no model-name-specific default caps.
     if limits.max_output_tokens is not None:
+        if type(model_context) is not int or model_context < 1:
+            raise ValueError('research_catalog_context_required')
         config['provider'] = {provider_id: {'models': {model_id: {
-            'limit': {'output': limits.max_output_tokens}}}}}
+            'limit': {'context': model_context, 'output': limits.max_output_tokens}}}}}
     if directory is not None:
         config['plugin'] = [guard_profile(directory, limits, agent_research=agent_research)]
     return config
@@ -70,7 +72,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     input_json_ensure_ascii = True
 
     def __init__(self, directory: str, *, backend=None, abort_timeout_seconds: float = 10,
-                 require_guard: bool = True, agent_research: bool = False, **kwargs):
+                 require_guard: bool = True, agent_research: bool = False, model_context: int | None = None, **kwargs):
         path = Path(directory)
         if not path.is_absolute() or '..' in path.parts or path.resolve() != path or not path.is_dir():
             raise ValueError('research_capsule_directory_invalid')
@@ -89,6 +91,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         self.directory = str(path)
         self.require_guard = require_guard
         self.agent_research = agent_research
+        if model_context is None and self.limits.max_output_tokens is not None:
+            config_path = path / 'opencode.json'
+            if config_path.is_file() and not config_path.is_symlink():
+                local = json.loads(config_path.read_text())
+                model_context = (local.get('provider', {}).get(self.provider_id, {}).get('models', {})
+                    .get(self.model_id, {}).get('limit') or {}).get('context')
+        self.model_context = model_context
         self.shared_backend = backend
         self.abort_timeout_seconds = abort_timeout_seconds
         self._deadline: ContextVar[float | None] = ContextVar('research_deadline', default=None)
@@ -106,7 +115,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     @property
     def profile_fingerprint(self):
         return hashlib.sha256(json.dumps(scoped_research_config(self.model_id, provider_id=self.provider_id,
-            limits=self.limits, directory=Path(self.directory) if self.require_guard else None, agent_research=self.agent_research), sort_keys=True).encode()).hexdigest()
+            limits=self.limits, directory=Path(self.directory) if self.require_guard else None,
+            agent_research=self.agent_research, model_context=self.model_context), sort_keys=True).encode()).hexdigest()
 
     async def _request(self, client, method, path, **kwargs):
         allowed = ((method == 'GET' and path in {'/global/health', '/config', '/config/providers', '/agent', '/experimental/tool/ids'})
@@ -140,10 +150,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             path += '?' + urlencode(kwargs['params'])
         return await self._invoke(method, path, payload=payload, timeout=timeout)
 
-    async def _invoke(self, method, path, *, timeout, payload=None):
+    async def _invoke(self, method, path, *, timeout, payload=None, unscoped_catalog=False):
+        if unscoped_catalog and (method != 'GET' or path != '/config/providers' or payload is not None):
+            raise ResearchUnavailable('research_api_operation_denied')
         try:
             result = await asyncio.wait_for(self.shared_backend.request(
-                method, path, directory=self.directory, payload=payload, timeout=timeout), timeout=timeout)
+                method, path, directory=None if unscoped_catalog else self.directory,
+                payload=payload, timeout=timeout), timeout=timeout)
             if len(json.dumps(result, ensure_ascii=False).encode()) > self.limits.max_response_bytes:
                 raise ResearchUnavailable('research_response_too_large')
             return result
@@ -154,6 +167,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             # only that boundary so the existing durable recovery handles it.
             if type(exc).__name__ != 'OpenCodeError':
                 raise
+            status, category = getattr(exc, 'status', None), getattr(exc, 'category', None)
+            if type(status) is int:
+                safe_category = category if category in {'validation', 'configuration', 'unavailable',
+                    'unauthorized', 'forbidden', 'invalid_response', 'oversized_response'} else 'http_error'
+                raise ResearchUnavailable('research_shared_http_error', {
+                    'transport_status': status, 'transport_category': safe_category,
+                    'transport_response_closed': True}) from exc
             raise httpx.TransportError('Shared OpenCode transport failed') from exc
 
     def _session_permissions(self, role):
@@ -206,13 +226,24 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_controller_steps_unverified')
         output = (config.get('provider', {}).get(self.provider_id, {}).get('models', {})
                   .get(self.model_id, {}).get('limit') or {}).get('output')
-        catalog = await self._request(client, 'GET', '/config/providers')
+        deadline = self._deadline.get()
+        catalog = await self._invoke('GET', '/config/providers', unscoped_catalog=True,
+            timeout=min(30, max(.001, deadline - time.monotonic())) if deadline is not None else 30)
         provider = next((p for p in catalog.get('providers', []) if p.get('id') == self.provider_id), {})
         model = provider.get('models', {}).get(self.model_id, {})
+        catalog_context = (model.get('limit') or {}).get('context')
+        configured_context = (config.get('provider', {}).get(self.provider_id, {}).get('models', {})
+            .get(self.model_id, {}).get('limit') or {}).get('context')
+        if self.limits.max_output_tokens is not None and (
+                type(catalog_context) is not int or catalog_context < 1
+                or configured_context != catalog_context or self.model_context != catalog_context):
+            raise ResearchUnavailable('research_model_context_unverified')
         if output is None:
             output = (model.get('limit') or {}).get('output')
         tool_bytes = (config.get('tool_output') or {}).get('max_bytes')
         if (type(output) is not int or output < 1
+                or type((model.get('limit') or {}).get('output')) is not int
+                or output > model['limit']['output']
                 or self.limits.max_output_tokens is not None and output > self.limits.max_output_tokens):
             raise ResearchUnavailable('research_model_output_not_bounded')
         if type(tool_bytes) is not int or not 1 <= tool_bytes <= self.limits.max_search_context_chars:
@@ -229,6 +260,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
                                           'attested_guard_and_session_readback') if guard_verified else 'session_readback'),
                 'guard_sha256': profile[1]['marker'].split(':')[-1] if guard_verified else None,
                 'max_output_tokens': output,
+                'model_context': catalog_context,
                 'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds,
                 '_system_prompt': selected.get('prompt') or
                     (config.get('agent', {}).get('plan') or {}).get('prompt') or ''}

@@ -55,7 +55,8 @@ def test_read_alias_never_normalizes_query_fragment_host_or_scheme(candidate_url
 def test_agent_capsule_does_not_change_existing_reader_guard(tmp_path):
     normal = scoped_research_config('arbitrary-model', directory=tmp_path)
     limits = ResearchLimits(timeout_seconds=720, max_steps=4, max_output_tokens=4096)
-    agent = scoped_research_config('arbitrary-model', directory=tmp_path, limits=limits, agent_research=True)
+    agent = scoped_research_config('arbitrary-model', directory=tmp_path, limits=limits,
+        agent_research=True, model_context=1048576)
     assert normal['agent']['plan']['steps'] == 3
     assert agent['agent']['plan']['steps'] == 4
     assert normal['plugin'] != agent['plugin']

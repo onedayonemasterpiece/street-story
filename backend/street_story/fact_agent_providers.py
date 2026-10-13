@@ -158,7 +158,33 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
         native = await route.client._run('agent_research', prompt, binding, RESULT_SCHEMA)
         receipt = {**native['receipt'], 'raw_result': native['result']}
         try:
-            raw, rejected = partition_result(native['result'])
+            from .opencode_research import _native_tool_completed_at, _public_article_url
+            from .research_runs import persist_source_version
+            guard()
+            sources, fetched = [], set()
+            with adapter.service.store.tx() as db:
+                guard()
+                for part in receipt.get('native_tool_receipts') or []:
+                    state = part.get('state') or {}
+                    if part.get('tool') != 'webfetch' or state.get('status') != 'completed':
+                        continue
+                    url = _public_article_url((state.get('input') or {}).get('url'))
+                    text = state.get('output')
+                    if not url or not isinstance(text, str) or not text or not _native_tool_completed_at(part):
+                        continue
+                    version = persist_source_version(db, run_id=context['run_id'], requested_url=url,
+                        final_url=url, title=str(state.get('title') or ''), content_type='text/plain',
+                        http_status=0, redirect_chain=[], normalized_text=text,
+                        read_status='native_tool_output_partial' if (state.get('metadata') or {}).get('truncated')
+                            else 'native_tool_output', now=adapter.service.store.now())
+                    sources.append({**version, 'requested_url': url, 'final_url': url,
+                        'http_status_verified': False, 'native_tool_call_id': part.get('callID'),
+                        'native_output_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                        'completed_at': _native_tool_completed_at(part)})
+                    fetched.add(url)
+                guard()
+            receipt['sources'] = sources
+            raw, rejected = partition_result(native['result'], fetched=fetched)
             receipt['rejected_candidates'] = rejected
             if rejected and not raw['facts']:
                 raise ValueError('agent_result_no_valid_candidates')
@@ -169,7 +195,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
         receipt.update(result=raw, prompt_sha256=hashlib.sha256(
             str(native['receipt'].get('frozen_prompt') or prompt).encode()).hexdigest())
         adapter._checkpoint_receipt(binding, receipt)
-        return {**native, 'result': raw, 'receipt': receipt}
+        return {**native, 'result': raw, 'receipt': receipt, 'sources': sources}
     receipt = {'binding': binding, 'phase': 'created', 'provider_id': route.provider_id,
         'model_id': route.model_id, 'frozen_prompt': prompt, 'frozen_schema': RESULT_SCHEMA,
         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),

@@ -36,7 +36,7 @@ class Backend:
 
     async def request(self, method, path, *, directory=None, payload=None, timeout=30):
         self.calls.append((method, path, directory, copy.deepcopy(payload), timeout))
-        assert directory == self.directory
+        assert directory == self.directory or method == 'GET' and path == '/config/providers' and directory is None
         clean_path = urlsplit(path).path
         if clean_path == '/global/health':
             return self.health
@@ -80,11 +80,11 @@ def setup(tmp_path, **kwargs):
         return 'image/jpeg', jpeg()
     kwargs.setdefault('public_image_loader', public_image_loader)
     h = Harness()
-    h.config = scoped_research_config('mimo-v2.6-flash-free', limits=kwargs.get('limits'))
+    h.config = scoped_research_config('mimo-v2.6-flash-free', limits=kwargs.get('limits'), model_context=200000)
     backend = Backend(h, tmp_path)
     adapter = SharedDevCoveerResearch(str(tmp_path), backend=backend, model_id='mimo-v2.6-flash-free',
                                      admission=h.admission, checkpoint=h.checkpoint,
-                                     require_guard=kwargs.pop('require_guard', False), **kwargs)
+                                     require_guard=kwargs.pop('require_guard', False), model_context=200000, **kwargs)
     return h, backend, adapter
 
 
@@ -118,7 +118,7 @@ async def test_native_plan_session_overrides_permissions_and_every_request_is_sc
     assert backend.session['permission'] == adapter._session_permissions('search')
     prompt = next(call[3] for call in backend.calls if '/prompt_async' in call[1])
     assert prompt['agent'] == 'plan' and 'tools' not in prompt
-    assert all(call[2] == str(tmp_path) for call in backend.calls)
+    assert all(call[2] == str(tmp_path) or call[:3] == ('GET', '/config/providers', None) for call in backend.calls)
     assert not any(method == 'PATCH' for method, *_rest in backend.calls)
     assert h.finalized[0][1] == 'completed'
 
@@ -418,7 +418,7 @@ def test_all_shared_routes_inherit_provider_limits_without_name_specific_caps(tm
     adapter = SharedDevCoveerResearch(str(tmp_path), provider_id=provider, model_id=model)
     assert adapter.limits.max_output_tokens is None
     explicit = scoped_research_config(model, provider_id=provider,
-                                    limits=ResearchLimits(max_output_tokens=8192))
+                                    limits=ResearchLimits(max_output_tokens=8192), model_context=1048576)
     assert explicit['provider'][provider]['models'][model]['limit']['output'] == 8192
 
 
@@ -480,7 +480,7 @@ def test_generated_installer_uses_same_mimo_limit_and_guard_without_inference(tm
     assert not h.sends and not any(method == 'POST' for method, *_ in backend.calls)
     # An old profile must be explicitly reconciled/migrated by the integrator.
     legacy = scoped_research_config('mimo-v2.6-flash-free', directory=tmp_path,
-                                   limits=ResearchLimits(max_output_tokens=2048))
+                                   limits=ResearchLimits(max_output_tokens=2048), model_context=200000)
     (tmp_path / 'opencode.json').write_text(json.dumps(legacy))
     before = len(backend.calls)
     with pytest.raises(RuntimeError, match='reconcile its active attempts'):

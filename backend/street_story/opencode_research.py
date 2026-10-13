@@ -112,6 +112,11 @@ def _public_article_url(value: Any) -> str | None:
     return None
 
 
+def _native_tool_completed_at(part):
+    value = ((part.get('state') or {}).get('time') or {}).get('end')
+    return value / 1000 if type(value) in {int, float} and value > 0 else None
+
+
 def _completed_search_result_prefix(output: str) -> list[dict]:
     """Recover closed result objects from a truncated JSON tool response.
 
@@ -735,12 +740,18 @@ class OpenCodeResearch:
                                     if part.get('type') == 'tool' and (part.get('state') or {}).get('status') == 'completed'}
                                 receipt['completed_agent_tools'] = sorted(completed_tools)
                                 receipt['tool_receipts'] = [{'name': part.get('tool'), 'call_id': part.get('callID'),
-                                    'arguments': (part.get('state') or {}).get('input'),
+                                    'arguments': {key: ((part.get('state') or {}).get('input') or {}).get(key)
+                                        for key in (['query'] if part.get('tool') == 'websearch' else ['url'])},
+                                    'completed_at': _native_tool_completed_at(part),
                                     'result_sha256': hashlib.sha256(json.dumps((part.get('state') or {}).get('output'),
                                         ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
                                     for message in related for part in message.get('parts', [])
                                     if part.get('type') == 'tool' and part.get('tool') in {'websearch', 'webfetch'}
                                     and (part.get('state') or {}).get('status') == 'completed']
+                                receipt['native_tool_receipts'] = [part for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and part.get('tool') in {'websearch', 'webfetch'}
+                                    and (part.get('state') or {}).get('status') == 'completed']
+                                receipt['model_attempts'] = receipt['assistants']
                                 if not {'websearch', 'webfetch'} <= completed_tools:
                                     raise ResearchUnavailable('research_agent_tools_not_performed', receipt)
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
@@ -775,6 +786,8 @@ class OpenCodeResearch:
                                          selection_status, len(discovered), len(sources), rejected)
                             receipt.update({'phase': 'completed', 'elapsed_ms': round((time.monotonic() - started) * 1000),
                                             'assistant_message_id': info.get('id'), 'result': result})
+                            if role == 'agent_research':
+                                receipt['provider_send_state'] = 'response_closed'
                             await self._checkpoint(binding, receipt)
                             return {'result': result, 'sources': sources, 'receipt': receipt}
                     if time.monotonic() >= deadline:
@@ -794,12 +807,15 @@ class OpenCodeResearch:
             raise
         except ResearchUnavailable as exc:
             if receipt.get('session_id') and receipt.get('phase') in {'prompt_intent', 'submitted'}:
-                await self._abort(client, receipt, 'research_guard_failed')
+                if exc.code == 'research_shared_http_error':
+                    await self._retain_pending(receipt, 'transport_read_failed')
+                else:
+                    await self._abort(client, receipt, 'research_guard_failed')
             if receipt['phase'] == 'response_completed':
                 receipt['phase'] = 'failed'
                 if exc.code in {'research_json_invalid', 'research_schema_invalid'}:
                     receipt['provider_send_state'] = 'response_closed'
-            exc.receipt = exc.receipt or receipt
+            exc.receipt = {**receipt, **exc.receipt}
             exc.receipt['error_code'] = exc.code
             exc.receipt['elapsed_ms'] = round((time.monotonic() - started) * 1000)
             await self._checkpoint(binding, exc.receipt)
