@@ -174,7 +174,11 @@ def fact_page_capsule(page, context):
     public.update(known_inventory_complete=len(first) == total,
                   known_inventory_total=total, known_inventory_next_offset=len(first),
                   known_inventory_omitted_count=total - len(first))
-    return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
+    # Match the existing review-packet date on the actual one-pass wire. Do not
+    # infer publication time from source acquisition or the provider's clock.
+    review_date = ({'review_as_of_date_utc': context['review_as_of_date_utc']}
+                   if context.get('review_as_of_date_utc') else {})
+    return {**review_date, 'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
             'semantic_contract': FACT_READING_CONTRACT,
             'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
                          'reading_text': page.get('core_text'),

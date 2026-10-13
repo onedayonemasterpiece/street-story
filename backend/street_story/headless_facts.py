@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from . import review_packets
@@ -839,6 +840,10 @@ class HeadlessFacts:
                 'SELECT DISTINCT s.url FROM research_run_sources s JOIN research_runs r ON r.run_id=s.run_id '
                 f'WHERE r.poi_key IN ({placeholders})', tuple(poi_keys)))
             context = {
+                # The run owns this review date across retries and midnight;
+                # source publication/event dates still come from own evidence.
+                'review_as_of_date_utc': datetime.fromtimestamp(
+                    snapshot[2]['created_at'], timezone.utc).date().isoformat(),
                 'confirmed_identity': compact_physical_identity(research['visual_identity'],
                     photo_sha256=story['photo_sha256'], generation=story['_identity_generation'],
                     control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
@@ -853,6 +858,8 @@ class HeadlessFacts:
                 'previously_processed_sources': source_window,
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
+        LOG.info('street_story_fact_review_context story_id=%s run_id=%s review_as_of_date_utc=%s',
+                 story['id'], run_id, context['review_as_of_date_utc'])
         suggestions, failures = [], []
         for unit in units:
             unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
