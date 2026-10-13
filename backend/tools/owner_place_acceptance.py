@@ -149,12 +149,22 @@ def load_agent_qualification(path, *, routes=None):
             receipt = report.get('receipt', report)
             binding = receipt.get('binding') or {}
             tools = receipt.get('tool_receipts') or []
+            schema, prefix = RESULT_SCHEMA, INSTRUCTIONS + '\nINPUT='
+            native = route.get('provider_id') == 'codex_native'
+            if native:
+                from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS, source_candidates
+                from street_story.native_fact_research import CONTRACT as NATIVE_CONTRACT, INSTRUCTIONS as NATIVE_INSTRUCTIONS
+                schema, prefix = NATIVE_SCHEMA, NATIVE_INSTRUCTIONS + '\n' + FINAL_INSTRUCTIONS + '\nINPUT='
+                if (receipt.get('native_contract') != NATIVE_CONTRACT or receipt.get('native_terminal_status') != 'completed'
+                        or not receipt.get('thread_id') or not receipt.get('turn_id')
+                        or not receipt.get('native_threads') or not receipt.get('native_tool_calls')):
+                    raise ValueError('Native agent requires original executed-session/source readback')
             if (receipt.get('phase') != 'completed' or receipt.get('provider_id') != route.get('provider_id')
                     or receipt.get('model_id') != route.get('model_id') or not binding.get('attempt_id')
                     or not binding.get('story_id') or binding.get('purpose') != 'facts'
                     or receipt.get('provider_send_state') != 'response_closed'
-                    or receipt.get('frozen_schema') != RESULT_SCHEMA
-                    or not str(receipt.get('frozen_prompt') or '').startswith(INSTRUCTIONS + '\nINPUT=')
+                    or receipt.get('frozen_schema') != schema
+                    or not str(receipt.get('frozen_prompt') or '').startswith(prefix)
                     or not receipt.get('model_attempts') or not tools
                     or {item.get('name') for item in tools} != {'websearch', 'webfetch'}):
                 raise ValueError('Actual agent search/read receipt required; legacy reader flags cannot qualify')
@@ -163,7 +173,7 @@ def load_agent_qualification(path, *, routes=None):
                 if (not declaration or not Draft202012Validator(declaration['parameters']).is_valid(tool.get('arguments'))
                         or not tool.get('completed_at') or not tool.get('result_sha256')):
                     raise ValueError('Agent observed tool receipt outside current read-only scope')
-            facts = validate_result(receipt.get('result'))['facts']
+            facts = source_candidates(receipt.get('raw_result'))['facts'] if native else validate_result(receipt.get('result'))['facts']
             read_urls = {source.get(key) for source in receipt.get('sources') or []
                          if source.get('source_version_id') and source.get('content_sha256')
                          for key in ('requested_url', 'final_url')}

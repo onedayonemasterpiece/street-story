@@ -421,8 +421,18 @@ class AgentEvidenceMixin:
         if snapshot is None:
             return {'status': 'stale'}
         story, research, run = snapshot
+        native_document, native_verified = None, None
         with self.store.connection() as db:
             owner = headless._owner_fence(db, story, research)
+            if agent.get('provider_id') == 'codex_native' or 'native_fact' in candidate:
+                try:
+                    from .native_fact_contract import owned_assessment
+                    native_document, native_verified = owned_assessment(db, candidate, agent,
+                        story=story, run_id=run_id)
+                except (ValueError, TypeError, KeyError) as exc:
+                    code = str(exc)
+                    return {'status': 'unverified', 'reason': code if code.startswith('native_fact_')
+                        and len(code) < 120 else 'native_research_basis_invalid'}
             retained = None
             attempt = db.execute('SELECT role FROM research_provider_attempts WHERE attempt_id=? AND story_id=?',
                 (agent.get('attempt_id'), story['id'])).fetchone()
@@ -463,11 +473,17 @@ class AgentEvidenceMixin:
                 if retained is not None:
                     _retained_agent_document(db, agent, candidate, story=current[0],
                         run_id=run_id, identity=current[1]['visual_identity'])
+                if native_verified is not None:
+                    from .native_fact_contract import owned_assessment
+                    owned_assessment(db, candidate, agent, story=current[0], run_id=run_id)
 
         url = str(candidate.get('url') or '').rstrip('/')
         reader = self.providers.gemini
         original = recovered['receipt'] if recovered else None
-        if retained is not None:
+        if native_document is not None:
+            document = native_document
+            version = document['source_version_id']
+        elif retained is not None:
             document = retained
             version = retained['source_version_id']
             if recovered and recovered['receipt'].get('source_version_id') != version:
@@ -520,7 +536,9 @@ class AgentEvidenceMixin:
                 _write_confirmation_checkpoint(db, job['id'], stage, {'owner': owner, 'candidate': candidate,
                     'agent': agent, 'receipt': receipt}, now)
 
-        verified = recovered or await reader.verify_agent_evidence(payload, checkpoint=checkpoint, guard=guard)
+        if native_verified is not None and recovered is None:
+            checkpoint(native_verified['receipt'])
+        verified = recovered or native_verified or await reader.verify_agent_evidence(payload, checkpoint=checkpoint, guard=guard)
         if not recovered and verified.get('reason') == 'confirmation_routes_unavailable':
             adapter = self.providers.research
             routes = adapter.fact_agent_routes() if callable(getattr(adapter, 'fact_agent_routes', None)) else []
@@ -573,6 +591,9 @@ class AgentEvidenceMixin:
             relation_excerpt = confirmation_excerpt(relation['fragment'])
             relation.update(fragment=relation_excerpt['text'], fragment_kind=relation_excerpt['kind'],
                 fragment_truncated=relation_excerpt['truncated'], fragment_original_sha256=relation_excerpt['original_sha256'])
+        if native_verified is not None:
+            source.update(verification_level='one_model', assessment_origin='native_research_single_model',
+                original_native_attempt_id=agent['attempt_id'])
         item = {'text': row['text'], 'claim_key': row['claim_key'],
                 'existing_fact_id': row['existing_fact_id'], 'confidence': 1.0,
                 'selected': False, 'sources': [source]}
@@ -592,6 +613,9 @@ class AgentEvidenceMixin:
                     'word_limit': 25, 'confirmed_fragment': excerpt}}
             if 'checks' in row:
                 operation['confirmation_checks'] = row['checks']
+            if native_verified is not None:
+                operation.update(verification_level='one_model', assessment_origin='native_research_single_model',
+                    original_native_attempt_id=agent['attempt_id'])
             if row['verdict'] == 'supported':
                 accept_fact_basis(db, story['id'], fact_id, evidence_ids, operation=operation, now=self.store.now())
             if row['conflicts_with_existing']:

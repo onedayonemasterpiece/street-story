@@ -14,6 +14,7 @@ from .errors import RetryableProviderError
 
 GRANT_SECONDS = 15 * 60
 MIN_REMAINING_PERCENT = 3  # Owner reserve; independent of research lifetime and local work limits.
+NATIVE_RESEARCH_MODELS = frozenset({'gpt-6-luna', 'gpt-6.1-sol'})
 
 
 def credential_stamp(home: Path = Path('/home/dev/.codex')) -> str:
@@ -65,7 +66,11 @@ class NativeQuotaPermission:
     def _key(self, stamp):
         return 'native-luna-quota-permission-v1:' + stamp
 
-    async def ensure(self, client):
+    async def ensure(self, client, *, model='gpt-6-luna'):
+        # This permission is for the account's shared quota, not a model
+        # entitlement. The executed model still needs native readback.
+        if model not in NATIVE_RESEARCH_MODELS:
+            raise ValueError('native_quota_model_not_permitted')
         async with self.lock:
             try:
                 stamp = self.binding_stamp()
@@ -73,10 +78,10 @@ class NativeQuotaPermission:
                 raise RetryableProviderError('native_quota_binding_unavailable', retry_at=self.store.now() + 60) from None
             key, now = self._key(stamp), self.store.now()
             grant = self.store.cache_get(key) or {}
-            if (grant.get('binding_stamp') == stamp and grant.get('model') == 'gpt-6-luna'
+            if (grant.get('binding_stamp') == stamp and grant.get('model') in NATIVE_RESEARCH_MODELS
                     and grant.get('issued_at', now + 1) <= now < grant.get('expires_at', 0)
                     and grant.get('remaining_percent', 0) >= MIN_REMAINING_PERCENT):
-                return grant
+                return {**grant, 'model': model}
             try:
                 reply = await client.request('account/rateLimits/read', {})
             except Exception:
@@ -95,7 +100,7 @@ class NativeQuotaPermission:
                 future = [w['resets_at'] for w in snapshot['windows']
                           if isinstance(w['resets_at'], (int, float)) and w['resets_at'] > now]
                 raise RetryableProviderError('native_quota_below_reserve', retry_at=min(future) if future else now + GRANT_SECONDS)
-            grant = {**snapshot, 'binding_stamp': stamp, 'model': 'gpt-6-luna',
+            grant = {**snapshot, 'binding_stamp': stamp, 'model': model,
                      'issued_at': now, 'expires_at': now + GRANT_SECONDS}
             self.store.cache_put(key, grant, GRANT_SECONDS)
             return grant

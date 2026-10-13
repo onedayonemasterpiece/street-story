@@ -22,6 +22,31 @@ A POI is keyed by the stable accepted object identity. Each topic keeps
 evidence-backed atomic facts for that POI. Facts accumulate instead of being
 discarded on each research pass.
 
+The optional native research route is configured as
+`STREET_STORY_FACT_AGENT_ROUTES=[{"provider_id":"codex_native","model_id":"gpt-6-luna"}]`.
+It remains unavailable until its current profile has actual search/read
+qualification. Luna owns research and decides whether to call a scoped native
+`gpt-6.1-sol` child. Both models share native account admission and quota; a
+quota grant is not proof of which model ran. Existing native thread/turn IDs,
+execution-context readback, source versions and model usage are retained.
+
+A complete original researcher assessment may enter the existing fact ledger
+without a second model call. It must address its own actually received frozen
+chunks and establish physical subject, relationship to the selected house,
+scope, time/modality and semantic justification. Such sources explicitly retain
+`verification_level=one_model`; this is not independent verification. Incomplete
+assessments stay unverified. The existing conflict journal, arbitration history,
+revision staleness and eligibility rules still apply. A fact keeps all source
+supports, including different frozen versions of the same URL.
+
+`backend/tools/native_facts_acceptance.py` measures an unqualified native route
+on an isolated managed Store through normal EXIF intake, exact mapped selection,
+research jobs and ledger admission. It neither installs qualification nor proves
+Android/Live/publication acceptance. The incremental P0→P1 instruction at
+[af501586](https://github.com/onedayonemasterpiece/street-story/blob/af5015868036d66385f5ec9ac19cb07d3b8a9a55/docs/prompts/street-story-p0-codex-facts-incremental-20261013.md)
+requires real102 initial+two additions and105/131 evidence before full P0 E2E;
+P1 qualification and E2E follow successful P0 acceptance. These gates are pending.
+
 An atomic fact is a short concrete statement: a date or period, architect or
 founder, reconstruction, change of use, ownership event, demolition attempt,
 documented visit, or another specific event. The target presentation length is

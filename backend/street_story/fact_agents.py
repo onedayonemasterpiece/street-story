@@ -112,6 +112,16 @@ def configured_routes(adapter, *, include_unqualified=False):
                     checkpoint=adapter.checkpoint, scope_guard=adapter.transport_scope_guard)
             client = clients[key]
             route = AgentRoute(provider, model, client.endpoint, client, client.directory)
+        elif provider == 'codex_native' and model == 'gpt-6-luna':
+            from ai_resource_control.workload import WorkloadAdmission
+            from .native_fact_research import NativeFactResearch
+            from .native_vision import ACCOUNT_SCOPE
+            client = getattr(adapter, 'native_facts', None)
+            if client is None:
+                admission = adapter.fenced_admission(WorkloadAdmission(adapter.control, ACCOUNT_SCOPE)) if adapter.control else adapter.agent_admission
+                adapter.native_facts = client = NativeFactResearch(adapter.service,
+                    admission=admission, checkpoint=adapter.checkpoint)
+            route = AgentRoute(provider, model, client.endpoint, client)
         else:
             continue
         if item.get('endpoint') and item['endpoint'].rstrip('/') != route.endpoint.rstrip('/'):
@@ -130,6 +140,11 @@ def configured_routes(adapter, *, include_unqualified=False):
 def route_plan(routes):
     """Up to two independent services, with at most four qualified routes total."""
     routes = list(routes)
+    native = [route for route in routes if route.provider_id == 'codex_native']
+    if native:
+        # Luna owns the decision and native child call; no host count heuristic
+        # starts Sol or a second simultaneous research operation.
+        return native[:1]
     SystemRandom().shuffle(routes)
     primary, tail, seen = [], [], set()
     for route in routes:
@@ -165,13 +180,16 @@ def _source_coverage(receipt):
     from .fact_agent_providers import _read_url_key
     proposed = {_read_url_key(row['url']) for row in (receipt.get('result') or {}).get('facts', [])
         if isinstance(row.get('url'), str)}
+    proposed_versions = {(row.get('native_basis') or {}).get('source_version_id')
+        for row in (receipt.get('result') or {}).get('facts', [])}
     unproposed = set()
     for source in receipt.get('sources', []):
         if not source.get('source_version_id') or not source.get('content_sha256'):
             continue
         urls = {_read_url_key(source[key]) for key in ('requested_url', 'final_url')
             if isinstance(source.get(key), str)}
-        if not (urls - {None}) & proposed:
+        if (receipt.get('provider_id') == 'codex_native' and source['source_version_id'] not in proposed_versions
+                or receipt.get('provider_id') != 'codex_native' and not (urls - {None}) & proposed):
             unproposed.add(source['source_version_id'])
     return {'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
         'unproposed_source_version_ids': sorted(unproposed),
@@ -341,6 +359,31 @@ def agent_context(identity, goal, run_id, now):
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
 
 
+def native_agent_context(service, story, identity, goal, run_id):
+    """Owned accumulated knowledge and the existing complete conflict journal."""
+    from .conflict_journal import conflict_journal
+    from .agent_evidence import selected_object_context
+    context = agent_context(identity, goal, run_id, service.store.now())
+    context['selected_object'].update(selected_object_context(identity))
+    with service.store.connection() as db:
+        context['known'] = [{**dict(row), 'sources': json.loads(row['sources_json'] or '[]')}
+            for row in db.execute('SELECT a.assertion_id AS fact_id,a.display_text AS text,'
+                'a.semantic_key AS claim_key,a.eligibility,a.revision_digest,f.sources_json '
+                'FROM fact_assertions a LEFT JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
+                'WHERE a.story_id=? ORDER BY a.assertion_id', (story['id'],))]
+        for item in context['known']:
+            item.pop('sources_json', None)
+    conflicts, cursor = [], None
+    while True:
+        page = conflict_journal(service, story['id'], cursor)
+        conflicts.extend(page['items'])
+        if not page['has_more']:
+            break
+        cursor = page['next_cursor']
+    context['conflict_journal'] = conflicts
+    return context
+
+
 async def run_fact_agents(adapter, job, run_id, goal):
     from .headless_facts import HeadlessFacts
     headless = HeadlessFacts(adapter.service)
@@ -358,10 +401,13 @@ async def run_fact_agents(adapter, job, run_id, goal):
         if not plan:
             _finish(adapter, job, run_id, headless, epoch, 'research_routes_unavailable', pending=True)
             return {'outcome': 'resource_blocked', 'reason': 'research_routes_unavailable'}
+        context = agent_context(research['visual_identity'], goal, run_id, adapter.service.store.now())
+        if any(route.provider_id == 'codex_native' for route in plan):
+            context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
         saved = {'pipeline': QUALIFICATION_KEY, 'route_ids': [r.route_id for r in plan],
             'primary_count': min(2, len({r.provider_id for r in plan})),
             'provider_availability': 'independent' if len({r.provider_id for r in plan}) > 1 else 'reduced',
-            'context': agent_context(research['visual_identity'], goal, run_id, adapter.service.store.now()),
+            'context': context,
             'routes': {}}
         saved = _persist_plan(adapter, job, run_id, headless, epoch, initial=saved)
     context = saved['context']
@@ -387,6 +433,10 @@ async def run_fact_agents(adapter, job, run_id, goal):
 
     async def retained(route_id, state):
         """Extract the same owned cohort once before asking another discovery route."""
+        if state.get('provider_id') == 'codex_native':
+            # Native continuation/readback belongs to the original Luna family.
+            # A host coverage heuristic must not launch another model over it.
+            return state
         from .fact_agent_providers import retained_source_cohort, run_retained_source_agent
         continuation = state.get('retained') or {}
         with adapter.service.store.connection() as db:
@@ -519,7 +569,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
                     state.get('supported_count', 0),
                     sum(row.get('status') == 'unverified' for row in state.get('outcomes', [])))
             return await retained(route_id, state)
-        if state.get('phase') == 'unknown' and (route is None or route.provider_id != 'opencode'):
+        if state.get('phase') == 'unknown' and (route is None or route.provider_id not in {'opencode', 'codex_native'}):
             # No blind retry of a failed/unknown synchronous operation.
             return await retained(route_id, state)
         if route is None:
@@ -616,8 +666,10 @@ async def run_fact_agents(adapter, job, run_id, goal):
             addressed = db.execute("SELECT 1 FROM research_provider_attempts WHERE story_id=? "
                 "AND role LIKE 'facts_agent_%' AND json_extract(receipt_json,'$.binding.job_id')=? "
                 "AND json_extract(receipt_json,'$.phase') NOT IN ('created','completed','failed','aborted') "
-                "AND json_extract(receipt_json,'$.session_id') IS NOT NULL "
-                "AND json_extract(receipt_json,'$.message_id') IS NOT NULL LIMIT 1", (story['id'], job['id'])).fetchone()
+                "AND ((json_extract(receipt_json,'$.session_id') IS NOT NULL "
+                "AND json_extract(receipt_json,'$.message_id') IS NOT NULL) OR "
+                "(json_extract(receipt_json,'$.thread_id') IS NOT NULL "
+                "AND json_extract(receipt_json,'$.turn_id') IS NOT NULL)) LIMIT 1", (story['id'], job['id'])).fetchone()
         if addressed:
             raise RetryableProviderError('research_agent_original_pending', retry_at=adapter.service.store.now()+30)
     return outcome

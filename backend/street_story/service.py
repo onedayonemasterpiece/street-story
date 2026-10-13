@@ -110,6 +110,8 @@ class StreetStoryService:
 
         if self.providers.research is None and (settings.research_endpoint or settings.native_vision_reserve
                 or reveal(settings.research_gigachat_key)
+                or any(route.get('provider_id') == 'codex_native' and route.get('enabled') is not False
+                    for route in settings.fact_agent_routes)
                 or settings.gemini_keys and settings.gemini_quota_supabase_url):
             from .research_adapter import ProductResearchAdapter
             self.providers.research = ProductResearchAdapter(self)

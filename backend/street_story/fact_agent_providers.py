@@ -359,10 +359,14 @@ async def run_retained_source_agent(adapter, route, story, context, cohort, *, o
 
 async def run_tool_agent(adapter, route, story, context, *, binding, guard, _retained_cohort=None):
     """A bounded agent task; no new scheduler, credential hopping or tool runtime."""
-    if route.provider_id != 'opencode' and binding.get('phase') not in {None, 'created'}:
+    if route.provider_id not in {'opencode', 'codex_native'} and binding.get('phase') not in {None, 'created'}:
         raise ResearchUnavailable('research_agent_original_unaddressable', {'binding': binding,
             'phase': binding.get('phase'), 'provider_send_state': 'possibly_sent', 'retry_safe': False})
     prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(context, ensure_ascii=False)
+    if route.provider_id == 'codex_native':
+        from .native_fact_contract import FINAL_INSTRUCTIONS
+        from .native_fact_research import INSTRUCTIONS as NATIVE_INSTRUCTIONS
+        prompt = NATIVE_INSTRUCTIONS + '\n' + FINAL_INSTRUCTIONS + '\nINPUT=' + json.dumps(context, ensure_ascii=False)
     if _retained_cohort is not None:
         prompt = OWNED_SOURCE_INSTRUCTIONS + '\nSOURCE_PACKET_UNTRUSTED=' + json.dumps(
             {'context': context, 'source_packet': _retained_cohort, 'output_schema': RESULT_SCHEMA},
@@ -413,6 +417,13 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         'model_id': route.model_id, 'frozen_prompt': prompt, 'frozen_schema': RESULT_SCHEMA,
         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
         'provider_send_state': 'not_sent', 'sources': [], 'model_attempts': []}
+    if route.provider_id == 'codex_native' and binding.get('phase') not in {None, 'created'}:
+        with adapter.service.store.connection() as db:
+            saved = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                (binding['attempt_id'],)).fetchone()
+        if not saved:
+            raise ResearchUnavailable('native_research_original_receipt_missing', {'phase': 'unknown', 'retry_safe': False})
+        receipt = route.client.original_receipt(binding) or json.loads(saved[0])
     if _retained_cohort is not None:
         receipt.update(contract=OWNED_SOURCE_CONTRACT, retained_source_packet=copy.deepcopy(_retained_cohort),
             route_id=route.route_id, profile_sha256=route.profile_fingerprint,
@@ -459,6 +470,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             docs = list(docs.values())
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
+            if route.provider_id == 'codex_native':
+                with adapter.service.store.connection() as db:
+                    for document in value['documents']:
+                        document['chunks'] = [{'chunk_id': row['chunk_id'], 'text': row['chunk_text']}
+                            for row in db.execute('SELECT chunk_id,chunk_text FROM source_chunks '
+                                'WHERE source_version_id=? ORDER BY ordinal', (document.get('source_version_id'),))]
             for doc in docs:
                 if doc.get('normalized_text') and doc.get('source_version_id') and doc.get('content_sha256'):
                     fetched.update(value for value in (doc.get('requested_url'), doc.get('final_url'))
@@ -469,7 +486,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         receipt.setdefault('tool_receipts', []).append({'name': name, 'arguments': args,
             'completed_at': adapter.service.store.now(), 'result_sha256': hashlib.sha256(
                 json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()})
-        if route.provider_id == 'google':
+        if route.provider_id in {'google', 'codex_native'}:
             receipt.setdefault('completed_tool_transcript', []).append(copy.deepcopy({
                 **receipt['tool_receipts'][-1], 'result': value}))
         adapter._checkpoint_receipt(binding, receipt)
@@ -490,7 +507,22 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
 
     try:
         async with asyncio.timeout(720):
-            if route.provider_id == 'google':
+            if route.provider_id == 'codex_native':
+                from .native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, source_candidates
+                if binding.get('phase') in {None, 'created'}:
+                    receipt['frozen_schema'] = copy.deepcopy(NATIVE_SCHEMA)
+                native = await route.client.run(binding=binding, receipt=receipt, prompt=prompt,
+                    schema=NATIVE_SCHEMA, tools=TOOLS, callback=tool, guard=guard)
+                receipt, text = native['receipt'], native['text']
+                receipt['raw_result_text'] = text
+                receipt['raw_result'] = json.loads(text)
+                raw = source_candidates(receipt['raw_result'])
+                guard()
+                receipt.update(phase='completed', provider_send_state='response_closed', result=raw,
+                    elapsed_seconds=time.monotonic()-started)
+                adapter._checkpoint_receipt(binding, receipt)
+                return {'result': raw, 'receipt': receipt, 'sources': receipt['sources']}
+            elif route.provider_id == 'google':
                 from google.genai import types
                 client = route.client
                 model, _pool, quota, executor = next(item for item in client.research_routes if item[0] == route.model_id)
@@ -658,6 +690,16 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 raise ValueError('agent_provider_unavailable')
             raise ValueError('agent_tool_rounds_exhausted')
     except BaseException as exc:
+        if route.provider_id == 'codex_native':
+            # Native retains its own original send/terminal state. A timeout in
+            # this outer observer must not relabel a submitted turn NOT_SENT.
+            if receipt.get('phase') == 'completed':
+                receipt.update(phase='failed', error_code=failure_code(exc),
+                    provider_send_state='response_closed')
+            adapter._checkpoint_receipt(binding, receipt)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise ResearchUnavailable(failure_code(exc), receipt) from exc
         if getattr(exc, 'provider_send_state', None) in {'not_sent', 'response_closed'}:
             sent = False
         if route.provider_id == 'gigachat' and receipt['model_attempts'] and receipt['model_attempts'][-1].get('http_status') is not None:

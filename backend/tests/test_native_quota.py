@@ -135,3 +135,52 @@ async def test_account_changed_while_quota_rpc_pending_does_not_grant():
     with pytest.raises(RetryableProviderError, match='binding_changed'):
         await permission.ensure(client)
     assert not store.cache
+
+
+@pytest.mark.asyncio
+async def test_luna_and_sol_share_one_account_grant_without_mutating_its_issuer():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    luna = await permission.ensure(client)
+    sol = await permission.ensure(client, model='gpt-6.1-sol')
+    assert client.calls == 1 and len(store.cache) == 1
+    assert luna['model'] == 'gpt-6-luna' and sol['model'] == 'gpt-6.1-sol'
+    assert {k: v for k, v in luna.items() if k != 'model'} == {
+        k: v for k, v in sol.items() if k != 'model'}
+    assert next(iter(store.cache.values()))['model'] == 'gpt-6-luna'
+
+
+@pytest.mark.asyncio
+async def test_sol_quota_failure_blocks_luna_and_sol_on_the_same_binding():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    grant = await permission.ensure(client, model='gpt-6.1-sol')
+    permission.invalidate(grant, 'provider_quota')
+    client.reply['rateLimits']['primary']['usedPercent'] = 100
+    for model in ('gpt-6-luna', 'gpt-6.1-sol'):
+        with pytest.raises(RetryableProviderError, match='below_reserve'):
+            await permission.ensure(client, model=model)
+    assert len(store.cache) == 1
+
+
+@pytest.mark.asyncio
+async def test_sol_grant_rechecks_a_changed_credential_and_all_quota_windows():
+    store, client, binding = Store(), Client(), ['first']
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: binding[0])
+    await permission.ensure(client, model='gpt-6.1-sol')
+    binding[0] = 'second'
+    client.reply['rateLimits']['secondary'] = {'usedPercent': 100, 'resetsAt': 3000}
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await permission.ensure(client, model='gpt-6-luna')
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_cannot_reuse_an_account_grant():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    await permission.ensure(client)
+    before = copy.deepcopy(store.cache)
+    with pytest.raises(ValueError, match='model_not_permitted'):
+        await permission.ensure(client, model='unapproved')
+    assert client.calls == 1 and store.cache == before

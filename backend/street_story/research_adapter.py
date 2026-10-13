@@ -468,6 +468,8 @@ class ProductResearchAdapter:
             await asyncio.gather(*pending, return_exceptions=True)
         if self.native_vision is not None:
             await self.native_vision.close()
+        if getattr(self, 'native_facts', None) is not None:
+            await self.native_facts.close()
         if getattr(self, 'live_facts', None) is not None:
             await self.live_facts.close()
         if getattr(self, 'control', None) is not None:
@@ -585,7 +587,8 @@ class ProductResearchAdapter:
         binding, saved = self.attempt(story, role, unit)
         if saved:
             return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
-        readback = (binding.get('session_id') and binding.get('message_id')
+        readback = ((binding.get('session_id') and binding.get('message_id')
+                    or binding.get('thread_id') and binding.get('turn_id'))
                     and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
         # Existing receipt metadata is the durable wait fence. An explicit
         # Resume changes the owner epoch and permits one new admission probe;

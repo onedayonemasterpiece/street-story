@@ -101,10 +101,12 @@ class Settings:
         if len(self.fact_agent_routes) > 16:
             raise ValueError('At most 16 fact agent routes may be configured')
         for route in self.fact_agent_routes:
-            if (not isinstance(route, dict) or route.get('provider_id') not in {'google', 'gigachat', 'opencode'}
+            if (not isinstance(route, dict) or route.get('provider_id') not in {'google', 'gigachat', 'opencode', 'codex_native'}
                     or not isinstance(route.get('model_id'), str) or not route['model_id'].strip()
                     or set(route) - {'provider_id', 'model_id', 'endpoint', 'directory', 'enabled'}):
                 raise ValueError('Invalid fact agent route')
+            if route['provider_id'] == 'codex_native' and route['model_id'] != 'gpt-6-luna':
+                raise ValueError('Native fact research must start in Luna')
 
     @property
     def gemini_keys(self) -> tuple[SecretStr, ...]:
