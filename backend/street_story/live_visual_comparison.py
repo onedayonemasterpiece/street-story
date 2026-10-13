@@ -390,6 +390,8 @@ class LiveVisualComparisonMixin:
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': physical_packet,
+            **({'observed_address_context': identity['_owner_group_address_context']}
+               if identity.get('_owner_group_address_context') else {}),
             'research_priority': {key: priority[key] for key in ('active_candidate_ids',
                 'reason', 'next_question', 'next_step', 'contradictions') if key in priority},
             'reserve_candidate_count': len(priority.get('reserve_candidate_ids') or []),
@@ -436,12 +438,13 @@ class LiveVisualComparisonMixin:
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
-        from .owner_group_identity import selected_group, physical_members, reference_allowed
+        from .owner_group_identity import selected_group, physical_members, reference_allowed, group_input_context
         group = selected_group(research, photo_sha256=story['photo_sha256'], generation=generation)
         if group:
-            identity = {**identity, 'candidates': [*physical_members(research, identity.get('candidates') or []),
+            story = group_input_context(story, research)
+            identity = {**identity, '_owner_group_address_context': story['_owner_group_address_context'], 'candidates': [*physical_members(research, identity.get('candidates') or []),
                 *[c for c in identity.get('candidates') or [] if str(c.get('candidate_id') or '').startswith('web:')]],
-                'owner_selected_group': {'group_id': group['group_id'], 'candidate_ids': group['candidate_ids']}}
+                'owner_selected_group': story['_owner_selected_group']}
         catalog = {c.get('candidate_id'): c for c in identity.get('candidates', [])}
         collection_pages = {}
         def reference_eligible(candidate):

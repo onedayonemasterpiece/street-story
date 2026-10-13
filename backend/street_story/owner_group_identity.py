@@ -66,6 +66,91 @@ def project_group_resolution(research, identity, now):
                                       'narrowed_candidate_id': None}
 
 
+def group_input_context(story, research):
+    """Observed address/locality inputs beside a frozen owner group; never identity."""
+    from .place_selection import snapshot_member_address, snapshot_city, object_center
+    from .identity_source_selection import observed_address_context
+
+    group = selected_group(research, photo_sha256=story['photo_sha256'],
+                           generation=int(research.get('identity_generation') or 0))
+    if not group:
+        return story
+    snapshot = next((s for s in research.get('place_map_snapshots') or []
+        if s.get('snapshot_id') == group.get('snapshot_id')
+        and s.get('photo_sha256') == story['photo_sha256']), {})
+    members = json.loads(canonical(group['candidates']))
+    original = {c['candidate_id']: c for c in [*snapshot.get('address_objects', []),
+        *snapshot.get('city_objects', []), *snapshot.get('candidates', [])]}
+    nodes, cities = {}, []
+
+    def literal_city(entry):
+        anchor = entry.get('search_anchor') or {}
+        # This DTO retains addr:city separately from map_object's type tags.
+        return (anchor.get('city') if anchor.get('source') == 'osm.observed_tags'
+            and anchor.get('city_provenance') in {None, 'osm.selected.addr_city'} else None)
+
+    for member in members:
+        cid = member['candidate_id']
+        captured = original.get(cid) or {}
+        own_city = literal_city(captured)
+        if own_city and member.get('map_address'):
+            member['map_address'] = {**member['map_address'], 'city': own_city}
+        # Revalidate linkage against original nodes and the frozen group contour.
+        checked = {**member, 'search_anchor': {'city': own_city} if own_city else {}}
+        snapshot_member_address(snapshot, checked)
+        for address in checked['search_anchor'].get('address_entries') or []:
+            node = json.loads(canonical(original[address['candidate_id']]))
+            node_city = literal_city(node)
+            if node_city:
+                node['map_address'] = {**node['map_address'], 'city': node_city}
+            node.update(identity_eligible=False, identity_role='owner_group_address_context')
+            nodes[node['candidate_id']] = node
+        snapshot_city(snapshot, checked)
+        anchor = checked['search_anchor']
+        if not anchor.get('city'):
+            receipt = (snapshot.get('city_reverse') or {}).get(cid) or {}
+            center = object_center(member)
+            if (receipt.get('status') == 'completed' and receipt.get('center') == center
+                    and receipt.get('provenance') == 'osm.selected_center_reverse'):
+                anchor.update(city=receipt.get('city'), city_provenance=receipt['provenance'])
+        cities.append({'candidate_id': cid, 'city': anchor.get('city') or '',
+            'provenance': anchor.get('city_provenance'),
+            'source_candidate_id': anchor.get('city_source_candidate_id')})
+    shared = {c['city'] for c in cities if c['city']}
+    city = next(iter(shared)) if len(shared) == 1 and all(c['city'] for c in cities) else ''
+    observed = [*members, *nodes.values()]
+    # The existing address builder restores city from same-ID raw OSM input.
+    # Keep only the literal captured city tag; no neighbor/derived city becomes
+    # a physical object's own attribute.
+    city_tags = []
+    for entry in observed:
+        captured = original.get(entry['candidate_id']) or {}
+        own_city = literal_city(captured)
+        if own_city:
+            _, kind, identifier = entry['candidate_id'].split(':')
+            city_tags.append({'type': kind, 'id': int(identifier), 'tags': {'addr:city': own_city}})
+    group_context = {'group_id': group['group_id'], 'candidate_ids': group['candidate_ids'],
+                     'owner_context': group.get('owner_context') or {}, 'locality_context': cities}
+    # A prior camera reverse/OSM projection cannot widen or locate this group.
+    scoped_research = {k: v for k, v in research.items() if k != 'osm'}
+    result = {**story, 'research_json': canonical(scoped_research),
+        '_identity_observed_candidates': observed,
+        '_identity_map_snapshot': {'owner_group_snapshot_id': group.get('snapshot_id'),
+            'observed_pool': city_tags},
+        '_owner_selected_group': group_context,
+        '_identity_search_context': {'nearby': observed, 'reverse_address': {'city': city} if city else {},
+            'reverse_address_provenance': 'owner_selected_snapshot_locality',
+            'owner_selected_group': group_context}}
+    if group.get('location_basis') == 'owner_relocated':
+        result.update(latitude=None, longitude=None, _camera_hints={}, _camera_position_verified=False)
+    result['_owner_group_address_context'] = observed_address_context(result, members)
+    LOG.info('street_story_identity stage=owner_group_context story_id=%s generation=%s '
+        'group_id=%s members=%s address_nodes=%s known_localities=%s shared_locality=%s',
+        story['id'], group['generation'], group['group_id'], len(members), len(nodes),
+        sum(bool(c['city']) for c in cities), bool(city))
+    return result
+
+
 async def resolve_group(service, story, research, *, job_id, job_attempt, transcript=''):
     """Acquire/compare only the selected physical group; never search a new POI."""
     from .identity_lifecycle import visual_match, confidence
@@ -101,7 +186,7 @@ async def resolve_group(service, story, research, *, job_id, job_attempt, transc
         '_owner_selected_group': {'group_id': group['group_id'], 'candidate_ids': group['candidate_ids'],
                                   'owner_context': group.get('owner_context') or {}},
         'latitude': camera.get('latitude'), 'longitude': camera.get('longitude')}
-    story['_identity_search_context'] = {'nearby': members, 'owner_selected_group': story['_owner_selected_group']}
+    story = group_input_context(story, research)
     candidates = list(members)
     raw = None
     provider = getattr(service.providers, 'research', None)
