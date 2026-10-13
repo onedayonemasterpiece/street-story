@@ -18,7 +18,7 @@ import time
 
 from devcoveer_story_diag import load_installer
 from identity_corpus import NoPublication
-from owner_place_acceptance import registry_item
+from owner_place_acceptance import author_context, registry_item
 from product_recovery_acceptance import managed, require_frozen_checkout, save
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -154,6 +154,15 @@ async def run(args):
     from street_story.research_budget import finish_attempt
 
     item, data = registry_item(args.registry, args.message)
+    owner_context = None
+    if args.owner_address_from_registry:
+        registry = json.loads(args.registry.read_text())
+        row = next(row for row in registry['items'] if any(
+            source.get('telegram_message_id') == args.message for source in row['sources']))
+        if (row.get('owner_hint', {}).get('status') != 'owner_confirmed_address'
+                or row['expected'].get('status') != 'owner_confirmed_address'):
+            raise ValueError('Only a documented owner-confirmed address may supply selection context')
+        owner_context = author_context(item)
     if item['camera_gps'].get('status') != 'verified_exif':
         raise ValueError('Only original files with internal verified GPS may be tested')
     service = RuntimeStreetStoryService(Settings.from_env())
@@ -167,6 +176,8 @@ async def run(args):
         'app_e2e': False, 'reference_facts_or_urls_supplied': False, 'cost': 'unknown'}
     if args.coverage_goal:
         campaign['explicit_new_coverage_goal'] = args.coverage_goal
+    if owner_context:
+        campaign['explicit_owner_selection_context'] = owner_context
     original_receipt = None
     if continuation:
         campaign.update(mode='native_fact_only_explicit_continuation', cold_acceptance=False,
@@ -219,6 +230,8 @@ async def run(args):
             body = {'mode': 'exact', 'command_id': token+':place', 'snapshot_id': snapshot['snapshot_id'],
                 'candidate_id': selected, 'expected_photo_sha256': item['sha256'],
                 'expected_identity_generation': story['identity_generation'], 'expected_candidate_id': None}
+            if owner_context:
+                body['owner_context'] = owner_context
             await prepare_place_context(service, sid, body)
             confirmed = confirm_place(service, sid, body['command_id'], body)
             campaign.update(selected_candidate_id=selected, status='RESEARCHING')
@@ -353,7 +366,12 @@ if __name__ == '__main__':
         help='An explicit new linked command in the original selected story, retaining failed reads and discovered leads')
     parser.add_argument('--coverage-goal',
         help='A distinct explicit question about a model-reported gap; requires --continue-from, not initial/recovery replay')
+    parser.add_argument('--owner-address-from-registry', action='store_true',
+        help='Supply only a documented owner-confirmed address through the existing selection owner_context')
     args = parser.parse_args()
+    if args.owner_address_from_registry and (args.continue_from or args.resume_closed_native
+            or args.recover_assessments_from):
+        parser.error('An owner address requires a fresh explicit selection; existing selected stories stay unchanged')
     if args.coverage_goal:
         args.coverage_goal = args.coverage_goal.strip()
         if (not args.continue_from or args.resume_closed_native or args.recover_assessments_from
