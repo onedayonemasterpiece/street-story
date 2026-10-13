@@ -90,7 +90,7 @@ def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
     assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
     proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
         'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
-        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v4-mandatory-search-read')), (giga, giga.profile_fingerprint)]]
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v5-read-url-structured-output')), (giga, giga.profile_fingerprint)]]
     settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
     adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
         providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
@@ -227,7 +227,8 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version(varia
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('empty_first', [False, True])
-async def test_google_requires_search_then_own_fetch_before_automatic_final(empty_first):
+@pytest.mark.parametrize('extra_read', [False, True])
+async def test_google_requires_search_then_own_fetch_before_automatic_final(empty_first, extra_read):
     import json
     from google.genai import types
     from street_story.fact_agent_providers import run_tool_agent
@@ -235,7 +236,9 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
         'source_version_id': 'version', 'content_sha256': 'content', 'normalized_text': 'Read actual source text.'}
     candidate = {'text': 'Здание построено в 1901 году.', 'subject_scope': 'selected_building',
         'url': source['final_url'], 'quote': 'built in 1901', 'source_date': None}
-    stages, searches, saved = [], [], []
+    second_url = 'https://source.example/second'
+    stages, searches, saved, reads = [], [], [], []
+    preliminary = '```json\n' + json.dumps({'facts': [candidate]}) + '\n```'
     async def search(query):
         searches.append(query)
         if empty_first and len(searches) == 1:
@@ -243,29 +246,40 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
             raise RetryableProviderError('public_web_search_no_https_results')
         return SimpleNamespace(grounding_sources=[{'url': source['final_url']}])
     async def fetch(urls, context):
-        assert urls == [source['final_url']] and context == {'research_run_id': 'run1'}
-        return {source['requested_url']: source}
+        assert urls[0] in {source['final_url'], second_url} and context == {'research_run_id': 'run1'}
+        reads.extend(urls)
+        return {urls[0]: {**source, 'requested_url': urls[0], 'final_url': urls[0]}}
     async def generate(_key, _timeout, contents, config, **kwargs):
-        tool_config = config.tool_config.function_calling_config
-        forced = (tool_config.allowed_function_names or [None])[0]
-        stages.append(forced)
-        assert tool_config.mode.value == ('ANY' if forced else 'AUTO')
-        if forced:
-            assert config.response_mime_type is None and config.response_json_schema is None
-        else:
+        strict_final = config.tool_config is None
+        if strict_final:
             from jsonschema import Draft202012Validator
+            stages.append('strict_final')
+            assert config.tools is None
             assert config.response_mime_type == 'application/json'
             wire = config.model_dump(mode='json', exclude_none=True)
             schema = wire['response_json_schema']
-            assert schema['properties']['facts']['items']['properties']['url']['enum'] == [source['final_url']]
+            assert schema['properties']['facts']['items']['properties']['url']['enum'] == sorted(reads)
             assert Draft202012Validator(schema).is_valid({'facts': [candidate]})
             assert not Draft202012Validator(schema).is_valid({'facts': [{**candidate, 'url': 'https://source.example/aricle'}]})
+            assert contents[-2].parts[0].text == preliminary
+            assert any(part.function_response for content in contents for part in content.parts)
+            forced = None
+        else:
+            tool_config = config.tool_config.function_calling_config
+            forced = (tool_config.allowed_function_names or [None])[0]
+            stages.append(forced)
+            assert tool_config.mode.value == ('ANY' if forced else 'AUTO')
+            assert config.tools and config.response_mime_type is None and config.response_json_schema is None
         kwargs['before_provider_send']({'request_body_sha256': 'wire'})
         if forced:
             args = {'query': 'different query' if searches else 'first query'} if forced == 'websearch' else {'url': source['final_url']}
             part = types.Part(function_call=types.FunctionCall(name=forced, args=args))
-        else:
+        elif strict_final:
             part = types.Part(text=json.dumps({'facts': [candidate]}))
+        elif extra_read and second_url not in reads:
+            part = types.Part(function_call=types.FunctionCall(name='webfetch', args={'url': second_url}))
+        else:
+            part = types.Part(text=preliminary)
         return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role='model', parts=[part]))])
     async def execute(_operation, call, **_kwargs):
         return await call('controlled-key', 60)
@@ -275,10 +289,11 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
         providers=SimpleNamespace(gemini=gemini)), _checkpoint_receipt=lambda _binding, receipt: saved.append(dict(receipt)))
     result = await run_tool_agent(adapter, AgentRoute('google', 'configured-google', 'https://api.example', gemini), {},
         {'run_id': 'run1'}, binding={'attempt_id': 'one'}, guard=lambda: None)
-    assert stages == (['websearch', 'websearch', 'webfetch', None] if empty_first else ['websearch', 'webfetch', None])
+    assert stages == (['websearch', 'websearch', 'webfetch'] if empty_first else ['websearch', 'webfetch']) + [None] * (2 if extra_read else 1) + ['strict_final']
     assert result['result']['facts'] == [{**candidate, 'url': source['final_url']}]
     assert saved[-1]['raw_result']['facts'][0]['url'] == candidate['url']
-    assert saved[-1]['final_response_schema']['properties']['facts']['items']['properties']['url']['enum'] == [source['final_url']]
+    assert saved[-1]['preliminary_result_text'] == preliminary
+    assert saved[-1]['final_response_schema']['properties']['facts']['items']['properties']['url']['enum'] == sorted(reads)
 
 
 def test_provider_wire_schema_uses_supported_subset_host_stays_strict():

@@ -120,7 +120,7 @@ class AgentRoute:
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
             'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
-                else 'agent-tools-per-turn-admission-v5-read-url-structured-output' if self.provider_id == 'google'
+                else 'agent-tools-per-turn-admission-v6-separate-read-url-strict-final' if self.provider_id == 'google'
                 else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
@@ -227,17 +227,21 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                 contents = [types.Content(role='user', parts=[types.Part(text=prompt)])]
                 config = types.GenerateContentConfig(tools=[types.Tool(function_declarations=[
                     types.FunctionDeclaration(**item) for item in wire_tools()])], max_output_tokens=4096)
+                strict_final_required = False
                 for _ in range(24):
                     guard()
                     forced_tool = 'websearch' if not fetched and not search_has_sources else 'webfetch' if not fetched else None
-                    config.tool_config = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
-                        mode='ANY' if forced_tool else 'AUTO', allowed_function_names=[forced_tool] if forced_tool else None))
-                    if fetched:
+                    if strict_final_required:
+                        config.tools = None
+                        config.tool_config = None
                         response_schema = copy.deepcopy(RESULT_SCHEMA)
                         response_schema['properties']['facts']['items']['properties']['url']['enum'] = sorted(fetched)
                         config.response_mime_type = 'application/json'
                         config.response_json_schema = response_schema
                         receipt['final_response_schema'] = response_schema
+                    else:
+                        config.tool_config = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
+                            mode='ANY' if forced_tool else 'AUTO', allowed_function_names=[forced_tool] if forced_tool else None))
                     receipt['last_request_sent'] = False
                     async def call(key, timeout):
                         nonlocal sent
@@ -265,7 +269,22 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     parts = response.candidates[0].content.parts
                     calls = [part.function_call for part in parts if part.function_call]
                     if not calls:
-                        return final(response.text or '')
+                        if strict_final_required:
+                            return final(response.text or '')
+                        if not fetched:
+                            raise ValueError('agent_final_before_source_read')
+                        receipt['preliminary_result_text'] = response.text or ''
+                        contents.append(response.candidates[0].content)
+                        contents.append(types.Content(role='user', parts=[types.Part(text=
+                            'Now return only the final JSON object matching the response schema. '
+                            'Use only the source documents already read in this conversation and their exact URLs. '
+                            'Keep the same evidence, subject and date rules; omit unsupported candidates. '
+                            'Do not use tools or wrap the JSON in a code fence.')]))
+                        strict_final_required = True
+                        adapter._checkpoint_receipt(binding, receipt)
+                        continue
+                    if strict_final_required:
+                        raise ValueError('agent_strict_final_tool_call')
                     contents.append(response.candidates[0].content)
                     responses = []
                     for invocation in calls:
