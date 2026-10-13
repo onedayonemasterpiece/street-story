@@ -28,6 +28,28 @@ def test_native_config_includes_context_with_output_and_preserves_unbounded_defa
     assert config['provider']['opencode']['models']['configured-model']['limit'] == {'context': 1048576, 'output': 4096}
 
 
+@pytest.mark.parametrize('names', ['connector', ['', 'valid'], ['../connector'], [None], {'connector': False}])
+def test_native_capsule_mcp_override_accepts_only_observed_valid_name_list(names):
+    with pytest.raises(ValueError, match='research_disabled_mcp_names_invalid'):
+        scoped_research_config('configured-model', disabled_mcp=names)
+
+
+def test_native_capsule_disables_only_named_mcp_and_pins_override_in_profile(tmp_path):
+    assert 'mcp' not in scoped_research_config('configured-model')
+    config = scoped_research_config('configured-model', disabled_mcp=['kalinigrad-base'], agent_research=True)
+    assert config['mcp'] == {'kalinigrad-base': {'enabled': False}}
+    legacy_original = SharedDevCoveerResearch(str(tmp_path), model_id='configured-model').profile_fingerprint
+    original = SharedDevCoveerResearch(str(tmp_path), model_id='configured-model', agent_research=True).profile_fingerprint
+    (tmp_path / 'opencode.json').write_text(json.dumps(config))
+    client = SharedDevCoveerResearch(str(tmp_path), model_id='configured-model', agent_research=True)
+    assert client.disabled_mcp == ('kalinigrad-base',)
+    assert client.profile_fingerprint != original
+    assert SharedDevCoveerResearch(str(tmp_path), model_id='configured-model').profile_fingerprint == legacy_original
+    config['mcp']['active-other'] = {'enabled': None}
+    (tmp_path / 'opencode.json').write_text(json.dumps(config))
+    assert SharedDevCoveerResearch(str(tmp_path), model_id='configured-model').disabled_mcp == ('kalinigrad-base',)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('context', [200000, 199999])
 async def test_native_attestation_checks_actual_catalog_context_before_send(tmp_path, context):

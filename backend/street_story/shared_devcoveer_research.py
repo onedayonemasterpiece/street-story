@@ -36,7 +36,8 @@ def guard_profile(directory: Path, limits: ResearchLimits, *, agent_research=Fal
 
 def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
                            limits: ResearchLimits | None = None, directory: Path | None = None,
-                           agent_research: bool = False, model_context: int | None = None) -> dict:
+                           agent_research: bool = False, model_context: int | None = None,
+                           disabled_mcp: list[str] | tuple[str, ...] | None = None) -> dict:
     """Data-only profile for a dedicated directory on the SAME existing server.
 
     Do not install at a repository root or in global config. Existing provider
@@ -57,6 +58,12 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
             'limit': {'context': model_context, 'output': limits.max_output_tokens}}}}}
     if directory is not None:
         config['plugin'] = [guard_profile(directory, limits, agent_research=agent_research)]
+    if disabled_mcp is not None:
+        if (not isinstance(disabled_mcp, (list, tuple)) or any(not isinstance(name, str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,149}', name) for name in disabled_mcp)):
+            raise ValueError('research_disabled_mcp_names_invalid')
+        if disabled_mcp:
+            config['mcp'] = {name: {'enabled': False} for name in sorted(set(disabled_mcp))}
     return config
 
 
@@ -91,13 +98,15 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         self.directory = str(path)
         self.require_guard = require_guard
         self.agent_research = agent_research
+        config_path = path / 'opencode.json'
+        local = json.loads(config_path.read_text()) if config_path.is_file() and not config_path.is_symlink() else {}
         if model_context is None and self.limits.max_output_tokens is not None:
-            config_path = path / 'opencode.json'
-            if config_path.is_file() and not config_path.is_symlink():
-                local = json.loads(config_path.read_text())
-                model_context = (local.get('provider', {}).get(self.provider_id, {}).get('models', {})
-                    .get(self.model_id, {}).get('limit') or {}).get('context')
+            model_context = (local.get('provider', {}).get(self.provider_id, {}).get('models', {})
+                .get(self.model_id, {}).get('limit') or {}).get('context')
         self.model_context = model_context
+        local_mcp = local.get('mcp') or {}
+        self.disabled_mcp = tuple(sorted(name for name, value in local_mcp.items()
+            if isinstance(value, dict) and value.get('enabled') is False)) if isinstance(local_mcp, dict) else ()
         self.shared_backend = backend
         self.abort_timeout_seconds = abort_timeout_seconds
         self._deadline: ContextVar[float | None] = ContextVar('research_deadline', default=None)
@@ -116,7 +125,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     def profile_fingerprint(self):
         return hashlib.sha256(json.dumps(scoped_research_config(self.model_id, provider_id=self.provider_id,
             limits=self.limits, directory=Path(self.directory) if self.require_guard else None,
-            agent_research=self.agent_research, model_context=self.model_context), sort_keys=True).encode()).hexdigest()
+            agent_research=self.agent_research, model_context=self.model_context,
+            disabled_mcp=self.disabled_mcp if self.agent_research else None), sort_keys=True).encode()).hexdigest()
 
     async def _request(self, client, method, path, **kwargs):
         allowed = ((method == 'GET' and path in {'/global/health', '/config', '/config/providers', '/agent', '/experimental/tool/ids'})
