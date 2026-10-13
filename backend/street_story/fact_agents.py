@@ -103,8 +103,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
     if saved is None:
         plan = route_plan(available)
         if not plan:
-            _finish(adapter, job, run_id, headless, epoch, 'research_agent_independent_routes_unavailable', pending=True)
-            return {'outcome': 'resource_blocked', 'reason': 'research_agent_independent_routes_unavailable'}
+            _finish(adapter, job, run_id, headless, epoch, 'research_routes_unavailable', pending=True)
+            return {'outcome': 'resource_blocked', 'reason': 'research_routes_unavailable'}
         saved = {'pipeline': QUALIFICATION_KEY, 'route_ids': [r.route_id for r in plan],
             'context': agent_context(research['visual_identity'], goal, run_id, adapter.service.store.now()),
             'routes': {}}
@@ -217,10 +217,13 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending):
             (job['story_id'],)).fetchone()[0]
         outcome = 'useful_partial' if eligible and pending else 'useful_complete' if eligible else 'resource_blocked' if pending else 'no_supported_facts'
         value = {'outcome': outcome, 'reason': reason, 'eligible_count': eligible,
-            'coverage_complete': not pending, 'pipeline': QUALIFICATION_KEY}
+            'coverage_complete': not pending, 'pipeline': QUALIFICATION_KEY,
+            'photo_sha256': story['photo_sha256'], 'identity_generation': story['_identity_generation'],
+            'purpose': 'facts', 'run_id': run_id}
         research['research_outcome'] = value
-        set_run_state(db, run_id, 'partial' if pending else 'completed', detail=reason,
-            now=adapter.service.store.now(), completed=not pending)
+        unavailable = reason == 'research_routes_unavailable'
+        set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
+            now=adapter.service.store.now(), completed=not pending or unavailable)
         db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
             (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
     adapter.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:'+run_id, value)

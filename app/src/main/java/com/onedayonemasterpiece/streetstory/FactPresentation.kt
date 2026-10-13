@@ -30,6 +30,8 @@ internal object FactPresentation {
             result.identityGeneration != projection.identityGeneration || result.purpose != "facts" ||
             projection.researchPending["facts"] == true || result.coverageComplete != false) return null
         return when {
+            result.reason == "research_routes_unavailable" ->
+                "Исследование недоступно · нет двух независимых проверенных маршрутов"
             result.reason == "source_selection_unavailable" ->
                 "Исследование не завершено · временная проблема с выбором источников"
             result.reason in setOf("research_output_exhausted", "research_empty_response",

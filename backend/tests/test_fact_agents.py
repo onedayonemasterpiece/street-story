@@ -89,6 +89,7 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
     messages = [
         {'role': 'assistant', 'function_call': {'name': 'websearch', 'arguments': {'query': 'selected building history'}}},
         {'role': 'assistant', 'function_call': {'name': 'webfetch', 'arguments': {'url': source['final_url']}}},
+        {'role': 'assistant', 'content': json.dumps({'facts': [candidate]})},
         {'role': 'assistant', 'content': json.dumps({'facts': [candidate]})}]
     fetched, finalized, saved = [], [], []
     async def fetch(urls, context):
@@ -104,6 +105,10 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
         assert _workload['estimated_input_tokens'] > 0
         yield SimpleNamespace(finalize=finalize)
     async def completion(_lease, body, receipts, _purpose, _output, before):
+        if len(messages) == 1:
+            assert body['function_call'] == 'none'
+            assert body['response_format']['strict'] is True
+            assert body['response_format']['schema']['properties']['facts']['items']['properties']['subject_scope']['enum'] == ['selected_building', 'complex_or_site']
         await before({'request_body_sha256': 'wire'})
         receipts.append({'status': 'succeeded', 'http_status': 200,
             'usage': {'prompt_tokens': 10, 'completion_tokens': 5}})
@@ -119,8 +124,8 @@ async def test_tool_loop_reads_real_document_mapping_and_preserves_version():
     assert result['sources'][0]['source_version_id'] == 'srcv1'
     assert fetched == [([source['requested_url']], {'research_run_id': 'run1'})]
     assert finalized[0][1] == 'completed'
-    assert len(finalized) == 3
-    assert sum(item[0]['input_tokens'] for item in finalized) == 30
+    assert len(finalized) == 4
+    assert sum(item[0]['input_tokens'] for item in finalized) == 40
     assert saved[-1]['phase'] == 'completed'
 
 

@@ -70,7 +70,8 @@ class AgentRoute:
         value = getattr(self.client, 'profile_fingerprint', None)
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
-            'transport_contract': 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
+            'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
+                else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
     def route_id(self):
@@ -200,11 +201,17 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                 messages = [{'role': 'system', 'content': INSTRUCTIONS},
                     {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]
                 from ai_resource_control.client import estimate_input_tokens
+                strict_final_required = False
                 for turn in range(24):
                     guard()
+                    final_turn = strict_final_required or turn == 23
+                    tool_names = {item['name'] for item in receipt.get('tool_receipts', [])}
                     body = {'model': route.model_id, 'messages': messages, 'stream': False,
                         'max_tokens': 4096, 'functions': wire_tools(),
-                        'function_call': 'none' if turn == 23 else 'auto'}
+                        'function_call': 'none' if final_turn else {'name': 'websearch'} if not tool_names
+                            else {'name': 'webfetch'} if not fetched else 'auto'}
+                    if final_turn:
+                        body['response_format'] = {'type': 'json_schema', 'schema': RESULT_SCHEMA, 'strict': True}
                     child, saved = adapter.attempt(story, 'facts_agent_turn_'+route.route_id,
                         {'parent_attempt_id': binding['attempt_id'], 'turn': turn})
                     if saved:
@@ -254,7 +261,16 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     receipt['provider_send_state'] = 'response_closed'
                     invocation = message.get('function_call')
                     if not invocation:
+                        if not final_turn:
+                            strict_final_required = bool(fetched)
+                            messages.extend([message, {'role': 'user', 'content':
+                                'Finalize the already read source evidence with the required JSON schema. '
+                                'Use the exact subject_scope enum and at most 25 words in quote.' if fetched else
+                                'Use websearch and webfetch to obtain actual source evidence before answering.'}])
+                            continue
                         return final(message.get('content') or '')
+                    if final_turn:
+                        raise ValueError('agent_final_tool_outside_scope')
                     args = invocation.get('arguments')
                     args = json.loads(args) if isinstance(args, str) else args
                     value = await tool(invocation.get('name'), args)
