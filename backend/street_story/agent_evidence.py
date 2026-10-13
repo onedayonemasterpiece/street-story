@@ -108,14 +108,20 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
     from .gemini import classify_error
     from .fact_agent_providers import _google_output_schema
 
-    prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(payload, ensure_ascii=False)
+    input_text = 'INPUT=' + json.dumps(payload, ensure_ascii=False)
     failures = []
     for model, _pool, quota, executor in client.research_routes:
+        config = types.GenerateContentConfig(system_instruction=INSTRUCTIONS, response_mime_type='application/json',
+            response_json_schema=_google_output_schema(SCHEMA), max_output_tokens=2048)
+        prompt = json.dumps({'contract': CONTRACT, 'model': model, 'contents': [input_text],
+            'config': config.model_dump(mode='json', exclude_none=True)}, ensure_ascii=False, sort_keys=True)
         receipt = {'attempt_id': 'rattempt_' + uuid.uuid4().hex[:24], 'phase': 'created',
                    'provider_id': 'google', 'model_id': model, 'contract': CONTRACT,
                    'source_version_id': payload['source']['source_version_id'],
                    'source_content_sha256': payload['source']['content_sha256'],
                    'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
+                   'prompt_role_contract': 'system_instruction_with_user_input_v1',
+                   'system_policy_sha256': hashlib.sha256(INSTRUCTIONS.encode()).hexdigest(),
                    'provider_send_state': 'not_sent'}
         checkpoint(receipt)
         state = {'uncertain': False, 'closed': False}
@@ -128,9 +134,8 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
                 receipt.update(phase='sent', provider_send_state='possibly_sent')
                 checkpoint(receipt)
             try:
-                response = await client._generate(key, timeout, [prompt],
-                    types.GenerateContentConfig(response_mime_type='application/json',
-                        response_json_schema=_google_output_schema(SCHEMA), max_output_tokens=2048),
+                response = await client._generate(key, timeout, [input_text],
+                    config,
                     operation='grounded_research', model=model, quota=quota,
                     before_provider_send=sent)
             except Exception as exc:
