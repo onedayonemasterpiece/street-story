@@ -107,7 +107,10 @@ async def test_runtime_replays_closed_candidates_without_agent_sdk_source_fetch_
         service.store = Store(service.store.path)
         second = await run_fact_agents(adapter, job, 'headless-run', 'Changed goal')
         if case in {'closed', 'closed_unverified'}:
-            assert second['outcome'] == 'useful_complete'
+            assert second['outcome'] == 'useful_partial'
+            assert second['reason'] == 'research_agent_content_gaps'
+            assert second['coverage_complete'] is False
+            assert second['content_gaps'] == ['no_source_backed_candidates']
             after = service.store.checkpoint_get(job['id'], stage)
             assert after['context'] == before['context'] and after['route_ids'] == before['route_ids']
             assert after['routes'][selected]['phase'] == 'completed'

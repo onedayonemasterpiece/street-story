@@ -174,6 +174,40 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
         return saved
 
 
+def _recover_route_state(adapter, job, run_id, story, context, route_id):
+    """A missing plan slot does not erase an already journalled original send."""
+    from .service import ConflictError, canonical
+    unit = {'run_id': run_id, 'context': context, 'route_id': route_id}
+    role = 'facts_agent_' + route_id
+    logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+        story['_identity_generation'], role, unit]).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    with adapter.service.store.connection() as db:
+        row = db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts '
+            'WHERE logical_id=? AND story_id=? AND role=? ORDER BY created_at DESC,rowid DESC LIMIT 1',
+            (logical, story['id'], role)).fetchone()
+    if row is None:
+        return None
+    receipt = json.loads(row['receipt_json'])
+    binding = receipt.get('binding') or {}
+    expected = {'attempt_id': row['attempt_id'], 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+        'generation': story['_identity_generation'], 'job_id': job['id'],
+        'control_revision': story['_fact_research_control_revision'],
+        'fact_unit_id': 'agent_' + digest[:24], 'fact_input_sha256': digest}
+    if any(binding.get(key) != value for key, value in expected.items()):
+        raise ConflictError('agent_research_original_binding_invalid', 'The original agent binding is inconsistent.')
+    if (receipt.get('phase') == 'created' and receipt.get('provider_send_state') in {None, 'not_sent'}
+            and receipt.get('last_request_sent') is not True):
+        return None  # Existing not-sent binding still uses ordinary admission.
+    phase = receipt.get('phase')
+    candidates = (receipt.get('result') or {}).get('facts') or []
+    return {'phase': 'completed' if phase == 'completed' else 'failed' if phase in {'failed', 'aborted'} else 'unknown',
+        'original_phase': phase, 'reason': receipt.get('error_code', 'original_agent_state_recovered'),
+        'attempt_id': row['attempt_id'], 'provider_id': receipt.get('provider_id'),
+        'candidate_count': len(candidates), **_source_coverage(receipt),
+        'outcomes': [{'status': 'unverified', 'reason': 'original_confirmation_unavailable'} for _ in candidates]}
+
+
 async def _recover_confirmations(adapter, job, run_id, story, context, route_id, state, guard):
     """Re-admit original candidates from a closed agent, without invoking its SDK."""
     from .service import canonical
@@ -376,6 +410,16 @@ async def run_fact_agents(adapter, job, run_id, goal):
         guard()
         state = saved['routes'].get(route_id, {})
         route = routes_by_id.get(route_id)
+        if not state:
+            recovered = _recover_route_state(adapter, job, run_id, story, context, route_id)
+            if recovered is not None:
+                if not recovered.get('provider_id') and route:
+                    recovered['provider_id'] = route.provider_id
+                persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=recovered)
+                state = saved['routes'][route_id] = persisted['routes'][route_id]
+                LOG.info('street_story_fact_agent_state_recovered story_id=%s run_id=%s route_id=%s '
+                    'attempt_id=%s original_phase=%s unresolved=%s', story['id'], run_id, route_id,
+                    state['attempt_id'], state.get('original_phase'), state.get('original_send_unresolved'))
         if state.get('phase') in {'completed', 'failed'}:
             recovered = await _recover_confirmations(adapter, job, run_id, story, context, route_id, state, guard)
             if recovered is not None:

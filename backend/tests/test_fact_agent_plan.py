@@ -83,8 +83,9 @@ async def test_completed_and_unknown_states_survive_store_reopen_without_replan_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('missing_slot', [False, True])
 async def test_unknown_native_reopens_original_address_without_new_send_or_cooldown_reset(
-        tmp_path, monkeypatch, fixed_shuffle):
+        tmp_path, monkeypatch, fixed_shuffle, missing_slot):
     service, job, _, reader, _ = await fixture(tmp_path)
     adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
     routes = [route('opencode', 'native'), route('gigachat', 'completed')]
@@ -114,6 +115,10 @@ async def test_unknown_native_reopens_original_address_without_new_send_or_coold
         original = service.store.checkpoint_get(job['id'], stage)
         assert original['routes'][routes[0].route_id]['phase'] == 'unknown'
         original_attempt = original['routes'][routes[0].route_id]['attempt_id']
+        if missing_slot:
+            interrupted = copy.deepcopy(original)
+            interrupted['routes'].pop(routes[0].route_id)
+            service.store.checkpoint_put(job['id'], stage, interrupted)
         health_key = 'research-route-health:' + hashlib.sha256(canonical([
             routes[0].endpoint, routes[0].model_id, routes[0].directory,
             routes[0].profile_fingerprint]).encode()).hexdigest()

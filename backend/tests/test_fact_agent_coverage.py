@@ -1,12 +1,15 @@
 """Research continuation follows evidence gaps, not a universal fact quota."""
 import copy
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from street_story.errors import RetryableProviderError
 from street_story.fact_agent_providers import AgentRoute
-from street_story.fact_agents import run_fact_agents
+from street_story.fact_agents import QUALIFICATION_KEY, _persist_plan, agent_context, run_fact_agents
+from street_story.headless_facts import HeadlessFacts
 from street_story.research_adapter import ProductResearchAdapter
 from test_headless_facts import fixture
 
@@ -286,5 +289,87 @@ async def test_legacy_completed_state_recovers_closed_read_metadata_without_rese
         with service.store.connection() as db:
             assert db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
                 (old['attempt_id'],)).fetchone()[0] == original_receipt
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['failed_cancelled', 'unknown', 'created_not_sent'])
+async def test_missing_route_state_recovers_original_journal_before_any_discovery_send(tmp_path, monkeypatch, phase):
+    service, job, _, reader, _ = await fixture(tmp_path)
+    adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
+    google = AgentRoute('google', 'original', 'https://example.org', object())
+    giga = AgentRoute('gigachat', 'retained-extractor', 'https://example.org', object())
+    monkeypatch.setattr('street_story.fact_agents.configured_routes', lambda _adapter: [google, giga])
+    headless = HeadlessFacts(service)
+    story, research, _ = headless._snapshot(job, 'headless-run')
+    context = agent_context(research['visual_identity'], 'Original goal', 'headless-run', service.store.now())
+    _persist_plan(adapter, job, 'headless-run', headless, story['_fact_research_control_revision'], initial={
+        'pipeline': QUALIFICATION_KEY, 'route_ids': [google.route_id], 'primary_count': 1,
+        'provider_availability': 'reduced', 'context': context, 'routes': {}})
+    unit = {'run_id': 'headless-run', 'context': context, 'route_id': google.route_id}
+    digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    binding, _ = adapter.attempt({**story, '_fact_pool_unit_id': 'agent_' + digest[:24],
+        '_fact_pool_input_sha256': digest}, 'facts_agent_' + google.route_id, unit)
+    source = {'source_version_id': 'completed-original-read', 'content_sha256': 'd' * 64,
+        'requested_url': 'https://source.example/article', 'final_url': 'https://source.example/article'}
+    original = {'binding': binding, 'provider_id': 'google', 'phase': 'failed' if phase == 'failed_cancelled'
+        else 'unknown' if phase == 'unknown' else 'created', 'last_request_sent': phase != 'created_not_sent',
+        'provider_send_state': 'not_sent' if phase == 'created_not_sent' else 'possibly_sent',
+        'sources': [] if phase == 'created_not_sent' else [source],
+        **({'error_code': 'CancelledError'} if phase == 'failed_cancelled' else {})}
+    adapter._checkpoint_receipt(binding, original)
+    with service.store.connection() as db:
+        original_json = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+            (binding['attempt_id'],)).fetchone()[0]
+    discoveries, extractions = [], []
+
+    async def discover(_adapter, route, _story, _context, *, binding, guard):
+        assert phase == 'created_not_sent', 'An original uncertain send must not be repeated'
+        guard()
+        discoveries.append(binding['attempt_id'])
+        receipt = {'binding': binding, 'phase': 'completed', 'result': {'facts': []}}
+        adapter._checkpoint_receipt(binding, receipt)
+        return {'receipt': receipt, 'result': receipt['result']}
+
+    def cohort(_adapter, receipt, *, story, context, guard):
+        guard()
+        if not receipt.get('sources'):
+            return None
+        return {'original_attempt_id': receipt['binding']['attempt_id'], 'source_cohort_sha256': 'e' * 64,
+            'sources': [source]}
+
+    async def extract(_adapter, route, _story, _context, _cohort, *, original_receipt, binding, guard):
+        guard()
+        assert route.provider_id == 'gigachat'
+        extractions.append(binding['attempt_id'])
+        receipt = {'binding': binding, 'phase': 'completed', 'sources': [source],
+            'result': {'facts': [{'text': 'Controlled retained finding', 'url': source['final_url']}]}}
+        adapter._checkpoint_receipt(binding, receipt)
+        return {'receipt': receipt, 'result': receipt['result']}
+
+    async def admit(_job, _run, _candidate, agent):
+        assert agent['original_attempt_id'] == binding['attempt_id']
+        return {'status': 'supported'}
+
+    monkeypatch.setattr('street_story.fact_agents.run_tool_agent', discover)
+    monkeypatch.setattr('street_story.fact_agent_providers.retained_source_cohort', cohort)
+    monkeypatch.setattr('street_story.fact_agent_providers.run_retained_source_agent', extract)
+    service.confirm_agent_fact = admit
+    try:
+        await run_fact_agents(adapter, job, 'headless-run', 'Changed goal must not replace original')
+        state = service.store.checkpoint_get(job['id'], 'fact_agent_plan:headless-run')['routes'][google.route_id]
+        assert state['attempt_id'] == binding['attempt_id']
+        with service.store.connection() as db:
+            rows = list(db.execute('SELECT attempt_id,role,receipt_json FROM research_provider_attempts'))
+        if phase == 'created_not_sent':
+            assert discoveries == [binding['attempt_id']] and extractions == [] and len(rows) == 1
+        else:
+            assert discoveries == [] and len(extractions) == 1 and len(rows) == 2
+            assert state['phase'] == original['phase'] and state['original_send_unresolved'] is True
+            assert state['retained']['extraction_route_id'] == giga.route_id
+            assert next(row['receipt_json'] for row in rows if row['attempt_id'] == binding['attempt_id']) == original_json
+            await run_fact_agents(adapter, job, 'headless-run', 'Original goal')
+            assert discoveries == [] and len(extractions) == 1
     finally:
         await reader.search_http.aclose()
