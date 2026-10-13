@@ -78,7 +78,8 @@ async def test_agent_known_closed_or_not_sent_can_use_unused_key_but_unknown_can
         assert result['receipt']['phase'] == 'completed'
         assert calls[:2] == list(KEYS[:2])
         assert reservations[1] == ({key_pool.ids[0]}, key_pool.ids[1])
-        assert successful_turns == 4
+        assert successful_turns == 3
+        assert result['receipt']['result_origin'] == 'preliminary_validated'
         assert [row['name'] for row in result['receipt']['tool_receipts']] == ['websearch', 'webfetch']
         failed = next(row for row in saved if row.get('sdk_error'))
         assert failed['last_request_sent'] is False
