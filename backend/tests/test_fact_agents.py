@@ -90,7 +90,7 @@ def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
     assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
     proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
         'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
-        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v5-read-url-structured-output')), (giga, giga.profile_fingerprint)]]
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v6-separate-read-url-strict-final')), (giga, giga.profile_fingerprint)]]
     settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
     adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
         providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
@@ -259,6 +259,10 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
             wire = config.model_dump(mode='json', exclude_none=True)
             schema = wire['response_json_schema']
             assert schema['properties']['facts']['items']['properties']['url']['enum'] == sorted(reads)
+            properties = schema['properties']['facts']['items']['properties']
+            assert properties['subject_scope']['type'] == 'string'
+            assert all('minLength' not in properties[key] and 'maxLength' not in properties[key]
+                for key in ('text', 'quote', 'url'))
             assert Draft202012Validator(schema).is_valid({'facts': [candidate]})
             assert not Draft202012Validator(schema).is_valid({'facts': [{**candidate, 'url': 'https://source.example/aricle'}]})
             assert contents[-2].parts[0].text == preliminary
@@ -294,6 +298,25 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
     assert saved[-1]['raw_result']['facts'][0]['url'] == candidate['url']
     assert saved[-1]['preliminary_result_text'] == preliminary
     assert saved[-1]['final_response_schema']['properties']['facts']['items']['properties']['url']['enum'] == sorted(reads)
+
+
+def test_google_output_schema_preserves_host_contract_and_nullable_values():
+    import copy
+    from street_story.fact_agent_providers import CANDIDATE_SCHEMA, RESULT_SCHEMA, _google_output_schema
+    original = copy.deepcopy(RESULT_SCHEMA)
+    wire = _google_output_schema(RESULT_SCHEMA)
+    properties = wire['properties']['facts']['items']['properties']
+    assert properties['subject_scope'] == {'type': 'string', 'enum': ['selected_building', 'complex_or_site']}
+    assert properties['source_date'] == {'type': ['string', 'null']}
+    assert properties['url'] == {'type': 'string'}
+    assert wire['properties']['facts']['maxItems'] == 24
+    assert wire['additionalProperties'] is False
+    assert wire['properties']['facts']['items']['additionalProperties'] is False
+    assert RESULT_SCHEMA == original
+    assert 'type' not in CANDIDATE_SCHEMA['properties']['subject_scope']
+    assert CANDIDATE_SCHEMA['properties']['url']['maxLength'] == 2048
+    wire['properties']['facts']['items']['properties']['subject_scope']['enum'].append('untrusted')
+    assert RESULT_SCHEMA == original
 
 
 def test_provider_wire_schema_uses_supported_subset_host_stays_strict():

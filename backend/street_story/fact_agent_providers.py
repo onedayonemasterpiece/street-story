@@ -40,6 +40,25 @@ def wire_tools():
         'required': item['parameters']['required']}} for item in TOOLS]
 
 
+def _google_output_schema(schema):
+    """Project the host contract onto Google's documented JSON Schema subset."""
+    def project(value):
+        if isinstance(value, list):
+            return [project(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: project(item) for key, item in value.items()}
+        enum = result.get('enum')
+        if 'type' not in result and isinstance(enum, list) and enum and all(isinstance(item, str) for item in enum):
+            result['type'] = 'string'
+        value_type = result.get('type')
+        if value_type == 'string' or isinstance(value_type, list) and 'string' in value_type:
+            result.pop('minLength', None)
+            result.pop('maxLength', None)
+        return result
+    return project(copy.deepcopy(schema))
+
+
 INSTRUCTIONS = ('Research the explicitly selected physical building. Independently search and read public articles. '
     'Only websearch and webfetch tools exist. Do not reidentify the owner selection. '
     'Find useful publication facts, including history, architecture, events and documented site context. '
@@ -120,7 +139,7 @@ class AgentRoute:
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
             'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
-                else 'agent-tools-per-turn-admission-v6-separate-read-url-strict-final' if self.provider_id == 'google'
+                else 'agent-tools-per-turn-admission-v7-supported-schema-strict-final' if self.provider_id == 'google'
                 else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
@@ -234,7 +253,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     if strict_final_required:
                         config.tools = None
                         config.tool_config = None
-                        response_schema = copy.deepcopy(RESULT_SCHEMA)
+                        response_schema = _google_output_schema(RESULT_SCHEMA)
                         response_schema['properties']['facts']['items']['properties']['url']['enum'] = sorted(fetched)
                         config.response_mime_type = 'application/json'
                         config.response_json_schema = response_schema

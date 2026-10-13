@@ -60,6 +60,7 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
     """Existing configured model pools, executors and shared quota authority."""
     from google.genai import types
     from .gemini import classify_error
+    from .fact_agent_providers import _google_output_schema
 
     prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(payload, ensure_ascii=False)
     for model, _pool, quota, executor in client.research_routes:
@@ -81,7 +82,7 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
             try:
                 response = await client._generate(key, timeout, [prompt],
                     types.GenerateContentConfig(response_mime_type='application/json',
-                        response_json_schema=SCHEMA, max_output_tokens=2048),
+                        response_json_schema=_google_output_schema(SCHEMA), max_output_tokens=2048),
                     operation='grounded_research', model=model, quota=quota,
                     before_provider_send=sent)
             except Exception as exc:
