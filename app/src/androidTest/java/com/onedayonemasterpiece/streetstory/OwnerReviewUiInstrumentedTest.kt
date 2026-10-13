@@ -23,7 +23,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
-import java.util.Base64
 
 @RunWith(AndroidJUnit4::class)
 class OwnerReviewUiInstrumentedTest {
@@ -34,9 +33,7 @@ class OwnerReviewUiInstrumentedTest {
         val previousBackend = config.backendUrl
         config.backendUrl = null
         val storyId = "conflict-journal-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val server = okhttp3.mockwebserver.MockWebServer().apply { start() }
         val serverId = "server-$storyId"
         try {
@@ -112,9 +109,7 @@ class OwnerReviewUiInstrumentedTest {
         val previousBackend = config.backendUrl
         config.backendUrl = null
         val storyId = "own-source-dialog-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         try {
             StoryStore(context).use { store ->
                 store.createStory(imported)
@@ -159,9 +154,7 @@ class OwnerReviewUiInstrumentedTest {
 
     @Test fun pending_facts_and_status_reason_survive_store_reopen_without_live_session() {
         val storyId = "durable-research-ui-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         StoryStore(context).use { store ->
             store.createStory(imported)
             store.replaceFacts(storyId, listOf(FactSnapshot("f", "Нужно проверить собственный источник", .5,
@@ -199,9 +192,7 @@ class OwnerReviewUiInstrumentedTest {
         val captured = JSONObject(instrumentation.context.assets.open("live-first-real-facts.json").bufferedReader().use { it.readText() })
         assertEquals("real_retrieval", captured.getString("source_mode"))
         val storyId = "real-facts-ui-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val rows = captured.getJSONArray("facts")
         val facts = (0 until rows.length()).map { index ->
             val json = rows.getJSONObject(index)
@@ -279,13 +270,11 @@ class OwnerReviewUiInstrumentedTest {
     @Test
     fun topicMilestonesLiveInsideConversationAndStickyBentoIsSeparate() {
         val storyId = "owner-review-ui-" + System.nanoTime()
-        val png = Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )
+        val original = PhotoGpsFixture.bytes()
         val imported = PhotoImporter.importStream(
             context,
-            ByteArrayInputStream(png),
-            "image/png",
+            ByteArrayInputStream(original),
+            "image/jpeg",
             storyId,
         )
         StoryStore(context).use { store ->

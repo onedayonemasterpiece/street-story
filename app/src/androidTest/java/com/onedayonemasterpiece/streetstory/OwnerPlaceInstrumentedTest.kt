@@ -200,7 +200,7 @@ class OwnerPlaceInstrumentedTest {
                     val views = descendants(activity.findViewById(android.R.id.content)).toList()
                     mapView = views.filterIsInstance<org.maplibre.android.maps.MapView>().single()
                     mapView!!.getMapAsync { map = it }
-                    listOf("publication-image", "owner-place-map", "owner-place-confirm", "owner-place-point").forEach { description ->
+                    listOf("publication-image", "owner-place-map", "owner-place-confirm", "owner-place-elsewhere").forEach { description ->
                         val view = views.single { it.contentDescription?.toString() == description }
                         assertTrue("$description must be visible with the other selection controls", view.getGlobalVisibleRect(android.graphics.Rect()))
                     }
@@ -253,12 +253,7 @@ class OwnerPlaceInstrumentedTest {
                     descendants(activity.findViewById(android.R.id.content)).single { it.contentDescription?.toString() == "owner-place-confirm" }.performClick()
                 }
                 EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
-                val cityInput = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.desc("owner-place-city")), 3000))
-                assertTrue("city must not be guessed from EXIF", cityInput.text.isNullOrBlank() || cityInput.text == "Город")
-                cityInput.text = "Калининград"
-                requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-address"))).text = "Клиническая 19А"
-                requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("owner-place-name"))).text = "Дом карты"
-                requireNotNull(device.findObject(androidx.test.uiautomator.By.res("android:id/button1"))).click()
+                assertNull("confirmation must not open an author text field", device.findObject(androidx.test.uiautomator.By.clazz(android.widget.EditText::class.java)))
                 val confirmDeadline = android.os.SystemClock.elapsedRealtime() + 3000
                 var queuedPlace: PendingOperation? = null
                 while (queuedPlace == null && android.os.SystemClock.elapsedRealtime() < confirmDeadline) {
@@ -269,13 +264,11 @@ class OwnerPlaceInstrumentedTest {
                     device.takeScreenshot(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.png"))
                     device.dumpWindowHierarchy(java.io.File(context.getExternalFilesDir(null), "owner-place-map-failure.xml"))
                 }
-                val queued = requireNotNull(queuedPlace) { "owner context confirmation must persist the place outbox command" }
+                val queued = requireNotNull(queuedPlace) { "one-touch contour confirmation must persist the place outbox command" }
                 val payload = JsonParser.parseString(queued.payloadJson).asJsonObject
                 assertEquals("osm:way:fixture", payload["candidate_id"].asString)
                 assertEquals("ui-map", payload["snapshot_id"].asString)
-                assertEquals("Калининград", payload.getAsJsonObject("owner_context")["city"].asString)
-                assertEquals("Клиническая 19А", payload.getAsJsonObject("owner_context")["address"].asString)
-                assertEquals("Дом карты", payload.getAsJsonObject("owner_context")["name"].asString)
+                assertFalse("server supplies city; no author text context is sent", payload.has("owner_context"))
                 MockWebServer().apply { start() }.use { transport ->
                     // Controlled acknowledgement through the normal outbox/sync
                     // projection path, with no background workers or providers.
@@ -310,7 +303,7 @@ class OwnerPlaceInstrumentedTest {
                     assertEquals("/v1/stories/ui-story/place", confirmation.path)
                     assertEquals(queued.requestKey, confirmation.getHeader("Idempotency-Key"))
                     val sent = JsonParser.parseString(confirmation.body.readUtf8()).asJsonObject
-                    assertEquals(payload.getAsJsonObject("owner_context"), sent.getAsJsonObject("owner_context"))
+                    assertFalse(sent.has("owner_context"))
                     assertEquals("osm:way:fixture", sent["candidate_id"].asString)
                     assertEquals(photo.sha256, sent["expected_photo_sha256"].asString)
                     assertEquals(0, sent["expected_identity_generation"].asInt)
@@ -417,20 +410,95 @@ class OwnerPlaceInstrumentedTest {
         if (view is android.view.ViewGroup) for (index in 0 until view.childCount) yieldAll(descendants(view.getChildAt(index)))
     }
 
-    @Test fun pointFallbackUsesOwnerCoordinatesAndPlaceReadbackWithoutLive() {
+    @Test fun unknownAcknowledgementDetachesMaterialAndReopensWithImmutableGpsAndFocus() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val projection = ResearchProjectionStore(context)
+        val photo = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = photo.clientStoryId
+        val server = MockWebServer().apply { start() }
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        var unknown = false
+        val gson = Gson()
+        val wire = StoryWire().apply {
+            this.id = "server-$id"; clientStoryId = id; photoSha256 = photo.sha256
+            identityMode = "manual"; identityGeneration = 1; revision = 2; sourceAvailable = true
+            state = StoryStage.REVIEW; draftText = "Черновик A"
+            visualIdentity = VisualIdentityWire().apply { status = "owner_confirmed"; candidateId = "osm:way:A"; candidateName = "A" }
+            cameraPoint = PlaceCameraWire().apply { latitude = photo.latitude; longitude = photo.longitude; origin = "exif" }
+            placeMapFocus = PlaceMapFocusWire().apply { lat = 54.71; lon = 20.52; zoom = 17.0; label = "Район"; revision = 2; areaId = "area" }
+            placeNavigationActive = true
+        }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                calls += request
+                if (request.method == "POST" && request.path?.endsWith("/place-unknown") == true) {
+                    unknown = true
+                    wire.identityGeneration = 2; wire.revision = 3; wire.state = StoryStage.PLACE_UNKNOWN
+                    wire.visualIdentity = null; wire.draftText = null; wire.placeNavigationActive = false
+                    wire.placeSelection = JsonParser.parseString("""{"mode":"unknown","status":"place_unknown","generation":2,"photo_sha256":"${photo.sha256}"}""").asJsonObject
+                }
+                return MockResponse().setHeader("Content-Type", "application/json").setBody(gson.toJson(wire))
+            }
+        }
+        try {
+            store.createStory(photo); store.setServerIdentity(id, wire.id); projection.replace(id, wire)
+            store.setDraftText(id, "Черновик A")
+            projection.markPlaceMapFocusApplied(id, 2)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+            store.enqueueOperation(id, "place-unknown", "unknown-command", gson.toJson(mapOf("command_id" to "unknown-command",
+                "expected_photo_sha256" to photo.sha256, "expected_identity_generation" to 1, "expected_candidate_id" to "osm:way:A")))
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            worker.syncStory(store, FeedProjectionStore(context), projection, ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only"), store.story(id)!!, null)
+            assertTrue(unknown)
+            assertEquals(1, calls.count { it.method == "POST" && it.path?.endsWith("/place-unknown") == true })
+            assertFalse(calls.any { it.path?.endsWith("/identity") == true })
+            assertEquals(StoryStage.PLACE_UNKNOWN, store.story(id)?.stage)
+            assertNull(store.story(id)?.draftText)
+            assertTrue(store.facts(id).isEmpty())
+            assertTrue(store.pendingOperations(id).isEmpty())
+            val reopened = ResearchProjectionStore(context).get(id)!!
+            assertEquals(2, reopened.identityGeneration)
+            assertEquals(photo.latitude!!, reopened.cameraPoint!!.latitude!!, 0.0)
+            assertEquals(photo.longitude!!, reopened.cameraPoint!!.longitude!!, 0.0)
+            assertEquals("area", reopened.placeMapFocus?.areaId)
+            assertEquals("reopen and generation change must not replay old focus over a later owner pan", 2, reopened.appliedPlaceMapFocusRevision)
+            assertFalse(reopened.placeNavigationActive)
+            projection.replace(id, StoryWire().apply { revision = 99; identityGeneration = 1; photoSha256 = photo.sha256; placeMapFocus = PlaceMapFocusWire().apply { lat = 0.0; lon = 0.0 } })
+            assertEquals("area", projection.get(id)?.placeMapFocus?.areaId)
+            wire.revision = 4; wire.placeMapFocus!!.revision = 3
+            projection.replace(id, wire)
+            assertNull("a new voice focus must be applied", projection.get(id)?.appliedPlaceMapFocusRevision)
+        } finally {
+            store.deleteStory(id); projection.clear(id); PhotoAssets.releaseTemporary(photo.path)
+            config.backendUrl = priorBackend; server.shutdown()
+        }
+    }
+
+    @Test fun placeNavigationAndUnknownUseFencedCommandsWithoutReplacingExif() {
         val server = MockWebServer().apply { start() }
         try {
-            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"id":"s","identity_mode":"manual","identity_generation":1,
-                "camera_point":{"latitude":54.7,"longitude":20.5,"origin":"manual"},
-                "place_selection":{"candidate_id":"owner:point"}}"""))
-            val payload = """{"mode":"exact","fallback":{"latitude":54.7,"longitude":20.5,"city":"Калининград","address":"Клиническая 19А"},"expected_identity_generation":0}"""
-            val wire = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only").mutate("s", "place", payload, "point-command")
-            val request = server.takeRequest()
-            assertEquals("/v1/stories/s/place", request.path)
-            assertEquals("point-command", request.getHeader("Idempotency-Key"))
-            assertEquals(54.7, JsonParser.parseString(request.body.readUtf8()).asJsonObject.getAsJsonObject("fallback")["latitude"].asDouble, 0.0)
-            assertEquals("manual", wire.cameraPoint?.origin)
-            assertEquals("owner:point", wire.placeSelection?.get("candidate_id")?.asString)
+            val body = """{"id":"s","state":"place_unknown","identity_mode":"manual","identity_generation":2,
+                "camera_point":{"latitude":54.7,"longitude":20.5,"origin":"exif"},
+                "place_map_focus":{"lat":54.71,"lon":20.51,"zoom":17,"label":"Другой район","revision":2,"area_id":"area"},
+                "place_navigation_active":true,
+                "place_selection":{"mode":"unknown","status":"place_unknown"}}"""
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only")
+            val payload = """{"command_id":"command","expected_photo_sha256":"photo","expected_identity_generation":1,"expected_candidate_id":"A"}"""
+            for (endpoint in listOf("place-navigation", "place-unknown")) {
+                server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
+                val wire = api.mutate("s", endpoint, payload, "command")
+                val request = server.takeRequest()
+                assertEquals("/v1/stories/s/$endpoint", request.path)
+                assertEquals("command", request.getHeader("Idempotency-Key"))
+                assertEquals("photo", JsonParser.parseString(request.body.readUtf8()).asJsonObject["expected_photo_sha256"].asString)
+                assertEquals("exif", wire.cameraPoint?.origin)
+                assertEquals(54.7, wire.cameraPoint!!.latitude!!, 0.0)
+                assertEquals("area", wire.placeMapFocus?.areaId)
+                assertTrue(wire.placeNavigationActive)
+            }
         } finally { server.shutdown() }
     }
 }

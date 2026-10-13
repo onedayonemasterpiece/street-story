@@ -13,6 +13,14 @@ public final class PhotoGpsFixture {
         return bytes(24, 32);
     }
 
+    public static byte[] withoutGps() {
+        Bitmap bitmap = Bitmap.createBitmap(24, 32, Bitmap.Config.ARGB_8888);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output);
+        bitmap.recycle();
+        return output.toByteArray();
+    }
+
     public static byte[] galleryBytes() {
         return bytes(480, 640);
     }

@@ -607,7 +607,7 @@ class OpenCodeResearch:
                     messages = await self._request(client, 'GET', f'/session/{sid}/message', params={'limit': 100})
                     related = [message for message in messages if message.get('info', {}).get('parentID') == message_id]
                     forbidden = [part for message in related for part in message.get('parts', [])
-                        if part.get('type') == 'tool' and part.get('tool') not in ({'websearch', 'StructuredOutput'} if role == 'search' else {'StructuredOutput'})]
+                        if part.get('type') == 'tool' and part.get('tool') not in ({'websearch', 'webfetch', 'StructuredOutput'} if role == 'agent_research' else {'websearch', 'StructuredOutput'} if role == 'search' else {'StructuredOutput'})]
                     blocked = [part for part in forbidden if (receipt.get('isolation') or {}).get('permission_authority') == 'attested_pre_execution_guard'
                                and (part.get('state') or {}).get('status') == 'error'
                                and 'research_tool_denied' in str((part.get('state') or {}).get('error') or '')]
@@ -730,6 +730,19 @@ class OpenCodeResearch:
                                 receipt['image_attachment_readback_verified'] = True
                                 if not submitted or binding.get('image_transport') == 'inline_data_uri_v1':
                                     receipt['image_delivery_verification'] = 'original_server_inline_parts_labels_mime'
+                            if role == 'agent_research':
+                                completed_tools = {part.get('tool') for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and (part.get('state') or {}).get('status') == 'completed'}
+                                receipt['completed_agent_tools'] = sorted(completed_tools)
+                                receipt['tool_receipts'] = [{'name': part.get('tool'), 'call_id': part.get('callID'),
+                                    'arguments': (part.get('state') or {}).get('input'),
+                                    'result_sha256': hashlib.sha256(json.dumps((part.get('state') or {}).get('output'),
+                                        ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+                                    for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and part.get('tool') in {'websearch', 'webfetch'}
+                                    and (part.get('state') or {}).get('status') == 'completed']
+                                if not {'websearch', 'webfetch'} <= completed_tools:
+                                    raise ResearchUnavailable('research_agent_tools_not_performed', receipt)
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
                             # The contract bounds JSON characters, not the

@@ -1071,6 +1071,11 @@ class LiveVisualComparisonMixin:
             **({key: hints[key] for key in ('direction_degrees', 'direction_ref') if key in hints}
                if identity.get('camera_position_verified') is True
                and hints.get('direction_status') == 'true_north' and hints.get('direction_ref') == 'T' else {})}
+        if (research.get('place_selection') or {}).get('location_basis') == 'owner_relocated':
+            reply['camera_hints'] = {}
+            reply['camera_position_verified'] = False
+            reply['location_instruction'] = ('Камера GPS смещена относительно выбранной автором группы. '
+                'Не используй GPS-позицию или направление камеры для выбора её участника.')
         reply['camera_hints_instruction'] = (
             'focal_length_35mm уже является эквивалентным фокусным расстоянием. '
             'Не умножай его автоматически на digital_zoom_ratio: поля могут описывать один и тот же зум. '

@@ -176,7 +176,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.exception_handler(ConflictError)
     async def conflict_handler(_request: Request, exc: ConflictError):
-        return error_response(409, exc.code, str(exc))
+        return error_response(422 if exc.code == 'photo_gps_required' else 409, exc.code, str(exc))
 
     @app.exception_handler(InvalidStateError)
     async def state_handler(_request: Request, exc: InvalidStateError):
@@ -263,7 +263,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post('/v1/stories/{story_id}/place', dependencies=[Depends(auth)])
     async def story_confirm_place(story_id: str, request: Request,
                                   idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
-        from .place_selection import confirm_place
+        from .place_selection import confirm_place, prepare_place_context
         body_bytes = await request.body()
         if len(body_bytes) > 8192:
             raise HTTPException(status_code=413, detail='Place command too large')
@@ -273,7 +273,25 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             raise HTTPException(status_code=422, detail='Invalid place command')
         if not isinstance(body, dict):
             raise HTTPException(status_code=422, detail='Invalid place command')
+        await prepare_place_context(service, story_id, body)
         return confirm_place(service, story_id, idem(idempotency_key or body.get('command_id')), body)
+
+    @app.post('/v1/stories/{story_id}/place-unknown', dependencies=[Depends(auth)])
+    @app.post('/v1/stories/{story_id}/place-navigation', dependencies=[Depends(auth)])
+    async def owner_place_action(story_id: str, request: Request,
+                                 idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        from .place_selection import place_action
+        raw = await request.body()
+        if len(raw) > 4096:
+            raise HTTPException(status_code=413, detail='Place action too large')
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='Invalid place action') from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail='Invalid place action')
+        return place_action(service, story_id, idem(idempotency_key or body.get('command_id')), body,
+                            unknown=request.url.path.endswith('/place-unknown'))
 
     @app.post('/v1/stories/{story_id}/draft', dependencies=[Depends(auth)])
     async def story_save_draft(story_id: str, request: Request,

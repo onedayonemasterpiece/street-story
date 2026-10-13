@@ -6,6 +6,7 @@ from typing import Any
 from .config import Settings
 from .mvp_location import MvpLocationStreetStoryService
 from .product import VibePublishBoundary
+from .agent_evidence import AgentEvidenceMixin
 
 
 class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
@@ -15,7 +16,7 @@ class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
         return await super().ingress_asset(data, mime_type, request_key)
 
 
-class RuntimeStreetStoryService(MvpLocationStreetStoryService):
+class RuntimeStreetStoryService(AgentEvidenceMixin, MvpLocationStreetStoryService):
     """MVP product service plus bounded live/readback evidence; durable core stays unchanged."""
 
     def __init__(self, settings: Settings, providers=None):
@@ -27,6 +28,15 @@ class RuntimeStreetStoryService(MvpLocationStreetStoryService):
         if research is None:
             research = json.loads(row["research_json"] or "{}")
         result = super()._story_repr(db, row, research=research)
+        for fact in result.get('facts', []):
+            assertion = db.execute('SELECT accepted_basis_json FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                   (row['id'], fact['fact_id'])).fetchone()
+            basis = json.loads(assertion[0] or '{}') if assertion else {}
+            operation = basis.get('operation') or {}
+            if operation.get('contract') == 'agent-source-confirmation-v1':
+                fact['subject_scope'] = operation.get('subject_scope')
+                fact['confirmation'] = {key: operation.get(key) for key in
+                    ('confirmation_attempt_id', 'confirmation_model', 'confirmed_fragment', 'source_date', 'reason', 'agent')}
         if research:
             wikipedia = research.get("wikipedia") if isinstance(research.get("wikipedia"), list) else []
             grounding = (

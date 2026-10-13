@@ -990,6 +990,10 @@ class GeminiClient:
         for gate in gates.values():
             await gate.close()
 
+    async def verify_agent_evidence(self, payload, *, checkpoint, guard):
+        from .agent_evidence import verify_with_gemini
+        return await verify_with_gemini(self, payload, checkpoint, guard)
+
     async def _generate(
         self,
         key: str,

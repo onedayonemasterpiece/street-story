@@ -106,6 +106,73 @@ def load_research_qualification(installer, *, research_directory=None, qualifica
     return qualification, caches, provenance
 
 
+def load_agent_qualification(path, *, routes=None):
+    """New agent-role proof only: immutable actual tool receipts plus current profile."""
+    from street_story.fact_agents import QUALIFICATION_KEY
+    from street_story.fact_agent_providers import INSTRUCTIONS, RESULT_SCHEMA, TOOLS, validate_result
+    from jsonschema import Draft202012Validator
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError('Agent qualification symlink is not accepted')
+    path = managed(path)
+    proof = json.loads(path.read_text())
+    if proof.get('contract') != QUALIFICATION_KEY or not isinstance(proof.get('routes'), list) or not proof['routes']:
+        raise ValueError('New agent-role qualification required')
+    current = {route.route_id: route for route in routes} if routes is not None else None
+    seen, providers = set(), set()
+    for route in proof['routes']:
+        if (not isinstance(route, dict) or route.get('contract') != QUALIFICATION_KEY
+                or not route.get('route_id') or not route.get('profile_sha256')
+                or route.get('tool_access_verified') is not True or route.get('tool_safety_verified') is not True
+                or not isinstance(route.get('qualification_receipts'), list) or not route['qualification_receipts']
+                or route['route_id'] in seen):
+            raise ValueError('Agent role/tool qualification incomplete')
+        seen.add(route['route_id']); providers.add(route.get('provider_id'))
+        if current is not None:
+            configured = current.get(route['route_id'])
+            if (configured is None or configured.profile_fingerprint != route['profile_sha256']
+                    or configured.provider_id != route.get('provider_id') or configured.model_id != route.get('model_id')
+                    or configured.endpoint.rstrip('/') != str(route.get('endpoint') or '').rstrip('/')
+                    or configured.directory != route.get('directory')):
+                raise ValueError('Agent qualification route/profile changed')
+        for evidence in route['qualification_receipts']:
+            evidence_path = Path(evidence['path'])
+            if evidence_path.is_symlink():
+                raise ValueError('Agent receipt symlink is not accepted')
+            evidence_path = managed(evidence_path)
+            raw = evidence_path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != evidence.get('sha256'):
+                raise ValueError('Agent qualification receipt integrity mismatch')
+            report = json.loads(raw)
+            receipt = report.get('receipt', report)
+            binding = receipt.get('binding') or {}
+            tools = receipt.get('tool_receipts') or []
+            if (receipt.get('phase') != 'completed' or receipt.get('provider_id') != route.get('provider_id')
+                    or receipt.get('model_id') != route.get('model_id') or not binding.get('attempt_id')
+                    or not binding.get('story_id') or binding.get('purpose') != 'facts'
+                    or receipt.get('provider_send_state') != 'response_closed'
+                    or receipt.get('frozen_schema') != RESULT_SCHEMA
+                    or not str(receipt.get('frozen_prompt') or '').startswith(INSTRUCTIONS + '\nINPUT=')
+                    or not receipt.get('model_attempts') or not tools
+                    or {item.get('name') for item in tools} != {'websearch', 'webfetch'}):
+                raise ValueError('Actual agent search/read receipt required; legacy reader flags cannot qualify')
+            for tool in tools:
+                declaration = next((item for item in TOOLS if item['name'] == tool.get('name')), None)
+                if (not declaration or not Draft202012Validator(declaration['parameters']).is_valid(tool.get('arguments'))
+                        or not tool.get('completed_at') or not tool.get('result_sha256')):
+                    raise ValueError('Agent observed tool receipt outside current read-only scope')
+            facts = validate_result(receipt.get('result'))['facts']
+            read_urls = {source.get(key) for source in receipt.get('sources') or []
+                         if source.get('source_version_id') and source.get('content_sha256')
+                         for key in ('requested_url', 'final_url')}
+            if not facts or any(fact['url'] not in read_urls for fact in facts):
+                raise ValueError('Agent qualification has no actually read candidate source')
+    if len(providers - {None}) < 2:
+        raise ValueError('Agent qualification needs two independent providers')
+    return proof, {'agent_qualification_path': str(path),
+        'agent_qualification_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
 def registry_item(path, message):
     registry = json.loads(managed(path).read_text())
     matches = [row for row in registry['items'] if any(
@@ -195,8 +262,33 @@ def enrich_evidence(service, case, visible):
     case['rest_eligible_proved_facts'] = usable
     case['rest_eligible_proved_count'] = len(usable)
     case['own_read_source_count'] = len({span['source_url'] for fact in usable for span in fact['read_spans']})
-    case['own_read_supported_fact_count'] = sum(any(span['support_kind'] == 'verified_page_span'
-        for span in fact['read_spans']) for fact in usable)
+    from street_story.agent_evidence import CONTRACT
+    from street_story.fact_ledger import accepted_basis_valid
+    with service.store.connection() as db:
+        def model_confirmed(fact, span):
+            if span['support_kind'] != 'model_confirmed_source_chunk':
+                return False
+            assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                (case['story_id'], fact['assertion_id'])).fetchone()
+            if not assertion or not accepted_basis_valid(db, case['story_id'], assertion):
+                return False
+            basis = json.loads(assertion['accepted_basis_json'] or '{}')
+            operation = basis.get('operation') or {}
+            metadata = facts[fact['assertion_id']].get('confirmation') or {}
+            version = db.execute('SELECT * FROM source_versions WHERE source_version_id=?', (span['source_version_id'],)).fetchone()
+            chunk = db.execute('SELECT * FROM source_chunks WHERE source_version_id=? AND chunk_id=?',
+                (span['source_version_id'], span['chunk_id'])).fetchone()
+            return bool(operation.get('contract') == CONTRACT and operation.get('confirmation_attempt_id')
+                and operation.get('confirmation_model') and operation.get('confirmed_fragment') and operation.get('reason')
+                and (operation.get('agent') or {}).get('route_id')
+                and metadata.get('confirmation_attempt_id') == operation['confirmation_attempt_id']
+                and metadata.get('confirmation_model') == operation['confirmation_model']
+                and span['evidence_id'] in {ev['evidence_id'] for ev in basis.get('evidence', [])}
+                and version and chunk and version['access_scope'] == 'public'
+                and hashlib.sha256(version['normalized_text'].encode()).hexdigest() == version['content_sha256']
+                and operation.get('source_content_sha256') == version['content_sha256'])
+        case['own_read_supported_fact_count'] = sum(any(span['support_kind'] == 'verified_page_span' or model_confirmed(fact, span)
+            for span in fact['read_spans']) for fact in usable)
     case['rest_projection'] = visible
     case['confirmed_identity_preserved'] = (
         visible.get('visual_identity', {}).get('status') == 'owner_confirmed'
@@ -224,6 +316,10 @@ async def run(args):
                       VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='')
     qualification, caches, research_provenance = load_research_qualification(installer,
         research_directory=args.research_directory, qualification_path=args.qualification)
+    agent_qualification = None
+    if args.agent_qualification is not None:
+        agent_qualification, agent_provenance = load_agent_qualification(args.agent_qualification)
+        research_provenance.update(agent_provenance)
     from street_story.config import Settings, reveal
     settings = Settings.from_env()
     from street_story.shared_devcoveer_research import SharedDevCoveerResearch
@@ -244,6 +340,7 @@ async def run(args):
         'observation_seconds': args.observe_seconds, 'product_deadline': None,
         'provider_reference_or_expected_facts_supplied': False,
         'author_selection_input': author_context(item), 'physical_ids': item['expected_physical_ids']}
+    frozen['revision14_voice_gps'] = args.revision14
     frozen['qualification_scope'] = 'prerelease_WIP' if args.allow_wip else 'frozen_candidate'
     frozen['source_hashes'] = {str(path.relative_to(BACKEND.parent)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted((BACKEND/'street_story').glob('*.py'))}
@@ -261,6 +358,11 @@ async def run(args):
     service.providers.vibepublish = NoPublication()
     for key, value in caches.items():
         service.store.cache_put(key, value, 3600)
+    if agent_qualification is not None:
+        from street_story.fact_agents import QUALIFICATION_KEY
+        checked, _ = load_agent_qualification(args.agent_qualification,
+            routes=service.providers.research.fact_agent_routes(include_unqualified=True))
+        service.store.cache_put(QUALIFICATION_KEY, checked, 3600)
     restore_control = instrument_control_boundary()
     import httpx
     import uvicorn
@@ -284,6 +386,8 @@ async def run(args):
                     form = {'client_story_id': key, 'photo_sha256': item['sha256'],
                             'voice_protocol': 'voice-chunks-v2', 'identity_mode': 'manual'}
                     gps = item['camera_gps']
+                    if args.revision14 and gps.get('status') != 'verified_exif':
+                        raise ValueError('Revision14 requires original verified EXIF GPS')
                     if gps.get('status') == 'verified_exif':
                         # Standard intake lat/lon fields represent photo GPS;
                         # camera_coordinate_source is reserved for owner hints.
@@ -315,9 +419,12 @@ async def run(args):
                             'expected_candidate_id': (current.get('visual_identity') or {}).get('candidate_id')}
                         context = author_context(item)
                         if selected:
-                            body.update(snapshot_id=snapshot['snapshot_id'], candidate_id=selected,
-                                        owner_context=context)
+                            body.update(snapshot_id=snapshot['snapshot_id'], candidate_id=selected)
+                            if not args.revision14:
+                                body['owner_context'] = context
                             case['selection_basis'] = 'shown_osm_contour'
+                        elif args.revision14:
+                            raise ValueError('Revision14 requires a shown contour; no manual point or author text fallback')
                         else:
                             coordinates, provenance = await fallback_object_point(service, item)
                             body['fallback'] = {**context, **coordinates}
@@ -400,8 +507,12 @@ if __name__ == '__main__':
         help='Managed task capsule override, applied after the dev environment')
     parser.add_argument('--qualification', type=Path,
         help='Managed task qualification override; immutable evidence is verified')
+    parser.add_argument('--revision14', action='store_true', help='Verified EXIF GPS and one shown contour; no author text/point fallback')
+    parser.add_argument('--agent-qualification', type=Path, help='Managed actual research-agent-verification-v1 tool proof JSON')
     parser.add_argument('--observe-seconds', type=float, default=300)
     args = parser.parse_args()
+    if args.revision14 and args.agent_qualification is None:
+        parser.error('Revision14 requires explicit actual --agent-qualification')
     if not 0 < args.observe_seconds <= 300:
         parser.error('Observation must be between 0 and 300 seconds; this is not a product deadline')
     asyncio.run(run(args))

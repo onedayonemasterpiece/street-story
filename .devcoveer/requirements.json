@@ -4,13 +4,15 @@
   "requirements": [
     {
       "id": "CORE-PHOTO-IDENTITY",
-      "statement": "Street Story retains automatic identification of the depicted place or object through product automation/Mira. In the owner-requested exact map-selection path authorized on 2026-10-12, the owner may instead select and confirm one building or an explicit point with address/name; this selection is final and does not require model re-identification. This limited path does not replace the automatic product or authorize reducing the voice, visual or publication requirements. In the owner-approved approximate mode authorized on 2026-10-13, the product automatically narrows the depicted object only within the explicitly selected building group; the group is not itself accepted as one identified POI.",
+      "statement": "Street Story retains automatic identification of the depicted place or object through product automation/Mira. In the owner-requested exact map-selection path authorized on 2026-10-12, the owner may instead select and confirm one building or an explicit point with address/name; this selection is final and does not require model re-identification. This limited path does not replace the automatic product or authorize reducing the voice, visual or publication requirements. In the owner-approved approximate mode authorized on 2026-10-13, the product automatically narrows the depicted object only within the explicitly selected building group; the group is not itself accepted as one identified POI. In the owner-authorized creation path clarified on 2026-10-13 (governing revision14), imported/shared photos require EXIF GPS before a manual story is created; the EXIF point only initializes the map. The selected building is final, its location determines the city, and selection is not bounded by distance to the camera. The owner uses touches or voice, including explicit point selection with a voice-provided name/address when contours are unavailable.",
       "critical": true,
       "acceptance": [
         "The automatic path evaluates the source photo before research and publication work depends on its identity.",
         "Uncertain automatic identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity.",
         "The exact owner path preserves the photo, selected physical object and literal address provenance; fact evidence must still belong to that object. The owner can change A to B without old facts, drafts or late results entering B.",
-        "The approximate mode preserves the owner-selected snapshot and group, constrains automatic candidate admission and identity rebinding to that group, and keeps unresolved identity visible without choosing an arbitrary member. Exact selection remains available as an owner correction."
+        "The approximate mode preserves the owner-selected snapshot and group, constrains automatic candidate admission and identity rebinding to that group, and keeps unresolved identity visible without choosing an arbitrary member. Exact selection remains available as an owner correction.",
+        "Manual photo intake without EXIF GPS creates no Android story and returns422 photo_gps_required on the backend; manual camera coordinates are not a fallback.",
+        "City/context come from the selected building and its map snapshot, never the EXIF camera point. The owner can relocate the map by touch or Mira voice guidance without re-identifying an exact selection."
       ]
     },
     {
@@ -27,7 +29,8 @@
       "critical": true,
       "acceptance": [
         "Research exposes source-linked evidence for publication facts.",
-        "Low-confidence discovery material is not silently upgraded into a verified fact."
+        "Low-confidence discovery material is not silently upgraded into a verified fact.",
+        "Agent candidates are confirmed by a configured model against backend-acquired, versioned source text. Literal search, regex, normalization or similarity thresholds do not decide semantic acceptance. Each fact retains selected_building or explicitly labelled complex_or_site scope."
       ]
     },
     {
@@ -49,11 +52,12 @@
     },
     {
       "id": "CORE-VOICE-MIRA",
-      "statement": "The primary creation and refinement flow supports live voice communication with Mira while preserving the same story conversation and product context.",
+      "statement": "The primary creation and refinement flow supports live voice communication with Mira while preserving the same story conversation and product context. The owner creation/refinement UI uses only touches and voice: no text entry for city, address, place name, coordinates, draft or clarification. Connection settings remain technical settings. Mira may find an area and focus the map; the owner chooses the shown building. Unknown place remains explicit without fact research.",
       "critical": true,
       "acceptance": [
         "Voice interaction does not force the owner into a separate manual research or editing workflow.",
-        "A transport or provider implementation change must preserve the conversational product outcome."
+        "A transport or provider implementation change must preserve the conversational product outcome.",
+        "A displaced GPS photo retains its immutable EXIF point, while owner relocation records gps_offset_m/location_basis and moves the map through the existing shared Live adapter."
       ]
     },
     {
@@ -77,13 +81,14 @@
     },
     {
       "id": "CORE-LIVE-FIRST-FACT-RESEARCH",
-      "statement": "Street Story is Live-first for fact research economics and orchestration. The normal fact-research path should exploit the Live model as the primary low-marginal-cost semantic worker by decomposing research into many small, simple, bounded operations over retrieved source material. Search/fetch may use dedicated services, but stronger or separately metered non-Live models are not a mandatory dependency of normal fact extraction unless measured product evidence shows that Live alone is insufficient.",
+      "statement": "Street Story is Live-first for fact research economics and orchestration. The normal fact-research path should exploit the Live model as the primary low-marginal-cost semantic worker by decomposing research into many small, simple, bounded operations over retrieved source material. Search/fetch may use dedicated services, but stronger or separately metered non-Live models are not a mandatory dependency of normal fact extraction unless measured product evidence shows that Live alone is insufficient. For the owner-confirmed map path authorized on2026-10-13 revision14, the measured reader bottleneck is addressed by multiple independent agent tasks within the existing research job, with configured provider/model routes and model-confirmed source evidence. At least two independent providers are supported; Codex is optional and the scenario works without it. This targeted owner-approved path reuses existing transport, quota authority, persistence and tools.",
       "critical": true,
       "acceptance": [
         "A normal source-research run can produce a useful evidence-backed fact set with Mira/Live plus search/fetch and deterministic persistence/orchestration, without requiring a paid or stronger helper-model chain.",
         "Live work is decomposed into small bounded semantic operations that fit the model and resource envelope; weakness of the Live model is addressed first by decomposition, repetition, evidence access and resumable orchestration rather than by replacing it with deterministic semantics.",
         "A non-Live research or verification model may be used as an optional targeted quality/latency fallback only when a concrete measured blocker justifies it; it must not silently become a permanent mandatory cost of the normal path.",
-        "If operational evidence later disproves the assumed Live cost/capacity advantage, that is surfaced as a product/economic constraint and the architecture may be reconsidered explicitly rather than drifting implicitly."
+        "If operational evidence later disproves the assumed Live cost/capacity advantage, that is surfaced as a product/economic constraint and the architecture may be reconsidered explicitly rather than drifting implicitly.",
+        "Failure of one route does not stop independent agent research; an UNKNOWN operation is not resent on the same route. Empty configuration is visible as research_routes_unavailable, without endless retry."
       ]
     },
     {

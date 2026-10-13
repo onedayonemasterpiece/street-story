@@ -78,19 +78,20 @@ async def resolve_group(service, story, research, *, job_id, job_attempt, transc
     members = [c for c in json.loads(canonical(group['candidates']))
                if c['candidate_id'] not in research.get('identity_rejected_ids', [])]
     source = service._source_photo_for_job(story['id'])
-    camera = (research.get('manual_camera_point') or {}) if story.get('latitude') is None else story
+    relocated = group.get('location_basis') == 'owner_relocated'
+    camera = {} if relocated else story
     from .photo_metadata import inspect_gps
     metadata = inspect_gps(source)
     binding = research.get('photo_camera_hints') or {}
     recovered_hints = (binding.get('photo_sha256') == story['photo_sha256']
         and binding.get('source') == 'selected_original_exif'
         and (research.get('location_provenance') or {}).get('kind') == 'selected_original_exif')
-    position_verified = bool(camera.get('latitude') is not None and camera.get('longitude') is not None
+    position_verified = bool(not relocated and camera.get('latitude') is not None and camera.get('longitude') is not None
         and (research.get('location_provenance') or {}).get('kind') != 'owner_approx_camera'
         and (recovered_hints or metadata['status'] == 'gps_present'
             and abs(float(camera['latitude']) - metadata['latitude']) <= .00001
             and abs(float(camera['longitude']) - metadata['longitude']) <= .00001))
-    hints = binding['metadata'] if recovered_hints else read_camera_hints(source)
+    hints = {} if relocated else binding['metadata'] if recovered_hints else read_camera_hints(source)
     story = {**story, '_identity_generation': generation, '_identity_research_control_revision': control,
         '_research_job_id': job_id, '_research_job_attempt': job_attempt,
         '_identity_original_source_sha256': hashlib.sha256(source).hexdigest(),

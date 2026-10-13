@@ -43,6 +43,9 @@ data class ResearchProjectionSnapshot(
     val researchOutcome: ResearchOutcomeWire? = null,
     val identityClarification: com.google.gson.JsonObject? = null,
     val sourceAvailable: Boolean? = null,
+    val placeMapFocus: PlaceMapFocusWire? = null,
+    val placeNavigationActive: Boolean = false,
+    val appliedPlaceMapFocusRevision: Int? = null,
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -60,6 +63,12 @@ class ResearchProjectionStore(context: Context) {
             placeMap = wire.placeMap,
             placeSelection = wire.placeSelection,
             sourceAvailable = wire.sourceAvailable,
+            placeMapFocus = wire.placeMapFocus?.takeIf { it.valid() },
+            placeNavigationActive = wire.placeNavigationActive,
+            appliedPlaceMapFocusRevision = prior?.appliedPlaceMapFocusRevision?.takeIf {
+                prior?.photoSha256 == wire.photoSha256 && prior?.placeMapFocus?.revision == wire.placeMapFocus?.revision &&
+                    prior?.placeMapFocus?.areaId == wire.placeMapFocus?.areaId
+            },
             identityClarification = wire.identityClarification?.takeIf {
                 runCatching { !wire.photoSha256.isNullOrBlank() && wire.identityGeneration != null &&
                     it["photo_sha256"]?.asString == wire.photoSha256 &&
@@ -106,7 +115,15 @@ class ResearchProjectionStore(context: Context) {
 
     fun replacePlaceMap(storyId: String, map: PlaceMapWire) {
         val prior = get(storyId) ?: return
-        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(placeMap = map, cameraPoint = map.camera))).commit())
+        if (map.identityGeneration != (prior.identityGeneration ?: 0) ||
+            (map.photoSha256.isNotBlank() && map.photoSha256 != prior.photoSha256)) return
+        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(placeMap = map, cameraPoint = prior.cameraPoint ?: map.camera))).commit())
+    }
+
+    fun markPlaceMapFocusApplied(storyId: String, revision: Int) {
+        val prior = get(storyId) ?: return
+        if (prior.placeMapFocus?.revision != revision) return
+        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(appliedPlaceMapFocusRevision = revision))).commit())
     }
 
     fun clear(storyId: String) {

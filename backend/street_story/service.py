@@ -434,6 +434,9 @@ class StreetStoryService:
             "place_selection": research.get("place_selection"),
             "identity_clarification": research.get("identity_clarification"),
             "place_map": research.get("place_map"),
+            "place_map_focus": research.get("place_map_focus"),
+            "place_navigation_active": bool(research.get("place_navigation_active")),
+            "owner_place_hint": research.get("owner_place_hint"),
             "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
@@ -467,6 +470,14 @@ class StreetStoryService:
         # Legacy API field is an opaque upload token, never an image checksum.
         if not photo_bytes:
             raise ConflictError('photo_empty', 'Uploaded photo is empty')
+        if identity_mode == 'manual':
+            from .photo_metadata import inspect_gps
+            gps = inspect_gps(photo_bytes)
+            if gps['status'] != 'gps_present':
+                raise ConflictError('photo_gps_required', 'В фото нет координат GPS — выберите снимок с геолокацией.')
+            if location_provenance is not None:
+                raise ConflictError('camera_context_invalid', 'Ручная точка камеры недоступна; используйте GPS снимка.')
+            lat, lon = gps['latitude'], gps['longitude']
         if voice_protocol != "voice-chunks-v2":
             raise ConflictError("voice_protocol_unsupported", "voice-chunks-v2 is required")
         identity = {

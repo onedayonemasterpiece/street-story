@@ -105,14 +105,14 @@ async def test_snapshot_selection_rejects_unshown_ids_and_pan_is_bounded(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_manual_http_intake_and_no_gps_explicit_fallback(tmp_path):
+async def test_manual_http_intake_retains_exif_and_house_point_fallback(tmp_path):
     service, gemini = make_service(tmp_path)
     app = create_app(service.settings, service)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         client.headers['Authorization'] = 'Bearer ' + reveal(service.settings.device_token)
         response = await client.post('/v1/stories', headers={'Idempotency-Key': 'intake'},
             data={'client_story_id': 'manual', 'photo_sha256': 'token', 'voice_protocol': 'voice-chunks-v2', 'identity_mode': 'manual'},
-            files={'photo': ('photo.jpg', b'photo', 'image/jpeg')})
+            files={'photo': ('photo.jpg', __import__('test_identity_recovery_policy').photo(), 'image/jpeg')})
         assert response.status_code == 200, response.text
         story = response.json()
         assert story['identity_mode'] == 'manual' and story['state'] == 'photo_ready'
@@ -121,7 +121,7 @@ async def test_manual_http_intake_and_no_gps_explicit_fallback(tmp_path):
             'fallback': {'latitude': 54.7, 'longitude': 20.5, 'address': 'Street 5', 'city': 'City'}}
         response = await client.post(f"/v1/stories/{story['id']}/place", json=body)
         assert response.status_code == 200, response.text
-        assert response.json()['camera_point']['origin'] == 'manual'
+        assert response.json()['camera_point']['origin'] == 'exif'
         assert response.json()['visual_identity']['search_anchor']['address'] == 'Street 5'
         assert response.json()['identity_mode'] == 'manual'
     with service.store.connection() as db:
@@ -307,7 +307,8 @@ async def test_contour_without_city_accepts_same_object_and_explicit_context_enr
     chosen = enriched['visual_identity']['candidates'][0]
     assert enriched['visual_identity']['candidate_id'] == 'osm:way:1'
     assert enriched['visual_identity']['candidate_name'] == 'Owner City, Street 1'
-    assert chosen['search_anchor']['city'] == 'Owner City'
+    assert chosen['search_anchor']['city'] == ''
+    assert chosen['search_anchor']['owner_context']['city'] == 'Owner City'
     assert chosen['search_anchor']['owner_context_provenance'] == 'owner.explicit_selection_hint'
     assert chosen['map_address'] == first['visual_identity']['candidates'][0]['map_address']
     assert chosen['map_address']['provenance'] == 'osm.tags'

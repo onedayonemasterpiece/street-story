@@ -27,7 +27,151 @@ def camera_point(row, research):
         provenance = research.get('location_provenance') or {}
         return {'latitude': row['latitude'], 'longitude': row['longitude'],
                 'origin': 'manual' if provenance.get('kind') == 'owner_approx_camera' else 'exif'}
-    return research.get('manual_camera_point')
+    return None
+
+
+def object_center(candidate):
+    center = candidate.get('map_coordinates') or {}
+    if center.get('latitude') is not None and center.get('longitude') is not None:
+        return point(center['latitude'], center['longitude'])
+    points = [p for r in (candidate.get('map_geometry') or {}).get('rings') or []
+              if r.get('role') == 'outer' for p in r.get('points') or []]
+    if points:
+        return point(sum(p['lat'] for p in points)/len(points), sum(p['lon'] for p in points)/len(points))
+    return None
+
+
+def offset_m(a, b):
+    lat1, lat2 = math.radians(a['latitude']), math.radians(b['latitude'])
+    dlat, dlon = lat2-lat1, math.radians(b['longitude']-a['longitude'])
+    value = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+    return 6_371_000 * 2 * math.asin(min(1, math.sqrt(max(0, value))))
+
+
+def selection_location(row, members):
+    camera = camera_point(row, {})
+    centers = [center for c in members if (center := object_center(c))]
+    if not camera or not centers:
+        return {'gps_offset_m': None, 'location_basis': 'near_gps'}
+    distance = min(offset_m(camera, center) for center in centers)
+    return {'gps_offset_m': round(distance, 1),
+            'location_basis': 'owner_relocated' if distance > 350 else 'near_gps'}
+
+
+def snapshot_city(snapshot, chosen):
+    anchor = chosen.setdefault('search_anchor', {})
+    if anchor.get('city'):
+        anchor.setdefault('city_provenance', 'osm.selected.addr_city')
+        return True
+    center = object_center(chosen)
+    neighbors = [(offset_m(center, p) if center and (p := object_center(c)) else 0, c)
+        for c in snapshot.get('city_objects') or snapshot.get('candidates') or []
+        if (c.get('search_anchor') or {}).get('city') and (c.get('search_anchor') or {}).get('city_provenance')
+            not in {'osm.snapshot_neighbor.addr_city', 'osm.selected_center_reverse'}]
+    if neighbors:
+        source = min(neighbors, key=lambda item: item[0])[1]
+        anchor.update(city=source['search_anchor']['city'], city_provenance='osm.snapshot_neighbor.addr_city',
+                      city_source_candidate_id=source['candidate_id'])
+        return True
+    return False
+
+
+async def reverse_selected_city(service, center):
+    osm = service.providers.osm
+    receipt = {'status': 'unavailable', 'center': center}
+    own = getattr(osm, 'http', None) is None
+    client = getattr(osm, 'http', None) or httpx.AsyncClient(timeout=15)
+    try:
+        response = await client.get(osm.reverse_url, params={'format': 'jsonv2',
+            'lat': center['latitude'], 'lon': center['longitude'], 'zoom': 18, 'addressdetails': 1},
+            headers={'User-Agent': getattr(osm, 'user_agent', service.settings.osm_user_agent)})
+        response.raise_for_status()
+        address = response.json().get('address') or {}
+        city = next((str(address[k])[:180] for k in ('city', 'town', 'village', 'municipality') if address.get(k)), '')
+        receipt.update(status='completed', city=city, provenance='osm.selected_center_reverse')
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError) as exc:
+        receipt['reason'] = type(exc).__name__
+    finally:
+        if own:
+            await client.aclose()
+    return receipt
+
+
+async def prepare_place_context(service, story_id, body):
+    """One selected-object reverse read; it cannot change the owner identity."""
+    with service.store.connection() as db:
+        row = service._story_row(db, story_id)
+        research = json.loads(row['research_json'] or '{}')
+    generation = int(research.get('identity_generation') or 0)
+    if (body.get('expected_photo_sha256') != row['photo_sha256']
+            or body.get('expected_identity_generation', body.get('expected_generation')) != generation):
+        return  # The normal command fence reports stale requests, including replay.
+    fallback = body.get('fallback')
+    if isinstance(fallback, dict):
+        center = point(fallback.get('latitude'), fallback.get('longitude'))
+        cache_key = 'owner-selected-point-city:' + digest(center)
+        if service.store.cache_get(cache_key) is None:
+            service.store.cache_put(cache_key, await reverse_selected_city(service, center), 3600)
+        return
+    snapshot = next((s for s in research.get('place_map_snapshots') or []
+        if s['snapshot_id'] == body.get('snapshot_id') and s['identity_generation'] == generation), None)
+    if not snapshot:
+        return
+    ids = body.get('candidate_ids') if body.get('mode') == 'rough' else [body.get('candidate_id') or body.get('poi_id')]
+    if not isinstance(ids, list):
+        return
+    targets = [c for c in snapshot['candidates'] if c['candidate_id'] in ids]
+    for chosen in targets:
+        if snapshot_city(snapshot, chosen):
+            continue
+        center = object_center(chosen)
+        cached = snapshot.setdefault('city_reverse', {}).get(chosen['candidate_id'])
+        if cached is None and center:
+            cached = await reverse_selected_city(service, center)
+            snapshot['city_reverse'][chosen['candidate_id']] = cached
+            LOG.info('street_story_map stage=selected_city story_id=%s generation=%s candidate_id=%s status=%s',
+                     story_id, generation, chosen['candidate_id'], cached['status'])
+        if cached and cached.get('city'):
+            chosen['search_anchor'].update(city=cached['city'], city_provenance=cached['provenance'])
+    with service.store.tx() as db:
+        current = service._story_row(db, story_id)
+        latest = json.loads(current['research_json'] or '{}')
+        if current['photo_sha256'] != row['photo_sha256'] or int(latest.get('identity_generation') or 0) != generation:
+            return
+        for saved in latest.get('place_map_snapshots') or []:
+            if saved['snapshot_id'] == snapshot['snapshot_id']:
+                saved.update(candidates=snapshot['candidates'], city_reverse=snapshot.get('city_reverse') or {})
+                for feature in saved['buildings']['features']:
+                    selected = next((c for c in targets if c['candidate_id'] == feature['id']), None)
+                    if selected:
+                        feature['properties']['search_anchor'] = selected['search_anchor']
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
+
+
+def place_action(service, story_id, key, body, *, unknown=False):
+    action = 'place_unknown' if unknown else 'place_navigation'
+    with service.store.tx() as db:
+        row = service._story_row(db, story_id)
+        if service._idem(db, key, action, digest({'story_id': story_id, **body}), 'story', story_id):
+            return service._story_repr(db, row)
+        research = json.loads(row['research_json'] or '{}')
+        if (body.get('expected_photo_sha256') != row['photo_sha256']
+                or body.get('expected_identity_generation') != int(research.get('identity_generation') or 0)
+                or 'expected_candidate_id' not in body
+                or body['expected_candidate_id'] != (research.get('visual_identity') or {}).get('candidate_id')):
+            raise ConflictError('place_selection_stale', 'Фото или объект изменился. Обновите историю.')
+        if row['state'] in {'scheduling', 'scheduled', 'published'}:
+            raise ConflictError('place_publication_active', 'Публикация уже подготовлена.')
+        if unknown:
+            research, _, _ = detach_place_material(service, db, row, research)
+            research['place_selection'] = {'mode': 'unknown', 'status': 'place_unknown',
+                'photo_sha256': row['photo_sha256'], 'generation': research['identity_generation']}
+            db.execute("UPDATE stories SET state='place_unknown',place_name=NULL,draft_text=NULL,summary=NULL,"
+                "processed_image_path=NULL,processed_image_url=NULL,vibepublish_asset_ref=NULL,visual_context_json='{}' WHERE id=?", (story_id,))
+        research['place_navigation_active'] = True
+        db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
+                   (canonical(research), service.store.now(), story_id))
+        return service._story_repr(db, service._story_row(db, story_id))
 
 
 def _geometry(candidate):
@@ -54,13 +198,16 @@ def _candidate(item):
     name = str(tags.get('name') or ' '.join(str(address.get(k) or '') for k in ('street', 'house_number')).strip()
                or 'Здание ' + str(candidate.get('candidate_id') or ''))[:300]
     candidate.update(name=name, name_provenance='osm.tags.name' if tags.get('name') else (
-        'osm.tags.address' if address else 'map.placeholder'), url=(candidate.get('map_object') or {}).get('source_url'),
+        'osm.tags.address' if address.get('street') or address.get('house_number') else 'map.placeholder'), url=(candidate.get('map_object') or {}).get('source_url'),
                      type='building', osm_id=candidate.get('candidate_id'))
     candidate['search_anchor'] = {'city': str(tags.get('addr:city') or '')[:180],
         'street': address.get('street', ''), 'house_number': address.get('house_number', ''),
         'names': [str(tags[k])[:180] for k in ('name', 'old_name', 'alt_name') if tags.get(k)],
         'source': 'osm.observed_tags', 'provenance': 'osm.observed_tags', 'candidate_id': candidate.get('candidate_id'),
         'coordinates': candidate.get('map_coordinates') or {}}
+    if 'map_coordinates' not in candidate and (center := object_center(candidate)):
+        candidate['map_coordinates'] = {**center, 'provenance': 'osm.geometry_center', 'source_url': candidate.get('url')}
+        candidate['search_anchor']['coordinates'] = candidate['map_coordinates']
     return candidate
 
 
@@ -114,10 +261,12 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
         camera = camera_point(row, research)
         scope = (row['photo_sha256'], int(research.get('identity_generation') or 0))
         saved_map = research.get('place_map') or {}
-        center = point(latitude, longitude) if latitude is not None or longitude is not None else (saved_map.get('center') or camera)
+        focus = research.get('place_map_focus') or {}
+        center = point(latitude, longitude) if latitude is not None or longitude is not None else (
+            point(focus['lat'], focus['lon']) if focus else saved_map.get('center') or camera)
         if not center:
-            raise ConflictError('place_map_point_required', 'В фото нет GPS. Укажите точку на карте.')
-        effective_zoom = zoom or saved_map.get('zoom') or 17
+            raise ConflictError('photo_gps_required', 'В фото нет координат GPS — выберите снимок с геолокацией.')
+        effective_zoom = zoom or focus.get('zoom') or saved_map.get('zoom') or 17
         cache_key = digest([scope, center['latitude'], center['longitude'], radius_m, effective_zoom])
         cached = next((s for s in reversed(research.get('place_map_snapshots') or [])
                        if s.get('cache_key') == cache_key), None)
@@ -153,9 +302,12 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
                 streets.append({'type': 'Feature', 'id': cid, 'geometry': {'type': 'MultiLineString',
                     'coordinates': [[[p['lon'], p['lat']] for p in line] for line in lines]},
                     'properties': {'name': str(tags.get('name') or '')[:180]}})
+    city_objects = [_candidate(item) for item in raw.get('elements') or [] if (item.get('tags') or {}).get('addr:city')]
+    for candidate in candidates:
+        snapshot_city({'city_objects': city_objects}, candidate)
     snapshot = {'snapshot_id': 'map_' + uuid.uuid4().hex, 'photo_sha256': scope[0],
         'identity_generation': scope[1], 'center': {k: center[k] for k in ('latitude', 'longitude')},
-        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key,
+        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key, 'city_objects': city_objects,
         'partial': building_count > len(buildings) or bool(raw.get('incomplete_building_ids')),
         'incomplete_building_count': len(raw.get('incomplete_building_ids') or []),
         'map_source': raw.get('map_source'), 'available_building_count': building_count, 'buildings': {'type': 'FeatureCollection', 'features': buildings},
@@ -202,15 +354,16 @@ def confirm_place(service, story_id, key, body):
             if not isinstance(fallback, dict) or body.get('candidate_id') or body.get('poi_id'):
                 raise ConflictError('place_fallback_invalid', 'Подтвердите точку и адрес явно.')
             coordinates = point(fallback.get('latitude'), fallback.get('longitude'))
-            address, name, city = (str(fallback.get(k) or '').strip()[:300] for k in ('address', 'name', 'city'))
-            if not address and not name:
-                raise ConflictError('place_fallback_address_required', 'Для точки без контура нужно название объекта или адрес дома.')
-            cid = 'owner:place:' + digest([coordinates, (address or name).casefold(), city.casefold()])[:24]
-            chosen = {'candidate_id': cid, 'name': name or address, 'type': 'owner_point_address',
+            address, name = (str(fallback.get(k) or '').strip()[:300] for k in ('address', 'name'))
+            city_receipt = service.store.cache_get('owner-selected-point-city:' + digest(coordinates)) or {}
+            city = city_receipt.get('city') or ''
+            cid = 'owner:place:' + digest([coordinates])[:24]
+            chosen = {'candidate_id': cid, 'name': name or address or 'Выбранная точка дома', 'type': 'owner_point_address',
                 'map_coordinates': {**coordinates, 'provenance': 'owner.explicit_point'},
                 'map_address': {'address': address, 'city': city, 'provenance': 'owner.explicit_address'},
                 'search_anchor': {'city': city, 'address': address, 'names': [name] if name else [],
-                    'coordinates': coordinates, 'source': 'owner.explicit_point_address', 'provenance': 'owner.explicit_point_address', 'candidate_id': cid}}
+                    'coordinates': coordinates, 'city_provenance': city_receipt.get('provenance'),
+                    'source': 'owner.explicit_point_address', 'provenance': 'owner.explicit_point_address', 'candidate_id': cid}}
         else:
             cid = body.get('candidate_id') or body.get('poi_id')
             snapshot = next((s for s in research.get('place_map_snapshots') or []
@@ -220,6 +373,7 @@ def confirm_place(service, story_id, key, body):
             chosen = next((c for c in snapshot['candidates'] if c['candidate_id'] == cid), None)
             if not chosen:
                 raise ConflictError('place_candidate_unknown', 'Выберите один показанный контур здания.')
+            snapshot_city(snapshot, chosen)
         owner_context = body.get('owner_context')
         if owner_context is not None:
             if not isinstance(owner_context, dict) or any(k not in {'city', 'address', 'name'}
@@ -228,7 +382,7 @@ def confirm_place(service, story_id, key, body):
             chosen = {**chosen, 'search_anchor': dict(chosen['search_anchor'])}
             anchor = chosen['search_anchor']
             owner_context = {k: v.strip() for k, v in owner_context.items() if v.strip()}
-            for field in ('city', 'address'):
+            for field in ('address',):
                 if not anchor.get(field) and owner_context.get(field):
                     anchor[field] = owner_context[field]
             if owner_context.get('name'):
@@ -267,10 +421,8 @@ def confirm_group(service, db, row, research, command, body):
         raise ConflictError('place_owner_context_invalid', 'Нужны короткие сведения автора о группе.')
     members = json.loads(canonical([catalog[cid] for cid in ids]))
     for member in members:
-        if context.get('city') and not member['search_anchor'].get('city'):
-            member['search_anchor'].update(city=context['city'].strip(), city_provenance='owner.explicit_group_context')
-    camera = body.get('camera') or snapshot['center']
-    camera = point(camera.get('latitude'), camera.get('longitude'))
+        snapshot_city(snapshot, member)
+    location = selection_location(row, members)
     research, generation, now = detach_place_material(service, db, row, research)
     group = {'mode': 'rough', 'group_id': 'group_' + digest([row['id'], command, generation, ids])[:24],
         'status': 'identifying', 'candidate_id': None, 'narrowed_candidate_id': None,
@@ -278,16 +430,13 @@ def confirm_group(service, db, row, research, command, body):
         'features': {'type': 'FeatureCollection', 'features': [feature for feature in snapshot['buildings']['features']
             if feature['id'] in ids]}, 'owner_context': context,
         'context_provenance': 'owner.explicit_group_context', 'basis': 'owner_rough_osm_group',
-        'generation': generation, 'photo_sha256': row['photo_sha256'], 'command_id': command, 'confirmed_at': now}
+        'generation': generation, 'photo_sha256': row['photo_sha256'], 'command_id': command, 'confirmed_at': now, **location}
     research['place_selection'] = group
     research['visual_identity'] = {'status': 'uncertain', 'selection_basis': 'owner_rough_group',
         'candidate_id': None, 'candidate_name': None, 'candidates': members, 'observed_candidates': members,
         'owner_group_id': group['group_id'], 'photo_sha256': row['photo_sha256'], 'generation': generation}
     if body.get('owner_comment'):
         research['transcript'] = str(body['owner_comment'])[:5000]
-    if row['latitude'] is None:
-        research['manual_camera_point'] = {**camera, 'origin': 'manual'}
-        research['location_provenance'] = {'kind': 'owner_approx_camera', 'not_device_current_location': True}
     db.execute("UPDATE stories SET place_name=NULL,state='identifying',summary=NULL,draft_text=NULL,"
         "processed_image_path=NULL,processed_image_url=NULL,vibepublish_asset_ref=NULL,visual_context_json='{}',"
         "research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
@@ -299,6 +448,9 @@ def confirm_group(service, db, row, research, command, body):
          'queue_priority': 'interactive'})
     LOG.info('street_story_map stage=group_confirmed story_id=%s generation=%s group_id=%s members=%s job_id=%s',
              row['id'], generation, group['group_id'], len(ids), jid)
+    if location['location_basis'] == 'owner_relocated':
+        LOG.info('street_story_place_relocated story_id=%s generation=%s gps_offset_m=%s',
+                 row['id'], generation, location['gps_offset_m'])
     return service._story_repr(db, service._story_row(db, row['id']))
 
 
@@ -333,7 +485,8 @@ def detach_place_material(service, db, row, research):
     db.execute('DELETE FROM fact_assertions WHERE story_id=?', (story_id,))
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_editor_state'").fetchone():
         db.execute('DELETE FROM live_editor_state WHERE story_id=?', (story_id,))
-    keep = {'identity_mode', 'location_provenance', 'manual_camera_point', 'place_map_snapshots', 'place_map',
+    keep = {'identity_mode', 'location_provenance', 'place_map_snapshots', 'place_map', 'place_map_focus',
+            'owner_place_hint', 'owner_place_areas',
             'research_controls', 'research_control_revision', 'research_budget'}
     # External operation receipts remain addressable by their original generation.
     keep.update(k for k in research if 'receipt' in k or 'operation' in k)
@@ -368,16 +521,20 @@ def transition_owner_selection(service, db, row, research, chosen, command, *, b
         'approval_evidence': approval or {'kind': 'owner_map_ui', 'command_id': command, 'confirmed_at': now},
         'source_links': [chosen['url']] if chosen.get('url') else []}
     research['visual_identity'] = confirmed
+    if chosen.get('name_provenance') == 'map.placeholder' or (
+            fallback and not chosen['search_anchor'].get('address') and not chosen['search_anchor'].get('names')):
+        research['identity_clarification'] = {'question': 'Как называется этот выбранный дом или какой у него адрес?',
+            'reason': 'owner_selected_context_missing', 'photo_sha256': row['photo_sha256'],
+            'generation': generation, 'scope': 'search_context_only'}
     if body.get('owner_comment'):
         research['transcript'] = str(body['owner_comment'])[:5000]
     research['place_selection'] = {'mode': 'exact', 'candidate_id': cid, 'poi_id': cid,
         'candidate': chosen, 'snapshot_id': body.get('snapshot_id'), 'generation': generation,
         'photo_sha256': row['photo_sha256'], 'basis': 'owner_named_voice' if selection_basis == 'owner_live' else ('owner_explicit_point_address' if fallback else 'owner_exact_osm_contour'),
-        'command_id': command, 'confirmed_at': now}
-    if row['latitude'] is None:
-        camera = body.get('camera') or (snapshot or {}).get('center') or chosen.get('map_coordinates')
-        if camera:
-            research['manual_camera_point'] = {**point(camera.get('latitude'), camera.get('longitude')), 'origin': 'manual'}
+        'command_id': command, 'confirmed_at': now, **selection_location(row, [chosen])}
+    if research['place_selection']['location_basis'] == 'owner_relocated':
+        LOG.info('street_story_place_relocated story_id=%s generation=%s gps_offset_m=%s',
+                 story_id, generation, research['place_selection']['gps_offset_m'])
     db.execute("UPDATE stories SET place_name=?,state='researching',summary=NULL,draft_text=NULL,processed_image_path=NULL,"
                "processed_image_url=NULL,vibepublish_asset_ref=NULL,visual_context_json='{}',research_json=?,"
                "error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",

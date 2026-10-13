@@ -421,6 +421,24 @@ FUNCTIONS = [
         ["run_id", "source_ref"],
     ),
     _tool_schema(
+        'find_place_area',
+        'Find up to five areas or named OSM places from the author\'s spoken memory when the photo GPS is displaced. '
+        'GPS only biases search; it never restricts the area or chooses a house. Do not use resolve_place for owner map navigation.',
+        {'description': {'type': 'string'}}, ['description']),
+    _tool_schema(
+        'focus_owner_map',
+        'Move the author map to an area_id returned by find_place_area. This does not select or confirm a building; '
+        'the author chooses the displayed house by touch or explicit speech.',
+        {'area_id': {'type': 'string'}}, ['area_id']),
+    _tool_schema('describe_owner_place',
+        'Record fresh literal author speech as owner_voice name/address context for the already selected exact house. '
+        'Never change the physical ID, city, geometry or generation.',
+        {'candidate_id': {'type': 'string'}, 'name': {'type': 'string'}, 'address': {'type': 'string'}}, ['candidate_id']),
+    _tool_schema(
+        'mark_place_unknown',
+        'When the author says they do not know where the photo was taken, retain the photo in place_unknown '
+        'and stop identity/fact work. The author may return to the map later.', {}),
+    _tool_schema(
         "resolve_place",
         "Resolve the photographed place before factual research. Uses the source photo plus GPS when available, OSM and nearby Wikipedia candidates, and visual identity. This does not publish or rewrite the post.",
         {
@@ -795,6 +813,7 @@ Answer briefly and concretely in Russian.
 
 class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     CAPABILITY_TOOLS = {
+        'place_map': {'read_topic', 'find_place_area', 'focus_owner_map', 'mark_place_unknown', 'confirm_place', 'describe_owner_place'},
         'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
         'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'generate_visual'},
         'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
@@ -815,7 +834,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
         identity = remainder.split('Research and durable evidence:', 1)[0]
-        if capability == 'identity':
+        if capability == 'place_map':
+            overlay = ('The author chooses a building on the map; GPS is only the initial hint and may be displaced. '
+                'For an already selected house use describe_owner_place for spoken name/address without selecting again. '
+                'Ask briefly what the author remembers, call find_place_area with their spoken description, then '
+                'focus_owner_map using a returned area_id. This moves only the viewport. Do not choose a house yourself. '
+                'The author can tap any displayed contour or explicitly confirm its exact name/ID with confirm_place. '
+                'If they do not know where it is, use mark_place_unknown. Save speech as owner context, not established facts. '
+                'Never ask for typed city/address/coordinates. Do not use automatic recognition/G/T/REF to revisit an owner selection. '
+                'The photo GPS marker never moves. After confirmed selection use research/editor as appropriate.')
+        elif capability == 'identity':
             overlay = identity.replace('resolve_place/search_web', 'a search tool').replace(
                 'final generate_visual or prepare_publication', 'final visuals or publication'
             ).replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
@@ -1012,9 +1040,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             return None
         initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
         continuation = str((call.get('args') or {}).get('intent') or '')[:1200]
-        if stage != 'identity' and not initialized['context'].get('physical_identity_accepted'):
-            stage = 'identity'
-            continuation = 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.'
+        manual = self.service.story(session.resource_id).get('identity_mode') == 'manual'
+        if stage == 'identity' and manual:
+            stage = 'place_map'
+            continuation = 'The author chooses the building on the map. Find/focus the area from spoken memory; do not automatically reidentify it.'
+        elif stage not in {'identity', 'place_map'} and not initialized['context'].get('physical_identity_accepted'):
+            stage = 'place_map' if manual else 'identity'
+            continuation = ('Find/focus the area, then the author selects a displayed house.' if manual else
+                'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.')
         if stage == getattr(session, 'capability', None):
             return None
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
@@ -1138,7 +1171,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                                 and all(current_bundle.get(fid) == digest for fid, digest in frozen.items())):
                             requested_review = True
                             break
-            capability = ('identity' if not context['physical_identity_accepted']
+            clarification = state['story'].get('identity_clarification') or {}
+            owner_context_needed = (clarification.get('reason') == 'owner_selected_context_missing'
+                and clarification.get('photo_sha256') == state['story']['photo_sha256']
+                and clarification.get('generation') == state['story']['identity_generation'])
+            capability = ('place_map' if owner_context_needed or state['story'].get('place_navigation_active') or (
+                          state['story'].get('identity_mode') == 'manual' and not context['physical_identity_accepted'])
+                          else 'identity' if not context['physical_identity_accepted']
                           else 'publication' if publication_ready
                           else 'review' if reviewing and (not eligible_available or requested_review)
                           else 'editor' if eligible_available else 'research')
@@ -1522,6 +1561,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             stage = args.get('stage')
             if not isinstance(stage, str) or stage not in self.CAPABILITY_TOOLS or stage != getattr(session, 'capability', None):
                 raise ConflictError('live_stage_invalid', 'Запрошенный этап ещё не активен.')
+            if stage == 'place_map':
+                current = self.service.story(story_id)
+                session.state['research_control_scope'] = {'expected_photo_sha256': current['photo_sha256'],
+                    'expected_identity_generation': current['identity_generation']}
             return {'capability': stage, 'ready': True, 'already_active': True,
                 'next_tool': 'read_topic',
                 'instruction': 'This stage is already active. Use its available tools to finish the accepted request; do not switch again.'}
@@ -1533,7 +1576,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = self._topic_state(story_id)
             compact = self._compact_context(result)
             self.emit(session, {"type": "product_state", "state": compact})
-            return await self._next_visual_result(session, compact)
+            return compact if getattr(session, 'capability', None) == 'place_map' or result['story'].get('identity_mode') == 'manual' else await self._next_visual_result(session, compact)
         if name == "get_facts":
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
@@ -1599,6 +1642,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     return self._model_result(name, {**replay, 'changed': [], 'story': current,
                         'research_controls': current['research_controls'],
                         'instruction': 'Команда уже обработана. Это текущее управление исследованием; повторного действия нет.'})
+                if name in {'focus_owner_map', 'mark_place_unknown', 'describe_owner_place'}:
+                    current = self.service.story(story_id)
+                    return self._model_result(name, {**replay, 'story': current,
+                        **({'place_map_focus': current.get('place_map_focus')} if name == 'focus_owner_map' else {})})
                 if name in {'resolve_place', 'reject_place'}:
                     return await self._next_visual_result(session, self._model_result(name, replay))
                 return self._model_result(name, replay)
@@ -1610,11 +1657,24 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         elif name == "record_place_comparison":
             result = self._record_place_comparison(session, command_id, args)
         elif name == "resolve_place":
+            current = self.service.story(story_id)
+            if current.get('identity_mode') == 'manual' and (current.get('place_selection') or {}).get('mode') != 'rough':
+                raise ConflictError('owner_map_selection_required', 'Используйте поиск района и авторский выбор на карте.')
             result = await self._resolve_place(session, command_id, args)
         elif name == "reject_place":
+            if self.service.story(story_id).get('identity_mode') == 'manual':
+                raise ConflictError('owner_map_selection_required', 'Откройте карту и выберите другой дом.')
             result = await self._reject_place(session, command_id, args)
         elif name == "confirm_place":
             result = await self._confirm_place(session, command_id, args)
+        elif name == 'describe_owner_place':
+            result = self._describe_owner_place(session, command_id, args)
+        elif name == 'find_place_area':
+            result = await self._find_place_area(session, command_id, args)
+        elif name == 'focus_owner_map':
+            result = self._focus_owner_map(session, command_id, args)
+        elif name == 'mark_place_unknown':
+            result = self._mark_place_unknown(session, command_id, args)
         elif name == "search_web":
             result = await self._search_web(session, command_id, args)
         elif name == "save_research_facts":
@@ -2345,6 +2405,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
             "poi_location": {"latitude": story.get("latitude", story.get("lat")), "longitude": story.get("longitude", story.get("lon"))},
+            'camera_point': story.get('camera_point'),
+            'identity_mode': story.get('identity_mode'),
+            'place_map_focus': story.get('place_map_focus'),
+            'owner_place_hint': story.get('owner_place_hint'),
+            'owner_map': {key: (story.get('place_map') or {}).get(key) for key in ('snapshot_id', 'center', 'zoom')},
+            'owner_map_candidates': [{key: (feature.get('properties') or {}).get(key) for key in
+                ('candidate_id', 'name', 'address')} for feature in (story.get('place_map') or {}).get('buildings', {}).get('features', [])[:64]],
             "draft_text": str(story.get("draft_text") or "")[:5000],
             "text_revision": state["editor"].get("text_revision"),
             "literal_spans": state["editor"].get("literal_spans", []),
@@ -2493,6 +2560,141 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._store_command(db, session.resource_id, command_id, "resolve_place", args, result)
         return result
 
+    def _describe_owner_place(self, session, command_id, args):
+        from .live_author_intent import normalized
+        cid = _bounded_text(args.get('candidate_id'), 300, required=True)
+        values = {key: _bounded_text(args.get(key), 300) for key in ('name', 'address')}
+        turn = session.state.get('author_turn') or {}
+        text = ' ' + normalized(str(turn.get('text') or '')) + ' '
+        if (not any(values.values()) or turn.get('consumed') or turn.get('suspected_noise')
+                or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30
+                or any(' ' + normalized(value) + ' ' not in text for value in values.values() if value)):
+            raise ConflictError('owner_voice_context_required', 'Нужно уточнение в текущей реплике автора.')
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, session.resource_id)
+            research = json.loads(row['research_json'] or '{}')
+            generation = int(research.get('identity_generation') or 0)
+            scope = session.state.get('research_control_scope') or {}
+            identity = research.get('visual_identity') or {}
+            selection = research.get('place_selection') or {}
+            if (scope.get('expected_photo_sha256') != row['photo_sha256']
+                    or scope.get('expected_identity_generation') != generation
+                    or selection.get('mode') != 'exact' or identity.get('status') != 'owner_confirmed'
+                    or identity.get('candidate_id') != cid):
+                raise ConflictError('place_selection_stale', 'Уточнение должно относиться к текущему выбранному дому.')
+            chosen = dict(selection['candidate'])
+            anchor = dict(chosen.get('search_anchor') or {})
+            context = {'provenance': 'owner_voice', 'scope': 'search_context_only',
+                       'independently_verified': False, 'turn_serial': turn.get('serial'),
+                       **{key: value for key, value in values.items() if value}}
+            anchor.update(owner_context=context, owner_context_provenance='owner_voice')
+            if values['address']:
+                anchor['address'] = values['address']
+            if values['name']:
+                anchor['names'] = list(dict.fromkeys([*anchor.get('names', []), values['name']]))
+                if not ((chosen.get('map_object') or {}).get('tags') or {}).get('name'):
+                    chosen.update(name=values['name'], name_provenance='owner_voice')
+            chosen['search_anchor'] = anchor
+            identity.update(search_anchor=anchor, candidates=[chosen], candidate_name=chosen['name'],
+                            candidate_name_provenance=chosen.get('name_provenance'))
+            selection['candidate'] = chosen
+            research.pop('identity_clarification', None)
+            research['owner_place_hint'] = {**context, 'photo_sha256': row['photo_sha256'], 'generation': generation}
+            db.execute('UPDATE stories SET place_name=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',
+                       (chosen['name'], canonical(research), self.service.store.now(), row['id']))
+            result = {'story': self.service._story_repr(db, self.service._story_row(db, row['id'])),
+                      'instruction': 'Контекст автора сохранён. Выбранный дом остался тем же; это не проверенный факт.'}
+            self._store_command(db, row['id'], command_id, 'describe_owner_place', args, result)
+        turn['consumed'] = True
+        self.emit(session, {'type': 'product_state', 'state': self._compact_context(self._topic_state(row['id']))})
+        logger.info('street_story_owner_map stage=voice_context story_id=%s generation=%s candidate_id=%s', row['id'], generation, cid)
+        return result
+
+    async def _find_place_area(self, session, command_id, args):
+        description = _bounded_text(args.get('description'), 500, required=True)
+        turn = session.state.get('author_turn') or {}
+        owner_text = str(turn.get('text') or '')[:500]
+        if not owner_text or turn.get('suspected_noise') or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30:
+            raise ConflictError('owner_voice_context_required', 'Нужна текущая реплика автора о месте съёмки.')
+        row, research = self.service._identity_snapshot(session.resource_id)
+        generation = int(research.get('identity_generation') or 0)
+        scope = session.state.get('research_control_scope') or {}
+        if scope.get('expected_photo_sha256') != row['photo_sha256'] or scope.get('expected_identity_generation') != generation:
+            raise ConflictError('place_selection_stale', 'Фото или объект изменился.')
+        from .place_selection import camera_point, point
+        rows = await self.service._resolve_place_query(description, gps_bias=camera_point(row, research), all_candidates=True)
+        areas = []
+        for item in rows[:5]:
+            try:
+                center = point(float(item['lat']), float(item['lon']))
+            except (KeyError, TypeError, ValueError, ConflictError):
+                continue
+            label = str(item.get('display_name') or item.get('name') or description)[:500]
+            area_id = 'area_' + digest([row['photo_sha256'], generation, center, label])[:24]
+            areas.append({'area_id': area_id, 'lat': center['latitude'], 'lon': center['longitude'],
+                'zoom': 15, 'label': label, 'provenance': 'nominatim.search',
+                'osm_type': item.get('osm_type'), 'osm_id': item.get('osm_id')})
+        with self.service.store.tx() as db:
+            current = self.service._story_row(db, session.resource_id)
+            latest = json.loads(current['research_json'] or '{}')
+            if current['photo_sha256'] != row['photo_sha256'] or int(latest.get('identity_generation') or 0) != generation:
+                raise ConflictError('place_selection_stale', 'Фото или объект изменился.')
+            latest['owner_place_hint'] = {'text': owner_text, 'search_description': description, 'provenance': 'owner_voice',
+                'scope': 'search_context_only', 'independently_verified': False,
+                'photo_sha256': row['photo_sha256'], 'generation': generation}
+            latest['owner_place_areas'] = {'photo_sha256': row['photo_sha256'], 'generation': generation, 'areas': areas}
+            db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
+                (canonical(latest), self.service.store.now(), current['id']))
+            result = {'areas': areas, 'owner_place_hint': latest['owner_place_hint'],
+                'instruction': 'Выберите подходящий район и вызовите focus_owner_map. Дом выбирает автор.'}
+            self._store_command(db, current['id'], command_id, 'find_place_area', args, result)
+        logger.info('street_story_owner_map stage=area_found story_id=%s generation=%s count=%s', row['id'], generation, len(areas))
+        return result
+
+    def _focus_owner_map(self, session, command_id, args):
+        area_id = _bounded_text(args.get('area_id'), 100, required=True)
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, session.resource_id)
+            research = json.loads(row['research_json'] or '{}')
+            saved = research.get('owner_place_areas') or {}
+            area = next((a for a in saved.get('areas') or [] if a['area_id'] == area_id), None)
+            if not area or saved.get('photo_sha256') != row['photo_sha256'] or saved.get('generation') != int(research.get('identity_generation') or 0):
+                raise ConflictError('place_area_stale', 'Выберите район из текущего поиска.')
+            focus = {k: area[k] for k in ('area_id', 'lat', 'lon', 'zoom', 'label')}
+            focus['revision'] = int((research.get('place_map_focus') or {}).get('revision') or 0) + 1
+            research.update(place_map_focus=focus, place_navigation_active=True)
+            db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
+                (canonical(research), self.service.store.now(), row['id']))
+            story = self.service._story_repr(db, self.service._story_row(db, row['id']))
+            result = {'place_map_focus': focus, 'story': story, 'instruction': 'Карта перенесена. Попросите автора выбрать показанный дом.'}
+            self._store_command(db, row['id'], command_id, 'focus_owner_map', args, result)
+        self.emit(session, {'type': 'product_state', 'state': self._compact_context(self._topic_state(row['id']))})
+        logger.info('street_story_owner_map stage=focused story_id=%s generation=%s focus_revision=%s',
+                    row['id'], saved['generation'], focus['revision'])
+        return result
+
+    def _mark_place_unknown(self, session, command_id, args):
+        from .place_selection import place_action
+        from .live_author_intent import normalized
+        turn = session.state.get('author_turn') or {}
+        text = normalized(str(turn.get('text') or ''))
+        if (turn.get('consumed') or turn.get('suspected_noise')
+                or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30
+                or not any(value in text for value in ('не знаю', 'не помню', 'неизвестно'))):
+            raise ConflictError('owner_place_unknown_consent_required', 'Автор должен сказать, что не знает место съёмки.')
+        story = self.service.story(session.resource_id)
+        scope = session.state.get('research_control_scope') or {}
+        result = place_action(self.service, story['id'], command_id, {
+            'expected_photo_sha256': scope.get('expected_photo_sha256'), 'expected_identity_generation': scope.get('expected_identity_generation'),
+            'expected_candidate_id': (story.get('visual_identity') or {}).get('candidate_id')}, unknown=True)
+        session.state['research_control_scope'] = {'expected_photo_sha256': result['photo_sha256'],
+            'expected_identity_generation': result['identity_generation'],
+            'expected_candidate_id': None}
+        with self.service.store.tx() as db:
+            self._store_command(db, story['id'], command_id, 'mark_place_unknown', args, {'story': result})
+        turn['consumed'] = True
+        return {'story': result, 'instruction': 'Место съёмки не определено. Фото сохранено, исследования нет. Можно вернуться к карте.'}
+
     async def _confirm_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         story_id = session.resource_id
         candidate_id = _bounded_text(args.get("candidate_id"), 300)
@@ -2503,9 +2705,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         with self.service.store.connection() as db:
             row = self.service._story_row(db, story_id)
             research = json.loads(row["research_json"] or "{}")
+        if research.get('identity_mode') == 'manual':
+            scope = session.state.get('research_control_scope') or {}
+            if scope.get('expected_photo_sha256') != row['photo_sha256'] or scope.get('expected_identity_generation') != int(research.get('identity_generation') or 0):
+                raise ConflictError('place_selection_stale', 'Фото или объект изменился.')
         identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
         candidates = identity.get("candidates") if isinstance(identity.get("candidates"), list) else []
+        map_snapshot = next((s for s in research.get('place_map_snapshots') or []
+            if s['snapshot_id'] == (research.get('place_map') or {}).get('snapshot_id')
+                and s['identity_generation'] == int(research.get('identity_generation') or 0)), None)
+        if map_snapshot:
+            candidates = list({c['candidate_id']: c for c in [*candidates, *map_snapshot['candidates']]}.values())
         if not candidates:
+            if research.get('identity_mode') == 'manual':
+                raise ConflictError('owner_map_selection_required', 'Сначала покажите район на карте и выберите дом.')
             await self._resolve_place_state(session, candidate_name)
             with self.service.store.connection() as db:
                 row = self.service._story_row(db, story_id)
@@ -2545,11 +2758,29 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "The confirmed place does not uniquely match the current OSM/Wikipedia candidates",
             )
 
-        if not has_place_consent(session, str(chosen.get("name") or "")):
+        voice_label = candidate_name if candidate_id and (not ((chosen.get('map_object') or {}).get('tags') or {}).get('name')
+            or chosen.get('type') == 'owner_point_address') else ''
+        if not has_place_consent(session, voice_label or str(chosen.get("name") or "")):
             record_live_diagnostic(self.service, story_id, session.id, "backend", "identity_confirmation_blocked",
                 {"candidate_id": chosen.get("candidate_id"), "reason": "no_fresh_explicit_named_author_consent"})
             raise ConflictError("live_place_author_consent_required", "Нужно явное подтверждение автора с названием объекта. Шум, приветствие и догадка модели не являются согласием.")
         approval = consent_receipt(session)
+        if map_snapshot and chosen['candidate_id'] in {c['candidate_id'] for c in map_snapshot['candidates']}:
+            from .place_selection import prepare_place_context
+            await prepare_place_context(self.service, story_id, {'mode': 'exact',
+                'snapshot_id': map_snapshot['snapshot_id'], 'candidate_id': chosen['candidate_id'],
+                'expected_photo_sha256': row['photo_sha256'],
+                'expected_identity_generation': int(research.get('identity_generation') or 0)})
+            _, refreshed = self.service._identity_snapshot(story_id)
+            selected_map = next((s for s in refreshed.get('place_map_snapshots') or []
+                if s['snapshot_id'] == map_snapshot['snapshot_id']), None)
+            if selected_map:
+                chosen = next((c for c in selected_map['candidates'] if c['candidate_id'] == chosen['candidate_id']), chosen)
+        if voice_label:
+            chosen = {**chosen, 'name': voice_label, 'name_provenance': 'owner_voice',
+                'search_anchor': {**chosen.get('search_anchor', {}),
+                    'names': list(dict.fromkeys([*(chosen.get('search_anchor') or {}).get('names', []), voice_label])),
+                    'owner_context_provenance': 'owner_voice'}}
         with self.service.store.tx() as db:
             current = self.service._story_row(db, story_id)
             current_research = json.loads(current['research_json'] or '{}')
@@ -2560,11 +2791,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             from .owner_group_identity import selected_group
             group = selected_group(current_research, photo_sha256=current['photo_sha256'],
                                    generation=int(current_research.get('identity_generation') or 0))
-            if group and chosen['candidate_id'] not in group['candidate_ids']:
+            if group and chosen['candidate_id'] not in group['candidate_ids'] and not map_snapshot:
                 raise ConflictError('place_group_member_required', 'Подтверждение должно относиться к выбранной группе зданий.')
             story_result = transition_owner_selection(self.service, db, current, current_research, chosen,
                 command_id, selection_basis='owner_live', approval=approval,
-                body={'owner_comment': self._recent_transcript(session, candidate_name)})
+                body={'owner_comment': self._recent_transcript(session, candidate_name),
+                      'snapshot_id': map_snapshot['snapshot_id'] if map_snapshot else None})
             confirmed = story_result['visual_identity']
             result = {'visual_identity': confirmed, 'story': story_result}
             self._store_command(db, story_id, command_id, 'confirm_place', args, result)

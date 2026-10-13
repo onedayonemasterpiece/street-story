@@ -50,6 +50,8 @@ class PublicationWire {
 
 class StoryWire {
     @SerializedName("identity_mode") var identityMode: String? = null
+    @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
+    @SerializedName("place_navigation_active") var placeNavigationActive: Boolean = false
     @SerializedName("place_map") var placeMap: PlaceMapWire? = null
     @SerializedName("place_selection") var placeSelection: com.google.gson.JsonObject? = null
     @SerializedName("identity_clarification") var identityClarification: com.google.gson.JsonObject? = null
@@ -398,7 +400,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity", "place-navigation", "place-unknown"))
         if (endpoint == "research-control") {
             val receipt = requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey,
                 ResearchControlReceiptWire::class.java)

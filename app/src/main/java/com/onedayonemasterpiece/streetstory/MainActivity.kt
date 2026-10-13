@@ -64,6 +64,10 @@ class MainActivity : Activity() {
     private var placeMapPanel: PlaceMapPanel? = null
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
+    private var ownerConversation: OwnerConversationScope? = null
+    private var ownerConversationText: String? = null
+    private var ownerConversationGuard: (() -> Boolean)? = null
+    private var ownerConversationNeedsNavigation = false
     private var pendingPhotoRecoveryStoryId: String? = null
     private var pendingSharedPhotos: ArrayList<Uri>? = null
     private var photoLocationRequestInFlight = false
@@ -444,7 +448,9 @@ class MainActivity : Activity() {
         val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
         val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
         column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(photoHeight)))
-        placeMapPanel = PlaceMapPanel(this, storyId, store, research, config)
+        placeMapPanel = PlaceMapPanel(this, storyId, store, research, config, { navigateOwnerPlace(storyId) }, { markOwnerPlaceUnknown(storyId) }, {
+            requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.")
+        })
         column.addView(placeMapPanel, blockMargins(top = 8))
         column.addView(identityLinkView, blockMargins(top = 8))
         column.addView(topicStatusView)
@@ -499,7 +505,7 @@ class MainActivity : Activity() {
         chatBox?.addView(conceptBlock, blockMargins(top = 10))
 
         column.addView(chatBox, blockMargins(top = 12))
-        column.addView(secondaryButton("Сохранить черновик") { editOwnerDraft(storyId) }.apply {
+        column.addView(secondaryButton("Черновик с Мирой") { editOwnerDraft(storyId) }.apply {
             contentDescription = "owner-save-draft"
         }, blockMargins(top = 8))
         ownerVisualButton = secondaryButton("Создать визуал") { createOwnerVisual(storyId) }.apply {
@@ -612,6 +618,7 @@ class MainActivity : Activity() {
     private fun refreshTopicDetail() {
         val id = activeStoryId ?: return
         placeMapPanel?.refresh()
+        continueOwnerConversation()
         live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
 
@@ -886,6 +893,7 @@ class MainActivity : Activity() {
     private fun stopLiveForOwner(storyId: String) {
         // Stop does not depend on an archive, successful handshake or server reply.
         pendingLiveStoryId = null
+        clearOwnerConversation()
         live.stopLocal()
         RecordingService.command(this, RecordingService.ACTION_TRANSPORT_FINISH)
     }
@@ -896,7 +904,9 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (ready && live.isActiveFor(storyId) && !live.snapshot().connecting) {
                     RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
+                    continueOwnerConversation()
                 } else if (!error.isNullOrBlank()) {
+                    clearOwnerConversation()
                     Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 }
             }
@@ -918,9 +928,13 @@ class MainActivity : Activity() {
         val storyId = pendingLiveStoryId
         pendingLiveStoryId = null
         if (storyId == null) return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && storyId != null) {
+        if (ownerConversation?.let { !it.matches(activeStoryId, store.story(it.storyId), research.get(it.storyId)) } == true) {
+            clearOwnerConversation(); return
+        }
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             startLive(storyId)
         } else {
+            clearOwnerConversation()
             Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
         }
     }
@@ -937,7 +951,7 @@ class MainActivity : Activity() {
                 photoLocationRequestInFlight = true
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_PHOTO_LOCATION)
             }
-            .setNegativeButton("Без геометок") { _, _ -> continuePhotoIntake() }
+            .setNegativeButton("Выбрать оригинал") { _, _ -> continuePhotoIntake() }
             .setOnCancelListener { pendingSharedPhotos = null; pendingPhotoRecoveryStoryId = null }
             .show()
     }
@@ -976,6 +990,7 @@ class MainActivity : Activity() {
             runCatching {
                 val photo = PhotoImporter.import(this, uri)
                 imported = photo
+                PhotoIntake.requireGps(photo)
                 if (recoveryId != null) {
                     val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
                     val sourceMissing = existing.lastError == SOURCE_UNAVAILABLE_MESSAGE
@@ -1002,7 +1017,15 @@ class MainActivity : Activity() {
                     showTopic(storyId)
                 }
             }.onFailure { exc ->
-                runOnUiThread { Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show() }
+                imported?.let { photo ->
+                    PhotoAssets.releaseTemporary(photo.path)
+                    PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
+                }
+                runOnUiThread {
+                    if (exc.message == PhotoIntake.GPS_REQUIRED_MESSAGE) {
+                        AlertDialog.Builder(this).setMessage(PhotoIntake.GPS_REQUIRED_MESSAGE).setPositiveButton("Понятно", null).show()
+                    } else Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show()
+                }
             }
             if (recoveryId != null) imported?.let { photo ->
                 PhotoAssets.releaseTemporary(photo.path)
@@ -1170,20 +1193,10 @@ class MainActivity : Activity() {
             research.get(storyId)?.identityGeneration == journal.identityGeneration &&
             research.get(storyId)?.researchControls?.get("facts")?.revision == revision
         if (!current()) { SyncScheduler.enqueue(this); return }
-        val input = EditText(this).apply {
-            hint = "Ваше уточнение (необязательно)"
-            filters = arrayOf(android.text.InputFilter.LengthFilter(3000))
-        }
-        AlertDialog.Builder(this).setTitle("Уточнение противоречия").setView(input)
-            .setNegativeButton("Отмена", null).setPositiveButton("Обсудить") { _, _ ->
-                val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
-                    "Прочитай собственные источники обеих версий, сохрани обоснованное адресное решение либо оставь его неразрешённым. " +
-                    "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование. " + input.text.toString()
-                fun send() { if (current() && live.isActiveFor(storyId)) live.sendText(request) }
-                if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
-                    runOnUiThread { if (ready) send() else if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show() }
-                }
-            }.show()
+        val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
+            "Обсуди уточнение с автором голосом. Прочитай источники обеих версий и сохрани обоснованное решение либо оставь противоречие неразрешённым. " +
+            "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование."
+        requestOwnerConversation(storyId, request) { current() }
     }
 
     private fun createOwnerVisual(storyId: String) {
@@ -1475,6 +1488,7 @@ class MainActivity : Activity() {
         if (story.stage == StoryStage.IDENTIFYING && controls["identity"]?.stopped == true) return "Поиск объекта приостановлен"
         if (story.stage == StoryStage.RESEARCHING && controls["facts"]?.stopped == true) return "Поиск фактов приостановлен"
         return when (story.stage) {
+        StoryStage.PLACE_UNKNOWN -> "Место съёмки не определено"
         StoryStage.SCHEDULED -> "Запланировано · ${story.scheduledFor.orEmpty()}"
         StoryStage.PUBLISHED -> "Опубликовано"
         StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED -> "Нужно внимание"
@@ -1961,37 +1975,95 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun navigationPayload(storyId: String, commandId: String): String {
+        val state = research.get(storyId)
+        return gson.toJson(mapOf("command_id" to commandId,
+            "expected_photo_sha256" to store.story(storyId)?.photoSha256,
+            "expected_identity_generation" to (state?.identityGeneration ?: 0),
+            "expected_candidate_id" to state?.candidateId))
+    }
+
+    private fun navigateOwnerPlace(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        val command = "ss-place-navigation-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-navigation", command, navigationPayload(storyId, command))
+        requestOwnerConversation(storyId,
+            "Продолжи текущую историю в режиме поиска места: continue_story stage=place_map. Дом не здесь. " +
+                "Спроси голосом, что я помню о месте съёмки. Используй find_place_area и focus_owner_map, чтобы перенести карту. " +
+                "Дом я выберу сам касанием или назову показанный контур. Не выбирай дом за меня, не используй resolve_place и не запускай распознавание по GPS.",
+            navigation = true)
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun markOwnerPlaceUnknown(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        clearOwnerConversation()
+        val command = "ss-place-unknown-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-unknown", command, navigationPayload(storyId, command))
+        SyncScheduler.enqueue(this)
+        Toast.makeText(this, "Сохраняем: место съёмки не определено", Toast.LENGTH_SHORT).show()
+        placeMapPanel?.refresh()
+    }
+
+    private fun requestOwnerConversation(storyId: String, text: String, navigation: Boolean = false, guard: () -> Boolean = { true }) {
+        val scope = OwnerConversationScope.capture(store.story(storyId), research.get(storyId)) ?: return
+        ownerConversation = scope
+        ownerConversationText = text
+        ownerConversationGuard = guard
+        ownerConversationNeedsNavigation = navigation
+        android.util.Log.i("StreetStoryOwnerVoice", "stage=queued story_id=$storyId generation=${scope.generation} place_navigation=$navigation")
+        continueOwnerConversation()
+    }
+
+    private fun clearOwnerConversation() {
+        ownerConversation = null; ownerConversationText = null; ownerConversationGuard = null
+        ownerConversationNeedsNavigation = false
+    }
+
+    private fun continueOwnerConversation() {
+        val scope = ownerConversation ?: return
+        if (!scope.matches(activeStoryId, store.story(scope.storyId), research.get(scope.storyId)) || ownerConversationGuard?.invoke() != true) {
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=dropped story_id=${scope.storyId} generation=${scope.generation} reason=scope_changed")
+            clearOwnerConversation(); return
+        }
+        val operations = store.pendingOperations(scope.storyId)
+        if (operations.any { it.kind in setOf("place", "place-navigation", "place-unknown", "facts") }) return
+        if (ownerConversationNeedsNavigation && research.get(scope.storyId)?.placeNavigationActive != true) {
+            clearOwnerConversation(); return
+        }
+        if (live.isActiveFor(scope.storyId)) {
+            val text = ownerConversationText ?: return
+            clearOwnerConversation()
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=sent story_id=${scope.storyId} generation=${scope.generation}")
+            live.sendText(text)
+            return
+        }
+        if (live.snapshot().connecting || live.snapshot().active) return
+        if (!config.configured) { clearOwnerConversation(); showSettings(); return }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (pendingLiveStoryId != scope.storyId) {
+                pendingLiveStoryId = scope.storyId
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            }
+            return
+        }
+        startLive(scope.storyId)
+    }
+
     private fun editOwnerDraft(storyId: String) {
-        val story = store.story(storyId) ?: return
-        val selected = store.facts(storyId).filter { it.selected && it.evidenceSupported }
+        val selected = store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text }
         if (selected.isEmpty()) {
             Toast.makeText(this, "Выберите хотя бы один подтверждённый факт", Toast.LENGTH_LONG).show()
             return
         }
-        val editor = EditText(this).apply {
-            minLines = 5
-            gravity = Gravity.TOP
-            setText(story.draftText?.takeIf(String::isNotBlank) ?: selected.joinToString("\n\n") { it.text })
-            contentDescription = "owner-draft-editor"
+        val draft = store.story(storyId)?.draftText
+        requestOwnerConversation(storyId,
+            "Составь или поправь черновик текущего выбранного дома с помощью существующих инструментов редактора edit_text. " +
+                "Используй только текущие выбранные подтверждённые факты: ${selected.joinToString(", ") { it.first }}. " +
+                "Обсуди пожелания с автором голосом, сохрани черновик. Ничего не публикуй.") {
+            store.story(storyId)?.draftText == draft &&
+                store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text } == selected
         }
-        val dialog = AlertDialog.Builder(this).setTitle("Черновик материала")
-            .setView(editor).setNegativeButton("Назад", null).setPositiveButton("Сохранить", null).create()
-        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val text = editor.text.toString().trim()
-            if (text.isBlank()) { editor.error = "Введите текст черновика"; return@setOnClickListener }
-            val state = research.get(storyId)
-            store.setDraftText(storyId, text)
-            // Checkbox writes precede this draft in the existing durable outbox.
-            // Generation provides the house boundary; no Live session is required.
-            store.enqueueOperation(storyId, "draft", newRequestKey("draft-ui", "$storyId-${java.util.UUID.randomUUID()}"),
-                gson.toJson(mapOf("text" to text, "selected_fact_ids" to selected.map { it.factId },
-                    "expected_identity_generation" to (state?.identityGeneration ?: 0))))
-            SyncScheduler.enqueue(this)
-            dialog.dismiss()
-            refreshTopicDetail()
-            Toast.makeText(this, "Черновик сохранён на устройстве и отправляется на сервер", Toast.LENGTH_LONG).show()
-        } }
-        dialog.show()
     }
 
     private fun enqueueFactSelection(storyId: String) {

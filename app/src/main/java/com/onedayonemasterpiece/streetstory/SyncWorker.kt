@@ -308,6 +308,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
 
     private fun normalizeState(value: String): String = when (value) {
         StoryStage.PHOTO_READY, "created", "voice_pending" -> StoryStage.PHOTO_READY
+        StoryStage.PLACE_UNKNOWN -> StoryStage.PLACE_UNKNOWN
         StoryStage.IDENTIFYING -> StoryStage.IDENTIFYING
         StoryStage.IDENTITY_READY -> StoryStage.IDENTITY_READY
         StoryStage.QUEUED, "uploaded" -> StoryStage.QUEUED

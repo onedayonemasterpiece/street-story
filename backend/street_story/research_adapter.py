@@ -196,6 +196,7 @@ class ProductResearchAdapter:
             from ai_resource_control.workload import WorkloadAdmission
             self.control = Control(Config.from_env('street-story'))
             admission = WorkloadAdmission(self.control, 'opencode:street-story-research')
+        self.agent_admission = self.fenced_admission(admission)
         self.client = None
         self.live_facts = None
         if service.settings.gemini_keys:
@@ -228,6 +229,9 @@ class ProductResearchAdapter:
                 ca_bundle_file=service.settings.research_gigachat_ca, scope=service.settings.research_gigachat_scope)
 
     async def checkpoint(self, binding, receipt):
+        self._checkpoint_receipt(binding, receipt)
+
+    def _checkpoint_receipt(self, binding, receipt):
         with self.service.store.tx() as db:
             previous = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
                                   (binding['attempt_id'],)).fetchone()
@@ -456,6 +460,10 @@ class ProductResearchAdapter:
                     raise GeminiUnavailable(self.service.store.now()+300, 'visual_pair_known_failure')
                 raise PermanentProviderError('research_visual_group_pair_required')
             if rows and old.get('phase') == 'completed':
+                return None, old
+            if rows and role.startswith('facts_agent') and old.get('phase') in {'failed', 'aborted'}:
+                # A closed agent failure is a fallback signal to a different
+                # configured route, never permission to repeat this task.
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
                 ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
@@ -1021,7 +1029,7 @@ class ProductResearchAdapter:
                                   FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding))
 
     def _fact_pool_routes(self):
-        """Build only the configured primary and one approved extra transport.
+        """Build configured and independently qualified existing transports.
 
         All clients use the existing server, admission, checkpoint and capsule.
         Qualification belongs to the existing verification receipt, not catalog.
@@ -1037,16 +1045,24 @@ class ProductResearchAdapter:
             routes.append({'role': 'facts', 'provider_id': getattr(primary, 'provider_id', 'opencode'),
                            'model_id': primary.model_id, 'endpoint': primary.endpoint,
                            'client': primary})
-            extra = (getattr(self, '_fact_extractor_clients', {}) or {}).get('nemotron-3-ultra-free')
-            if extra is None and hasattr(primary, 'fact_extractor'):
-                extra = primary.fact_extractor('nemotron-3-ultra-free')
-                if not hasattr(self, '_fact_extractor_clients'):
-                    self._fact_extractor_clients = {}
-                self._fact_extractor_clients['nemotron-3-ultra-free'] = extra
-            if (extra is not None and extra.model_id == 'nemotron-3-ultra-free'
-                    and extra.provider_id == 'opencode' and extra.endpoint == primary.endpoint):
-                routes.append({'role': 'facts_opencode_nemotron', 'provider_id': extra.provider_id,
-                               'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
+            entries = (self.service.store.cache_get('research-text-verification-v1') or {}).get('extractors', [])
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                model = entry.get('model_id')
+                if (entry.get('provider_id') != primary.provider_id or not model
+                        or model == primary.model_id or entry.get('endpoint') != primary.endpoint):
+                    continue
+                clients = self.__dict__.setdefault('_fact_extractor_clients', {})
+                extra = clients.get(model)
+                if extra is None:
+                    if not hasattr(primary, 'fact_extractor'):
+                        continue
+                    extra = clients[model] = primary.fact_extractor(model)
+                # Historical journal role is retained for original addressed receipts.
+                role = 'facts_opencode_nemotron' if model == 'nemotron-3-ultra-free' else 'facts_opencode_' + hashlib.sha256(model.encode()).hexdigest()[:12]
+                routes.append({'role': role, 'provider_id': extra.provider_id,
+                    'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
         entries = proof.get('extractors') or []
         for route in routes:
@@ -1084,22 +1100,36 @@ class ProductResearchAdapter:
         return identity.get('status') == 'owner_confirmed' and identity.get('selection_basis') == 'owner_exact'
 
     def new_fact_routes(self, story, routes):
-        """Choose the qualified primary text reader for new owner-exact work.
+        """Qualification and availability decide routes, without model exclusivity."""
+        return routes
 
-        Original operation observation is selected before this policy. Provider
-        qualification, availability and admission remain their existing gates.
-        """
-        if not self._owner_exact_fact_scope(story):
-            return routes
-        primary = getattr(self, 'client', None)
-        selected = [route for route in routes if route.get('role') == 'facts'
-                and route.get('provider_id') == 'opencode'
-                and route.get('model_id') == 'mimo-v2.6-flash-free'
-                and route.get('client') is primary and route.get('qualified')]
-        LOG.info('street_story_fact_route_selection story_id=%s policy=owner_exact_quality_fallback '
-                 'model_id=%s qualified_routes=%s', story.get('id'),
-                 getattr(primary, 'model_id', None), len(selected))
-        return selected
+    def fact_agent_routes(self, *, include_unqualified=False):
+        from .fact_agents import configured_routes
+        return configured_routes(self, include_unqualified=include_unqualified)
+
+    async def research_agent_facts(self, job, run_id, goal):
+        from .fact_agents import run_fact_agents
+        return await run_fact_agents(self, job, run_id, goal)
+
+    async def qualify_fact_agent(self, job, run_id, route_id, context):
+        """Explicit control invocation; never silently grants qualification flags."""
+        from .fact_agent_providers import run_tool_agent
+        from .headless_facts import HeadlessFacts
+        route = next(route for route in self.fact_agent_routes(include_unqualified=True)
+                     if route.route_id == route_id)
+        headless = HeadlessFacts(self.service)
+        snapshot = headless._snapshot(job, run_id)
+        if snapshot is None:
+            raise ConflictError('agent_qualification_stale', 'Control owner selection changed.')
+        story = snapshot[0]
+        epoch = story['_fact_research_control_revision']
+        unit = {'qualification': context, 'run_id': run_id, 'route_id': route_id}
+        def guard():
+            if headless._snapshot(job, run_id, epoch) is None:
+                raise ConflictError('agent_qualification_stale', 'Control owner selection changed.')
+        async def invoke(binding):
+            return await run_tool_agent(self, route, story, context, binding=binding, guard=guard)
+        return await self.run(story, 'facts_agent_control_'+route_id, unit, invoke, client=route)
 
     def order_fact_routes(self, routes, ordinal=0, *, review=False):
         """Assign new units using observed service time and outstanding work.
@@ -1178,7 +1208,9 @@ class ProductResearchAdapter:
         return [route for route, _, _, _ in ranked]
 
     def _fact_pool_receipts(self, story, unit):
-        roles = ('facts_live', 'facts_gigachat', 'facts', 'facts_opencode_nemotron')
+        with self.service.store.connection() as db:
+            recorded = [row[0] for row in db.execute("SELECT DISTINCT role FROM research_provider_attempts WHERE story_id=? AND role LIKE 'facts_opencode_%'", (story['id'],))]
+        roles = tuple(dict.fromkeys(('facts_live', 'facts_gigachat', 'facts', 'facts_opencode_nemotron', *recorded)))
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
             story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
         latest = {}

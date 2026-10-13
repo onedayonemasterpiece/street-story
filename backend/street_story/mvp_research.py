@@ -1118,6 +1118,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             if original_pending:
                 from .errors import RetryableProviderError
                 raise RetryableProviderError('research_original_operation_pending', retry_at=self.store.now()+30)
+            researcher = getattr(self.providers, 'research', None)
+            if self.store.checkpoint_get(job['id'], 'fact_agent_plan:'+resume_run_id):
+                return await researcher.research_agent_facts(job, resume_run_id, run['goal'])
             from .headless_facts import HeadlessFacts
             return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
 
@@ -1278,6 +1281,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 detail="automatic_research",
                 now=self.store.now(),
             )
+
+        researcher = getattr(self.providers, 'research', None)
+        if (previous_identity.get('status') == 'owner_confirmed' or group_resolved):
+            if callable(getattr(researcher, 'research_agent_facts', None)):
+                return await researcher.research_agent_facts(job, run_id, request_goal or 'source-backed research')
 
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)

@@ -89,6 +89,8 @@ class Settings:
     research_gigachat_key: SecretStr | str | None = field(default=None, repr=False)
     research_gigachat_ca: str | None = None
     research_gigachat_scope: str = 'GIGACHAT_API_PERS'
+    # Data-only route configuration; credentials remain in existing adapters.
+    fact_agent_routes: tuple[dict, ...] = ()
 
     def __post_init__(self):
         if self.publication_test_alias and not re.fullmatch(r"street_story_e2e_[a-zA-Z0-9_]{1,80}", self.publication_test_alias):
@@ -96,6 +98,13 @@ class Settings:
         for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key','research_gigachat_key','rkb_poi_service_token'):
             object.__setattr__(self, name, secret(getattr(self, name)))
         object.__setattr__(self, 'gemini_api_keys', tuple(secret(k) for k in self.gemini_api_keys))
+        if len(self.fact_agent_routes) > 16:
+            raise ValueError('At most 16 fact agent routes may be configured')
+        for route in self.fact_agent_routes:
+            if (not isinstance(route, dict) or route.get('provider_id') not in {'google', 'gigachat', 'opencode'}
+                    or not isinstance(route.get('model_id'), str) or not route['model_id'].strip()
+                    or set(route) - {'provider_id', 'model_id', 'endpoint', 'directory', 'enabled'}):
+                raise ValueError('Invalid fact agent route')
 
     @property
     def gemini_keys(self) -> tuple[SecretStr, ...]:
@@ -173,6 +182,7 @@ class Settings:
             research_endpoint=os.getenv('STREET_STORY_RESEARCH_ENDPOINT', '').strip() or None,
             research_directory=Path(os.environ['STREET_STORY_RESEARCH_DIRECTORY']) if os.getenv('STREET_STORY_RESEARCH_DIRECTORY') else None,
             research_model=os.getenv('STREET_STORY_RESEARCH_MODEL', 'mimo-v2.6-flash-free'),
+            fact_agent_routes=tuple(json.loads(os.getenv('STREET_STORY_FACT_AGENT_ROUTES', '[]'))),
             native_vision_reserve=os.getenv('STREET_STORY_NATIVE_VISION_RESERVE', '').lower() in {'1', 'true', 'yes'},
             research_gigachat_key=os.getenv('STREET_STORY_GIGACHAT_KEY') or None,
             research_gigachat_ca=os.getenv('STREET_STORY_GIGACHAT_CA') or None,
