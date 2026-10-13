@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 import httpx
 import pytest
 
-from street_story.agent_evidence import AgentEvidenceMixin, SCHEMA
+from street_story.agent_evidence import AgentEvidenceMixin, NETWORK_SCHEMA
 from street_story.fact_agent_providers import AgentRoute
 from street_story.fact_agents import QUALIFICATION_KEY, configured_routes
 from test_agent_evidence import AGENT, CANDIDATE
@@ -31,7 +31,7 @@ async def setup(tmp_path, *, mode='supported', qualified=True, google_unknown=Fa
         body = json.loads(request.content)
         bodies.append(body)
         assert not any(key in body for key in ('tools', 'functions', 'function_call'))
-        assert body['max_tokens'] == 2048 and body['response_format']['schema'] == SCHEMA
+        assert body['max_tokens'] == 2048 and body['response_format']['schema'] == NETWORK_SCHEMA
         payload = json.loads(body['messages'][1]['content'].removeprefix('INPUT='))
         assert payload['source']['chunks'] and payload['review_as_of_utc']
         if mode == 'unknown':
@@ -44,6 +44,12 @@ async def setup(tmp_path, *, mode='supported', qualified=True, google_unknown=Fa
             'source_date': None, 'chunk_ids': [payload['source']['chunks'][0]['chunk_id']],
             'reason': 'Controlled model rejects wrong subject/date.' if mode != 'supported' else 'Controlled own-source support.',
             'existing_fact_id': '', 'conflicts_with_existing': []}
+        row['checks'] = {'source_physical_subject': 'Controlled selected building',
+            'object_relation': 'unrelated' if mode == 'wrong_subject' else 'selected_building',
+            'relation_basis': {'fragment': payload['candidate']['quote'],
+                'chunk_ids': [payload['source']['chunks'][0]['chunk_id']]},
+            'material_kind': 'history', 'temporal_basis': 'historical',
+            'temporal_preserved': mode != 'wrong_date'}
         text = 'malformed' if mode == 'malformed' else json.dumps(row)
         return httpx.Response(200, headers={'x-request-id': 'controlled-actual-request'}, json={
             'model': 'GigaChat-2:controlled', 'choices': [{'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
