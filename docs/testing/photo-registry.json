@@ -2226,10 +2226,22 @@
       "expected": {
         "status": "owner_confirmed_address",
         "object_or_address": "Калининград, Профессора Севастьянова, 3",
-        "physical_ids": [],
+        "physical_ids": [
+          "osm:way:105154961"
+        ],
         "source": "owner correction in Codex conversation, 2026-10-13",
-        "evaluation_status": "owner_address_confirmed_physical_contour_pending",
-        "limitations": "OSM contour binding requires map verification. Historical Университетская, 3 / way/105154961 is superseded, not an evaluator target. Existing finished stories are not rebound."
+        "evaluation_status": "owner_address_with_public_map_contour_binding",
+        "limitations": "Owner confirms photographed address. Public address marker for 3–5 lies inside way/105154961, but its observed OSM tag says Университетская улица 3. Preserve this address conflict and author provenance; no historical facts or current tenant claims inferred. Previous runs searched the wrong address, not necessarily a different contour.",
+        "map_binding": {
+          "source_url": "https://www.newkaliningrad.ru/catalog/3140446-maslobaza-kaliningradskaya.html",
+          "source_address": "Калининград, Профессора Севастьянова, 3-5",
+          "latitude": 54.7149,
+          "longitude": 20.50719,
+          "point_inside_osm_contour": "osm:way:105154961",
+          "public_page_raw_sha256": "4ddf1d8ef47248f45f9b314bf650ae0526200c98fa78d36ff27139c9de7eb11e",
+          "observed_osm_address": "Университетская улица 3",
+          "binding_scope": "evaluator/explicit author selection only; not historical model evidence"
+        }
       },
       "historical_metadata": [
         {
