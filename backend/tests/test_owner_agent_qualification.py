@@ -1,5 +1,4 @@
 """Controlled receipts exercise the explicit qualification trust boundary, no providers."""
-import copy
 import hashlib
 import json
 from pathlib import Path

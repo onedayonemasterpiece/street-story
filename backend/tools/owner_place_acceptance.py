@@ -127,7 +127,8 @@ def load_agent_qualification(path, *, routes=None):
                 or not isinstance(route.get('qualification_receipts'), list) or not route['qualification_receipts']
                 or route['route_id'] in seen):
             raise ValueError('Agent role/tool qualification incomplete')
-        seen.add(route['route_id']); providers.add(route.get('provider_id'))
+        seen.add(route['route_id'])
+        providers.add(route.get('provider_id'))
         if current is not None:
             configured = current.get(route['route_id'])
             if (configured is None or configured.profile_fingerprint != route['profile_sha256']
