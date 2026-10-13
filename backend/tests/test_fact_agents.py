@@ -90,7 +90,7 @@ def test_google_mandatory_tool_strategy_invalidates_only_its_old_role_proof():
     assert giga.profile_fingerprint == old_fingerprint('agent-tools-per-turn-admission-v3-strict-final')
     proofs = [{'route_id': row.route_id, 'profile_sha256': fingerprint, 'contract': QUALIFICATION_KEY,
         'tool_access_verified': True, 'tool_safety_verified': True, 'qualification_receipts': ['controlled-receipt']}
-        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v2')), (giga, giga.profile_fingerprint)]]
+        for row, fingerprint in [(google, old_fingerprint('agent-tools-per-turn-admission-v4-mandatory-search-read')), (giga, giga.profile_fingerprint)]]
     settings = SimpleNamespace(fact_agent_routes=(), gemini_keys=('controlled-key',))
     adapter = SimpleNamespace(giga=giga_client, service=SimpleNamespace(settings=settings,
         providers=SimpleNamespace(gemini=gemini), store=SimpleNamespace(cache_get=lambda _key: {'routes': proofs})))
@@ -234,7 +234,7 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
     source = {'requested_url': 'https://source.example/article', 'final_url': 'https://source.example/article',
         'source_version_id': 'version', 'content_sha256': 'content', 'normalized_text': 'Read actual source text.'}
     candidate = {'text': 'Здание построено в 1901 году.', 'subject_scope': 'selected_building',
-        'url': source['final_url'] + '/', 'quote': 'built in 1901', 'source_date': None}
+        'url': source['final_url'], 'quote': 'built in 1901', 'source_date': None}
     stages, searches, saved = [], [], []
     async def search(query):
         searches.append(query)
@@ -250,6 +250,16 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
         forced = (tool_config.allowed_function_names or [None])[0]
         stages.append(forced)
         assert tool_config.mode.value == ('ANY' if forced else 'AUTO')
+        if forced:
+            assert config.response_mime_type is None and config.response_json_schema is None
+        else:
+            from jsonschema import Draft202012Validator
+            assert config.response_mime_type == 'application/json'
+            wire = config.model_dump(mode='json', exclude_none=True)
+            schema = wire['response_json_schema']
+            assert schema['properties']['facts']['items']['properties']['url']['enum'] == [source['final_url']]
+            assert Draft202012Validator(schema).is_valid({'facts': [candidate]})
+            assert not Draft202012Validator(schema).is_valid({'facts': [{**candidate, 'url': 'https://source.example/aricle'}]})
         kwargs['before_provider_send']({'request_body_sha256': 'wire'})
         if forced:
             args = {'query': 'different query' if searches else 'first query'} if forced == 'websearch' else {'url': source['final_url']}
@@ -268,6 +278,7 @@ async def test_google_requires_search_then_own_fetch_before_automatic_final(empt
     assert stages == (['websearch', 'websearch', 'webfetch', None] if empty_first else ['websearch', 'webfetch', None])
     assert result['result']['facts'] == [{**candidate, 'url': source['final_url']}]
     assert saved[-1]['raw_result']['facts'][0]['url'] == candidate['url']
+    assert saved[-1]['final_response_schema']['properties']['facts']['items']['properties']['url']['enum'] == [source['final_url']]
 
 
 def test_provider_wire_schema_uses_supported_subset_host_stays_strict():

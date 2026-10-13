@@ -6,6 +6,7 @@ are durable operations, never permission to start the same route again.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import time
@@ -119,7 +120,7 @@ class AgentRoute:
         return value or hashlib.sha256(json.dumps({'instructions': INSTRUCTIONS, 'tools': TOOLS,
             'schema': RESULT_SCHEMA, 'wire_tools': wire_tools(),
             'transport_contract': 'agent-tools-per-turn-admission-v3-strict-final' if self.provider_id == 'gigachat'
-                else 'agent-tools-per-turn-admission-v4-mandatory-search-read' if self.provider_id == 'google'
+                else 'agent-tools-per-turn-admission-v5-read-url-structured-output' if self.provider_id == 'google'
                 else 'agent-tools-per-turn-admission-v2'}, sort_keys=True).encode()).hexdigest()
 
     @property
@@ -231,6 +232,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard):
                     forced_tool = 'websearch' if not fetched and not search_has_sources else 'webfetch' if not fetched else None
                     config.tool_config = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
                         mode='ANY' if forced_tool else 'AUTO', allowed_function_names=[forced_tool] if forced_tool else None))
+                    if fetched:
+                        response_schema = copy.deepcopy(RESULT_SCHEMA)
+                        response_schema['properties']['facts']['items']['properties']['url']['enum'] = sorted(fetched)
+                        config.response_mime_type = 'application/json'
+                        config.response_json_schema = response_schema
+                        receipt['final_response_schema'] = response_schema
                     receipt['last_request_sent'] = False
                     async def call(key, timeout):
                         nonlocal sent
