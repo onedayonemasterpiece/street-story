@@ -56,6 +56,14 @@ INSTRUCTIONS = (
 )
 
 
+def _write_confirmation_checkpoint(db, job_id, stage, value, now):
+    # Unlike immutable research inputs, this stage journals one operation's
+    # created/sent/closed/committed progression. Provider attempts remain separate.
+    db.execute('INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) '
+        'ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json',
+        (job_id, stage, json.dumps(value, ensure_ascii=False), now))
+
+
 async def verify_with_gemini(client, payload, checkpoint, guard):
     """Existing configured model pools, executors and shared quota authority."""
     from google.genai import types
@@ -63,6 +71,7 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
     from .fact_agent_providers import _google_output_schema
 
     prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(payload, ensure_ascii=False)
+    failures = []
     for model, _pool, quota, executor in client.research_routes:
         receipt = {'attempt_id': 'rattempt_' + uuid.uuid4().hex[:24], 'phase': 'created',
                    'provider_id': 'google', 'model_id': model, 'contract': CONTRACT,
@@ -71,12 +80,13 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
                    'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
                    'provider_send_state': 'not_sent'}
         checkpoint(receipt)
-        state = {'uncertain': False}
+        state = {'uncertain': False, 'closed': False}
 
         async def call(key, timeout):
             def sent():
                 guard()
                 state['uncertain'] = True
+                state['closed'] = False
                 receipt.update(phase='sent', provider_send_state='possibly_sent')
                 checkpoint(receipt)
             try:
@@ -89,8 +99,12 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
                 failure = classify_error(exc, now=client.store.now())
                 if getattr(exc, 'provider_send_state', None) == 'not_sent' or failure.code:
                     state['uncertain'] = False
+                if failure.code:
+                    state['closed'] = True
+                    receipt['http_status'] = failure.code
                 raise
             state['uncertain'] = False
+            state['closed'] = True
             usage = getattr(response, 'usage_metadata', None)
             receipt.update(phase='completed', provider_send_state='response_closed',
                 provider_request_id=getattr(response, 'response_id', None),
@@ -119,14 +133,106 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
             raise
         except Exception as exc:
             receipt.update(phase='unknown' if state['uncertain'] else 'failed',
-                provider_send_state='possibly_sent' if state['uncertain'] else 'response_closed',
+                provider_send_state='possibly_sent' if state['uncertain'] else 'response_closed' if state['closed'] else 'not_sent',
                 error_code=type(exc).__name__)
             checkpoint(receipt)
             LOG.warning('street_story_agent_confirmation model=%s phase=%s error=%s',
                 model, receipt['phase'], receipt['error_code'])
             if state['uncertain']:
                 return {'status': 'unverified', 'receipt': dict(receipt)}
-    return {'status': 'unverified', 'reason': 'confirmation_routes_unavailable'}
+            failures.append(dict(receipt))
+    return {'status': 'unverified', 'reason': 'confirmation_routes_unavailable' if failures and all(
+        row['provider_send_state'] == 'response_closed' for row in failures) else 'confirmation_routes_not_sent',
+        'closed_failures': failures}
+
+
+async def verify_with_gigachat(route, payload, checkpoint, guard, *, binding):
+    """One qualified alternate on the existing SDK; UNKNOWN never starts again."""
+    from ai_resource_control.client import estimate_input_tokens
+
+    client = route.client
+    prompt = INSTRUCTIONS + '\nINPUT=' + json.dumps(payload, ensure_ascii=False)
+    parent = 'rattempt_' + uuid.uuid4().hex[:24]
+    base = {'provider_id': 'gigachat', 'model_id': route.model_id, 'route_id': route.route_id,
+        'profile_sha256': route.profile_fingerprint, 'contract': CONTRACT,
+        'source_version_id': payload['source']['source_version_id'],
+        'source_content_sha256': payload['source']['content_sha256'],
+        'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'parent_attempt_id': parent}
+    receipt = {**base, 'attempt_id': parent, 'phase': 'created', 'provider_send_state': 'not_sent'}
+    checkpoint(receipt)
+    body = {'model': route.model_id, 'messages': [{'role': 'system', 'content': INSTRUCTIONS},
+        {'role': 'user', 'content': 'INPUT=' + json.dumps(payload, ensure_ascii=False)}],
+        'stream': False, 'max_tokens': 2048,
+        'response_format': {'type': 'json_schema', 'schema': SCHEMA, 'strict': True}}
+    workload = {'purpose': 'fact_research', 'modalities': ['text'], 'images': 0,
+        'estimated_input_tokens': estimate_input_tokens(body), 'output_allowance': 2048, 'max_provider_sends': 2}
+    attempts = []
+
+    def journal_attempts():
+        for actual in attempts:
+            closed = actual.get('http_status') is not None
+            child = {**base, **actual, 'model_id': route.model_id, 'provider_id': 'gigachat',
+                'phase': 'completed' if actual.get('status') == 'succeeded' else 'failed' if closed else 'unknown',
+                'provider_send_state': 'response_closed' if closed else 'possibly_sent'}
+            checkpoint(child)
+
+    async def before(metadata):
+        guard()
+        journal_attempts()
+        receipt.update(attempt_id=metadata['attempt_id'], phase='prompt_intent', provider_send_state='not_sent',
+            last_send=metadata)
+        checkpoint(receipt)
+
+    try:
+        guard()
+        async with client.admission({**client.binding, **binding, 'attempt_id': parent}, workload) as lease:
+            class ConfirmationLease:
+                async def before_send(self, metadata):
+                    guard()
+                    await lease.before_send(metadata)
+                    receipt.update(phase='sent', provider_send_state='possibly_sent')
+                    checkpoint(receipt)
+            try:
+                message, _finish = await client._completion(ConfirmationLease(), body, attempts, 'fact_research', 2048, before)
+                journal_attempts()
+                receipt.update(phase='completed', provider_send_state='response_closed', model_attempts=attempts,
+                    actual_model=attempts[-1].get('actual_model') if attempts else None)
+                if message.get('function_call'):
+                    raise MalformedProviderResponse('agent_confirmation_unexpected_tool')
+                receipt['raw_result_text'] = message.get('content') or ''
+                raw = json.loads(receipt['raw_result_text'])
+                if not Draft202012Validator(SCHEMA).is_valid(raw):
+                    raise MalformedProviderResponse('agent_confirmation_malformed')
+                guard()
+                receipt['result'] = raw
+                checkpoint(receipt)
+                return {'result': raw, 'receipt': dict(receipt)}
+            finally:
+                known = bool(attempts) and all(type((row.get('usage') or {}).get('prompt_tokens')) is int
+                    and type((row.get('usage') or {}).get('completion_tokens')) is int for row in attempts)
+                await lease.finalize({'provider': 'gigachat', 'model': route.model_id, 'usage_known': known,
+                    'input_tokens': sum(row['usage']['prompt_tokens'] for row in attempts) if known else None,
+                    'output_tokens': sum(row['usage']['completion_tokens'] for row in attempts) if known else None,
+                    'cost': 'unknown', 'receipts': attempts}, 'completed' if attempts and all(
+                        row.get('http_status') is not None for row in attempts) else 'unknown')
+    except BaseException as exc:
+        if receipt.get('phase') == 'completed' and receipt.get('result'):
+            # A closed, validated response survives a local checkpoint/finalize
+            # interruption. Recovery commits its original result, never resends.
+            raise
+        journal_attempts()
+        closed = receipt['provider_send_state'] == 'response_closed' or bool(attempts) and attempts[-1].get('http_status') is not None
+        uncertain = receipt['provider_send_state'] == 'possibly_sent' and not closed
+        receipt.update(phase='unknown' if uncertain else 'failed', model_attempts=attempts,
+            provider_send_state='possibly_sent' if uncertain else 'response_closed' if closed else 'not_sent',
+            error_code=type(exc).__name__)
+        checkpoint(receipt)
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            raise
+        from .service import ConflictError
+        if isinstance(exc, ConflictError):
+            raise
+        return {'status': 'unverified', 'receipt': dict(receipt)}
 
 
 class AgentEvidenceMixin:
@@ -220,10 +326,17 @@ class AgentEvidenceMixin:
                 db.execute('INSERT INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?) '
                     'ON CONFLICT(attempt_id) DO UPDATE SET receipt_json=excluded.receipt_json,updated_at=excluded.updated_at',
                     (receipt['attempt_id'], unit, story['id'], 'agent_evidence_confirmation', canonical(receipt), now, now))
-            self.store.checkpoint_put(job['id'], stage, {'owner': owner, 'candidate': candidate,
-                'agent': agent, 'receipt': receipt})
+                _write_confirmation_checkpoint(db, job['id'], stage, {'owner': owner, 'candidate': candidate,
+                    'agent': agent, 'receipt': receipt}, now)
 
         verified = recovered or await reader.verify_agent_evidence(payload, checkpoint=checkpoint, guard=guard)
+        if not recovered and verified.get('reason') == 'confirmation_routes_unavailable':
+            adapter = self.providers.research
+            routes = adapter.fact_agent_routes() if callable(getattr(adapter, 'fact_agent_routes', None)) else []
+            alternate = next((route for route in routes if route.provider_id == 'gigachat'), None)
+            if alternate is not None:
+                verified = await verify_with_gigachat(alternate, payload, checkpoint, guard,
+                    binding={'story_id': story['id'], 'research_run_id': run_id, 'fact_unit_id': unit, 'contract': CONTRACT})
         guard()
         row = verified.get('result')
         if not isinstance(row, dict) or not Draft202012Validator(SCHEMA).is_valid(row):
@@ -232,7 +345,8 @@ class AgentEvidenceMixin:
             'confirmation': verified['receipt'], 'source_version_id': version}
         if row['verdict'] != 'supported' and not (row['verdict'] == 'possible_conflict'
                 and row['conflicts_with_existing']):
-            self.store.checkpoint_put(job['id'], stage, {'outcome': outcome, 'owner': owner})
+            with self.store.tx() as db:
+                _write_confirmation_checkpoint(db, job['id'], stage, {'outcome': outcome, 'owner': owner}, self.store.now())
             return outcome
         by_id = {chunk['chunk_id']: chunk for chunk in chunks}
         ids = list(dict.fromkeys(row['chunk_ids']))
@@ -294,7 +408,8 @@ class AgentEvidenceMixin:
             sync_poi_review_from_story(db, story['id'], self.store.now())
             db.execute("UPDATE stories SET state='researching',revision=revision+1,updated_at=? WHERE id=?", (self.store.now(), story['id']))
         outcome.update(fact_id=fact_id, subject_scope=row['subject_scope'])
-        self.store.checkpoint_put(job['id'], stage, {'outcome': outcome, 'owner': owner})
+        with self.store.tx() as db:
+            _write_confirmation_checkpoint(db, job['id'], stage, {'outcome': outcome, 'owner': owner}, self.store.now())
         LOG.info('street_story_agent_fact_confirmed story_id=%s run_id=%s fact_id=%s model=%s source_version=%s scope=%s',
             story['id'], run_id, fact_id, verified['receipt']['model_id'], version, row['subject_scope'])
         return outcome
