@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .product import ProductStreetStoryService, _receipt
+from .product import POST_4_5_FRAME_CONTRACT, POST_4_5_FRAME_INSTRUCTION, ProductStreetStoryService, _receipt
 from .providers import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, InvalidStateError, canonical, digest
 
@@ -83,7 +83,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
 
         base = template.replace(self.PROMPT_TOKEN, "")
-        dynamic_budget = self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+        dynamic_budget = (self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+                          - len(POST_4_5_FRAME_INSTRUCTION))
         if dynamic_budget <= 0:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -103,7 +104,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 break
             themes += ("\n" if themes else "") + note[:remaining]
 
-        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule
+        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule + POST_4_5_FRAME_INSTRUCTION
         if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -319,6 +320,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 }
             if previous.get('operation_id'):
                 frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
+            if not frozen.get('recompose_source') or previous.get('output_frame_contract'):
+                frozen['output_frame_contract'] = POST_4_5_FRAME_CONTRACT
+                frozen['identity_generation'] = int(research.get('identity_generation') or 0)
             content_revision = digest(frozen)
             context = {
                 **frozen,
@@ -435,6 +439,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if operation_id:
                 receipt = await self.providers.vibepublish.status(operation_id)
             else:
+                if context.get('output_frame_contract'):
+                    with self.store.connection() as db:
+                        if not self._frame_work_current(db, self._story_row(db, story_id), context, job):
+                            return
                 receipt = await self.providers.vibepublish.visual(command, visual_key)
                 operation_id = str(receipt.get("operation_id") or "")
                 if not operation_id:
@@ -488,6 +496,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     raise PermanentProviderError(
                         "VibePublish visual selection receipt is incomplete"
                     )
+                context = self._record_visual_frame(story_id, context, current, candidate=candidate, job=job)
+                if context is None:
+                    return
                 select_key = str(context.get("select_request_key") or "") or (
                     "ss-vp-select-"
                     + hashlib.sha256(
@@ -505,6 +516,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 )
                 if merged is None:
                     return
+                context = merged
                 select_command = {
                     "command": {
                         "kind": "select",
@@ -538,6 +550,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 raise PermanentProviderError(
                     "VibePublish verified visual lacks immutable asset identity"
                 )
+            context = self._record_visual_frame(story_id, context, selected, job=job)
+            if context is None:
+                return
+            candidate_id = candidate_id or (context.get('output_frame_evidence') or {}).get('candidate_id')
             merged = self._merge_visual_context(
                 story_id,
                 content_revision,
