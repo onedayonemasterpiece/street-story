@@ -68,6 +68,9 @@ Native search delivers discovery titles and URLs; the original indexed snippets
 remain in the audit receipt. Frozen fetched chunks supply the supporting prose.
 The model also sees the remaining existing tool/observation allowance, with no
 increase in bounds or quota and no forced Sol delegation.
+Own completed source reviews accompany known claims with their reasons, packet
+references and current/stale revision markers. Other photos/generations and
+pending reviews are excluded; this history remains context rather than evidence.
 
 `backend/tools/native_facts_acceptance.py` measures an unqualified native route
 on an isolated managed Store through normal EXIF intake, exact mapped selection,

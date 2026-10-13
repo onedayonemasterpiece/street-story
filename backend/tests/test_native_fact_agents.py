@@ -74,6 +74,48 @@ async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as
 
 
 @pytest.mark.asyncio
+async def test_native_known_context_explains_own_current_and_stale_reviews_without_foreign_scope(tmp_path):
+    from street_story.fact_agents import native_agent_context
+    from street_story.headless_facts import HeadlessFacts
+    from street_story.native_fact_contract import source_candidates
+    from street_story.review_packets import SCHEMA
+    from test_native_fact_basis import setup
+    service, job, reader, _, agent, receipt, _ = await setup(tmp_path)
+    try:
+        await service.confirm_agent_fact(job, 'headless-run', source_candidates(receipt['raw_result'])['facts'][0], agent)
+        fact = service.story(job['story_id'])['facts'][0]
+        with service.store.connection() as db:
+            db.executescript(SCHEMA)
+        story, research, _ = HeadlessFacts(service)._snapshot(job, 'headless-run')
+        with service.store.tx() as db:
+            db.execute("UPDATE fact_assertions SET review_status='withheld',eligibility='withheld',"
+                "eligibility_reason='assessment_withheld' WHERE story_id=?", (story['id'],))
+            for ref, revision, photo, generation, state in [
+                    ('current', fact['revision_digest'], story['photo_sha256'], 0, 'finished'),
+                    ('stale', 'older-revision', story['photo_sha256'], 0, 'finished'),
+                    ('foreign-photo', fact['revision_digest'], 'other-photo', 0, 'finished'),
+                    ('foreign-generation', fact['revision_digest'], story['photo_sha256'], 5, 'finished'),
+                    ('pending', fact['revision_digest'], story['photo_sha256'], 0, 'pending')]:
+                packet = {'owner_fence': {'photo': photo}, 'bundle': {fact['fact_id']: revision},
+                    'items': [{'id': fact['fact_id'], 'evidence': [{'source_version_id': 'own-version'}]}]}
+                decision = {'0': {'fact': 0, 'verdict': 'not_supported', 'reason': 'Claim absent from the actual frozen page'}}
+                db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,'
+                    'identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
+                    (ref, story['id'], 'headless-run', 'scope', 0, generation, json.dumps(packet), json.dumps(decision)))
+                db.execute('INSERT INTO live_review_attempts(packet_ref,policy_version,affected_json,state) '
+                    'VALUES(?,?,?,?)', (ref, 'controlled', '[]', state))
+        context = native_agent_context(service, story, research['visual_identity'], 'Continue real gaps', 'headless-run')
+        assert context['known'][0]['eligibility'] == 'withheld'
+        assert context['known'][0]['eligibility_reason'] == 'assessment_withheld'
+        history = context['source_review_history']
+        assert [(r['packet_ref'], r['current_revision']) for r in history] == [('current', True), ('stale', False)]
+        assert all(r['reason'] == 'Claim absent from the actual frozen page' for r in history)
+        assert all(r['kind'] == 'own_review_history_context_not_evidence' for r in history)
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_native_continuation_receives_own_failed_leads_but_excludes_foreign_generation(tmp_path):
     from street_story.fact_agents import native_agent_context
     from street_story.headless_facts import HeadlessFacts

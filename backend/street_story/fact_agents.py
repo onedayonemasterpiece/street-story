@@ -380,11 +380,35 @@ def native_agent_context(service, story, identity, goal, run_id):
     with service.store.connection() as db:
         context['known'] = [{**dict(row), 'sources': json.loads(row['sources_json'] or '[]')}
             for row in db.execute('SELECT a.assertion_id AS fact_id,a.display_text AS text,'
-                'a.semantic_key AS claim_key,a.eligibility,a.revision_digest,f.sources_json '
+                'a.semantic_key AS claim_key,a.eligibility,a.review_status,a.eligibility_reason,'
+                'a.revision_digest,f.sources_json '
                 'FROM fact_assertions a LEFT JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
                 'WHERE a.story_id=? ORDER BY a.assertion_id', (story['id'],))]
         for item in context['known']:
             item.pop('sources_json', None)
+        reviews = []
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_review_packets'").fetchone():
+            current = {item['fact_id']: item['revision_digest'] for item in context['known']}
+            for record in db.execute('SELECT p.packet_ref,p.payload_json,p.decisions_json '
+                    'FROM live_review_packets p JOIN live_review_attempts a ON a.packet_ref=p.packet_ref '
+                    'WHERE p.story_id=? AND p.identity_generation=? AND a.state=? ORDER BY p.rowid',
+                    (story['id'], story['_identity_generation'], 'finished')):
+                packet = json.loads(record['payload_json'])
+                if (packet.get('owner_fence') or {}).get('photo') != story['photo_sha256']:
+                    continue
+                for decision in json.loads(record['decisions_json']).values():
+                    index = decision.get('fact')
+                    if type(index) is not int or not 0 <= index < len(packet.get('items', [])):
+                        continue
+                    item = packet['items'][index]
+                    fact_id = item['id']
+                    revision = (packet.get('bundle') or {}).get(fact_id)
+                    reviews.append({'packet_ref': record['packet_ref'], 'fact_id': fact_id,
+                        'revision_digest': revision, 'current_revision': bool(revision and current.get(fact_id) == revision),
+                        'verdict': decision.get('verdict'), 'reason': decision.get('reason'),
+                        'source_version_ids': sorted({e['source_version_id'] for e in item.get('evidence', [])
+                            if e.get('source_version_id')}), 'kind': 'own_review_history_context_not_evidence'})
+        context['source_review_history'] = reviews
         prior, leads = [], []
         for record in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
                 "AND role LIKE 'facts_agent_%' ORDER BY created_at", (story['id'],)):
