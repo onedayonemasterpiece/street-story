@@ -78,3 +78,53 @@ def test_override_rejects_changed_profile_or_changed_evidence(tmp_path, monkeypa
     report.write_text('{}')
     with pytest.raises(ValueError, match='provenance mismatch'):
         harness.load_research_qualification(installer, research_directory=directory, qualification_path=proof)
+
+
+def test_useful_partial_does_not_stop_active_research_at_three_or_more():
+    case = {'own_read_supported_fact_count': 4, 'own_read_source_count': 2,
+        'jobs': [{'id': 'research', 'kind': 'research', 'state': 'running'}]}
+    visible = {'facts': [{'id': str(i)} for i in range(4)],
+        'research_outcome': {'outcome': 'useful_partial', 'coverage_complete': False}}
+    assert harness.observe_research(case, visible, 81, window_ended=False) is None
+    assert case['status'] == 'OBSERVING'
+    assert case['active_research_job_ids'] == ['research']
+    assert case['research_complete'] is False
+
+
+def test_one_proved_fact_is_available_without_count_based_acceptance_gates():
+    case = {'own_read_supported_fact_count': 1, 'own_read_source_count': 1,
+        'confirmed_identity_preserved': True,
+        'gates': {'eligible_minimum': False, 'canonical_poi_readback': False,
+            'correct_physical_object': True},
+        'jobs': [{'id': 'research', 'kind': 'research', 'state': 'running'}]}
+    assert harness.observe_research(case, {'research_outcome': None}, 35, window_ended=False) is None
+    assert case['useful_product_available'] is True
+    assert case['gates'] == {'correct_physical_object': True}
+    assert case['legacy_count_observations']['eligible_minimum'] is False
+
+
+def test_five_minute_material_snapshot_is_immutable_when_late_results_arrive():
+    case = {'own_read_supported_fact_count': 1, 'own_read_source_count': 1,
+        'jobs': [{'id': 'research', 'kind': 'research', 'state': 'retry'}]}
+    visible = {'facts': [{'id': 'first'}], 'research_outcome': None}
+    assert harness.observe_research(case, visible, 301, window_ended=False) is None
+    early = case['five_minute_observation']
+    case['own_read_supported_fact_count'] = 5
+    visible = {'facts': [{'id': str(i)} for i in range(5)], 'research_outcome': None}
+    assert harness.observe_research(case, visible, 720, window_ended=True) == 'observation_window'
+    assert case['five_minute_observation'] == early
+    assert early['own_read_supported_fact_count'] == 1
+    assert case['useful_fact_count'] == 5
+    assert case['status'] == 'OBSERVATION_WINDOW_ENDED'
+    assert case['research_complete'] is False
+
+
+def test_idle_done_job_with_unknown_original_is_an_incomplete_attempt():
+    case = {'own_read_supported_fact_count': 0, 'own_read_source_count': 1,
+        'jobs': [{'id': 'research', 'kind': 'research', 'state': 'done'}]}
+    visible = {'research_outcome': {'outcome': 'resource_blocked',
+        'reason': 'research_agent_original_pending', 'coverage_complete': False}}
+    assert harness.observe_research(case, visible, 90, window_ended=False) == 'research_workers_idle'
+    assert case['status'] == 'RESEARCH_ATTEMPT_ENDED'
+    assert case['research_complete'] is False
+    assert case['product_outcome'] == visible['research_outcome']

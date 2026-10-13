@@ -361,6 +361,47 @@ async def verify_with_gigachat(route, payload, checkpoint, guard, *, binding):
         return {'status': 'unverified', 'receipt': dict(receipt)}
 
 
+def _retained_agent_document(db, agent, candidate, *, story, run_id, identity):
+    """Read only the closed extractor's bound packet, never caller-supplied text."""
+    from .fact_agent_providers import OWNED_SOURCE_CONTRACT, validate_retained_source_cohort
+
+    row = db.execute('SELECT * FROM research_provider_attempts WHERE attempt_id=? AND story_id=?',
+        (agent.get('attempt_id'), story['id'])).fetchone()
+    if row is None or row['role'] != 'facts_agent_retained_' + str(agent.get('route_id')):
+        raise ValueError('retained_confirmation_attempt_invalid')
+    receipt = json.loads(row['receipt_json'])
+    packet = receipt.get('retained_source_packet') or {}
+    binding = receipt.get('binding') or {}
+    frozen_prompt = receipt.get('frozen_prompt')
+    try:
+        sent_packet = json.loads(frozen_prompt.split('\nSOURCE_PACKET_UNTRUSTED=', 1)[1])['source_packet']
+    except (AttributeError, IndexError, ValueError, KeyError, TypeError):
+        raise ValueError('retained_confirmation_input_invalid') from None
+    if (binding.get('attempt_id') != agent.get('attempt_id')
+            or hashlib.sha256(frozen_prompt.encode()).hexdigest() != receipt.get('prompt_sha256')
+            or sent_packet != packet
+            or receipt.get('contract') != OWNED_SOURCE_CONTRACT or receipt.get('phase') != 'completed'
+            or receipt.get('provider_send_state') != 'response_closed'
+            or receipt.get('route_id') != agent.get('route_id')
+            or receipt.get('model_id') != agent.get('model_id') or receipt.get('provider_id') != agent.get('provider_id')
+            or receipt.get('original_attempt_id') != agent.get('original_attempt_id')
+            or receipt.get('source_cohort_sha256') != agent.get('retained_source_cohort_sha256')
+            or packet.get('source_cohort_sha256') != agent.get('retained_source_cohort_sha256')
+            or candidate not in (receipt.get('result') or {}).get('facts', [])
+            or any(binding.get(key) != expected for key, expected in {
+                'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                'generation': story['_identity_generation'], 'job_id': story['_research_job_id'],
+                'control_revision': story['_fact_research_control_revision']}.items())):
+        raise ValueError('retained_confirmation_attempt_invalid')
+    validate_retained_source_cohort(db, packet, story=story,
+        context={'run_id': run_id, 'selected_object': {'candidate_id': identity.get('candidate_id')}})
+    document = next((source for source in packet['sources']
+        if candidate.get('url') in {source['requested_url'], source['final_url']}), None)
+    if document is None:
+        raise ValueError('retained_confirmation_source_invalid')
+    return document
+
+
 class AgentEvidenceMixin:
     async def confirm_agent_fact(self, job, run_id, candidate, agent):
         # Serialize semantic inventory snapshots and commits for this story,
@@ -382,6 +423,16 @@ class AgentEvidenceMixin:
         story, research, run = snapshot
         with self.store.connection() as db:
             owner = headless._owner_fence(db, story, research)
+            retained = None
+            attempt = db.execute('SELECT role FROM research_provider_attempts WHERE attempt_id=? AND story_id=?',
+                (agent.get('attempt_id'), story['id'])).fetchone()
+            if (agent.get('retained_source_cohort_sha256') is not None or agent.get('original_attempt_id') is not None
+                    or attempt is not None and attempt['role'].startswith('facts_agent_retained_')):
+                try:
+                    retained = _retained_agent_document(db, agent, candidate, story=story,
+                        run_id=run_id, identity=research['visual_identity'])
+                except (ValueError, TypeError, KeyError):
+                    return {'status': 'unverified', 'reason': 'retained_source_binding_invalid'}
         unit = hashlib.sha256(canonical({'run': run_id, 'candidate': candidate,
             'agent': agent.get('route_id')}).encode()).hexdigest()[:24]
         stage = 'agent_confirmation:' + unit
@@ -409,13 +460,21 @@ class AgentEvidenceMixin:
             with self.store.connection() as db:
                 if headless._owner_fence(db, current[0], current[1]) != owner:
                     raise ConflictError('agent_confirmation_stale', 'Owner inputs changed.')
+                if retained is not None:
+                    _retained_agent_document(db, agent, candidate, story=current[0],
+                        run_id=run_id, identity=current[1]['visual_identity'])
 
         url = str(candidate.get('url') or '').rstrip('/')
         reader = self.providers.gemini
-        if recovered:
+        original = recovered['receipt'] if recovered else None
+        if retained is not None:
+            document = retained
+            version = retained['source_version_id']
+            if recovered and recovered['receipt'].get('source_version_id') != version:
+                return {'status': 'unverified', 'reason': 'retained_source_binding_invalid'}
+        elif recovered:
             # A closed assessment belongs to its retained source, even if the
             # public page subsequently changes or becomes unavailable.
-            original = recovered['receipt']
             version = original.get('source_version_id')
             document = {'title': url}
         else:
@@ -449,6 +508,10 @@ class AgentEvidenceMixin:
             receipt['binding'] = binding
             receipt['source_version_id'] = version
             receipt['source_content_sha256'] = frozen['content_sha256']
+            if retained is not None:
+                receipt['retained_source_provenance'] = {
+                    'extraction_attempt_id': agent['attempt_id'], 'original_attempt_id': agent['original_attempt_id'],
+                    'source_cohort_sha256': agent['retained_source_cohort_sha256']}
             now = self.store.now()
             with self.store.tx() as db:
                 db.execute('INSERT INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?) '

@@ -58,7 +58,7 @@ def fixture(tmp_path):
     return path, routes
 
 
-def test_actual_role_receipts_require_current_profile_and_both_independent_services(tmp_path):
+def test_actual_role_receipts_require_current_profile_for_each_independent_service(tmp_path):
     path, routes = fixture(tmp_path)
     proof, _ = load_agent_qualification(path, routes=routes)
     assert len(proof['routes']) == 2
@@ -67,16 +67,28 @@ def test_actual_role_receipts_require_current_profile_and_both_independent_servi
         load_agent_qualification(path, routes=routes)
 
 
-@pytest.mark.parametrize('fault', ['tampered_receipt', 'legacy_role', 'unread_candidate', 'unsafe_tool', 'one_provider'])
+def test_one_qualified_provider_keeps_actual_integrity_checks_and_reports_reduced_availability(tmp_path):
+    path, routes = fixture(tmp_path)
+    proof = json.loads(path.read_text())
+    proof['routes'] = proof['routes'][:1]
+    path.write_text(json.dumps(proof))
+    actual, metadata = load_agent_qualification(path, routes=routes)
+    assert actual == proof
+    assert metadata['qualified_provider_count'] == 1
+    assert metadata['qualified_provider_availability'] == 'reduced'
+    routes[0].profile_fingerprint = 'changed'
+    with pytest.raises(ValueError, match='profile changed'):
+        load_agent_qualification(path, routes=routes)
+
+
+@pytest.mark.parametrize('fault', ['tampered_receipt', 'legacy_role', 'unread_candidate', 'unsafe_tool'])
 def test_receipt_flags_cannot_replace_actual_read_only_role_integrity(tmp_path, fault):
     path, routes = fixture(tmp_path)
     proof = json.loads(path.read_text())
     evidence = proof['routes'][0]['qualification_receipts'][0]
     receipt_path = tmp_path / 'google.json'
     receipt = json.loads(receipt_path.read_text())
-    if fault == 'one_provider':
-        proof['routes'] = proof['routes'][:1]
-    elif fault == 'tampered_receipt':
+    if fault == 'tampered_receipt':
         receipt['result']['facts'][0]['text'] = 'Changed'
     elif fault == 'legacy_role':
         receipt['frozen_schema'] = {'type': 'object'}

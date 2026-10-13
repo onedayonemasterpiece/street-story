@@ -70,7 +70,7 @@ def configured_routes(adapter, *, include_unqualified=False):
 
 
 def route_plan(routes):
-    """First two independent services, then at most two unused route fallbacks."""
+    """Up to two independent services, with at most four qualified routes total."""
     routes = list(routes)
     SystemRandom().shuffle(routes)
     primary, tail, seen = [], [], set()
@@ -80,7 +80,46 @@ def route_plan(routes):
             seen.add(route.provider_id)
         else:
             tail.append(route)
-    return primary + tail[:max(0, 4-len(primary))] if len(primary) == 2 else []
+    return primary + tail[:max(0, 4-len(primary))]
+
+
+def _coverage_gaps(state):
+    """Continuation signals from receipts/admission, never a fact-count target."""
+    retained = state.get('retained') or {}
+    if retained.get('phase') in {'completed', 'failed', 'unknown'}:
+        return _coverage_gaps(retained)
+    gaps = []
+    if state.get('phase') in {'failed', 'unknown'}:
+        gaps.append('original_' + state['phase'])
+    if state.get('phase') == 'completed' and not state.get('candidate_count', len(state.get('outcomes', []))):
+        gaps.append('no_source_backed_candidates')
+    if state.get('rejected_candidate_count'):
+        gaps.append('candidate_format_rejections')
+    if state.get('unproposed_source_version_ids'):
+        gaps.append('read_sources_without_candidates')
+    if any(row.get('status') not in {'supported', 'duplicate'} for row in state.get('outcomes', [])):
+        gaps.append('candidate_admission_unresolved')
+    return gaps
+
+
+def _source_coverage(receipt):
+    """Identify completed own reads not represented by a candidate URL."""
+    from .fact_agent_providers import _read_url_key
+    proposed = {_read_url_key(row['url']) for row in (receipt.get('result') or {}).get('facts', [])
+        if isinstance(row.get('url'), str)}
+    unproposed = set()
+    for source in receipt.get('sources', []):
+        if not source.get('source_version_id') or not source.get('content_sha256'):
+            continue
+        urls = {_read_url_key(source[key]) for key in ('requested_url', 'final_url')
+            if isinstance(source.get(key), str)}
+        if not (urls - {None}) & proposed:
+            unproposed.add(source['source_version_id'])
+    return {'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
+        'unproposed_source_version_ids': sorted(unproposed),
+        'original_send_unresolved': receipt.get('phase') == 'unknown'
+            or receipt.get('provider_send_state') == 'possibly_sent'
+            or receipt.get('error_code') == 'CancelledError' and receipt.get('last_request_sent') is True}
 
 
 def _healthy_routes(adapter, routes):
@@ -127,7 +166,7 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
             routes = saved.setdefault('routes', {})
             old = routes.get(route_id, {})
             if (old.get('phase') not in {'completed', 'failed'} or recovery
-                    and state.get('phase') == 'completed' and state.get('attempt_id')
+                    and state.get('phase') in {old.get('phase'), 'completed'} and state.get('attempt_id')
                     and state['attempt_id'] == old.get('attempt_id')):
                 routes[route_id] = state
                 db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
@@ -138,9 +177,6 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
 async def _recover_confirmations(adapter, job, run_id, story, context, route_id, state, guard):
     """Re-admit original candidates from a closed agent, without invoking its SDK."""
     from .service import canonical
-    if state.get('phase') == 'completed' and not any(
-            row.get('status') == 'unverified' for row in state.get('outcomes', [])):
-        return None
     attempt_id = state.get('attempt_id')
     if not attempt_id:
         return None
@@ -160,9 +196,17 @@ async def _recover_confirmations(adapter, job, run_id, story, context, route_id,
         'control_revision': story['_fact_research_control_revision'],
         'fact_unit_id': 'agent_' + digest[:24], 'fact_input_sha256': digest}
     candidates = (receipt.get('result') or {}).get('facts')
-    if (receipt.get('phase') != 'completed' or not isinstance(candidates, list)
-            or any(binding.get(key) != value for key, value in expected.items())):
+    if any(binding.get(key) != value for key, value in expected.items()):
         return None
+    if receipt.get('phase') in {'failed', 'created', 'aborted'}:
+        recovered = {**state, **_source_coverage(receipt)}
+        return recovered if recovered != state else None
+    if receipt.get('phase') != 'completed' or not isinstance(candidates, list):
+        return None
+    if state.get('phase') == 'completed' and not any(
+            row.get('status') == 'unverified' for row in state.get('outcomes', [])):
+        recovered = {**state, **_source_coverage(receipt)}
+        return recovered if recovered != state else None
     outcomes = []
     for index, candidate in enumerate(candidates):
         guard()
@@ -188,7 +232,7 @@ async def _recover_confirmations(adapter, job, run_id, story, context, route_id,
         eligible = {row[0] for row in db.execute(
             "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
             (story['id'],))} & fact_ids
-    return {'phase': 'completed', 'attempt_id': attempt_id, 'outcomes': outcomes,
+    return {**state, 'phase': 'completed', 'attempt_id': attempt_id, 'outcomes': outcomes, **_source_coverage(receipt),
         'candidate_count': len(candidates), 'eligible_fact_ids': sorted(eligible), 'supported_count': len(eligible)}
 
 
@@ -196,8 +240,9 @@ def agent_context(identity, goal, run_id, now):
     # Explicit allowlist prevents prior facts, URLs and camera context entering discovery.
     selected = {key: identity[key] for key in ('candidate_id', 'name', 'names', 'address',
         'city', 'search_anchor', 'owner_context', 'building_polygon') if key in identity}
-    task_goal = (goal + '\nAim for six distinct useful facts when public sources support them. '
-        'If fewer than three useful building facts are supported, try another concise search or article. '
+    task_goal = (goal + '\nExtract distinct useful knowledge supported by the available sources. '
+        'Use already read pages first; investigate remaining historical, architectural, people, '
+        'organization and event gaps with another concise query or article when resources permit. '
         'Vary street-type suffixes and quoted versus unquoted address queries when needed. '
         'Read the full page before citing it. Never invent facts to meet a count.')
     return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
@@ -222,6 +267,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
             _finish(adapter, job, run_id, headless, epoch, 'research_routes_unavailable', pending=True)
             return {'outcome': 'resource_blocked', 'reason': 'research_routes_unavailable'}
         saved = {'pipeline': QUALIFICATION_KEY, 'route_ids': [r.route_id for r in plan],
+            'primary_count': min(2, len({r.provider_id for r in plan})),
+            'provider_availability': 'independent' if len({r.provider_id for r in plan}) > 1 else 'reduced',
             'context': agent_context(research['visual_identity'], goal, run_id, adapter.service.store.now()),
             'routes': {}}
         saved = _persist_plan(adapter, job, run_id, headless, epoch, initial=saved)
@@ -231,6 +278,99 @@ async def run_fact_agents(adapter, job, run_id, goal):
         if headless._snapshot(job, run_id, epoch) is None:
             from .service import ConflictError
             raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
+
+    async def admit(receipt, agent):
+        outcomes = []
+        for candidate in receipt['result']['facts']:
+            guard()
+            outcomes.append(await adapter.service.confirm_agent_fact(job, run_id, candidate, agent))
+        fact_ids = {row['fact_id'] for row in outcomes if row.get('fact_id')}
+        with adapter.service.store.connection() as db:
+            eligible = {row[0] for row in db.execute(
+                "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
+                (job['story_id'],))} & fact_ids
+        return {'phase': 'completed', 'attempt_id': agent['attempt_id'], 'outcomes': outcomes,
+            **_source_coverage(receipt), 'candidate_count': len(outcomes),
+            'eligible_fact_ids': sorted(eligible), 'supported_count': len(eligible)}
+
+    async def retained(route_id, state):
+        """Extract the same owned cohort once before asking another discovery route."""
+        from .fact_agent_providers import retained_source_cohort, run_retained_source_agent
+        continuation = state.get('retained') or {}
+        if (continuation.get('phase') in {'failed', 'unknown'} or continuation.get('phase') == 'completed'
+                and not any(row.get('status') == 'unverified' for row in continuation.get('outcomes', []))):
+            return state
+        if (state.get('phase') not in {'failed', 'unknown'}
+                and not state.get('unproposed_source_version_ids') and not state.get('rejected_candidate_count')):
+            return state
+        with adapter.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                (state.get('attempt_id'),)).fetchone()
+        original = json.loads(row[0]) if row else {}
+        try:
+            cohort = retained_source_cohort(adapter, original, story=story, context=context, guard=guard)
+        except ValueError as exc:
+            state = {**state, 'retained': {'phase': 'failed', 'reason': str(exc)}}
+            persisted = _persist_plan(adapter, job, run_id, headless, epoch,
+                route_id=route_id, state=state, recovery=True)
+            saved['routes'][route_id] = persisted['routes'][route_id]
+            return saved['routes'][route_id]
+        if cohort is None:
+            return state
+        if continuation.get('extraction_route_id'):
+            route = routes_by_id.get(continuation['extraction_route_id'])
+        else:
+            original_provider = state.get('provider_id') or original.get('provider_id') or (routes_by_id[route_id].provider_id
+                if route_id in routes_by_id else (original.get('binding') or {}).get('provider_id'))
+            unresolved = state.get('phase') == 'unknown' or state.get('original_send_unresolved')
+            choices = [route for route in available if route.provider_id != 'opencode'
+                and (not unresolved or original_provider and route.provider_id != original_provider)]
+            choices.sort(key=lambda route: (state.get('phase') == 'failed' and route.provider_id == original_provider,
+                route.route_id != route_id))
+            route = next(iter(_healthy_routes(adapter, choices)), None)
+        if route is None:
+            return state
+        state = {**state, 'retained': {**continuation, 'phase': continuation.get('phase', 'created'),
+            'extraction_route_id': route.route_id, 'source_cohort_sha256': cohort['source_cohort_sha256']}}
+        persisted = _persist_plan(adapter, job, run_id, headless, epoch,
+            route_id=route_id, state=state, recovery=True)
+        state = saved['routes'][route_id] = persisted['routes'][route_id]
+        unit = {'run_id': run_id, 'context': context, 'route_id': route.route_id, 'original_route_id': route_id,
+            'original_attempt_id': cohort['original_attempt_id'],
+            'source_cohort_sha256': cohort['source_cohort_sha256']}
+        digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        owned = {**story, '_fact_pool_unit_id': 'agent_retained_' + digest[:24], '_fact_pool_input_sha256': digest}
+        role = 'facts_agent_retained_' + route.route_id
+        try:
+            async def invoke(binding):
+                return await run_retained_source_agent(adapter, route, owned, context, cohort,
+                    original_receipt=original, binding=binding, guard=guard)
+            result = await adapter.run(owned, role, unit, invoke, client=route)
+            receipt = result['receipt']
+            if receipt.get('phase') != 'completed':
+                raise RetryableProviderError('research_agent_retained_' + str(receipt.get('phase', 'unknown')))
+            agent = {'route_id': route.route_id, 'provider_id': route.provider_id, 'model_id': route.model_id,
+                'attempt_id': receipt['binding']['attempt_id'], 'prompt_sha256': receipt.get('prompt_sha256'),
+                'original_attempt_id': cohort['original_attempt_id'],
+                'retained_source_cohort_sha256': cohort['source_cohort_sha256']}
+            continuation = await admit(receipt, agent)
+        except RetryableProviderError as exc:
+            logical = hashlib.sha256(json.dumps([story['id'], story['photo_sha256'],
+                story['_identity_generation'], role, unit], ensure_ascii=False,
+                separators=(',', ':'), sort_keys=True).encode()).hexdigest()
+            with adapter.service.store.connection() as db:
+                row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                    'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
+            receipt = json.loads(row[0]) if row else {}
+            continuation = {'phase': 'failed' if receipt.get('phase') in {'created', 'failed', 'completed'} else 'unknown',
+                'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id'),
+                **_source_coverage(receipt)}
+        state = {**state, 'retained': {**continuation, 'extraction_route_id': route.route_id,
+            'source_cohort_sha256': cohort['source_cohort_sha256']}}
+        persisted = _persist_plan(adapter, job, run_id, headless, epoch,
+            route_id=route_id, state=state, recovery=True)
+        saved['routes'][route_id] = persisted['routes'][route_id]
+        return saved['routes'][route_id]
 
     async def one(route_id):
         guard()
@@ -244,11 +384,12 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 state = saved['routes'][route_id] = persisted['routes'][route_id]
                 LOG.info('street_story_fact_agent_confirmation_recovered story_id=%s run_id=%s route_id=%s '
                     'attempt_id=%s supported=%s pending=%s', story['id'], run_id, route_id, state['attempt_id'],
-                    state['supported_count'], sum(row.get('status') == 'unverified' for row in state['outcomes']))
-            return state
+                    state.get('supported_count', 0),
+                    sum(row.get('status') == 'unverified' for row in state.get('outcomes', [])))
+            return await retained(route_id, state)
         if state.get('phase') == 'unknown' and (route is None or route.provider_id != 'opencode'):
             # No blind retry of a failed/unknown synchronous operation.
-            return state
+            return await retained(route_id, state)
         if route is None:
             state = {'phase': 'failed', 'reason': 'research_agent_route_unavailable'}
         else:
@@ -266,18 +407,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 agent = {'route_id': route.route_id, 'provider_id': route.provider_id,
                     'model_id': route.model_id, 'attempt_id': receipt['binding']['attempt_id'],
                     'elapsed_seconds': receipt.get('elapsed_seconds'), 'prompt_sha256': receipt.get('prompt_sha256')}
-                outcomes = []
-                for candidate in result['result']['facts']:
-                    guard()
-                    outcomes.append(await adapter.service.confirm_agent_fact(job, run_id, candidate, agent))
-                fact_ids = {outcome['fact_id'] for outcome in outcomes if outcome.get('fact_id')}
-                with adapter.service.store.connection() as db:
-                    eligible_ids = {row[0] for row in db.execute(
-                        "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
-                        (job['story_id'],))} & fact_ids
-                state = {'phase': 'completed', 'attempt_id': agent['attempt_id'], 'outcomes': outcomes,
-                    'candidate_count': len(outcomes),
-                    'eligible_fact_ids': sorted(eligible_ids), 'supported_count': len(eligible_ids)}
+                state = await admit(receipt, agent)
             except RetryableProviderError as exc:
                 # Existing attempt journal determines unknown versus closed failure.
                 logical = hashlib.sha256(json.dumps([story['id'], story['photo_sha256'],
@@ -288,37 +418,54 @@ async def run_fact_agents(adapter, job, run_id, goal):
                         'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
                 receipt = json.loads(row[0]) if row else {}
                 state = {'phase': 'unknown' if receipt.get('phase') not in {'failed', 'completed', 'created'} else 'failed',
-                    'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id')}
+                    'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id'),
+                    **_source_coverage(receipt)}
+        state = {**state, **({'provider_id': route.provider_id} if route else {})}
         persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state)
         state = saved['routes'][route_id] = persisted['routes'][route_id]
         LOG.info('street_story_fact_agent run_id=%s route_id=%s phase=%s candidates=%s',
             run_id, route_id, state['phase'], state.get('candidate_count', 0))
-        return state
+        return await retained(route_id, state)
 
     ids = saved['route_ids']
-    tasks = {asyncio.create_task(one(route_id)) for route_id in ids[:2]}
-    unused, outcomes = iter(ids[2:]), []
+    primary_count = saved.get('primary_count', min(2, len(ids)))
+    tasks = {asyncio.create_task(one(route_id)) for route_id in ids[:primary_count]}
+    unused, outcomes = iter(ids[primary_count:]), []
     try:
         while tasks:
             done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 result = task.result()
                 outcomes.append(result)
-                if len({fact_id for row in outcomes for fact_id in row.get('eligible_fact_ids', [])}) < 3:
-                    route_id = next(unused, None)
-                    if route_id is not None:
-                        tasks.add(asyncio.create_task(one(route_id)))
+                if _coverage_gaps(result):
+                    unknown_providers = {part.get('provider_id') or (routes_by_id[part_id].provider_id
+                        if part_id in routes_by_id else None)
+                        for original_id, original in saved['routes'].items()
+                        for part_id, part in ((original_id, original),
+                            ((original.get('retained') or {}).get('extraction_route_id'), original.get('retained') or {}))
+                        if part.get('phase') == 'unknown' or part.get('original_send_unresolved')}
+                    for route_id in unused:
+                        route = routes_by_id.get(route_id)
+                        if (route is not None and route.provider_id not in unknown_providers
+                                and _healthy_routes(adapter, [route])):
+                            tasks.add(asyncio.create_task(one(route_id)))
+                            break
     finally:
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-    pending = any(result.get('phase') == 'unknown' or any(outcome.get('status') == 'unverified'
-        for outcome in result.get('outcomes', [])) for result in outcomes)
+    assessments = [part for result in outcomes for part in (result, result.get('retained') or {})]
+    pending = any(result.get('phase') == 'unknown' or result.get('original_send_unresolved')
+        or any(outcome.get('status') == 'unverified'
+        for outcome in result.get('outcomes', [])) for result in assessments)
     failed = any(result.get('phase') == 'failed' for result in outcomes)
+    gaps = sorted({gap for result in outcomes for gap in _coverage_gaps(result)})
     outcome = _finish(adapter, job, run_id, headless, epoch,
-        'research_agent_original_pending' if pending else 'research_agent_route_failed' if failed else 'research_agent_completed',
-        pending=pending or failed)
+        'research_agent_original_pending' if pending else 'research_agent_route_failed' if failed
+            else 'research_agent_content_gaps' if gaps else 'research_agent_completed',
+        pending=pending or failed or bool(gaps), content_gaps=gaps,
+        provider_availability=saved.get('provider_availability'))
     if pending:
         with adapter.service.store.connection() as db:
             addressed = db.execute("SELECT 1 FROM research_provider_attempts WHERE story_id=? "
@@ -331,7 +478,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
     return outcome
 
 
-def _finish(adapter, job, run_id, headless, epoch, reason, *, pending):
+def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_gaps=None, provider_availability=None):
     from .service import canonical
     with adapter.service.store.tx() as db:
         snapshot = headless._snapshot(job, run_id, epoch)
@@ -345,6 +492,10 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending):
             'coverage_complete': not pending, 'pipeline': QUALIFICATION_KEY,
             'photo_sha256': story['photo_sha256'], 'identity_generation': story['_identity_generation'],
             'purpose': 'facts', 'run_id': run_id}
+        if content_gaps:
+            value['content_gaps'] = content_gaps
+        if provider_availability:
+            value['provider_availability'] = provider_availability
         research['research_outcome'] = value
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,

@@ -123,6 +123,7 @@ def load_agent_qualification(path, *, routes=None):
     for route in proof['routes']:
         if (not isinstance(route, dict) or route.get('contract') != QUALIFICATION_KEY
                 or not route.get('route_id') or not route.get('profile_sha256')
+                or not isinstance(route.get('provider_id'), str) or not route['provider_id']
                 or route.get('tool_access_verified') is not True or route.get('tool_safety_verified') is not True
                 or not isinstance(route.get('qualification_receipts'), list) or not route['qualification_receipts']
                 or route['route_id'] in seen):
@@ -168,10 +169,10 @@ def load_agent_qualification(path, *, routes=None):
                          for key in ('requested_url', 'final_url')}
             if not facts or any(fact['url'] not in read_urls for fact in facts):
                 raise ValueError('Agent qualification has no actually read candidate source')
-    if len(providers - {None}) < 2:
-        raise ValueError('Agent qualification needs two independent providers')
     return proof, {'agent_qualification_path': str(path),
-        'agent_qualification_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        'agent_qualification_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'qualified_provider_count': len(providers),
+        'qualified_provider_availability': 'independent' if len(providers) > 1 else 'reduced'}
 
 
 def registry_item(path, message):
@@ -295,6 +296,53 @@ def enrich_evidence(service, case, visible):
         and visible.get('visual_identity', {}).get('candidate_id') == case.get('selected_candidate_id'))
 
 
+def observe_research(case, visible, elapsed, *, window_ended):
+    """Record useful output separately from worker completion and window end.
+
+    Counts describe retained evidence; they never decide completeness. Ordinary
+    REST and durable jobs determine the attempt state. An experiment window
+    ending with active work is explicitly incomplete, not absence of sources.
+    """
+    outcome = visible.get('research_outcome')
+    case['product_outcome'] = outcome
+    case['observed_from_confirmation_s'] = round(elapsed, 3)
+    case['useful_fact_count'] = case['own_read_supported_fact_count']
+    case['useful_product_available'] = bool(case['useful_fact_count']
+        and case.get('confirmed_identity_preserved'))
+    # The legacy diagnostics also report count-based auto-identification gates.
+    # Keep those as measurements, not acceptance gates for this owner path.
+    count_gates = {key: case.get('gates', {}).pop(key) for key in
+        ('eligible_minimum', 'canonical_poi_readback') if key in case.get('gates', {})}
+    if count_gates:
+        case['legacy_count_observations'] = count_gates
+    active = [job['id'] for job in case.get('jobs', [])
+        if job['kind'] in {'identity', 'identity_visual', 'research', 'refinement'}
+        and job['state'] in {'ready', 'retry', 'running'}]
+    case['active_research_job_ids'] = active
+    if elapsed >= 300 and 'five_minute_observation' not in case:
+        case['five_minute_observation'] = {
+            'observed_from_confirmation_s': round(elapsed, 3),
+            'measurement_target_s': 300,
+            'facts': visible.get('facts', []),
+            'own_read_supported_fact_count': case['own_read_supported_fact_count'],
+            'own_read_source_count': case['own_read_source_count'],
+            'research_outcome': outcome, 'active_research_job_ids': active,
+            'count_establishes_completeness': False,
+        }
+    if not active and outcome is not None:
+        complete = outcome.get('coverage_complete') is True
+        case['status'] = 'RESEARCH_ATTEMPT_ENDED'
+        case['research_complete'] = complete
+        return 'research_workers_idle'
+    if window_ended:
+        case['status'] = 'OBSERVATION_WINDOW_ENDED'
+        case['research_complete'] = False
+        return 'observation_window'
+    case['status'] = 'OBSERVING'
+    case['research_complete'] = False
+    return None
+
+
 async def run(args):
     sys.path.insert(0, str(BACKEND))
     if args.allow_wip:
@@ -351,7 +399,7 @@ async def run(args):
     report_path = output/'case.json'
     case = json.loads(report_path.read_text()) if report_path.exists() else {
         'message_id': args.message, 'label': item['report_label'], 'status': 'NOT_RUN',
-        'source_sha': sha, 'original_sha256': item['sha256'], 'min_useful_facts': 3}
+        'source_sha': sha, 'original_sha256': item['sha256']}
     logging.basicConfig(filename=output/'workers.log', level=logging.INFO)
     from street_story.app import app
     service = app.state.service
@@ -454,25 +502,23 @@ async def run(args):
                 enrich_evidence(service, case, visible)
                 elapsed = time.time() - case['confirmed_at_utc']
                 count = case['rest_eligible_proved_count']
-                if count and 'first_eligible_from_confirmation_s' not in case:
+                first_fact = count and 'first_eligible_from_confirmation_s' not in case
+                if first_fact:
                     case['first_eligible_from_confirmation_s'] = round(elapsed, 3)
                     save(output/'first-rest-facts.json', visible)
-                if count >= 3 and 'three_eligible_from_confirmation_s' not in case:
-                    case['three_eligible_from_confirmation_s'] = round(elapsed, 3)
-                case['observed_from_confirmation_s'] = round(elapsed, 3)
-                case['threshold_pass'] = (count >= 3 and case.get('three_eligible_from_confirmation_s', float('inf')) <= 300
-                    and case['own_read_supported_fact_count'] >= 3 and case['confirmed_identity_preserved'])
-                case['status'] = 'PASS' if case['threshold_pass'] else 'OBSERVING'
+                end_reason = observe_research(case, visible, elapsed,
+                    window_ended=time.monotonic() - started >= args.observe_seconds)
+                if case.get('five_minute_observation') and not (output/'five-minute-observation.json').exists():
+                    save(output/'five-minute-observation.json', case['five_minute_observation'])
                 save(report_path, case)
-                if count >= 3 or time.monotonic() - started >= args.observe_seconds:
-                    if not case['threshold_pass']:
-                        case['status'] = 'THRESHOLD_NOT_REACHED'
+                if end_reason:
                     case['observation_ended_at_utc'] = time.time()
+                    case['observation_end_reason'] = end_reason
                     case['backend_shutdown_is_experiment_end'] = True
                     save(report_path, case)
                     print(json.dumps({key: case.get(key) for key in ('message_id', 'status', 'story_id',
                         'selection_basis', 'selected_candidate_id', 'first_eligible_from_confirmation_s',
-                        'rest_eligible_proved_count', 'own_read_source_count', 'three_eligible_from_confirmation_s',
+                        'rest_eligible_proved_count', 'own_read_source_count', 'observation_end_reason',
                         'confirmed_identity_preserved', 'product_outcome', 'error_code')}, ensure_ascii=False), flush=True)
                     break
                 await asyncio.sleep(2)
@@ -513,6 +559,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.revision14 and args.agent_qualification is None:
         parser.error('Revision14 requires explicit actual --agent-qualification')
-    if not 0 < args.observe_seconds <= 300:
-        parser.error('Observation must be between 0 and 300 seconds; this is not a product deadline')
+    if not 0 < args.observe_seconds <= 720:
+        parser.error('Observation must be between 0 and 720 seconds; this is not a product deadline')
     asyncio.run(run(args))

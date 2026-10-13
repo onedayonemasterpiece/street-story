@@ -13,10 +13,12 @@ def route(provider, model):
     return AgentRoute(provider, model, 'https://example.org', object())
 
 
-def test_plan_needs_independent_services_and_does_not_require_named_models(monkeypatch):
+def test_plan_prefers_independent_services_without_blocking_a_single_provider(monkeypatch):
     monkeypatch.setattr('street_story.fact_agents.SystemRandom',
         lambda: SimpleNamespace(shuffle=lambda _rows: None))
-    assert route_plan([route('opencode', 'a'), route('opencode', 'b')]) == []
+    single_provider = [route('opencode', 'a'), route('opencode', 'b')]
+    assert route_plan(single_provider) == single_provider
+    assert route_plan([]) == []
     rows = [route('opencode', 'new-model'), route('opencode', 'another'),
         route('google', 'custom-google'), route('gigachat', 'custom-giga'), route('google', 'last')]
     plan = route_plan(rows)
@@ -32,6 +34,9 @@ def test_agent_input_cannot_hydrate_old_poi_facts_or_photo_camera():
     context = agent_context(identity, 'History', 'run1', 1791849600)
     assert context['selected_object'] == {'candidate_id': 'way42', 'city': 'TargetCity', 'address': 'TargetStreet 7'}
     assert context['review_as_of_date_utc'] == '2026-10-13'
+    assert 'six distinct' not in context['editorial_goal']
+    assert 'fewer than three' not in context['editorial_goal']
+    assert 'already read pages first' in context['editorial_goal']
 
 
 def test_candidate_format_has_no_semantic_regex_gate():
