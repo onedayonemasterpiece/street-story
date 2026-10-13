@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.agent_evidence import (
-    CONTRACT, NETWORK_CONTRACT, NETWORK_SCHEMA, SCHEMA, confirmation_consistency_error,
+    CONTRACT, NETWORK_CONTRACT, NETWORK_SCHEMA, SCHEMA, _write_confirmation_checkpoint,
+    confirmation_consistency_error, confirmation_excerpt,
     verify_with_gemini,
 )
 from test_agent_evidence import AGENT, CANDIDATE, setup
@@ -58,8 +59,8 @@ async def controlled(tmp_path, change=lambda _row: None, *, legacy=False, after=
     ('time', 'confirmation_temporal_inconsistent'),
     ('modality', 'confirmation_temporal_inconsistent'),
     ('relation_chunk', 'confirmation_relationship_references_invalid'),
-    ('relation_quote', 'confirmation_relationship_references_invalid'),
-    ('fact_quote', 'confirmation_references_invalid'),
+    ('relation_empty', 'confirmation_relationship_references_invalid'),
+    ('fact_empty', 'confirmation_references_invalid'),
     ('missing_checks', 'confirmation_incomplete'),
     ('malformed_checks', 'confirmation_incomplete'),
 ])
@@ -78,10 +79,10 @@ async def test_supported_but_inconsistent_model_decisions_never_enter_ledger(tmp
             checks['temporal_preserved'] = False
         elif case == 'relation_chunk':
             checks['relation_basis']['chunk_ids'] = ['other-version-chunk']
-        elif case == 'relation_quote':
-            checks['relation_basis']['fragment'] = 'word ' * 26
-        elif case == 'fact_quote':
-            row['confirmed_fragment'] = 'word ' * 26
+        elif case == 'relation_empty':
+            checks['relation_basis']['fragment'] = ''
+        elif case == 'fact_empty':
+            row['confirmed_fragment'] = ''
         elif case == 'missing_checks':
             del row['checks']
         else:
@@ -229,3 +230,65 @@ def test_network_check_requirement_does_not_mutate_legacy_schema():
     assert confirmation_consistency_error(legacy, {'contract': CONTRACT}, {'c'}) is None
     assert confirmation_consistency_error(legacy, {'contract': NETWORK_CONTRACT}, {'c'}) == 'confirmation_incomplete'
     assert NETWORK_SCHEMA['required'][0] == 'checks'
+
+
+def test_excerpt_preserves_exact_prefix_and_marks_truncation_without_changing_proof():
+    fragment = '  ' + '\t '.join(f'word{i}' for i in range(33))
+    preview = confirmation_excerpt(fragment)
+    assert len(preview['text'].split()) == 25 and preview['text'].endswith('word24…')
+    assert fragment.startswith(preview['text'][:-1]) and preview['truncated'] is True
+    assert preview['kind'] == 'model_confirmed_excerpt'
+    short = confirmation_excerpt('Original  dated fragment.')
+    assert short['text'] == 'Original  dated fragment.' and short['truncated'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_closed_long_proof_recovers_as_bounded_excerpt_without_resend_or_model_rewrite(tmp_path, legacy):
+    full_fragment = ' '.join(f'word{i}' for i in range(33))
+    def change(row):
+        row['confirmed_fragment'] = full_fragment
+        if not legacy:
+            row['checks']['relation_basis']['fragment'] = full_fragment
+    def interrupt():
+        raise RuntimeError('Original closure before old formatting rejection')
+    service, job, reader, _, calls = await controlled(tmp_path, change, legacy=legacy, after=interrupt)
+    try:
+        with pytest.raises(RuntimeError):
+            await service.confirm_agent_fact(job, 'headless-run', CANDIDATE, AGENT)
+        with service.store.tx() as db:
+            saved_row = db.execute('SELECT stage,value_json FROM research_checkpoints').fetchone()
+            saved = json.loads(saved_row['value_json'])
+            original_receipt = copy.deepcopy(saved['receipt'])
+            _write_confirmation_checkpoint(db, job['id'], saved_row['stage'], {
+                'owner': saved['owner'], 'outcome': {'status': 'unverified',
+                    'reason': 'confirmation_references_invalid', 'confirmation': original_receipt}}, service.store.now())
+        async def no_network(*_args, **_kwargs):
+            raise AssertionError('Original closed proof cannot trigger fetch or inference')
+        service.providers.gemini._fetch_page_documents = no_network
+        service.providers.gemini.verify_agent_evidence = no_network
+        outcome = await service.confirm_agent_fact(job, 'headless-run', CANDIDATE, AGENT)
+        assert outcome['status'] == 'supported' and outcome['confirmation'] == original_receipt
+        fact = service.story(job['story_id'])['facts'][0]
+        source = fact['sources'][0]
+        assert fact['eligibility'] == 'eligible' and fact['text'] == CANDIDATE['text']
+        assert len(source['confirmed_fragment'].split()) == 25
+        assert source['confirmed_fragment_truncated'] is True
+        assert source['confirmed_fragment_kind'] == 'model_confirmed_excerpt'
+        if not legacy:
+            relation = source['confirmation_checks']['relation_basis']
+            assert len(relation['fragment'].split()) == 25 and relation['fragment_truncated'] is True
+        with service.store.connection() as db:
+            basis = json.loads(db.execute('SELECT accepted_basis_json FROM fact_assertions').fetchone()[0])
+            receipt = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])
+            assert receipt == original_receipt
+            assert basis['operation']['confirmation_result'] == original_receipt['result']
+            assert basis['operation']['confirmed_fragment'] == full_fragment
+            assert basis['operation']['contract'] == (CONTRACT if legacy else NETWORK_CONTRACT)
+            if not legacy:
+                assert basis['operation']['confirmation_checks']['relation_basis']['fragment'] == full_fragment
+            assert db.execute('SELECT normalized_text FROM source_versions').fetchone()[0]
+        assert len(calls) == 1
+        assert await service.confirm_agent_fact(job, 'headless-run', CANDIDATE, AGENT) == outcome
+    finally:
+        await reader.search_http.aclose()

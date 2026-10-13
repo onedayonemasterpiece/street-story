@@ -6,9 +6,11 @@ not search for the proposed quote, score similarity, or decide fact semantics.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -69,7 +71,7 @@ def confirmation_consistency_error(row, receipt, chunk_ids):
         return 'confirmation_incomplete'
     if row['verdict'] != 'supported' and not (row['verdict'] == 'possible_conflict' and row['conflicts_with_existing']):
         return None
-    if (not row['confirmed_fragment'] or len(row['confirmed_fragment'].split()) > 25
+    if (not row['confirmed_fragment']
             or not row['chunk_ids'] or not set(row['chunk_ids']).issubset(chunk_ids)):
         return 'confirmation_references_invalid'
     checks = row.get('checks')
@@ -85,9 +87,35 @@ def confirmation_consistency_error(row, receipt, chunk_ids):
     if checks['temporal_basis'] == 'unestablished' or not checks['temporal_preserved']:
         return 'confirmation_temporal_inconsistent'
     basis = checks['relation_basis']
-    if (not basis['fragment'] or len(basis['fragment'].split()) > 25 or not basis['chunk_ids']
+    if (not basis['fragment'] or not basis['chunk_ids']
             or not set(basis['chunk_ids']).issubset(chunk_ids)):
         return 'confirmation_relationship_references_invalid'
+    return None
+
+
+def confirmation_excerpt(fragment):
+    """Mechanical preview only; original model proof remains immutable."""
+    words = list(re.finditer(r'\S+', fragment))
+    truncated = len(words) > 25
+    return {'text': fragment[:words[24].end()] + '…' if truncated else fragment,
+        'kind': 'model_confirmed_excerpt' if truncated else 'model_confirmed_fragment',
+        'truncated': truncated,
+        'original_sha256': hashlib.sha256(fragment.encode()).hexdigest()}
+
+
+def _closed_excerpt_recovery(saved):
+    outcome = saved.get('outcome') or {}
+    receipt = outcome.get('confirmation') or {}
+    row = receipt.get('result') or {}
+    # Reference errors remain errors. Only an original closed long-fragment
+    # outcome may re-enter the same frozen validation/admission path.
+    if (outcome.get('status') == 'unverified' and outcome.get('reason') in {
+            'confirmation_references_invalid', 'confirmation_relationship_references_invalid'}
+            and receipt.get('phase') == 'completed' and receipt.get('provider_send_state') in {None, 'response_closed'}
+            and isinstance(row, dict) and _confirmation_result_valid(row, receipt)
+            and any(isinstance(text, str) and len(text.split()) > 25 for text in [
+                row.get('confirmed_fragment'), ((row.get('checks') or {}).get('relation_basis') or {}).get('fragment')])):
+        return {'result': row, 'receipt': receipt}
     return None
 
 INSTRUCTIONS = (
@@ -364,12 +392,15 @@ class AgentEvidenceMixin:
             if saved.get('owner') != owner:
                 return {'status': 'stale'}
             if saved.get('outcome'):
-                return saved['outcome']
-            receipt = saved.get('receipt') or {}
-            if receipt.get('phase') == 'completed' and receipt.get('result'):
-                recovered = {'result': receipt['result'], 'receipt': receipt}
+                recovered = _closed_excerpt_recovery(saved)
+                if recovered is None:
+                    return saved['outcome']
             else:
-                return {'status': 'unverified', 'reason': 'original_confirmation_pending'}
+                receipt = saved.get('receipt') or {}
+                if receipt.get('phase') == 'completed' and receipt.get('result'):
+                    recovered = {'result': receipt['result'], 'receipt': receipt}
+                else:
+                    return {'status': 'unverified', 'reason': 'original_confirmation_pending'}
 
         def guard():
             current = headless._snapshot(job, run_id, story['_fact_research_control_revision'])
@@ -455,15 +486,18 @@ class AgentEvidenceMixin:
         ids = list(dict.fromkeys([*row['chunk_ids'], *((row.get('checks') or {}).get('relation_basis') or {}).get('chunk_ids', [])]))
         known_ids = {item['fact_id'] for item in known}
         if (not ids or not set(ids).issubset(by_id) or not row['text'] or not row['claim_key']
-                or not row['confirmed_fragment'] or len(row['confirmed_fragment'].split()) > 25
+                or not row['confirmed_fragment']
                 or row['existing_fact_id'] and row['existing_fact_id'] not in known_ids
                 or not set(row['conflicts_with_existing']).issubset(known_ids)):
             return {'status': 'unverified', 'reason': 'confirmation_references_invalid'}
         # Freeze original complete addressed chunks as the immutable evidence;
         # the model-confirmed fragment is retained separately, never string-gated.
+        excerpt = confirmation_excerpt(row['confirmed_fragment'])
         source = {'type': 'web', 'url': frozen['final_url'], 'title': document.get('title') or url,
             'source_version_id': version, 'subject_scope': row['subject_scope'],
-            'confirmed_fragment': row['confirmed_fragment'], 'source_date': row['source_date'],
+            'confirmed_fragment': excerpt['text'], 'confirmed_fragment_kind': excerpt['kind'],
+            'confirmed_fragment_truncated': excerpt['truncated'],
+            'confirmed_fragment_original_sha256': excerpt['original_sha256'], 'source_date': row['source_date'],
             'confirmation_reason': row['reason'], 'supports': [
                 {'kind': 'model_confirmed_source_chunk', 'source_url': frozen['final_url'],
                  'source_version_id': version, 'chunk_id': cid,
@@ -471,7 +505,11 @@ class AgentEvidenceMixin:
                  'span_start': by_id[cid]['context_start'], 'span_end': by_id[cid]['context_end']}
                 for cid in ids]}
         if 'checks' in row:
-            source['confirmation_checks'] = row['checks']
+            source['confirmation_checks'] = copy.deepcopy(row['checks'])
+            relation = source['confirmation_checks']['relation_basis']
+            relation_excerpt = confirmation_excerpt(relation['fragment'])
+            relation.update(fragment=relation_excerpt['text'], fragment_kind=relation_excerpt['kind'],
+                fragment_truncated=relation_excerpt['truncated'], fragment_original_sha256=relation_excerpt['original_sha256'])
         item = {'text': row['text'], 'claim_key': row['claim_key'],
                 'existing_fact_id': row['existing_fact_id'], 'confidence': 1.0,
                 'selected': False, 'sources': [source]}
@@ -486,7 +524,9 @@ class AgentEvidenceMixin:
                 'agent': agent, 'confirmation_attempt_id': verified['receipt']['attempt_id'],
                 'confirmation_model': verified['receipt']['model_id'], 'subject_scope': row['subject_scope'],
                 'confirmed_fragment': row['confirmed_fragment'], 'source_date': row['source_date'],
-                'reason': row['reason'], 'source_content_sha256': frozen['content_sha256']}
+                'reason': row['reason'], 'source_content_sha256': frozen['content_sha256'],
+                'confirmation_result': row, 'excerpt_projection': {'contract': 'model-confirmed-excerpt-v1',
+                    'word_limit': 25, 'confirmed_fragment': excerpt}}
             if 'checks' in row:
                 operation['confirmation_checks'] = row['checks']
             if row['verdict'] == 'supported':
