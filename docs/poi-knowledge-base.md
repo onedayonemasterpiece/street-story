@@ -60,6 +60,10 @@ Native read responses carry the full text once in immutable chunks, with a
 versioned read contract; admission checks each delivered chunk against its
 frozen bytes as well as version/hash/run ownership. Navigation links carry
 their own literal labels, while a single-location container may add context.
+New native responses also carry a model completion decision and concrete
+remaining gaps, including an explanation for empty results. Positive fact counts
+do not override reported gaps. Original closed facts-only packets retain their
+schema for exact write recovery; new operations require the current full schema.
 
 `backend/tools/native_facts_acceptance.py` measures an unqualified native route
 on an isolated managed Store through normal EXIF intake, exact mapped selection,

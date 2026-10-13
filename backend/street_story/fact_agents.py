@@ -164,6 +164,10 @@ def _coverage_gaps(state):
     gaps = []
     if state.get('phase') in {'failed', 'unknown'}:
         gaps.append('original_' + state['phase'])
+    completion = state.get('native_completion')
+    if isinstance(completion, dict) and (not completion.get('research_sufficient')
+            or completion.get('remaining_gaps')):
+        gaps.append('model_reported_research_gap')
     if state.get('phase') == 'completed' and not state.get('candidate_count', len(state.get('outcomes', []))):
         gaps.append('no_source_backed_candidates')
         if state.get('source_read_failures'):
@@ -193,7 +197,9 @@ def _source_coverage(receipt):
         if (receipt.get('provider_id') == 'codex_native' and source['source_version_id'] not in proposed_versions
                 or receipt.get('provider_id') != 'codex_native' and not (urls - {None}) & proposed):
             unproposed.add(source['source_version_id'])
-    return {'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
+    return {**({'native_completion': (receipt.get('raw_result') or {}).get('completion')}
+            if receipt.get('provider_id') == 'codex_native' else {}),
+        'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
         'unproposed_source_version_ids': sorted(unproposed),
         'source_read_failures': [attempt for call in receipt.get('native_tool_calls', {}).values()
             if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'

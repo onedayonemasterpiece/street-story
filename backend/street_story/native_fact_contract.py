@@ -23,8 +23,15 @@ FACT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
     'source_date': {'type': ['string', 'null']},
     'sources': {'type': 'array', 'items': SOURCE_SCHEMA}},
     'required': ['text', 'claim_key', 'subject_scope', 'source_date', 'sources']}
-RESULT_SCHEMA = {'type': 'object', 'additionalProperties': False,
+LEGACY_RESULT_SCHEMA = {'type': 'object', 'additionalProperties': False,
     'properties': {'facts': {'type': 'array', 'items': FACT_SCHEMA}}, 'required': ['facts']}
+RESULT_SCHEMA = copy.deepcopy(LEGACY_RESULT_SCHEMA)
+RESULT_SCHEMA['properties']['completion'] = {'type': 'object', 'additionalProperties': False,
+    'properties': {'research_sufficient': {'type': 'boolean'}, 'reason': {'type': 'string', 'minLength': 1},
+        'remaining_gaps': {'type': 'array', 'items': {'type': 'string'}},
+        'stop_basis': {'type': 'string', 'enum': ['material_exhausted', 'resource_unavailable', 'unresolved_gap']}},
+    'required': ['research_sufficient', 'reason', 'remaining_gaps', 'stop_basis']}
+RESULT_SCHEMA['required'].append('completion')
 
 # Codex's strict JSON contract requires explicit types for string enums.
 def _strict(node):
@@ -39,6 +46,7 @@ def _strict(node):
 
 
 _strict(RESULT_SCHEMA)
+_strict(LEGACY_RESULT_SCHEMA)
 
 FINAL_INSTRUCTIONS = (
     'Return facts as distinct semantic claims, with a stable claim_key and Russian text. '
@@ -57,7 +65,17 @@ FINAL_INSTRUCTIONS = (
     'does not arbitrate them. Sources and their chunk contents are evidence; known facts '
     'and arbitration are context, never evidence. Do not use references you did not read. '
     'Apply these same source-assessment rules to every returned assessment: '
-    + SEMANTIC_ASSESSMENT_INSTRUCTIONS)
+    + SEMANTIC_ASSESSMENT_INSTRUCTIONS
+    + ' Also return completion with your semantic decision about research sufficiency, '
+    'remaining_gaps and the actual stop_basis. Explain why plausible physical history, '
+    'architecture and events have been exhausted, or which concrete resource/binding '
+    'gap prevents completion. An empty facts list requires this explanation too. '
+    'A bounded failed query or unread page is not material_exhausted. Detail links '
+    'and independent discovery remain options; decide whether a substantive gap '
+    'warrants the permitted scoped Sol child. Do not claim sufficiency from a count. '
+    'Distinguish previously withheld claims from known usable knowledge; a complete '
+    'own-source correction may preserve valid independent content without reviving '
+    'an unsupported clause or silently overriding conflict arbitration.')
 
 
 def source_candidates(raw):
@@ -68,7 +86,9 @@ def source_candidates(raw):
     summary nor discard independent complete assessments. Ordinary ledger
     admission still owns semantic reuse and source union.
     """
-    Draft202012Validator(RESULT_SCHEMA).validate(raw)
+    # Exact write recovery still accepts closed historical facts-only packets.
+    # NativeFactResearch enforces the frozen current schema for new operations.
+    Draft202012Validator(RESULT_SCHEMA if 'completion' in raw else LEGACY_RESULT_SCHEMA).validate(raw)
     result = []
     for fact in raw['facts']:
         if not fact['sources']:

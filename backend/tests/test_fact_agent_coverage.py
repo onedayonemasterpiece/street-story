@@ -28,6 +28,20 @@ def test_failed_native_reads_are_resource_gaps_and_not_source_poverty():
     assert 'source_read_unavailable' not in _coverage_gaps({'phase': 'completed', 'candidate_count': 1, **coverage})
 
 
+@pytest.mark.parametrize('sufficient,gaps,expected', [(False, ['Unread detail article'], True),
+    (True, ['Unresolved physical relationship'], True), (True, [], False)])
+def test_native_semantic_completion_is_preserved_and_not_inferred_from_count(sufficient, gaps, expected):
+    from street_story.fact_agents import _source_coverage, _coverage_gaps
+    closure = {'research_sufficient': sufficient, 'remaining_gaps': gaps,
+        'stop_basis': 'unresolved_gap' if gaps else 'material_exhausted', 'reason': 'Own model evidence decision'}
+    receipt = {'provider_id': 'codex_native', 'phase': 'completed', 'raw_result': {'completion': closure}}
+    coverage = _source_coverage(receipt)
+    assert coverage['native_completion'] == closure
+    for count in [1, 20]:
+        result = _coverage_gaps({'phase': 'completed', 'candidate_count': count, **coverage})
+        assert ('model_reported_research_gap' in result) is expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['single_clean', 'many_rejected', 'many_unverified', 'empty_first', 'unknown', 'empty_pool'])
 async def test_qualified_work_and_reserves_follow_closed_evidence_gaps(tmp_path, monkeypatch, mode):
