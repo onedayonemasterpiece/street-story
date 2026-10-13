@@ -312,20 +312,24 @@ async def test_map_detail_uses_existing_single_followup_and_freezes_the_new_map(
 
 
 @pytest.mark.asyncio
-async def test_unsent_detail_followup_reuses_original_map_and_preserves_unsent_text_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize('phase', ['not_sent', 'unknown'])
+async def test_unsent_detail_followup_reuses_original_map_and_preserves_unsent_text_receipt(tmp_path, monkeypatch, phase):
     from test_closed_initial_plan_reuse import install, prepared_plan
     service, story, active, initial = prepared_plan(tmp_path)
     initial['accepted_geometry']['next_action'] = {'kind': 'map_detail',
         'reason': 'Inspect the return before accepting this physical subject.',
         'target_candidate_ids': ['osm:way:2']}
     original_map = render_scene(story, active)
-    calls, acquisitions = install(service, initial, monkeypatch)
+    calls, acquisitions = install(service, initial, monkeypatch, phase=phase)
     await identity_discovery.suggest(service, story, '', active)
     plan = story['_identity_search_plan_payload']
     assert calls == ['initial', 'followup'] and acquisitions == [['99']]
     assert plan['source_map_receipt']['map_image_sha256'] == original_map['manifest']['image_sha256']
     assert plan['source_map_receipt']['manifest'].get('detail_view', {}).get('name') != 'nominated_detail'
-    assert plan['source_text_receipt']['provider_send_state'] == 'not_sent'
+    assert plan['source_text_receipt']['provider_send_state'] == phase
+    marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
+    assert marker['phase'] == phase
+    assert marker['prepared_request']['source_map_receipt']['map_image_sha256'] != original_map['manifest']['image_sha256']
     assert not plan.get('geometry_proof') and not plan.get('architectural_text_proof')
 
 
