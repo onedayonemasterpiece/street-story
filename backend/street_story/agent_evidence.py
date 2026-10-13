@@ -141,8 +141,11 @@ async def verify_with_gemini(client, payload, checkpoint, guard):
             if state['uncertain']:
                 return {'status': 'unverified', 'receipt': dict(receipt)}
             failures.append(dict(receipt))
+    # A known NOT_SENT cooldown/admission rejection creates no outstanding
+    # Google operation. An independent qualified route still needs its own
+    # admission. UNKNOWN above returns immediately without fallback permission.
     return {'status': 'unverified', 'reason': 'confirmation_routes_unavailable' if failures and all(
-        row['provider_send_state'] == 'response_closed' for row in failures) else 'confirmation_routes_not_sent',
+        row['provider_send_state'] in {'response_closed', 'not_sent'} for row in failures) else 'confirmation_routes_not_sent',
         'closed_failures': failures}
 
 

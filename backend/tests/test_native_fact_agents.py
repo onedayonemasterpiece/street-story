@@ -16,6 +16,52 @@ from test_opencode_research import Harness
 from test_shared_devcoveer_research import Backend
 
 
+def test_native_agent_mask_is_ordered_and_profile_bound_without_changing_legacy(tmp_path):
+    legacy = scoped_research_config('configured-model')
+    assert 'permission' not in legacy['agent']['plan']
+    agent = scoped_research_config('configured-model', agent_research=True)
+    assert list(agent['agent']['plan']['permission'].items()) == [
+        ('*', 'deny'), ('websearch', 'allow'), ('webfetch', 'allow')]
+    for mode, config in [(False, legacy), (True, agent)]:
+        client = SharedDevCoveerResearch(str(tmp_path), model_id='configured-model',
+            agent_research=mode, require_guard=False)
+        assert client.profile_fingerprint == hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    prior_agent = copy.deepcopy(agent)
+    del prior_agent['agent']['plan']['permission']
+    assert hashlib.sha256(json.dumps(prior_agent, sort_keys=True).encode()).hexdigest() != client.profile_fingerprint
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sorted_json', [False, True])
+@pytest.mark.parametrize('later_rule', [None,
+    {'permission': 'external_directory', 'pattern': '*', 'action': 'allow'},
+    {'permission': '*', 'pattern': '*', 'action': 'allow'},
+    {'permission': 'read', 'pattern': '*', 'action': 'allow'},
+    {'permission': 'grep', 'pattern': '*.md', 'action': 'deny'},
+    {'permission': 'websearch', 'pattern': '*', 'action': 'deny'},
+    {'permission': 'r*', 'pattern': '*', 'action': 'allow'},
+    {'permission': 'unknown_future_tool', 'pattern': '*', 'action': 'allow'}])
+async def test_native_agent_resolved_permissions_require_closed_tail_before_dispatch(tmp_path, later_rule, sorted_json):
+    from test_shared_devcoveer_research import setup
+    h, backend, client = setup(tmp_path, agent_research=True)
+    h.config = scoped_research_config(client.model_id, agent_research=True)
+    h.config = json.loads(json.dumps(h.config, sort_keys=sorted_json))
+    closed_tail = [{'permission': name, 'pattern': '*', 'action': action}
+        for name, action in h.config['agent']['plan']['permission'].items()]
+    backend.agent_permission = [
+        {'permission': '*', 'pattern': '*', 'action': 'allow'},
+        {'permission': 'read', 'pattern': '*', 'action': 'allow'}, *closed_tail]
+    if later_rule is not None:
+        backend.agent_permission.append(later_rule)
+    if later_rule is not None and later_rule['permission'] != 'external_directory':
+        with pytest.raises(ResearchUnavailable, match='research_agent_tool_permissions_unverified'):
+            await client._run('agent_research', 'Controlled tools', {'attempt_id': 'mask-control'}, {'type': 'object'})
+    else:
+        proof = await client._attest(None, 'agent_research')
+        assert proof['resolved_agent_tool_permission_tail'] == closed_tail
+    assert not h.sends and not any(method == 'POST' for method, *_ in backend.calls)
+
+
 @pytest.mark.parametrize('context', [None, 0, -1, True, '1048576'])
 def test_bounded_native_config_requires_actual_positive_catalog_context(context):
     with pytest.raises(ValueError, match='research_catalog_context_required'):

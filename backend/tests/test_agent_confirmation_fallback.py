@@ -74,7 +74,7 @@ async def close(reader, giga):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['closed', 'unknown', 'not_sent'])
-async def test_google_explicit_fallback_reason_requires_every_original_response_closed(mode):
+async def test_google_explicit_fallback_reason_requires_every_original_settled_without_unknown(mode):
     from google.genai.errors import ServerError
     from street_story.agent_evidence import verify_with_gemini
     from street_story.errors import RetryableProviderError
@@ -103,7 +103,7 @@ async def test_google_explicit_fallback_reason_requires_every_original_response_
         assert 'reason' not in result and result['receipt']['phase'] == 'unknown'
         assert len({row['attempt_id'] for row in saved}) == 1
     else:
-        assert result['reason'] == 'confirmation_routes_not_sent'
+        assert result['reason'] == 'confirmation_routes_unavailable'
         assert all(row['provider_send_state'] == 'not_sent' for row in result['closed_failures'])
 
 
@@ -127,6 +127,54 @@ async def test_qualified_alternate_commits_three_distinct_facts_to_normal_ledger
             assert sum(row.get('provider_id') == 'gigachat' and row.get('result') is not None for row in receipts) == 3
         assert all(workload['max_provider_sends'] == 2 for _, workload in admission.bindings)
         assert all(row['cost'] == 'unknown' and row['usage_known'] for row in admission.finalized)
+    finally:
+        await close(reader, giga)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('already_cooling,giga_denied', [(False, False), (True, False), (True, True)])
+async def test_google_closed_then_cooldown_or_all_not_sent_uses_independent_admission(tmp_path, already_cooling, giga_denied):
+    from google.genai.errors import ServerError
+    from street_story.agent_evidence import verify_with_gemini
+    from street_story.errors import RetryableProviderError
+    service, job, reader, giga, bodies, admission, _ = await setup(tmp_path)
+    cooling, google_sends = already_cooling, 0
+    async def generate(*args, **kwargs):
+        nonlocal cooling, google_sends
+        kwargs['before_provider_send']()
+        google_sends += 1
+        cooling = True
+        raise ServerError(503, {'error': {'message': 'Controlled high demand', 'status': 'UNAVAILABLE'}})
+    async def execute(_operation, call, **kwargs):
+        if cooling:
+            error = RetryableProviderError('controlled_key_cooldown')
+            error.provider_send_state = 'not_sent'
+            raise error
+        return await call('controlled-key', 1)
+    google = SimpleNamespace(_generate=generate, store=service.store,
+        research_routes=[('configured-google', None, None, SimpleNamespace(execute=execute))])
+    async def verify(payload, *, checkpoint, guard):
+        return await verify_with_gemini(google, payload, checkpoint, guard)
+    service.providers.gemini.verify_agent_evidence = verify
+    admission.denied = giga_denied
+    try:
+        candidates = [CANDIDATE, {**CANDIDATE, 'text': 'Facade restored in 1998.', 'quote': 'Facade restored in 1998.'},
+            {**CANDIDATE, 'text': 'Exhibition opened in 2010.', 'quote': 'Exhibition opened in 2010.'}]
+        for candidate in candidates[:1] if giga_denied else candidates:
+            outcome = await service.confirm_agent_fact(job, 'headless-run', candidate, AGENT)
+            assert outcome['status'] == ('unverified' if giga_denied else 'supported')
+        assert google_sends == (0 if already_cooling else 1)
+        assert len(bodies) == (0 if giga_denied else 3)
+        facts = service.story(job['story_id'])['facts']
+        assert len(facts) == (0 if giga_denied else 3)
+        assert all(row['eligibility'] == 'eligible' for row in facts)
+        assert len(admission.bindings) == (1 if giga_denied else 3)
+        assert all(workload['max_provider_sends'] == 2 for _, workload in admission.bindings)
+        with service.store.connection() as db:
+            google_receipts = [json.loads(row[0]) for row in db.execute(
+                'SELECT receipt_json FROM research_provider_attempts') if json.loads(row[0]).get('provider_id') == 'google']
+            assert sum(row['provider_send_state'] == 'response_closed' for row in google_receipts) == google_sends
+            assert sum(row['provider_send_state'] == 'not_sent' for row in google_receipts) == (1 if giga_denied else 3) - google_sends
     finally:
         await close(reader, giga)
 

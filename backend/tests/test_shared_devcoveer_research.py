@@ -32,6 +32,8 @@ class Backend:
         self.tool_ids = sorted(NATIVE_TOOL_IDS)
         self.health = {'healthy': True, 'version': '1.18.31'}
         self.agent_permission = [{'permission': '*', 'pattern': '*', 'action': 'allow'}]
+        self.agent_permission.extend({'permission': name, 'pattern': '*', 'action': action}
+            for name, action in (self.h.config['agent']['plan'].get('permission') or {}).items())
         self.image_capabilities = {'attachment': True, 'input': {'image': True}}
 
     async def request(self, method, path, *, directory=None, payload=None, timeout=30):
@@ -291,7 +293,8 @@ async def test_guarded_fact_extraction_uses_same_server_with_search_denied(tmp_p
     assert isolation['allowed_tools'] == []
     assert isolation['permission_authority'] == 'attested_guard_and_session_readback'
     assert {'permission': 'websearch', 'pattern': '*', 'action': 'deny'} in backend.session['permission']
-    assert all(directory == str(tmp_path) for _method, _path, directory, *_rest in backend.calls)
+    assert all(directory == str(tmp_path) or method == 'GET' and path == '/config/providers' and directory is None
+        for method, path, directory, *_rest in backend.calls)
     assert len(h.sends) == 1
 
 

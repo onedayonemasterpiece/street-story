@@ -25,6 +25,7 @@ GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'research_guard.
 AGENT_GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'fact_agent_guard.mjs'
 NATIVE_TOOL_IDS = {'invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write',
                    'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch'}
+AGENT_TOOL_PERMISSIONS = {'*': 'deny', 'websearch': 'allow', 'webfetch': 'allow'}
 
 
 def guard_profile(directory: Path, limits: ResearchLimits, *, agent_research=False):
@@ -49,6 +50,10 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
             'tool_output': {'max_bytes': limits.max_search_context_chars, 'max_lines': 300},
             'agent': {'plan': {'steps': limits.max_steps if agent_research else min(3, limits.max_steps)},
                       **{name: {'disable': True} for name in ('title', 'summary', 'compaction')}}}
+    if agent_research:
+        # PermissionNext.disabled uses the LAST matching permission-name rule.
+        # Catch-all first keeps the two allowed native tools declared to the SDK.
+        config['agent']['plan']['permission'] = dict(AGENT_TOOL_PERMISSIONS)
     # Inherit real model context/output limits. Explicit per-request profiles
     # can retain a smaller envelope, but no model-name-specific default caps.
     if limits.max_output_tokens is not None:
@@ -231,6 +236,20 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         selected = next((agent for agent in agents if agent.get('name') == 'plan'), {})
         if selected.get('native') is not True or selected.get('mode') != 'primary':
             raise ResearchUnavailable('research_native_plan_unverified')
+        if self.agent_research:
+            expected_tail = [{'permission': name, 'pattern': '*', 'action': action}
+                             for name, action in AGENT_TOOL_PERMISSIONS.items()]
+            permissions = selected.get('permission')
+            # OpenCode appends the non-tool external_directory category after
+            # configured rules. No other unknown name or glob can be ignored.
+            # JSON key sorting may reverse the two independent exact web allows.
+            if not isinstance(permissions, list) or any(not isinstance(row, dict) for row in permissions):
+                raise ResearchUnavailable('research_agent_tool_permissions_unverified')
+            tool_rules = [row for row in permissions if row.get('permission') != 'external_directory']
+            actual_tail = tool_rules[-3:]
+            if (len(actual_tail) != 3 or actual_tail[0] != expected_tail[0]
+                    or actual_tail[1:] not in [expected_tail[1:], expected_tail[:0:-1]]):
+                raise ResearchUnavailable('research_agent_tool_permissions_unverified')
         steps = selected.get('steps')
         if type(steps) is not int or not 1 <= steps <= self.limits.max_steps:
             raise ResearchUnavailable('research_controller_steps_unverified')
@@ -271,6 +290,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
                 'guard_sha256': profile[1]['marker'].split(':')[-1] if guard_verified else None,
                 'max_output_tokens': output,
                 'model_context': catalog_context,
+                **({'resolved_agent_tool_permission_tail': copy.deepcopy(actual_tail)}
+                   if self.agent_research else {}),
                 'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds,
                 '_system_prompt': selected.get('prompt') or
                     (config.get('agent', {}).get('plan') or {}).get('prompt') or ''}
