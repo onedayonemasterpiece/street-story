@@ -105,7 +105,7 @@ def _healthy_routes(adapter, routes):
     return healthy
 
 
-def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_id=None, state=None):
+def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_id=None, state=None, recovery=False):
     """Freeze discovery inputs once; merge only route progress under owner fences."""
     from .service import ConflictError, canonical
     store = adapter.service.store
@@ -125,11 +125,71 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
             if route_id not in saved['route_ids']:
                 raise ConflictError('agent_research_plan_changed', 'The route is outside the original agent plan.')
             routes = saved.setdefault('routes', {})
-            if routes.get(route_id, {}).get('phase') not in {'completed', 'failed'}:
+            old = routes.get(route_id, {})
+            if (old.get('phase') not in {'completed', 'failed'} or recovery
+                    and state.get('phase') == 'completed' and state.get('attempt_id')
+                    and state['attempt_id'] == old.get('attempt_id')):
                 routes[route_id] = state
                 db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
                     (canonical(saved), job['id'], stage))
         return saved
+
+
+async def _recover_confirmations(adapter, job, run_id, story, context, route_id, state, guard):
+    """Re-admit original candidates from a closed agent, without invoking its SDK."""
+    from .service import canonical
+    if state.get('phase') == 'completed' and not any(
+            row.get('status') == 'unverified' for row in state.get('outcomes', [])):
+        return None
+    attempt_id = state.get('attempt_id')
+    if not attempt_id:
+        return None
+    unit = {'run_id': run_id, 'context': context, 'route_id': route_id}
+    logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+        story['_identity_generation'], 'facts_agent_' + route_id, unit]).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(unit, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    store = adapter.service.store
+    with store.connection() as db:
+        row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=? '
+            'AND logical_id=? AND story_id=? AND role=?',
+            (attempt_id, logical, story['id'], 'facts_agent_' + route_id)).fetchone()
+    receipt = json.loads(row[0]) if row else {}
+    binding = receipt.get('binding') or {}
+    expected = {'attempt_id': attempt_id, 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+        'generation': story['_identity_generation'], 'job_id': job['id'],
+        'control_revision': story['_fact_research_control_revision'],
+        'fact_unit_id': 'agent_' + digest[:24], 'fact_input_sha256': digest}
+    candidates = (receipt.get('result') or {}).get('facts')
+    if (receipt.get('phase') != 'completed' or not isinstance(candidates, list)
+            or any(binding.get(key) != value for key, value in expected.items())):
+        return None
+    outcomes = []
+    for index, candidate in enumerate(candidates):
+        guard()
+        old = (state.get('outcomes') or [])[index:index+1]
+        if old and old[0].get('status') != 'unverified':
+            outcomes.append(old[0])
+            continue
+        confirmation = hashlib.sha256(canonical({'run': run_id,
+            'candidate': candidate, 'agent': route_id}).encode()).hexdigest()[:24]
+        saved = store.checkpoint_get(job['id'], 'agent_confirmation:' + confirmation) or {}
+        outcome = saved.get('outcome') or {}
+        agent = saved.get('agent') or outcome.get('agent') or (old[0].get('agent') if old else {}) or {}
+        if (not outcome and saved.get('candidate') != candidate or agent.get('route_id') != route_id
+                or agent.get('attempt_id') != attempt_id):
+            outcomes.append(old[0] if old else {'status': 'unverified', 'reason': 'original_confirmation_unavailable'})
+            continue
+        # Saved UNKNOWN returns pending; a CLOSED assessment reuses retained
+        # chunks. A missing stage must never cause a fresh read or judge send.
+        outcomes.append(await adapter.service.confirm_agent_fact(job, run_id, candidate, agent))
+    guard()
+    fact_ids = {outcome['fact_id'] for outcome in outcomes if outcome.get('fact_id')}
+    with store.connection() as db:
+        eligible = {row[0] for row in db.execute(
+            "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
+            (story['id'],))} & fact_ids
+    return {'phase': 'completed', 'attempt_id': attempt_id, 'outcomes': outcomes,
+        'candidate_count': len(candidates), 'eligible_fact_ids': sorted(eligible), 'supported_count': len(eligible)}
 
 
 def agent_context(identity, goal, run_id, now):
@@ -176,8 +236,17 @@ async def run_fact_agents(adapter, job, run_id, goal):
         guard()
         state = saved['routes'].get(route_id, {})
         route = routes_by_id.get(route_id)
-        if state.get('phase') in {'completed', 'failed'} or (state.get('phase') == 'unknown'
-                and (route is None or route.provider_id != 'opencode')):
+        if state.get('phase') in {'completed', 'failed'}:
+            recovered = await _recover_confirmations(adapter, job, run_id, story, context, route_id, state, guard)
+            if recovered is not None:
+                persisted = _persist_plan(adapter, job, run_id, headless, epoch,
+                    route_id=route_id, state=recovered, recovery=True)
+                state = saved['routes'][route_id] = persisted['routes'][route_id]
+                LOG.info('street_story_fact_agent_confirmation_recovered story_id=%s run_id=%s route_id=%s '
+                    'attempt_id=%s supported=%s pending=%s', story['id'], run_id, route_id, state['attempt_id'],
+                    state['supported_count'], sum(row.get('status') == 'unverified' for row in state['outcomes']))
+            return state
+        if state.get('phase') == 'unknown' and (route is None or route.provider_id != 'opencode'):
             # No blind retry of a failed/unknown synchronous operation.
             return state
         if route is None:
