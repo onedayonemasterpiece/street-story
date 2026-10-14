@@ -1,5 +1,5 @@
 {
-  "version": "102-canonical-M3",
+  "version": "102-canonical-M3.1-correction",
   "date": "2026-10-14",
   "source_files_sha256": {
     "benchmark-102-allrun-atomic-v3.json": "edd3253259635146efd2192d319e025da9c78d5b3bffec93d9b57d901627a567",
@@ -12,9 +12,9 @@
   "granularity": "Existing v3 canonical content nodes retained. A21 aliases A45. One procurement/suspension event with conditions counts once; individual architecture/material properties remain distinct. All tender SPO details retained. No false claim of completed works.",
   "provenance_note": "Experimental models are a separate column, never product credit. Dot39 is extended source-aware research, not a newly blinded baseline.",
   "counts": {
-    "product_verified": 49,
+    "product_verified": 50,
     "dot_verified": 39,
-    "product_dot_intersection": 22,
+    "product_dot_intersection": 23,
     "pre_experiment_unique": 66,
     "experimental_verified": 40,
     "experimental_intersection_pre": 29,
@@ -32,6 +32,7 @@
       "102A07",
       "102A08",
       "102A11",
+      "102A12",
       "102A17",
       "102A18",
       "102A22",
@@ -1019,7 +1020,7 @@
     "102X29_oct12": "102EQ03 qualified_source_conflict; prewar grocery not scored",
     "102X25_oct12_authenticity": "qualified, only E01 existence verified",
     "102X26_oct12_authenticity": "qualified, only E02 wood material verified",
-    "102Q04_102Q05": "source dated25.06.2025 now read; not new generic nodes; no product credit for source-only chunks; Space now at12.10.2026 remains temporally qualified",
+    "102Q04_102Q05": "Promoted after verifying explicitly dated actual product claim59d309; mappingA11/A12. Prior v3 omission was an auditor error.",
     "A21_A45": "same2024 contractor-change event, preserved partial baseline match",
     "102S23": "reported soil-bearing questions, not independent technical diagnosis",
     "102S01": "supported generic predecessor relation; wrong predecessor number and1905upper-bound excluded separately",
@@ -1237,7 +1238,7 @@
         "https://www.tvoybro.com/exclusive/598978559607000000_kakovo-zhiviotsia-v-starieishikh-zdaniiakh-ghoroda"
       ],
       "counted_in": {
-        "product": false,
+        "product": true,
         "dot": true,
         "experiments": false
       }
@@ -4411,5 +4412,21 @@
       "source_lookup_note": "Limited output-driven reads: existing S2, one kgd advertising source, one official CBR check; no prolonged discovery",
       "baseline_metadata_warning": "root verified_union_count=40 stale; ledger and all_run_union contain52; use IDs not root40"
     }
-  }
+  },
+  "restored_missing_mapping": {
+    "claim_59d309e926093a8250f9": {
+      "text": "По публикации от25июня2025года, на верхних этажах дома Житомирская22–24 располагались жилые квартиры, а на первом этаже кафе Штайндамм99.",
+      "ids": [
+        "102A11",
+        "102A12"
+      ],
+      "source": "https://klops.ru/kaliningrad/2025-06-25/359794-v-poslednem-dome-shtayndamma-na-zhitomirskoy-nachali-remontirovat-fasad-foto",
+      "source_date": "2025-06-25",
+      "reason": "Already present in retained output, accidentally omitted from v3 latest_mapping; now source checked. Same occupants with richer temporal support, not new union nodes."
+    }
+  },
+  "correction_log": [
+    "M3.1 corrects auditor omission of dated current native claim59d309, product49→50, qualified6→4; dot39 and union77 unchanged. No new run or source discovery."
+  ],
+  "product_qualified_count": 4
 }
