@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "session_id": "01a131ed-8e0a-7bb1-b824-1f52768f8b76",
+  "thread_url": "codex://threads/01a131ed-8e0a-7bb1-b824-1f52768f8b76",
+  "work_id": "work_09deb0599b780c8a8b51c6c4",
+  "branch": "chatgpt/street-story-map-facts-20261012",
+  "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
+  "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
+  "updated_at_utc": "2026-10-14T10:46:03.987799+00:00",
+  "last_useful_progress_at_utc": "2026-10-14T10:46:03.987799+00:00",
+  "stage": 0,
+  "status": "working",
+  "last_action": "Verified same native session is readable by DevCoveer; read four owner-supplied documents and issue258; confirmed five code boundaries and original visual incident; production health200 remains93a0878.",
+  "active_jobs_started_by_this_continuation": [],
+  "active_provider_request": null,
+  "task_inventory": {
+    "limit": 100,
+    "running_tasks_in_returned_sample": 0,
+    "old_idle_task": "dvt_dd511d980d2241f0a720e113d1b02808",
+    "old_idle_task_resumed": false,
+    "complete_history_claimed": false
+  },
+  "retained_unknown_operations": {
+    "case129": "Two prior exact Gemini confirmation UNKNOWN; protected, not resent or replaced."
+  },
+  "dot_progress_sources": {
+    "native_read_operation": "read_native_thread",
+    "native_thread": "01a131ed-8e0a-7bb1-b824-1f52768f8b76",
+    "native_read_access_verified": true,
+    "git_manifest": "https://github.com/onedayonemasterpiece/street-story/blob/chatgpt/street-story-map-facts-20261012/docs/reports/street-story-pr257-progress-20261014.json",
+    "local_live_manifest": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/progress.json",
+    "observer_automation_created": false
+  },
+  "plan_refs": [
+    "634577c1cd0db6d758ad9441a5c826afb290ebdd:docs/reports/street-story-research-limits-history-20261014.md",
+    "b393a12d3df109788cd822ae981b0e0993312043:docs/prompts/street-story-research-unblocking-20261014.md",
+    "https://github.com/onedayonemasterpiece/street-story/issues/258",
+    "2c48cbf175957a30aabccc617512243457149313:docs/prompts/street-story-measured-plan-watchdog-20261014.md"
+  ],
+  "authorization": "Owner explicitly confirmed code implementation through product E2E; analysis-only sentence by another agent superseded. Existing test-only publication authority remains; no production deployment or merge.",
+  "artifacts_root": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014",
+  "baseline": {
+    "full_comparable_old_run": null,
+    "status": "N/A until verified",
+    "independent_v4_reference": "locating canonical existing artifact; no reference expansion started",
+    "photo_registry": "b393a12d3df109788cd822ae981b0e0993312043:docs/testing/photo-registry.json",
+    "unique_registered_source_photos": 43,
+    "all_registry_records": 92,
+    "stage0_frozen_manifest": "pending"
+  },
+  "blockers": [
+    {
+      "scope": "stage0_metrics",
+      "reason": "Canonical V4 artifact and independent/output-driven partition need exact identification."
+    },
+    {
+      "scope": "visual_acceptance",
+      "reason": "Issue258 open: legacy geometry distortion, full executor model/version/seed fields not yet recovered."
+    }
+  ],
+  "next_step": "Freeze existing original/V4 IDs and hashes; implement five linked corrections in current components with scoped regressions, then measured fact runs, geometry acceptance and matched APK/backend E2E.",
+  "stages": [
+    {
+      "stage": 0,
+      "status": "working",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    },
+    {
+      "stage": 1,
+      "status": "pending",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    },
+    {
+      "stage": 2,
+      "status": "pending",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    },
+    {
+      "stage": 3,
+      "status": "pending",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    },
+    {
+      "stage": 4,
+      "status": "pending",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    },
+    {
+      "stage": 5,
+      "status": "pending",
+      "results": [],
+      "photo_metrics": [],
+      "logs": [],
+      "blockers": []
+    }
+  ]
+}
