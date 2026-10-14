@@ -703,10 +703,10 @@ FUNCTIONS = [
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
             "observe_existing_visual": {"type": "boolean", "description": "Read existing operation and inspect its saved image; omit visual_instruction. Never resend unknown."},
-            "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Honor visual_photo_format: original aspect or true4:5 crop. Inspect SOURCE; supply copy/layout. Separate review still required."},
+            "preserve_source_frame": {"type": "boolean", "description": "Only for an explicit request to compose copy over an unaltered photo without image generation. Original/crop_4_5 select framing and never imply this mode. For artistic photo/ink generation omit or use false; omit copy/layout."},
             "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
                 ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
-                "description": "Chosen eligible facts only; preserve dates, attribution and plans. Do not edit the draft."},
+                "description": "Only in explicitly requested preserve_source_frame mode. For artistic generation put qualified handwritten annotation instructions in visual_instruction and omit this field. Never edit the draft."},
             "visual_layout": {"type": "object", "properties": {
                 "text_box": {"type": "array", "items": {"type": "number"}},
                 "title_size": {"type": "number"}, "body_size": {"type": "number"},
