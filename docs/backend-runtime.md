@@ -231,6 +231,25 @@ families/directions. These instructions do not impose a fact/turn target or deci
 physical linkage in code. Current provider acceptance of the new profile remains
 pending; local tests alone do not establish product completeness.
 
+An explicit `generate_visual` request may use `preserve_source_frame=true` with
+model-authored `visual_copy` and `visual_layout`. This selects VibePublish's
+`frame_source` operation (compatible contract 1.12), rather than Imagegen. The
+complete oriented source is fitted uniformly across 4:5; the model chooses an
+actual free text area after inspecting the photo and preserves essential fact
+qualifiers. Geometry, photo prominence, annotation meaning and readability still
+require actual review. Layout/copy are frozen into the content revision with the
+existing selected-fact/source fences, operation ledger and separate publication
+confirmation. Observation cannot introduce a new layout or generation. Legacy
+generation/recovery keeps its original frozen operation. This is an opt-in
+consumer capability; VibePublish production activation and actual frame-source
+acceptance remain pending, and there is no automatic generator fallback.
+
+Android house markers now use an interior scanline interval of the observed
+footprint, respecting courtyard holes, concavity and disjoint components. This
+changes only the displayed marker; contour, candidate ID and confirmation remain
+the server-supplied owner selection. Real-photo/map tap acceptance is still
+pending; the old CI rectangle/black source were synthetic test inputs.
+
 Accepted photo intake belongs to backend jobs, independently of client sockets.
 Identity, reference comparison, fact research and refinement have no terminal
 180/480-second upload deadline and no cumulative local ceiling on comparisons,

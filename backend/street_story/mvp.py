@@ -125,6 +125,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     async def request_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         if body.get('observe_existing_visual') is True:
+            if any(body.get(field) is not None for field in ('visual_copy', 'visual_layout', 'preserve_source_frame')):
+                raise ConflictError('visual_observation_input_changed', 'Observation cannot create a new layout.')
             return await self._observe_existing_visual(story_id, key, body)
         # Observe the original operation before replacing its frozen context.
         # A new key expresses a new author request, never an unknown-outcome retry.
@@ -223,6 +225,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     def mutate_visual(self, story_id: str, key: str, body: dict[str, Any], *,
                       expected_revision: int | None = None, previous_receipt: dict | None = None) -> dict[str, Any]:
+        from .visual_source import source_frame_input
+        source_frame = source_frame_input(body)
         req_digest = digest({"story_id": story_id, **body})
         _, template_sha = self._prompt_template()
         with self.store.tx() as db:
@@ -302,6 +306,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "prompt_sha256": template_sha,
                 "source_orientation_contract": 'visual-source-exif-orientation-v1',
             }
+            if source_frame is not None:
+                frozen['source_frame'] = source_frame
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}
                 for field in ('prompt_version', 'prompt_sha256', 'source_orientation_contract'):
@@ -310,7 +316,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     else:
                         frozen.pop(field, None)
                 same_inputs = ('source_photo_sha256', 'fact_revision_bundle', 'publication_concept',
-                               'prompt_version', 'prompt_sha256', 'visual_instruction')
+                               'prompt_version', 'prompt_sha256', 'visual_instruction', 'source_frame')
                 if (observed.get('state') != 'verified'
                         or observed.get('visual_job_id') != previous.get('visual_job_id')
                         or observed.get('selected_asset_ref') != previous.get('selected_asset_ref')
@@ -445,6 +451,11 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 }
                 if context.get('recompose_source'):
                     command = {'command': {'kind': 'recompose', **context['recompose_source']}}
+                elif context.get('source_frame'):
+                    frame = context['source_frame']
+                    command = {'command': {'kind': 'frame_source',
+                        'source': {'source': {'kind': 'asset', 'id': source_asset}},
+                        'copy': frame['copy'], 'layout': frame['layout'], 'format': 'post_4_5'}}
                 visual_key = "ss-vp-visual-" + hashlib.sha256(
                     canonical([story_id, content_revision, source_asset, command]).encode()
                 ).hexdigest()[:48]

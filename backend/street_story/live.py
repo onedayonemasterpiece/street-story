@@ -693,6 +693,15 @@ FUNCTIONS = [
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
             "observe_existing_visual": {"type": "boolean", "description": "True only to retrieve the existing generation result, without another generation or visual edit. Omit visual_instruction in this mode."},
+            "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Keep the complete photo dominant; supply visual_copy and visual_layout after inspecting the source. Separate review still required."},
+            "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
+                ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
+                "description": "Concise model-authored annotations using only the chosen eligible facts, preserving essential dates, attribution and plans; never rewrite the publication draft."},
+            "visual_layout": {"type": "object", "properties": {
+                "text_box": {"type": "array", "items": {"type": "number"}},
+                "title_size": {"type": "number"}, "body_size": {"type": "number"},
+                "text_color": {"type": "string"}, "backplate_opacity": {"type": "number"}},
+                "description": "text_box is normalized x,y,width,height in the 4:5 canvas. Choose actual free image space without hiding the building/context; all photo pixels are contained uniformly. Title28–68px/body22–42px; optional modest plate0–0.65. Overflow blocks instead of dropping text."},
         },
     ),
     _tool_schema(
@@ -5574,6 +5583,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     raise InvalidStateError('visual_fact_not_selected',
                         'Visual facts must be a subset of the current owner-selected eligible facts.')
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
+        for field in ('preserve_source_frame', 'visual_copy', 'visual_layout'):
+            if field in args:
+                body[field] = args[field]
         if args.get('observe_existing_visual') is True:
             body['observe_existing_visual'] = True
         key = "ss-live-visual-" + hashlib.sha256(f"{story_id}:{command_id}".encode()).hexdigest()[:48]

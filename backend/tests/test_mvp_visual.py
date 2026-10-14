@@ -273,6 +273,42 @@ def visual_context(svc, sid):
 
 
 @pytest.mark.asyncio
+async def test_source_frame_request_preserves_layout_and_uses_existing_visual_worker_without_tune(tmp_path):
+    class SourceFrameVibe(FrameBoundary):
+        def __init__(self):
+            super().__init__()
+            self.frame_commands = []
+
+        async def visual(self, payload, request_key):
+            if payload['command']['kind'] == 'frame_source':
+                self.frame_commands.append(payload['command'])
+                return {'operation_id': 'frame-op', 'state': 'accepted', 'visual_job_id': 'frame-job'}
+            return await super().visual(payload, request_key)
+
+    vp = SourceFrameVibe()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    body = {'selected_fact_ids': [], 'preserve_source_frame': True,
+        'visual_copy': {'title': 'Исходное фото'},
+        'visual_layout': {'text_box': [.05, .02, .9, .14], 'title_size': 42, 'body_size': 28}}
+    svc.mutate_visual(sid, 'source-frame', body)
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    context = visual_context(svc, sid)
+    assert context['source_photo_sha256'] == PHOTO_SHA
+    assert context['source_frame']['copy'] == body['visual_copy']
+    assert context['source_frame']['layout'] == body['visual_layout']
+    await svc._run_visual(job)
+    assert vp.tune_calls == 0 and vp.select_calls == 1 and len(vp.frame_commands) == 1
+    assert vp.frame_commands[0] == {'kind': 'frame_source',
+        'source': {'source': {'kind': 'asset', 'id': 'asset_source_1'}},
+        'copy': body['visual_copy'], 'layout': body['visual_layout'], 'format': 'post_4_5'}
+    assert visual_context(svc, sid)['source_frame'] == context['source_frame']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('dimensions,reason', [
     ({'width': 1080, 'height': 810}, 'visual_format_mismatch'),
     ({'width': 1080}, 'visual_format_dimensions_missing'),

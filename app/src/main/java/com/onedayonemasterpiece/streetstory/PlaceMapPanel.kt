@@ -403,23 +403,7 @@ class PlaceMapPanel(
 
     private fun houseMarker(feature: Feature): Feature? {
         val geometry = feature.geometry() ?: return null
-        val point = if (geometry is Point) geometry else runCatching {
-            // Bound the displayed contour, including multipolygons. This is a map marker,
-            // not an address/search anchor or a replacement for server geometry.
-            val coordinates = com.google.gson.JsonParser.parseString(geometry.toJson()).asJsonObject["coordinates"]
-            val points = mutableListOf<Pair<Double, Double>>()
-            fun collect(node: com.google.gson.JsonElement) {
-                if (!node.isJsonArray) return
-                val values = node.asJsonArray
-                if (values.size() >= 2 && values[0].isJsonPrimitive && values[1].isJsonPrimitive)
-                    points += values[0].asDouble to values[1].asDouble
-                else values.forEach(::collect)
-            }
-            collect(coordinates)
-            if (points.isEmpty()) null else Point.fromLngLat(
-                (points.minOf { it.first } + points.maxOf { it.first }) / 2,
-                (points.minOf { it.second } + points.maxOf { it.second }) / 2)
-        }.getOrNull()
+        val point = PlaceFootprintGeometry.interiorPoint(geometry)
         return point?.let { Feature.fromGeometry(it) }
     }
 
