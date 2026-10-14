@@ -6,20 +6,18 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T15:47:35.877838+00:00",
-  "last_useful_progress_at_utc": "2026-10-14T14:30:02.991852+00:00",
+  "updated_at_utc": "2026-10-14T17:08:16.926553+00:00",
+  "last_useful_progress_at_utc": "2026-10-14T16:51:59.223255+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "SS639e47f andVibe6336b9b/PR80 pushed.639backend38590590614 andAndroid38590590605success; markerJVM compile/test CIpassed, actualmap/photoURI tapping stillpending. NormalcurrentMira source-frame request being observed on same102/store throughSS8192/Vibe8193, no newImagegen/publication.105originalactive14eligible;partialV4per105/107/120Markdown readfully, semanticoutputmapping stillpending.",
-  "active_jobs_started_by_this_continuation": [
-    "job_e64433596f2745e5ae3f418a"
-  ],
+  "last_action": "Actual Original frame op7e2d30cc61df4264986527d3a4ef8847 preserves3000x4000/source geometry and corrected2022 courtyard claim, but FAIL_LAYOUT due wrapped text crossing roof. Found font-coordinate ambiguity and crop preview omission: source tool now describes nominal1080-wide fonts and sends chosen cropped snapshot to Mira;69affected tests pass. Full5cb backend+Android CI success.105original closed, no resend.",
+  "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
     "story_id": "story_98d60ad1f6bda1196ea3e7f2",
     "job_id": "job_e64433596f2745e5ae3f418a",
     "run_id": "research_c851c79397f9dc53274bf5df",
     "thread_id": "01a13af0-73da-74d2-8d30-5c2a394d491b",
-    "status": "running_observe_original",
+    "status": "closed_response_native_interrupted_observed_no_resend",
     "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-product-memory-e28e23e/campaign.json"
   },
   "task_inventory": {
@@ -51,7 +49,7 @@
   "baseline": {
     "full_comparable_old_run": null,
     "status": "N/A until verified",
-    "independent_v4_reference": "Pinned partial package f4690fc; master read. Full102/104 JSON and partition pending inspection; remaining large JSON unpublished.",
+    "independent_v4_reference": "Published finite current atomic comparison ae132e8 checksummed: frozen102 strict29/45; frozen105 strict5/18. Later105 delta separate. Historical104/107/120/125 not current-codeE2E.",
     "photo_registry": "b393a12d3df109788cd822ae981b0e0993312043:docs/testing/photo-registry.json",
     "unique_registered_source_photos": 43,
     "all_registry_records": 92,
@@ -61,27 +59,23 @@
   },
   "blockers": [
     {
-      "scope": "research_method_acceptance",
-      "reason": "Oversizedrequestmechanism fixed and real qualificationpassed; actualordinarycontinuation/novelty/saturation stillbeingchecked. Sourcecache/networkhistoricalcounts unknown."
-    },
-    {
       "scope": "visual_acceptance",
-      "reason": "Newop86eeeec49f43409abf4d5ef6a9094964 completed;1024x1350 wrong4:5 and alteredgeometry. Publication not requested. Prompt-only correction insufficient."
+      "reason": "Closed source-frame preserves geometry but text obscures building; contain is superseded by explicit original/real crop requirement. Implementing persisted format and corrected composition."
     },
     {
       "scope": "owner_map_UI",
-      "reason": "Revision27 owner screenshot rejectsviewport rectangle/GPS ashouse. Need real buildingfootprint tap/screenshot/persisted ID evidence, blackpreview separate."
+      "reason": "Real footprint/photo URI tap, signed APK and voice product E2E remain outstanding."
     },
     {
-      "scope": "atomic_V4",
-      "reason": "Frozen102/104files read structure only; atomicsemanticmapping/independentdenominator not yet complete."
+      "scope": "atomic_acceptance",
+      "reason": "Published independent current atomic benchmark acquired/checksummed. Frozen102 strict29/45; frozen105 strict5/18. Later105 delta requires separate assessment; counts are not saturation."
     },
     {
       "scope": "photo105",
-      "reason": "Physical linkage3–5 toselectedcontour uncertain; ordinary model continuation remains permitted."
+      "reason": "Original job closed after5395.6s; final native turn interrupted, response_closed, actor/cause unconfirmed.17totalcards15eligible retained; frozen atomic reference snapshot remains unchanged."
     }
   ],
-  "next_step": "Freeze compatible source-frame consumer/Vibe changes and validate actual normalMira frame composition on original102. Observe unchanged105. RealAndroidmap/photoURI tap evidence and frozenV4atomiccomparison stillpending; no publication/deploy/merge.",
+  "next_step": "Freeze font units/chosen-crop Mira view fixes, then distinct compact sky layout correction and true4:5 normal product check. Actual Android map/voice/signedAPK/testpublication and P0 131/104 +Codex-offP1 remain incomplete.",
   "stages": [
     {
       "stage": 0,
@@ -623,9 +617,26 @@
         "EXIF6 original102 has4000x3000storedpixels. Vibe source PNG is pixel-identical to unoriented original and strips EXIF; correct mechanical transform is3000x4000. Contributing defect proved, not sole geometry rootcause.",
         "Fresh visual input preserves original bytes and applies only EXIF transpose in separate PNG. ImageV3removes outpainting/scenery reconstruction and preserves complete source frame; actualgenerated comparison stillpending.",
         "Actual currentvisualop86eeeec49f43409abf4d5ef6a9094964 closed;sourceorientation corrected,selectedannotation readable,geometry+4:5FAIL. No generation retry/publication.",
-        "ExplicitnormalLive visual request can use model-authoredcopy/textarea via existingVibeSVG sourceframe. Fullphoto across4:5, uniform contain/no crop. Realgeometry+layout review pending, smallphoto560px layout avoided."
+        "ExplicitnormalLive visual request can use model-authoredcopy/textarea via existingVibeSVG sourceframe. Fullphoto across4:5, uniform contain/no crop. Realgeometry+layout review pending, smallphoto560px layout avoided.",
+        "Actual source-frame op41f184fcbf2a4d3cb76c618ba4d15fdc completed: 1080x1350, unchanged geometry, FAIL_LAYOUT. Layout correction known local pre-submit harness failure, zero second Vibe submissions. Rev29/30 original/crop implementation in progress, not tested yet.",
+        "Actual original102 Mira tool set_photo_format persisted mode original, revision1, source SHA and oriented3000x4000; normal REST/new snapshot readback retained. Actualcompositionpending."
       ],
-      "photo_metrics": [],
+      "photo_metrics": [
+        {
+          "photo": 102,
+          "phase": "original-text-plate-correction",
+          "source_sha": "5cbba00f3d707fa816df7298817d67f6bb4e746c",
+          "operation_id": "op_7e2d30cc61df4264986527d3a4ef8847",
+          "width": 3000,
+          "height": 4000,
+          "geometry": "PASS_original_source",
+          "copy": "PASS_qualified_selected_courtyard2022",
+          "layout": "FAIL_roof_overlap",
+          "overall": "FAIL_LAYOUT",
+          "image": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-5cbba00/original-corrected.png",
+          "publication": false
+        }
+      ],
       "logs": [
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/issue258-exact-visual-jobs.json",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/issue258-images/manifest.json",
@@ -669,7 +680,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "639e47f583af53acd30e0a2dbc749ef0978db195",
+  "checked_out_commit": "5cbba00f3d707fa816df7298817d67f6bb4e746c",
   "code_changes": "pushed to existing PR257; current backend and Android CI succeeded",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -678,15 +689,18 @@
   },
   "watchdog_ack": {
     "run": "SS-MAP-20261012",
-    "revision": 28,
-    "document_commit": "0038017",
-    "blob": "6a20373956e753c85367616e813b27da592835c6",
-    "nonce": "SS-MAP-REV28-20261014T1510",
-    "at_utc": "2026-10-14T15:14:23Z",
+    "revision": 30,
+    "document_commit": "17fc692",
+    "blob": "1719d69db3d6e0212e707844ace5a72319166263",
+    "nonce": "SS-MAP-REV30-20261014T1603",
+    "at_utc": "2026-10-14T16:05:50Z",
     "read_revisions": [
       25,
       26,
-      27
+      27,
+      28,
+      29,
+      30
     ]
   },
   "active_local_checks": null,
@@ -698,16 +712,16 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "639e47f583af53acd30e0a2dbc749ef0978db195",
+  "code_commit": "5cbba00f3d707fa816df7298817d67f6bb4e746c",
   "ci": {
-    "head": "639e47f583af53acd30e0a2dbc749ef0978db195",
+    "head": "5cbba00f3d707fa816df7298817d67f6bb4e746c",
     "backend": {
-      "run": 38590590614,
+      "run": 38602188408,
       "status": "completed",
       "conclusion": "success"
     },
     "android": {
-      "run": 38590590605,
+      "run": 38602188410,
       "status": "completed",
       "conclusion": "success"
     }
@@ -720,12 +734,19 @@
   },
   "visual_dependency": {
     "repository": "onedayonemasterpiece/vibepublish",
-    "commit": "6336b9b2bf1c25a55173ae71d19ab3b5935c4230",
+    "commit": "74193f8b4e1dc11a7d8fb808bc733f4c9d0240c5",
     "pr": "https://github.com/onedayonemasterpiece/vibepublish/pull/80",
     "production_activated": false,
     "stand_port": 8193,
     "stand_store": "same_existing_private_store",
     "generator_calls": 0,
     "framework_added": false
+  },
+  "active_visual_check": {
+    "story_id": "story_61426cf85338fe71b4e915a4",
+    "phase": "original-text-plate-correction",
+    "status": "closed_geometry_and_copy_pass_layout_fail",
+    "operation_id": "op_7e2d30cc61df4264986527d3a4ef8847",
+    "review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-5cbba00/original-corrected-review.json"
   }
 }

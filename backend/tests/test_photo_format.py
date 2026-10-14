@@ -36,7 +36,7 @@ async def test_live_format_choice_uses_same_story_and_survives_reopen_without_pr
     from types import SimpleNamespace
     svc = service(tmp_path)
     sid = create_story(svc)['id']
-    async def write(_session, _message):
+    def write(_session, _message):
         return None
     adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, write)
     initial = adapter.initialize(resource_id=sid, actor=None, model='controlled')
@@ -70,3 +70,22 @@ def test_photo_format_stage_does_not_resend_unrelated_discovery_and_conflict_inv
     assert projected['facts'] == context['facts'][:1]
     assert projected['visual_photo_format'] == context['visual_photo_format']
     assert len(context['known_fact_inventory']) == 1000
+
+
+def test_visual_mira_snapshot_uses_chosen_crop_but_identity_keeps_original(tmp_path):
+    from street_story.live import StreetStoryLiveAdapter
+    from PIL import Image
+    import io
+    svc = service(tmp_path)
+    sid = create_story(svc)['id']
+    adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, lambda _session, _message: None)
+    set_photo_format(svc, sid, 'crop-view', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    _raw, width, height = adapter._visual_snapshot(sid)
+    assert (width, height) == (40, 30)
+    raw, width, height = adapter._visual_snapshot(sid, selected_format=True)
+    assert (width, height) == (24, 30)
+    with Image.open(io.BytesIO(raw)) as image:
+        assert image.size == (24, 30)
+    import hashlib
+    assert hashlib.sha256(svc._source_photo_bytes(sid)).hexdigest() == PHOTO_SHA

@@ -699,10 +699,10 @@ FUNCTIONS = [
         {
             "visual_instruction": {
                 "type": "string",
-                "description": "Optional concise visual-only author instruction such as 'чуть теплее'.",
+                "description": "Owner visual-only change.",
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
-            "observe_existing_visual": {"type": "boolean", "description": "True only to retrieve the existing generation result, without another generation or visual edit. Omit visual_instruction in this mode."},
+            "observe_existing_visual": {"type": "boolean", "description": "Read existing operation only; omit visual_instruction. Never resend unknown."},
             "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Honor visual_photo_format: original aspect or true4:5 crop. Inspect SOURCE; supply copy/layout. Separate review still required."},
             "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
                 ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
@@ -711,7 +711,7 @@ FUNCTIONS = [
                 "text_box": {"type": "array", "items": {"type": "number"}},
                 "title_size": {"type": "number"}, "body_size": {"type": "number"},
                 "text_color": {"type": "string"}, "backplate_opacity": {"type": "number"}},
-                "description": "text_box is normalized x,y,width,height in the chosen canvas. Choose actual free image space without hiding the building/context; no invented margins or scenery. Title28–68px/body22–42px; optional modest plate0–0.65. Overflow blocks instead of dropping text."},
+                "description": "text_box is normalized x,y,width,height in the chosen canvas. Choose actual free image space without hiding the building/context; no invented margins or scenery. Fonts are nominal pixels at1080-wide preview, scaled by canvas_width/1080 (not absolute source pixels). Title28–68/body22–42. Count wrapped lines before placing: line advance1.25font. Plate0–0.65 covers actual text. Overflow blocks."},
         },
     ),
     _tool_schema(
@@ -1400,12 +1400,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 }),
             )
 
-    def _visual_snapshot(self, story_id: str) -> tuple[bytes, int, int] | None:
+    def _visual_snapshot(self, story_id: str, *, selected_format=False) -> tuple[bytes, int, int] | None:
         # Budget preparation stays in RAM. It is not visual identification.
         try:
             import io
             from PIL import Image, ImageOps
             source = self.service._source_photo_bytes(story_id)
+            if selected_format:
+                from .photo_format import choice
+                from .visual_source import photo_transform
+                with self.service.store.connection() as db:
+                    row = self.service._story_row(db, story_id)
+                    selected = choice(json.loads(row['research_json'] or '{}'))
+                    source, _mime, transform = photo_transform(source, row['photo_mime_type'],
+                        selected['mode'], selected.get('crop_rect'))
+                    if transform['original_sha256'] != row['photo_sha256']:
+                        raise ConflictError('visual_source_original_changed', 'Original source changed.')
             with Image.open(io.BytesIO(source)) as opened:
                 image = ImageOps.exif_transpose(opened).convert('RGB')
                 image.thumbnail((768, 768), Image.Resampling.LANCZOS)
@@ -1422,7 +1432,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         return None
 
     def _send_visual_snapshot(self, session) -> None:
-        snapshot = self._visual_snapshot(session.resource_id)
+        snapshot = self._visual_snapshot(session.resource_id, selected_format=
+            getattr(session, 'capability', None) in {'editor', 'photo_format', 'publication'})
         if snapshot is None:
             self.emit(session, {"type": "visual_context", "status": "unavailable"})
             record_live_diagnostic(
@@ -1766,6 +1777,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             payload = {**args, "expected_photo_sha256": photo_sha,
                 "expected_identity_generation": int(research.get("identity_generation") or 0)}
             result = {"story": set_photo_format(self.service, story_id, command_id, payload)}
+            self._send_visual_snapshot(session)
         elif name == "set_concept":
             result = self._set_concept(story_id, command_id, args)
         elif name == "edit_text":
