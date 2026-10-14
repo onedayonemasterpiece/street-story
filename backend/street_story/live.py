@@ -1019,6 +1019,17 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     @staticmethod
     def _capability_context(context, capability):
+        if capability == 'photo_format':
+            # Crop/composition works on SOURCE and owner selection, not the
+            # discovery/conflict inventory. All original evidence stays durable.
+            result = {key: value for key, value in context.items() if key in {
+                'current_date_utc', 'story_id', 'photo_sha256', 'identity_generation',
+                'research_controls', 'revision', 'text_revision', 'place_name',
+                'physical_identity_accepted', 'selected_fact_ids', 'publication_concept',
+                'draft_text', 'visual_photo_format', 'visual', 'fact_count',
+            }}
+            result['facts'] = [fact for fact in context.get('facts', []) if fact.get('selected')]
+            return result
         if capability in {'editor', 'dictation', 'publication'}:
             # These stages work on the author's selection and saved draft.
             # Discovery inventories stay durable and accessible through the

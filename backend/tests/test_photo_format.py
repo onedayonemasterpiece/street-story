@@ -56,3 +56,17 @@ def test_pending_new_format_cannot_label_previous_asset_as_current():
     visual = {'photo_format_revision': 2, 'output_frame_evidence': {'state': 'verified', 'asset_ref': 'new-asset'}}
     assert not projection(research, visual, 'old-asset')['current_visual']
     assert projection(research, visual, 'new-asset')['current_visual']
+
+
+def test_photo_format_stage_does_not_resend_unrelated_discovery_and_conflict_inventory():
+    from street_story.live import StreetStoryLiveAdapter
+    context = {'photo_sha256': 'source', 'visual_photo_format': {'mode': 'original'},
+        'known_fact_inventory': ['repeated source history'] * 1000,
+        'fact_conflicts': ['unrelated dispute'] * 1000,
+        'facts': [{'fact_id': 'selected', 'selected': True, 'text': 'Chosen qualified claim'},
+                  {'fact_id': 'other', 'selected': False, 'text': 'Other material'}]}
+    projected = StreetStoryLiveAdapter._capability_context(context, 'photo_format')
+    assert 'known_fact_inventory' not in projected and 'fact_conflicts' not in projected
+    assert projected['facts'] == context['facts'][:1]
+    assert projected['visual_photo_format'] == context['visual_photo_format']
+    assert len(context['known_fact_inventory']) == 1000
