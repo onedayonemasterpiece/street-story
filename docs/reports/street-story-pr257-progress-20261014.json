@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T19:56:00.677727+00:00",
+  "updated_at_utc": "2026-10-14T20:31:14.524226+00:00",
   "last_useful_progress_at_utc": "2026-10-14T17:28:02.258576+00:00",
   "stage": 3,
   "status": "working",
@@ -76,7 +76,7 @@
       "reason": "Full one-house baseline/atomic comparison, actual map and voice, artistic Original, test publication and other required photos remain incomplete."
     }
   ],
-  "next_step": "Freeze corrected reader and use distinct actually readable primary DDE source + owned municipal identity in one scoped native save component; do not repeat unchanged FES/browser-verification request.",
+  "next_step": "Freeze native primary read→local retain→existing save batch, then one scoped actual Luna ledger verification on original105. Original failed HTTP component remains closed; no full research to rediscover its known evidence.",
   "stages": [
     {
       "stage": 0,
@@ -711,7 +711,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "7503c72b40d0ce425055f1facdc800de957c2ffa",
+  "checked_out_commit": "a7ce62117f874c406f8135732e73d4b0894d8c17",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -720,16 +720,17 @@
   },
   "watchdog_ack": {
     "run": "SS-MAP-20261012",
-    "revision": 41,
-    "document_commit": "2a94f690b696770a833c01a8f5526b8486145fbc",
-    "blob": "f7e92dabc3f7c4946f93e779bac33e190ab50056",
-    "nonce": "SS-MAP-REV41-20261014T1940",
-    "at_utc": "2026-10-14T19:43:05.646398+00:00",
+    "revision": 42,
+    "document_commit": "cf0ed8c005a166650f4510619d8c5f46aa6c200e",
+    "blob": "63d67cc86ced714a1560ddd42766e64d26642705",
+    "nonce": "SS-MAP-REV42-20261014T1953",
+    "at_utc": "2026-10-14T20:01:10.489353+00:00",
     "read_revisions": [
       38,
       39,
       40,
-      41
+      41,
+      42
     ],
     "strategy_read": "6be0421"
   },
@@ -747,7 +748,7 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "7503c72b40d0ce425055f1facdc800de957c2ffa",
+  "code_commit": "a7ce62117f874c406f8135732e73d4b0894d8c17",
   "ci": {
     "head": "89a8d8ea43477bf0e036fa0a273b09efac3a8a73",
     "backend": {
@@ -783,9 +784,9 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "freeze_reader_size_fix_then_finish_owned_source_component",
-  "current_blocker": "DDE archive own-reader acquisition now succeeds with partial_text_limit; final source assessment/save still unverified. SBC diagnostic pending separately. Full baseline/observer and Android/E2E remain incomplete.",
-  "updated_at": "2026-10-14T19:56:00.677727+00:00",
+  "current_stage": "freeze_native_received_content_then_real_save_component",
+  "current_blocker": "107 source/transport/basis tests passed. Controlled native content flows through existing ledger without HTTP; real corrected Luna save component not yet run. Full baseline and observer/Android/E2E still open.",
+  "updated_at": "2026-10-14T20:31:14.524226+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38607689217,
@@ -953,6 +954,36 @@
     "probe": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-identity-save-component-7503c72/alternative-reader-after-size-fix.json",
     "dde_read_status": "partial_text_limit",
     "dde_text_chars": 120000,
-    "no_model_probe": true
+    "no_model_probe": true,
+    "sbc_probe": {
+      "mime": "application/pdf",
+      "raw_bytes": 2350180,
+      "pages": 6,
+      "text_chars": 95625,
+      "read_status": "complete",
+      "reader_probe_only": true
+    }
+  },
+  "direct_native_prompt_rev42": {
+    "child_id": "/root/research_native_prompt_rev42",
+    "status": "guided_diag_and_fresh_autonomous_repeat_closed",
+    "manifest": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-native-prompt-rev42/manifest.json",
+    "actual_model_execution_metadata": "unknown, requested Luna medium only",
+    "guided_report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-native-prompt-rev42/report.md",
+    "autonomous_child_id": "/root/research_native_autonomous_rev42",
+    "autonomous_report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-native-autonomous-rev42/report.json"
+  },
+  "native_content_replay": {
+    "mode": "saved authenticated original journal, no model/network/new job",
+    "source_ref": "turn0search0",
+    "native_call_id": "call_1f71297da22c45dbb0872b8fa1633c6b",
+    "received_document_chars": 5615,
+    "source_content_sha256": "d69995c14e0415e9c4f1d382e32e2826fa56ce95f241b63c62e7893f516d6f22",
+    "artifact": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-evidence-rev42/owned-source-replay.json",
+    "admitted_facts": 0,
+    "ledger_component": "2 passed with HTTP/native paths; incremental eligible fact and same-call replay return existing ID, no duplicate observation or HTTP reread for native",
+    "checks": "107 passed; includes local retention with exhausted quota, completed rejected snippet outcome, existing ledger persistence/idempotent replay; no model or HTTP for saved proof replay",
+    "contract": "native-owned-received-content-v1",
+    "code_status": "implemented uncommitted"
   }
 }

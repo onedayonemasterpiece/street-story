@@ -84,6 +84,61 @@ async def test_original_unknown_reads_closed_owned_turn_without_send_or_fresh_ad
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('readable', [True, False])
+async def test_native_content_retention_uses_owned_journal_without_quota_or_http(tmp_path, monkeypatch, readable):
+    from pathlib import Path
+    from street_story import native_fact_research as native
+    from street_story.fact_agent_providers import native_tools
+    from test_native_received_sources import URL, REF, RESULT
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    path = Path(thread['path'])
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[-2:-2] = [
+        {'type': 'response_item', 'payload': {'type': 'custom_tool_call', 'name': 'exec', 'call_id': 'native-read',
+            'input': 'const r=await tools.web__run({open:[{ref_id:"https://archive.example/issue"}]}); text(r)',
+            'internal_chat_message_metadata_passthrough': {'turn_id': TURN}}},
+        {'timestamp': '2026-10-14T00:00:00Z', 'type': 'response_item', 'payload': {
+            'type': 'custom_tool_call_output', 'call_id': 'native-read', 'id': 'native-result',
+            'output': [{'type': 'input_text', 'text': 'Script completed\nOutput:\n'},
+                {'type': 'input_text', 'text': RESULT if readable else f'Archive ({URL})\n\ue200cite\ue202{REF}\ue201 summary only'}],
+            'internal_chat_message_metadata_passthrough': {'turn_id': TURN}}}]
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    callbacks, retained = [], []
+    def attach(client, callback):
+        callbacks.append(callback)
+        return client
+    async def no_quota(*args, **kwargs):
+        raise AssertionError('Retention is local; existing received content must survive quota loss')
+    async def retain(name, args, *, checkpoint_owner):
+        assert readable and name == 'retain_native_source'
+        proof = checkpoint_owner['native_source']
+        assert proof['call_id'] == 'native-read' and proof['content'] == 'Historical house article.'
+        retained.append(proof)
+        return {'documents': [{'source_version_id': 'existing-writer-id'}]}
+    original = native.native_turn_readback
+    async def readback(*args):
+        request = {'threadId': THREAD, 'turnId': TURN, 'callId': 'retain-call',
+            'tool': 'retain_native_source', 'arguments': {'url': URL, 'source_ref': REF}}
+        result = await callbacks[0](request)
+        assert await callbacks[0](request) == result
+        if readable:
+            assert result['documents'][0]['source_version_id'] == 'existing-writer-id'
+        else:
+            assert not result['documents']
+            assert result['read_attempts'][0]['error_code'] == 'native_source_document_content_not_returned'
+        return await original(*args)
+    provider.permission.ensure = no_quota
+    monkeypatch.setattr(native, 'attach_research_tools', attach)
+    monkeypatch.setattr(native, 'native_turn_readback', readback)
+    await provider.run(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=native_tools(), callback=retain, guard=lambda: None)
+    assert len(retained) == int(readable)
+    assert all(method == 'thread/read' for method, _ in calls)
+    assert saved[-1]['native_tool_calls']['retain-call']['phase'] == 'completed'
+
+
+@pytest.mark.asyncio
 async def test_unaddressable_send_stays_unknown_and_never_starts_replacement(tmp_path, monkeypatch):
     provider, receipt, calls, _ = setup(tmp_path, monkeypatch,
         receipt={'phase': 'unknown', 'thread_id': THREAD, 'provider_send_state': 'possibly_sent'})

@@ -204,7 +204,7 @@ def _source_coverage(receipt):
         'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
         'unproposed_source_version_ids': sorted(unproposed),
         'source_read_failures': [attempt for call in receipt.get('native_tool_calls', {}).values()
-            if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
+            if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') in {'webfetch', 'retain_native_source'}
             for attempt in (call.get('result') or {}).get('read_attempts', [])
             if attempt.get('status') in {'failed', 'rejected'}],
         'original_send_unresolved': receipt.get('phase') == 'unknown'

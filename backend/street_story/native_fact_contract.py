@@ -77,7 +77,8 @@ FINAL_INSTRUCTIONS = (
     'identity passage with its owned read receipt before assessing a historical-name '
     'claim as supported, and identify that read source in the reason. Reuse a supplied '
     'verified frozen identity read with its receipt and scope when available; otherwise '
-    'read the identity source through your own webfetch. If an available read can close this gap, '
+    'read the identity source with your native reader and retain its actual result. '
+    'If an available read can close this gap, '
     'perform it before ending rather than returning conditionally supported claims. '
     'Without that evidence mark object_relation unestablished and verdict '
     'insufficient, never selected_building conditional on a known identity. '
@@ -91,6 +92,9 @@ FINAL_INSTRUCTIONS = (
     'not prove the event concerns one particular body. '
     'A multi-number address establishes documented_site only unless actual read '
     'evidence distinguishes the selected body. '
+    'Before delivery check that subject_scope and checks.object_relation agree: '
+    'documented_site requires complex_or_site. Never select selected_building '
+    'and try to weaken it with a site-only caveat in the text or reason. '
     'Metadata-only identity evidence is not a substantive history fact and must '
     'not inflate the useful fact count. '
     'Apply these same source-assessment rules to every returned assessment: '
@@ -303,7 +307,7 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     from .fact_agent_providers import _read_url_key
     observed_url = _read_url_key(basis['url'])
     reads = [doc for call in receipt.get('native_tool_calls', {}).values()
-        if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
+        if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') in {'webfetch', 'retain_native_source'}
         and (checkpoint_at is None or type(call.get('completed_at')) in (int, float)
             and call['completed_at'] <= checkpoint_at)
         for doc in (call.get('result') or {}).get('documents', [])

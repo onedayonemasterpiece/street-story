@@ -17,7 +17,8 @@ from test_shared_devcoveer_research import Backend
 
 
 @pytest.mark.asyncio
-async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_canonical_outcome(tmp_path):
+@pytest.mark.parametrize('native_content', [False, True])
+async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_canonical_outcome(tmp_path, native_content):
     from test_native_fact_basis import setup
     from street_story.native_fact_research import CONTRACT
     from test_headless_facts import URL
@@ -41,9 +42,31 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
             receipt.update(native_contract=CONTRACT, phase='submitted', provider_send_state='possibly_sent',
                 thread_id='original-luna', turn_id='original-turn', native_threads={
                     'original-luna': {'model_id': 'gpt-6-luna', 'turn_id': 'original-turn'}}, native_tool_calls={})
-            read = await kwargs['callback']('webfetch', {'url': URL})
+            async def receive():
+                if not native_content:
+                    return await kwargs['callback']('webfetch', {'url': URL})
+                from street_story.native_received_sources import CONTRACT as SOURCE_CONTRACT
+                proof = {'contract': SOURCE_CONTRACT, 'url': URL, 'source_ref': 'turn0view0',
+                    'thread_id': 'original-luna', 'turn_id': 'original-turn', 'call_id': 'native-open',
+                    'result_item_id': 'native-result', 'completed_at': 0.5,
+                    'content': document['normalized_text'], 'title': 'Own native archive',
+                    'content_sha256': hashlib.sha256(document['normalized_text'].encode()).hexdigest()}
+                return await kwargs['callback']('retain_native_source', {'url': URL, 'source_ref': 'turn0view0'},
+                    checkpoint_owner={'call_id': 'retain', 'thread_id': 'original-luna',
+                        'turn_id': 'original-turn', 'native_source': proof})
+            read = await receive()
+            kind = 'retain_native_source' if native_content else 'webfetch'
+            if native_content:
+                owned = read['documents'][0]
+                source = fact['sources'][0]
+                source.update(source_version_id=owned['source_version_id'], content_sha256=owned['content_sha256'])
+                ids = [chunk['chunk_id'] for chunk in owned['chunks']]
+                source['assessment']['chunk_ids'] = ids
+                source['assessment']['checks']['relation_basis']['chunk_ids'] = ids
+                assert owned['native_source_provenance']['call_id'] == 'native-open'
+                assert owned['read_status'] == 'native_received_partial'
             receipt['native_tool_calls']['read-one'] = {'phase': 'completed',
-                'input': {'name': 'webfetch'}, 'result': read, 'completed_at': 1}
+                'input': {'name': kind}, 'result': read, 'completed_at': 1}
             packet = {'facts': [fact]}
             receipt['native_tool_calls']['save-one'] = {'phase': 'submitted', 'submitted_at': 2, 'input': {
                 'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
@@ -59,9 +82,9 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
             assert replay == saved
             saves.append(saved)
             receipt['native_tool_calls']['save-one'].update(phase='completed', result=saved)
-            later = await kwargs['callback']('webfetch', {'url': URL})
+            later = await receive()
             receipt['native_tool_calls']['read-two'] = {'phase': 'completed',
-                'input': {'name': 'webfetch'}, 'result': later, 'completed_at': 3}
+                'input': {'name': kind}, 'result': later, 'completed_at': 3}
             receipt['native_threads']['original-luna']['execution_contexts'] = [
                 {'model': 'gpt-6-luna', 'effort': 'medium', 'turn_id': 'original-turn'}]
             receipt.update(phase='completed', provider_send_state='response_closed', native_terminal_status='completed')
@@ -84,7 +107,7 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
         with service.store.connection() as db:
             assert db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0] == before
         assert len(service.story(job['story_id'])['facts']) == 1
-        assert len(source_reads) == 2 and len(fetches) == 1
+        assert len(source_reads) == (0 if native_content else 2) and len(fetches) == 1
         assert not result['receipt']['raw_result']['completion']['research_sufficient']
     finally:
         await reader.search_http.aclose()
@@ -172,7 +195,7 @@ async def test_native_discovery_uses_hosted_search_and_never_dispatches_ddg_call
     received, saved = [], []
     class Native:
         async def run(self, **kwargs):
-            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch', 'read_research_memory', 'save_facts']
+            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch', 'read_research_memory', 'retain_native_source', 'save_facts']
             with pytest.raises(ValueError, match='agent_tool_outside_scope'):
                 await kwargs['callback']('websearch', {'query': 'Selected building'})
             kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')

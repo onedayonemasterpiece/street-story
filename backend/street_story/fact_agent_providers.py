@@ -46,7 +46,13 @@ NATIVE_TOOLS += [{'name': 'read_research_memory',
         'required': ['section'], 'additionalProperties': False}}]
 def native_tools():
     from .native_fact_contract import LEGACY_RESULT_SCHEMA
-    return [*copy.deepcopy(NATIVE_TOOLS), {'name': 'save_facts',
+    return [*copy.deepcopy(NATIVE_TOOLS), {
+        'name': 'retain_native_source',
+        'description': 'Retain content already returned by your completed native web search/open, identified by its actual citation ref and URL. No HTTP download or new inference. Returns existing immutable source/chunk IDs for save_facts. Search leads without received document content remain discovery only. For a nonfirst search result, open that source with your native reader first.',
+        'parameters': {'type': 'object', 'additionalProperties': False,
+            'properties': {'url': {'type': 'string', 'maxLength': 2048},
+                'source_ref': {'type': 'string', 'maxLength': 200}},
+            'required': ['url', 'source_ref']}}, {'name': 'save_facts',
         'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
         'parameters': copy.deepcopy(LEGACY_RESULT_SCHEMA)}]
 
@@ -554,7 +560,29 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                     for source in value['sources']], 'evidence_role': 'discovery_only_read_before_support'}
         else:
             from .native_source_reads import source_page
-            if args.get('cursor'):
+            if name == 'retain_native_source':
+                from .research_runs import persist_source_version
+                from .native_received_sources import CONTRACT as NATIVE_SOURCE_CONTRACT
+                proof = (checkpoint_owner or {}).get('native_source')
+                if (route.provider_id != 'codex_native' or not proof or proof['url'] != args['url']
+                        or proof['source_ref'] != args['source_ref'] or proof.get('contract') != NATIVE_SOURCE_CONTRACT
+                        or proof.get('thread_id') != receipt.get('thread_id')
+                        or proof.get('turn_id') != receipt.get('turn_id')
+                        or proof.get('content_sha256') != hashlib.sha256(proof['content'].encode()).hexdigest()):
+                    raise ValueError('native_source_transport_proof_missing')
+                with adapter.service.store.tx() as db:
+                    guard()
+                    doc = persist_source_version(db, run_id=context['run_id'], requested_url=proof['url'],
+                        final_url=proof['url'], title=proof['title'], content_type='text/plain', http_status=0,
+                        redirect_chain=[], normalized_text=proof['content'], read_status='native_received_partial',
+                        source_bytes_sha256=proof['content_sha256'], access_scope='public',
+                        now=adapter.service.store.now())
+                    guard()
+                provenance = {key: value for key, value in proof.items() if key != 'content'}
+                docs = [{**doc, 'requested_url': proof['url'], 'final_url': proof['url'],
+                    'title': proof['title'], 'normalized_text': proof['content'],
+                    'native_source_provenance': provenance}]
+            elif args.get('cursor'):
                 with adapter.service.store.connection() as db:
                     docs = [source_page(db, run_id=context['run_id'], url=args['url'], cursor=args['cursor'])]
             else:
@@ -578,7 +606,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             if route.provider_id == 'codex_native':
                 for document, source in zip(value['documents'], docs):
                     document.update({key: source[key] for key in
-                        ('discovery_links', 'discovery_links_provenance') if key in source})
+                        ('discovery_links', 'discovery_links_provenance', 'native_source_provenance') if key in source})
                 with adapter.service.store.connection() as db:
                     attempted = db.execute('SELECT status,error_code,source_version_id FROM research_run_sources '
                         'WHERE run_id=? AND url=?', (context['run_id'], args['url'].rstrip('/'))).fetchone()
