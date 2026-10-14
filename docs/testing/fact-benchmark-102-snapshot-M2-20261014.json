@@ -1,0 +1,1156 @@
+{
+  "version": "102-snapshot-M2",
+  "coverage": "cold + 9ea804e + 85dff57; d992 restored pending mapping; v10 partial",
+  "product_verified": 42,
+  "dot_verified": 39,
+  "verified_union": 61,
+  "saturation": "not_reached",
+  "product_ledger": {
+    "version": "SPO-v3-known-series",
+    "source_run": "cold-6f5b7eb",
+    "verified_union_count": 40,
+    "independent_baseline_atomic_count": 26,
+    "output_verified": 18,
+    "output_qualified": 3,
+    "output_full_union_matches": 16,
+    "output_partial_union_matches": 2,
+    "ledger": [
+      {
+        "id": "102A01",
+        "subject": "дом Житомирская22–24",
+        "predicate": "construction",
+        "object": "начало XX века",
+        "time_scope": "строительство",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-01",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A02",
+        "subject": "дом Житомирская22–24",
+        "predicate": "survived",
+        "object": "боевые действия",
+        "time_scope": "1945",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-02",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A03",
+        "subject": "дом Житомирская22–24",
+        "predicate": "historic_uniqueness",
+        "object": "последний сохранившийся дом бывшего Штайндамма",
+        "time_scope": "по историческому очерку",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-02",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A04",
+        "subject": "дом Житомирская22–24",
+        "predicate": "storeys",
+        "object": "пять",
+        "time_scope": "описанный исторический объём",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-03",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A05",
+        "subject": "дом Житомирская22–24",
+        "predicate": "building_form",
+        "object": "узкий вытянутый объём",
+        "time_scope": "историческое описание",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-03",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A06",
+        "subject": "дом Житомирская22–24",
+        "predicate": "window_form",
+        "object": "вытянутые окна",
+        "time_scope": "историческое описание",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-03",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A07",
+        "subject": "дом Житомирская22–24",
+        "predicate": "occupant",
+        "object": "страховое общество Нордштерн",
+        "time_scope": "довоенное; первый этаж",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-04",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A08",
+        "subject": "дом Житомирская22–24",
+        "predicate": "use",
+        "object": "бакалея",
+        "time_scope": "советский период",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-05",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A09",
+        "subject": "дом Житомирская22–24",
+        "predicate": "use",
+        "object": "торговля по талонам/спецмагазин",
+        "time_scope": "поздний советский этап",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-05",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A10",
+        "subject": "дом Житомирская22–24",
+        "predicate": "occupant",
+        "object": "Унция",
+        "time_scope": "поздний этап, первый этаж",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-06",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A11",
+        "subject": "дом Житомирская22–24",
+        "predicate": "occupant",
+        "object": "кафе Штайндамм99",
+        "time_scope": "2017; первый этаж",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-07",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A12",
+        "subject": "дом Житомирская22–24",
+        "predicate": "use",
+        "object": "жилые квартиры",
+        "time_scope": "2017; верхние этажи",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-07",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A13",
+        "subject": "дом Житомирская22–24",
+        "predicate": "interior_work",
+        "object": "раскрыта старая кладка",
+        "time_scope": "обустройство кафе, описано2017",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-08",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A14",
+        "subject": "дом Житомирская22–24",
+        "predicate": "brick_feature",
+        "object": "клейма на раскрытых кирпичах",
+        "time_scope": "обустройство кафе, описано2017",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-08",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A15",
+        "subject": "дом Житомирская22–24",
+        "predicate": "interior_work",
+        "object": "раскрыты опоры",
+        "time_scope": "обустройство кафе, описано2017",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-08",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A16",
+        "subject": "дом Житомирская22–24",
+        "predicate": "interior_work",
+        "object": "снятие поздней обшивки увеличило видимую высоту потолка",
+        "time_scope": "обустройство кафе, описано2017",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-08",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A17",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_plan",
+        "object": "включение фасадного ремонта в план",
+        "time_scope": "январь2021",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-09",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A18",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_start",
+        "object": "начало фасадного ремонта",
+        "time_scope": "февраль2022",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-10",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A19",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_obstacle",
+        "object": "при первой подрядной стадии обнаружены проблемы основной стены",
+        "time_scope": "2022",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-10",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A20",
+        "subject": "дом Житомирская22–24",
+        "predicate": "inspection",
+        "object": "дополнительное обследование перед возобновлением ремонта",
+        "time_scope": "до июня2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-11",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A21",
+        "subject": "дом Житомирская22–24",
+        "predicate": "contractor_change",
+        "object": "сменён подрядчик ремонта",
+        "time_scope": "до возобновления июня2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-11",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A22",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_restart",
+        "object": "возобновлён ремонт",
+        "time_scope": "июнь2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-11",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A23",
+        "subject": "дом Житомирская22–24",
+        "predicate": "scaffolding",
+        "object": "леса сняты",
+        "time_scope": "к17.12.2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-12",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A24",
+        "subject": "дом Житомирская22–24",
+        "predicate": "facade_colour",
+        "object": "бежево-коричневая окраска",
+        "time_scope": "результат ремонта2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-12",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A25",
+        "subject": "дом Житомирская22–24",
+        "predicate": "decoration_restoration",
+        "object": "восстановлен орнамент",
+        "time_scope": "результат ремонта2025",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-12",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A26",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_plan",
+        "object": "возвращение башенки со шпилем",
+        "time_scope": "май2022",
+        "status": "verified",
+        "provenance": "independent_baseline",
+        "baseline_id": "102-13",
+        "source": "источники A–D исходного отчёта;102-13:kgd.ru/item/100253"
+      },
+      {
+        "id": "102A27",
+        "subject": "дом Житомирская22–24",
+        "predicate": "attic",
+        "object": "мансарда",
+        "time_scope": "исторический объём",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A28",
+        "subject": "дом Житомирская22–24",
+        "predicate": "roof_form",
+        "object": "двускатная",
+        "time_scope": "первоначальная крыша",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A29",
+        "subject": "дом Житомирская22–24",
+        "predicate": "roof_state",
+        "object": "крыша сохранилась после штурма",
+        "time_scope": "1945",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A30",
+        "subject": "дом Житомирская22–24",
+        "predicate": "roof_loss",
+        "object": "крыша утрачена",
+        "time_scope": "первые послевоенные годы",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A31",
+        "subject": "дом Житомирская22–24",
+        "predicate": "reconstruction",
+        "object": "здание восстановлено",
+        "time_scope": "конец1950-х",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A32",
+        "subject": "дом Житомирская22–24",
+        "predicate": "roof_form",
+        "object": "вальмовая",
+        "time_scope": "после восстановления конца1950-х",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A33",
+        "subject": "дом Житомирская22–24",
+        "predicate": "window_axes",
+        "object": "три оси окон",
+        "time_scope": "восточный фасад",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A34",
+        "subject": "дом Житомирская22–24",
+        "predicate": "cornice",
+        "object": "венчающий профилированный карниз на консолях",
+        "time_scope": "восточный фасад",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A35",
+        "subject": "дом Житомирская22–24",
+        "predicate": "cornice",
+        "object": "профилированный карниз между4и5этажами",
+        "time_scope": "восточный фасад",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A36",
+        "subject": "дом Житомирская22–24",
+        "predicate": "bay_location",
+        "object": "эркер по центральной оси со2по5этаж",
+        "time_scope": "восточный фасад",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A37",
+        "subject": "дом Житомирская22–24",
+        "predicate": "bay_plan",
+        "object": "прямоугольный план",
+        "time_scope": "уровни2–4этажей",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A38",
+        "subject": "дом Житомирская22–24",
+        "predicate": "bay_pediment",
+        "object": "полуциркульный щипец",
+        "time_scope": "эркер уровней2–4",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A39",
+        "subject": "дом Житомирская22–24",
+        "predicate": "bay_plan",
+        "object": "пятигранный план",
+        "time_scope": "уровень5этажа",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A40",
+        "subject": "дом Житомирская22–24",
+        "predicate": "facade_repair",
+        "object": "фасады отремонтированы",
+        "time_scope": "1980",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102Q01",
+        "subject": "дом Житомирская22–24",
+        "predicate": "construction",
+        "object": "около1910",
+        "time_scope": "конфликт уточнения с≈1905, раннийXXвек устойчив",
+        "status": "qualified_not_scored",
+        "provenance": "agent_claim_checked",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102Q02",
+        "subject": "дом Житомирская22–24",
+        "predicate": "occupant",
+        "object": "кафе Штайндамм99",
+        "time_scope": "сейчас в недатированной статье; дата запуска не подтверждена",
+        "status": "qualified_not_scored",
+        "provenance": "agent_claim_checked",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102Q03",
+        "subject": "дом Житомирская22–24",
+        "predicate": "use",
+        "object": "квартиры на верхних этажах",
+        "time_scope": "сейчас в недатированной статье; дата запуска не подтверждена",
+        "status": "qualified_not_scored",
+        "provenance": "agent_claim_checked",
+        "baseline_id": "",
+        "source": "https://www.prussia39.ru/sight/index.php?sid=3875"
+      },
+      {
+        "id": "102A41",
+        "subject": "дом Житомирская22–24",
+        "predicate": "heritage_status",
+        "object": "не числится в реестре памятников",
+        "time_scope": "29.01.2021",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/93470-nezauryadnyj-no-oblezlyj-v-kaliningrade-otremontiruyut-poslednij-dom-shtajndamma"
+      },
+      {
+        "id": "102A42",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_start_schedule",
+        "object": "точный срок начала планируемых работ не определён",
+        "time_scope": "29.01.2021",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/93470-nezauryadnyj-no-oblezlyj-v-kaliningrade-otremontiruyut-poslednij-dom-shtajndamma"
+      },
+      {
+        "id": "102A43",
+        "subject": "дом Житомирская22–24",
+        "predicate": "scaffolding_installation",
+        "object": "на лицевом фасаде установлены леса",
+        "time_scope": "24.06.2025",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/113683-podryadchik-vozobnovil-remont-glavnogo-fasada-poslednego-doma-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A44",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_contract",
+        "object": "первый контракт: СК Стандарт,15.7млнруб,план сдачи до декабря2022",
+        "time_scope": "2022",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/113683-podryadchik-vozobnovil-remont-glavnogo-fasada-poslednego-doma-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A45",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_contract",
+        "object": "контракт Алант19.7млнруб на завершение ремонта",
+        "time_scope": "лето2024",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/113683-podryadchik-vozobnovil-remont-glavnogo-fasada-poslednego-doma-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A46",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_restart_plan",
+        "object": "возобновление планировали на середину октября2024",
+        "time_scope": "план2024",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/109703-remont-poslednego-doma-shtajndamma-v-kaliningrade-vozobnovyat-v-oktyabre"
+      },
+      {
+        "id": "102A47",
+        "subject": "дом Житомирская22–24",
+        "predicate": "structural_requirement",
+        "object": "требуется усиление несущих стен",
+        "time_scope": "при продолжении ремонта2024–2025",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/113683-podryadchik-vozobnovil-remont-glavnogo-fasada-poslednego-doma-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A48",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_delay",
+        "object": "сроки возобновления переносились из-за усиления стен",
+        "time_scope": "2024–2025",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/113683-podryadchik-vozobnovil-remont-glavnogo-fasada-poslednego-doma-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A49",
+        "subject": "дом Житомирская22–24",
+        "predicate": "repair_state",
+        "object": "фасадный ремонт находится на завершающей стадии, акт окончания не заявлен",
+        "time_scope": "17.12.2025",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/115854-v-kaliningrade-zavershayut-remont-fasada-poslednego-doma-shtajndamma"
+      },
+      {
+        "id": "102A50",
+        "subject": "дом Житомирская22–24",
+        "predicate": "roof_plan",
+        "object": "проектом предусмотрена скатная крыша",
+        "time_scope": "26.05.2022",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/100253-s-zeljonoj-bashenkoj-i-cherepicej-kak-otremontiruyut-poslednij-dom-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A51",
+        "subject": "дом Житомирская22–24",
+        "predicate": "decoration_plan",
+        "object": "проектом предусмотрен картуш под двумя окнами",
+        "time_scope": "26.05.2022",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/100253-s-zeljonoj-bashenkoj-i-cherepicej-kak-otremontiruyut-poslednij-dom-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102A52",
+        "subject": "дом Житомирская22–24",
+        "predicate": "decoration_plan",
+        "object": "проектом предусмотрено восстановление декоративного фасадного оформления",
+        "time_scope": "26.05.2022",
+        "status": "verified_secondary_source",
+        "provenance": "discovered_from_agent_then_reread",
+        "baseline_id": "",
+        "source": "https://kgd.ru/news/society/item/100253-s-zeljonoj-bashenkoj-i-cherepicej-kak-otremontiruyut-poslednij-dom-shtajndamma-v-kaliningrade"
+      },
+      {
+        "id": "102Q04",
+        "subject": "дом Житомирская22–24",
+        "predicate": "occupant",
+        "object": "кафе Штайндамм99",
+        "time_scope": "атрибуция публикации25.06.2025",
+        "status": "qualified_not_scored",
+        "provenance": "agent_claim_checked",
+        "baseline_id": "",
+        "source": "точная публикация ещё не прочитана;2017подтверждён отдельно"
+      },
+      {
+        "id": "102Q05",
+        "subject": "дом Житомирская22–24",
+        "predicate": "use",
+        "object": "квартиры на верхних этажах",
+        "time_scope": "атрибуция публикации25.06.2025",
+        "status": "qualified_not_scored",
+        "provenance": "agent_claim_checked",
+        "baseline_id": "",
+        "source": "точная публикация ещё не прочитана;2017подтверждён отдельно"
+      }
+    ],
+    "mapping": [
+      {
+        "output_fact": "O01",
+        "old_text_locator": "1",
+        "union_id": "102A04",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O02",
+        "old_text_locator": "1",
+        "union_id": "102A27",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O03",
+        "old_text_locator": "1",
+        "union_id": "102A28",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O04",
+        "old_text_locator": "3",
+        "union_id": "102Q01",
+        "status": "qualified",
+        "match": "construction-date refinement"
+      },
+      {
+        "output_fact": "O05",
+        "old_text_locator": "4",
+        "union_id": "102A07",
+        "status": "verified",
+        "match": "partial: floor qualifier omitted"
+      },
+      {
+        "output_fact": "O06",
+        "old_text_locator": "4",
+        "union_id": "102A08",
+        "status": "verified",
+        "match": "partial: Soviet time omitted"
+      },
+      {
+        "output_fact": "O07",
+        "old_text_locator": "5",
+        "union_id": "102A02",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O08",
+        "old_text_locator": "6",
+        "union_id": "102A29",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O09",
+        "old_text_locator": "6",
+        "union_id": "102A30",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O10",
+        "old_text_locator": "7",
+        "union_id": "102A31",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O11",
+        "old_text_locator": "7",
+        "union_id": "102A32",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O12",
+        "old_text_locator": "8",
+        "union_id": "102Q02",
+        "status": "qualified",
+        "match": "undated now"
+      },
+      {
+        "output_fact": "O13",
+        "old_text_locator": "8",
+        "union_id": "102Q03",
+        "status": "qualified",
+        "match": "undated now"
+      },
+      {
+        "output_fact": "O14",
+        "old_text_locator": "9",
+        "union_id": "102A33",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O15",
+        "old_text_locator": "10",
+        "union_id": "102A34",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O16",
+        "old_text_locator": "10",
+        "union_id": "102A35",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O17",
+        "old_text_locator": "11",
+        "union_id": "102A36",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O18",
+        "old_text_locator": "12",
+        "union_id": "102A37",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O19",
+        "old_text_locator": "12",
+        "union_id": "102A38",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O20",
+        "old_text_locator": "13",
+        "union_id": "102A39",
+        "status": "verified",
+        "match": "full"
+      },
+      {
+        "output_fact": "O21",
+        "old_text_locator": "14",
+        "union_id": "102A40",
+        "status": "verified",
+        "match": "full"
+      }
+    ],
+    "all_run_union": {
+      "covered_series": [
+        "cold-6f5b7eb",
+        "9ea804e-final-5to8to9",
+        "85dff57-final-and-repair"
+      ],
+      "all_runs_complete": false,
+      "agent_verified_ids": [
+        "102A01",
+        "102A02",
+        "102A03",
+        "102A04",
+        "102A05",
+        "102A06",
+        "102A07",
+        "102A08",
+        "102A11",
+        "102A17",
+        "102A18",
+        "102A22",
+        "102A23",
+        "102A24",
+        "102A25",
+        "102A26",
+        "102A27",
+        "102A28",
+        "102A29",
+        "102A30",
+        "102A31",
+        "102A32",
+        "102A33",
+        "102A34",
+        "102A35",
+        "102A36",
+        "102A37",
+        "102A38",
+        "102A39",
+        "102A40",
+        "102A41",
+        "102A42",
+        "102A43",
+        "102A44",
+        "102A45",
+        "102A46",
+        "102A47",
+        "102A48",
+        "102A49",
+        "102A50",
+        "102A51",
+        "102A52"
+      ],
+      "agent_verified_count": 42,
+      "dot_independent_atoms": 26,
+      "verified_union_count": 52,
+      "intersection": 16,
+      "qualified_count": 5,
+      "all_known_runs_count": "pending complete run registry",
+      "scope_notes": "historical shop/cafe broad assertions partial-match dated baseline; no extra generic duplicates",
+      "series9_mapping": {
+        "849ecb95": [
+          "102A01",
+          "102A41"
+        ],
+        "7871782e": [
+          "102A04",
+          "102A05",
+          "102A06"
+        ],
+        "73debbe3": [
+          "102A03"
+        ],
+        "6b7ce1b8": [
+          "102A07",
+          "102A08",
+          "102A11"
+        ],
+        "fa071ff3": [
+          "102A17",
+          "102A42"
+        ],
+        "65b37e98": [
+          "102A22",
+          "102A43"
+        ],
+        "6148dfaa": [
+          "102A18",
+          "102A44"
+        ],
+        "5fe3bdb7": [
+          "102A45",
+          "102A46",
+          "102A47",
+          "102A48"
+        ],
+        "b80ec96f": [
+          "102A23",
+          "102A24",
+          "102A25",
+          "102A49"
+        ]
+      },
+      "latest_mapping": {
+        "329a02b2": [
+          "102A03",
+          "102A07",
+          "102A08",
+          "102A11"
+        ],
+        "9251d07b": [
+          "102A18",
+          "102A22",
+          "102A23",
+          "102A24",
+          "102A25",
+          "102A49"
+        ],
+        "455cc5ea": [
+          "102A04",
+          "102A27",
+          "102A31"
+        ],
+        "3ede4797": [
+          "102A26",
+          "102A50",
+          "102A51",
+          "102A52"
+        ],
+        "repair_a41": [
+          "102A05",
+          "102A06"
+        ],
+        "repair_13c_1d7": [
+          "102A04"
+        ]
+      },
+      "cold_verified_ids": [
+        "102A02",
+        "102A04",
+        "102A07",
+        "102A08",
+        "102A27",
+        "102A28",
+        "102A29",
+        "102A30",
+        "102A31",
+        "102A32",
+        "102A33",
+        "102A34",
+        "102A35",
+        "102A36",
+        "102A37",
+        "102A38",
+        "102A39",
+        "102A40"
+      ]
+    }
+  },
+  "independent_extension": {
+    "scope": "dedup against 52 verified v3 IDs and experiment102E01–02; pending space-bunny not yet merged",
+    "original_candidate_rows": 14,
+    "dot_distinct_additions_to_baseline26": 13,
+    "dot_canonical_supported_total": 39,
+    "new_to_current52_ids": [
+      "102X01",
+      "102X02",
+      "102X03",
+      "102X04",
+      "102X08",
+      "102X09",
+      "102X10",
+      "102X11",
+      "102X13"
+    ],
+    "new_to_current52_count": 9,
+    "shared_existing_ids": [
+      "102A41",
+      "102A44",
+      "102A46",
+      "102A51"
+    ],
+    "same_canonical_collapse": {
+      "102A44": [
+        "102X06",
+        "102X07"
+      ]
+    },
+    "facts": [
+      {
+        "id": "102X01",
+        "subject": "первый этаж дома Житомирская 22–24, открытие кафе «Штайндамм 99»",
+        "predicate": "opening",
+        "object": "Открытие кафе «Штайндамм 99» на первом этаже",
+        "time_scope": "конец августа 2016",
+        "source": "https://www.newkaliningrad.ru/afisha/restaurants/news/10545570-v-kaliningrade-otkrylos-kafe-shtayndamm-99.html",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X02",
+        "subject": "приспособление первого этажа дома Житомирская 22–24 под кафе",
+        "predicate": "person_responsible",
+        "object": "Андрей Мерзляков организовал раскрытие исторических элементов при обустройстве кафе",
+        "time_scope": "описано 08.08.2017",
+        "source": "https://www.tvoybro.com/exclusive/598978559607000000_kakovo-zhiviotsia-v-starieishikh-zdaniiakh-ghoroda",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X03",
+        "subject": "двор дома Житомирская 22–24",
+        "predicate": "courtyard_form",
+        "object": "Двор-полуколодец",
+        "time_scope": "описание 14.03.2022",
+        "source": "https://strana39.ru/news/2022-03-14/346824-gde-hranitsya-oskolok-shtayndamma",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X04",
+        "subject": "советская бакалея на первом этаже дома Житомирская 22–24",
+        "predicate": "popular_name",
+        "object": "Народное название советской бакалеи: Марьин утёс",
+        "time_scope": "советский период",
+        "source": "https://kgd.ru/news/livekenig/item/54662-kjonigsberg-v-detalyah-oberrolberg--ulica-kopernika",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X05",
+        "subject": "дом Житомирская 22–24",
+        "predicate": "heritage_register_status",
+        "object": "Дом не числился в реестре памятников",
+        "time_scope": "29.01.2021 / 14.03.2022",
+        "source": "https://kgd.ru/news/society/item/93470-nezauryadnyj-no-oblezlyj-v-kaliningrade-otremontiruyut-poslednij-dom-shtajndamma",
+        "current52_match": "102A41",
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X06",
+        "subject": "первоначальный подряд на ремонт дома Житомирская 22–24, 2022",
+        "predicate": "repair_contract",
+        "object": "Первоначальный подряд Стандарт; Страна39 сообщала стоимость 15,77 млн руб.",
+        "time_scope": "2022",
+        "source": "https://strana39.ru/news/2022-03-14/346824-gde-hranitsya-oskolok-shtayndamma",
+        "current52_match": "102A44",
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X07",
+        "subject": "первоначальный план ремонта дома Житомирская 22–24, 2022",
+        "predicate": "planned_completion",
+        "object": "Первоначально сдача ремонта планировалась до декабря 2022",
+        "time_scope": "план 2022",
+        "source": "https://kgd.ru/news/society/item/109410-v-kaliningrade-nashli-podryadchika-dlya-zaversheniya-remonta-poslednego-doma-shtajndamma",
+        "current52_match": "102A44",
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X08",
+        "subject": "три дворовые стороны дома Житомирская 22–24, этап ремонта до 13.10.2023",
+        "predicate": "partial_repair_completed",
+        "object": "Три стороны здания / стены со стороны двора отремонтированы",
+        "time_scope": "к 13.10.2023",
+        "source": "https://klops.ru/kaliningrad/2023-10-13/281296-v-kaliningrade-kapremont-istoricheskogo-doma-prervalsya-iz-za-togo-chto-prezhnie-zhiltsy-snesli-nesuschie-steny",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X09",
+        "subject": "несущие стены внутри дома Житомирская 22–24, предшествующий демонтаж",
+        "predicate": "prior_demolition",
+        "object": "По заявлению главы ФКР, прежние собственники помещения разобрали несущие стены",
+        "time_scope": "обнаружено до 13.10.2023",
+        "source": "https://klops.ru/kaliningrad/2023-10-13/281296-v-kaliningrade-kapremont-istoricheskogo-doma-prervalsya-iz-za-togo-chto-prezhnie-zhiltsy-snesli-nesuschie-steny",
+        "current52_match": null,
+        "status": "verified_attributed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X10",
+        "subject": "основной фасад дома Житомирская 22–24, консервация к 13.10.2023",
+        "predicate": "conservation",
+        "object": "Основной фасад законсервирован временным защитным составом после удаления штукатурки",
+        "time_scope": "к 13.10.2023",
+        "source": "https://klops.ru/kaliningrad/2023-10-13/281296-v-kaliningrade-kapremont-istoricheskogo-doma-prervalsya-iz-za-togo-chto-prezhnie-zhiltsy-snesli-nesuschie-steny",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X11",
+        "subject": "объём проекта ремонта дома Житомирская 22–24 после изысканий к 13.10.2023",
+        "predicate": "scope_expansion_needed",
+        "object": "В проект потребовалось добавить ремонт подвалов и фундамента",
+        "time_scope": "по результатам изысканий, сообщено 13.10.2023",
+        "source": "https://klops.ru/kaliningrad/2023-10-13/281296-v-kaliningrade-kapremont-istoricheskogo-doma-prervalsya-iz-za-togo-chto-prezhnie-zhiltsy-snesli-nesuschie-steny",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X12",
+        "subject": "план возобновления ремонта дома Житомирская 22–24, опубликован 11.07.2024",
+        "predicate": "planned_restart",
+        "object": "Возобновление ремонта запланировано на 14.10.2024",
+        "time_scope": "план 11.07.2024",
+        "source": "https://kgd.ru/news/society/item/109703-remont-poslednego-doma-shtajndamma-v-kaliningrade-vozobnovyat-v-oktyabre",
+        "current52_match": "102A46",
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X13",
+        "subject": "пересмотренный план возобновления ремонта дома Житомирская 22–24, опубликован 25.11.2024",
+        "predicate": "revised_planned_restart",
+        "object": "Новый план возобновления работ в марте 2025 после дополнительного обследования и с учётом погоды",
+        "time_scope": "план 25.11.2024",
+        "source": "https://kgd.ru/news/society/item/111316-ryhlyj-kirpich-zavershenie-remonta-poslednego-doma-shtajndamma-v-kaliningrade-perenesli-na-vesnu",
+        "current52_match": null,
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      },
+      {
+        "id": "102X14",
+        "subject": "проект декора фасада дома Житомирская 22–24, план 2022/2024",
+        "predicate": "planned_decoration",
+        "object": "В проекте картуш под двумя окнами",
+        "time_scope": "план 26.05.2022, повторно 29.02.2024",
+        "source": "https://kgd.ru/news/society/item/108103-na-zavershenie-remonta-poslednego-doma-shtajndamma-v-kaliningrade-vydelili-197-mln-rublej",
+        "current52_match": "102A51",
+        "status": "verified_source_backed",
+        "provenance": "dot_extension_after_ledger_before_muse_mimo_outputs",
+        "source_access": "full HTML or indexed full relevant section; see source register in saturation-extension.md"
+      }
+    ],
+    "qualified_tenants_not_added": [
+      "102XQ01",
+      "102XQ02"
+    ]
+  }
+}
