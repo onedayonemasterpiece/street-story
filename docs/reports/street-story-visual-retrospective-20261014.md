@@ -22,7 +22,7 @@
 | Visual operation | op_2049f7c3fa0749548b38adf716e536cb | op_08d12f57c50743439586886b21fc8363 |
 | Visual job | visual_f6cffae43d6c436e94c5723ca916854d | В прочитанной сводке не восстановлен |
 | Source asset | asset_873a389fd17148fdb469c68aba4ab43c | Тот же asset_873a389fd17148fdb469c68aba4ab43c |
-| Selected result | SHA 38e50a59462a4bae2ac6f21e4d3374885757ec77310a9c53c8a362eda21e71ed | asset_d16cbb6aab584d0992a65e216e25acec; SHA 157e7a138f6c0966c89fae0ecfcf29debaa1f9233df61acd06af5452ae4875e5 |
+| Selected result | asset_b4787475ebec4326b4770e5bf168be8a; SHA 38e50a59462a4bae2ac6f21e4d3374885757ec77310a9c53c8a362eda21e71ed | asset_d16cbb6aab584d0992a65e216e25acec; SHA 157e7a138f6c0966c89fae0ecfcf29debaa1f9233df61acd06af5452ae4875e5 |
 | Реальные размеры | 1080×810, 4:3 | 1080×1350, 4:5 |
 | Выбранные карточки | 5, другой сохранённый набор | 3, включая отдельный контекст улицы |
 | Операция по коду | tune, один source, candidates=1, formats=[post_4_5], selection=human, copy={} | Те же поля |
@@ -42,7 +42,7 @@ Generation SHA 3855383 не смешивать с последующим SHA 056
 
 37802: направление уклона крыши меняется, вместо глухой стены появляется длинная соседняя фасадная линия и деревья; нижний/правый контекст расширен вне фотографического доказательства. Это содержательное изменение сцены, а не подписи поверх исходной фотографии.
 
-Источник baseline-пикселей: сохранённый native view_image от 13 октября 04:50:31.140 UTC; SHA изображения совпал с selected SHA в записях1456/1460 основной native-сессии. Источник дефектных пикселей: view_image3431–3432 и receipt3430; хеш совпадает с выбранным Vibe asset.
+Источник baseline-пикселей: сохранённый native view_image, вызов1459, output1460–1663 (204 части), от 13 октября 04:50:31.140 UTC; SHA изображения совпал с selected SHA в записях1456/1460 основной native-сессии. Источник дефектных пикселей: view_image3431–3432 и receipt3430; хеш совпадает с выбранным Vibe asset.
 
 ## 3. Точный кодовый diff
 
