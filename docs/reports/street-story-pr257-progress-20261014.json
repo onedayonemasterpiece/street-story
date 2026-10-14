@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T13:22:29.442389+00:00",
+  "updated_at_utc": "2026-10-14T13:33:21.242862+00:00",
   "last_useful_progress_at_utc": "2026-10-14T13:16:22.862579+00:00",
   "stage": 1,
   "status": "working",
-  "last_action": "Ordinary product102 explicit more closed476.7s,7same-thread attempts,12addedcards,total15,original3preserved. Final candidate rejected local source reference, not provider UNKNOWN; saturation not reached. Local fixes: freshNative own hosted search only, compactknown source bodies, short exactsource cursors, wrapperoutcome forwarding, guarded model continuation after closed local source reference rejection. Scoped final worker/cursor/closed-basis tests20passed; hosted/tool/fact cohort131passed plus132passed with one cursor diagnostic mismatch subsequently corrected. Ruffpassed.",
+  "last_action": "New native hosted-only profile verified in actual105 and102, zero DDG callbacks.105 remains0eligible due3–5 physical-binding ambiguity. Fresh102 returned2candidates but both mechanically rejected because trailing slash differed from frozen observed URL; exact host/path/query/version/chunks preserved URL-equivalence fix35tests passed. Old outputs immutable; no UNKNOWN replay.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -62,9 +62,13 @@
     {
       "scope": "native_current_profile_acceptance",
       "reason": "Native search/tool/cursor contract changed after actualbc58139 ordinary run; current profile needs real canary qualification. Same-family continuation proved onbc58139, final saturation blocked by closed source reference rejection. Historical129 UNKNOWN still protected."
+    },
+    {
+      "scope": "photo105",
+      "reason": "Owner address saved/current registry f2922ff used with unchanged originalEXIF. Native model could not distinguish historical3–5 site from selectedway105154961; no history absence claimed and no selected-house override."
     }
   ],
-  "next_step": "Finish scoped checks/commit; verify changed native profile with originalGPS canary and current105registry owner address, then ordinary worker + editorial/visual/E2E.",
+  "next_step": "Commit URL-equivalence fix and qualify actual new-profile102 receipt; ordinary more worker in same selected story, then105 continuation and131/104/editorial/visual/E2E.",
   "stages": [
     {
       "stage": 0,
@@ -213,6 +217,77 @@
           "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/material-0.json",
           "plan": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/plan-0.json",
           "logs": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/research.log"
+        },
+        {
+          "photo": 105,
+          "source_sha": "a4d3111ff457d510c9ba88268bda171f27604fd4",
+          "story_id": "story_98d60ad1f6bda1196ea3e7f2",
+          "job_id": "job_d4ca9038f8c748f59186ddf9",
+          "run_id": "research_a66aa576409b440092bf29ef",
+          "native_attempt_id": "rattempt_269fbd224193b2a85d480e32",
+          "thread_id": "01a13a95-b833-7801-998f-ec54077f165a",
+          "turn_id": "01a13a95-baf8-77c1-ad22-edf4dad8755e",
+          "status": "INCOMPLETE",
+          "eligible_cards": 0,
+          "elapsed_seconds": 55.42165756225586,
+          "hosted_discovery_calls": 2,
+          "ddg_callbacks": 0,
+          "owned_reads": 6,
+          "model_completion": {
+            "research_sufficient": false,
+            "reason": "Обнаружены и прочитаны официальный муниципальный источник с историческими сведениями о здании Отто Брауна и региональный перечень ОКН. Однако оба источника дают адресный диапазон либо два номера (3–5; 3, 5), не подтверждая физическую связь именно с выбранным отдельным контуром здания OSM. Это конкретный пробел привязки объекта, а не отсутствие сведений о доме. Дополнительный поиск может найти исторические и архитектурные сведения, но без надёжной привязки к выбранному контуру их нельзя безопасно принять как факты о нём. Следует искать источник, прямо связывающий контур/корпус № 3 с зданием Отто Брауна; при этом независимые архитектурные сведения и история использования здания остаются перспективными после установления такой связи.",
+            "remaining_gaps": [
+              "Подтверждение, что выбранный контур здания по адресу 3 является именно зданием Отто Брауна, а не другой частью адресного комплекса 3–5.",
+              "Независимые сведения об архитектуре, авторах проекта и исторических функциях здания, применимые именно к выбранному контуру.",
+              "Возможные дополнительные события и сведения об использовании после описанных в муниципальной карточке периодов."
+            ],
+            "stop_basis": "unresolved_gap",
+            "next_action": {
+              "kind": "linkage",
+              "request": "Найти кадастровый/охранный документ, паспорт ОКН, адресный план или источник с фотографией/планом, прямо связывающий контур здания OSM osm:way:105154961 (Профессора Севастьянова, 3) с административным зданием Отто Брауна и разграничивающий его с адресом 5.",
+              "reason": "Пока источники подтверждают объект по адресу 3–5 или 3, 5, но не устанавливают тождество выбранного физического контура; после привязки можно безопасно использовать уже прочитанные сведения о строительстве и историческом использовании."
+            }
+          },
+          "atomic_N_H_V_Q_U_F": "not_yet_compared",
+          "Delta": "N/A",
+          "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-a4d3111/material-0.json",
+          "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-a4d3111/receipt-0.json"
+        },
+        {
+          "photo": 102,
+          "source_sha": "a4d3111ff457d510c9ba88268bda171f27604fd4",
+          "story_id": "story_61426cf85338fe71b4e915a4",
+          "job_id": "job_06a2f34c68694604a1066c8c",
+          "run_id": "research_74cd21213eda4308a8cd11a3",
+          "native_attempt_id": "rattempt_c72c557a84b5067fc26e32d1",
+          "thread_id": "01a13a98-6abd-7c81-855d-b396ebf9c73d",
+          "turn_id": "01a13a98-6cba-7b01-b9b2-2cb95c7647b5",
+          "status": "INCOMPLETE",
+          "eligible_cards": 0,
+          "elapsed_seconds": 40.892752170562744,
+          "hosted_discovery_calls": 3,
+          "ddg_callbacks": 0,
+          "owned_reads": 3,
+          "model_completion": {
+            "research_sufficient": false,
+            "reason": "Исследование начато и найдено прямое, но единственное содержательное сообщение о доме: туристический портал связывает Житомирскую, 22 (не №24) с рестораном в здании XVIII века. Страница ресторана фиксирует адрес, но недатирована и не доказывает актуальное использование. Cian дал CAPTCHA вместо содержимого, что является техническим отказом, а не доказательством отсутствия сведений. Не исследованы историческая застройка Штайндамма, прежние жильцы/организации, архитектурные источники и события дома; имеющихся материалов недостаточно, чтобы считать их исчерпанными.",
+            "remaining_gaps": [
+              "Независимое подтверждение соответствия старого адреса Штайндамм, 99 современному дому Житомирская, 22; связи с №24 не установлено.",
+              "Независимые архитектурные сведения и подтверждение датировки XVIII веком.",
+              "Исторические жильцы, организации и события конкретного здания.",
+              "Надёжно датированное свидетельство об использовании дома в качестве ресторана."
+            ],
+            "stop_basis": "unresolved_gap",
+            "next_action": {
+              "kind": "search",
+              "request": "Искать отдельные источники по запросам «Штайндамм 99 Кёнигсберг Житомирская 22», «Steindamm 99 Königsberg», «Житомирская 22 Калининград дом XVIII век»; затем читать найденные муниципальные, архивные или историко-архитектурные документы через webfetch.",
+              "reason": "Историческое название Штайндамм, 99 — проверяемая поисковая гипотеза из прочитанного материала; независимое исследование по ней может прояснить датировку, физическую идентичность и историю здания."
+            }
+          },
+          "atomic_N_H_V_Q_U_F": "not_yet_compared",
+          "Delta": "N/A",
+          "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-a4d3111/material-0.json",
+          "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-a4d3111/receipt-0.json"
         }
       ],
       "logs": [
@@ -278,7 +353,8 @@
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-hosted-only-r2.xml",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/short-cursor-r4.xml",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/worker-outcome-r1.xml",
-        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/closed-basis-worker-r2.xml"
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/closed-basis-worker-r2.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-url-guard-r1.xml"
       ],
       "blockers": [
         "Real hosted discovery, same-family continuation and qualified closed fallback still need provider verification.",
@@ -319,7 +395,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "bc58139edf875f8c90ca92cef8190908a05cd03f",
+  "checked_out_commit": "a4d3111ff457d510c9ba88268bda171f27604fd4",
   "code_changes": "pushed to existing PR257; current backend and Android CI succeeded",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -344,7 +420,7 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "8d0fb8318d3d22d96f75e434f9d57696264d10b0",
+  "code_commit": "a4d3111ff457d510c9ba88268bda171f27604fd4",
   "ci": {
     "head": "e051d3d53ff7e7c2d6d5a33d35fa650effc889fa",
     "backend": {
@@ -357,5 +433,11 @@
       "status": "completed",
       "conclusion": "success"
     }
+  },
+  "current_registry": {
+    "path": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/photo-registry-f2922ff.json",
+    "commit": "f2922ff",
+    "sha256": "1b8ea90d41098f27d75ce633b2b736606d959949f59e75364d83142b853f3141",
+    "reason": "contains saved owner105 address correction; previous frozen corpus/source files remain unchanged"
   }
 }

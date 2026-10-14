@@ -109,7 +109,7 @@ def load_research_qualification(installer, *, research_directory=None, qualifica
 def load_agent_qualification(path, *, routes=None):
     """New agent-role proof only: immutable actual tool receipts plus current profile."""
     from street_story.fact_agents import QUALIFICATION_KEY
-    from street_story.fact_agent_providers import INSTRUCTIONS, RESULT_SCHEMA, TOOLS, validate_result
+    from street_story.fact_agent_providers import INSTRUCTIONS, RESULT_SCHEMA, TOOLS, validate_result, _read_url_key
     from jsonschema import Draft202012Validator
     path = Path(path)
     if path.is_symlink():
@@ -197,7 +197,8 @@ def load_agent_qualification(path, *, routes=None):
             read_urls = {source.get(key) for source in receipt.get('sources') or []
                          if source.get('source_version_id') and source.get('content_sha256')
                          for key in ('requested_url', 'final_url')}
-            if not facts or any(fact['url'] not in read_urls for fact in facts):
+            read_keys = {_read_url_key(url) for url in read_urls} - {None}
+            if not facts or any(_read_url_key(fact['url']) not in read_keys for fact in facts):
                 raise ValueError('Agent qualification has no actually read candidate source')
     return proof, {'agent_qualification_path': str(path),
         'agent_qualification_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),

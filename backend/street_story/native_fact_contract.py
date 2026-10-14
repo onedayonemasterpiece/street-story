@@ -209,11 +209,14 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     if any(row[key] != candidate[key] for key in ('text', 'subject_scope', 'source_date')):
         raise ValueError('native_fact_assessment_claim_changed')
     version = basis['source_version_id']
+    from .fact_agent_providers import _read_url_key
+    observed_url = _read_url_key(basis['url'])
     reads = [doc for call in receipt.get('native_tool_calls', {}).values()
         if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
         for doc in (call.get('result') or {}).get('documents', [])
         if doc.get('source_version_id') == version and doc.get('content_sha256') == basis['content_sha256']
-        and basis['url'] in {doc.get('requested_url'), doc.get('final_url')}]
+        and observed_url is not None
+        and observed_url in {_read_url_key(doc.get('requested_url')), _read_url_key(doc.get('final_url'))}]
     read = next(iter(reads), None)
     # research_run_sources is a latest-per-URL pointer. The immutable chunk/run
     # relation retains earlier versions read in the same operation.

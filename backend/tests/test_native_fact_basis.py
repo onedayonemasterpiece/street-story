@@ -87,6 +87,28 @@ async def test_complete_single_model_basis_is_admitted_without_new_fetch_or_judg
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('alias', [URL+'/', URL+'?different=1', 'https://unread.example/gate-history'])
+async def test_owned_native_url_equivalence_preserves_host_query_version_and_chunks(tmp_path, alias):
+    from street_story.native_fact_contract import owned_assessment
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path)
+    try:
+        receipt['raw_result']['facts'][0]['sources'][0]['url'] = alias
+        save()
+        candidate = source_candidates(receipt['raw_result'])['facts'][0]
+        story = HeadlessFacts(service)._snapshot(job, 'headless-run')[0]
+        with service.store.connection() as db:
+            if alias == URL+'/':
+                document, result = owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+                assert document['requested_url'] == URL
+                assert result['receipt']['new_inference_sent'] is False
+            else:
+                with pytest.raises(ValueError, match='source_not_owned_read'):
+                    owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_paged_assessment_requires_actual_received_chunks_across_owned_calls(tmp_path):
     from street_story.native_fact_contract import owned_assessment
     from street_story.native_source_reads import source_page
