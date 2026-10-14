@@ -11,6 +11,37 @@ from test_headless_facts import fixture, URL
 from test_live_editor import make_service, mark_identity_ready
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stopped', [False, True])
+async def test_photo_only_agent_input_initializes_live_schema_before_writer_lock(tmp_path, stopped):
+    from street_story.service import ConflictError
+    service, job, _, reader, _ = await fixture(tmp_path)
+    try:
+        with service.store.tx() as db:
+            # A photo-only intake has not used the interactive Live adapter yet.
+            db.execute('DROP TABLE live_diagnostics')
+            row = service._story_row(db, job['story_id'])
+            research = json.loads(row['research_json'])
+            if stopped:
+                research['research_controls'] = {'facts': {'stopped': True,
+                    'photo_sha256': row['photo_sha256'], 'identity_generation': 0, 'revision': 1}}
+                db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                    (json.dumps(research), row['id']))
+        if stopped:
+            with pytest.raises(ConflictError) as failure:
+                service._persist_agent_input_revision(job, 'headless-run', 'photo-input', research)
+            assert failure.value.code == 'agent_research_stale'
+        else:
+            service._persist_agent_input_revision(job, 'headless-run', 'photo-input', research)
+        with service.store.connection() as db:
+            current = json.loads(service._story_row(db, job['story_id'])['research_json'])
+            assert (current.get('input_revision') == 'photo-input') is not stopped
+            assert db.execute("SELECT 1 FROM sqlite_master WHERE name='live_diagnostics'").fetchone()
+            assert db.execute('SELECT COUNT(*) FROM research_provider_attempts').fetchone()[0] == 0
+    finally:
+        await reader.search_http.aclose()
+
+
 def test_address_provenance_survives_reader_and_review_compaction():
     anchor = {'city': 'Калининград', 'street': 'Житомирская', 'house_number': '22–24',
               'names': ['Дом'], 'source': 'osm.observed_tags',

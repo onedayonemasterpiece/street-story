@@ -181,9 +181,10 @@ async def run(args):
     sha = require_frozen_checkout(args.expected_sha)
     output = managed(args.output)
     recovering = args.resume_closed_native
-    if output.exists() and not recovering:
+    resuming_product = args.resume_product
+    if output.exists() and not (recovering or resuming_product):
         raise ValueError('Existing original operation must be reconciled; never replay this campaign')
-    if not recovering:
+    if not (recovering or resuming_product):
         output.mkdir(mode=0o700)
     continuation = json.loads((managed(args.continue_from)/'campaign.json').read_text()) if args.continue_from else None
     if args.coverage_goal and not continuation:
@@ -230,6 +231,31 @@ async def run(args):
         from street_story.fact_agents import QUALIFICATION_KEY
         proof, provenance = load_agent_qualification(args.agent_qualification, routes=[route])
         service.store.cache_put(QUALIFICATION_KEY, proof, 3600)
+    if resuming_product:
+        campaign = json.loads((output/'campaign.json').read_text())
+        if (campaign.get('status') != 'INCOMPLETE' or campaign.get('message_id') != args.message
+                or campaign.get('mode') != 'qualified_product_fact_research'
+                or campaign.get('profile_sha256') != route.profile_fingerprint
+                or campaign.get('photo_sha256') != item['sha256'] or not campaign.get('attempts')):
+            raise ValueError('Only the original incomplete qualified product request may resume')
+        sid = campaign['story_id']
+        current = service.story(sid)
+        with service.store.connection() as db:
+            jobs = list(db.execute("SELECT id,state FROM jobs WHERE story_id=? AND kind='research' "
+                "AND state IN ('ready','retry','running')", (sid,)))
+        if (current['photo_sha256'] != item['sha256']
+                or current['visual_identity']['candidate_id'] != campaign['selected_candidate_id']
+                or len(jobs) != 1 or jobs[0]['id'] != campaign['attempts'][-1]['job_id']
+                or jobs[0]['state'] == 'running'):
+            raise ValueError('Original selected object/request changed or is still running')
+        campaign.update(recovery_code_sha=sha, recovery_new_job_created=False)
+        try:
+            await qualified_product_round(service, sid, output, len(campaign['attempts']), campaign)
+            campaign['status'] = 'MEASURED'
+        finally:
+            save(output/'campaign.json', campaign)
+            await adapter.close()
+        return
     campaign = {'status': 'PREPARING', 'mode': 'native_fact_only_qualification', 'source_sha': sha,
         'message_id': args.message, 'photo_sha256': item['sha256'], 'route_id': route.route_id,
         'profile_sha256': route.profile_fingerprint, 'attempts': [], 'publication_dispatches': 0,
@@ -426,6 +452,8 @@ if __name__ == '__main__':
         help='Verified actual current-profile receipts; execute the existing product plan and its same-job model continuations')
     parser.add_argument('--resume-closed-native', action='store_true',
         help='Observe the original completed turn after a local input-readback projection failure; never resend it')
+    parser.add_argument('--resume-product', action='store_true',
+        help='Resume the original retry-ready qualified product job through its ordinary worker; create no new job')
     parser.add_argument('--recover-assessments-from', type=Path,
         help='Write complete original native assessments in a separate measured segment; no inference or source replay')
     parser.add_argument('--attempt-id')
@@ -436,6 +464,9 @@ if __name__ == '__main__':
     parser.add_argument('--owner-address-from-registry', action='store_true',
         help='Supply only a documented owner-confirmed address through the existing selection owner_context')
     args = parser.parse_args()
+    if args.resume_product and (not args.agent_qualification or args.additions or args.continue_from
+            or args.resume_closed_native or args.recover_assessments_from or args.owner_address_from_registry):
+        parser.error('Product resume requires the original output and qualification, without new commands or recovery modes')
     if args.agent_qualification and (args.resume_closed_native or args.recover_assessments_from):
         parser.error('Qualified product research cannot substitute for original readback/write recovery')
     if args.owner_address_from_registry and (args.continue_from or args.resume_closed_native

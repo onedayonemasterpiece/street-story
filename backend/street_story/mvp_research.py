@@ -1180,8 +1180,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
     def _persist_agent_input_revision(self, job, run_id, input_revision, prior):
         from .headless_facts import HeadlessFacts
         epoch = int(((prior.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        # The adapter initializes Live tables using its own connection. Do that
+        # before taking the writer lock, including on a fresh photo-only store.
+        headless = HeadlessFacts(self)
         with self.store.tx() as db:
-            snapshot = HeadlessFacts(self)._snapshot(job, run_id, epoch)
+            snapshot = headless._snapshot(job, run_id, epoch)
             if snapshot is None:
                 raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
             story, research, _ = snapshot
