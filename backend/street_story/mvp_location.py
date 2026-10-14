@@ -167,7 +167,7 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                             (lat, lon, canonical(research), self.store.now(), job["story_id"]),
                         )
 
-        await super()._run_research(job)
+        outcome = await super()._run_research(job)
 
         if provenance is not None:
             with self.store.tx() as db:
@@ -178,6 +178,7 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                     "UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
                     (canonical(research), self.store.now(), job["story_id"]),
                 )
+        return outcome
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
         if research is None:

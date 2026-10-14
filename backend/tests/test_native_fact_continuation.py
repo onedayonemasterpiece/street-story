@@ -32,7 +32,7 @@ def receipt(binding, context, raw, number):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['complete', 'no_progress', 'unknown_second'])
+@pytest.mark.parametrize('mode', ['complete', 'no_progress', 'unknown_second', 'closed_bad_basis'])
 async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknown(tmp_path, monkeypatch, mode):
     service, job, _, reader, _ = await fixture(tmp_path)
     adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
@@ -41,6 +41,10 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
     actions = [{'kind':'search','request':'Independent historical building query','reason':'Find historical linkage'},
         {'kind':'read','request':'https://example.org/own-history','reason':'Read discovered original'}]
     calls, readbacks, parents = [], [], []
+    if mode == 'closed_bad_basis':
+        async def rejected_reference(*args):
+            return {'status': 'unverified', 'reason': 'native_fact_source_not_owned_read'}
+        service.confirm_agent_fact = rejected_reference
     async def invoke(adapter, current, story, context, *, binding, guard):
         guard()
         if binding.get('phase') == 'unknown':
@@ -59,6 +63,10 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
                         (pointer['original_attempt_id'],)).fetchone()[0])
                 assert parent['phase']=='completed' and parent['provider_send_state']=='response_closed'
                 parents.append(parent)
+                if mode == 'closed_bad_basis' and number == 2:
+                    diagnostic = context['native_continuation_diagnostics']
+                    assert diagnostic['original_attempt_id'] == calls[0][0]
+                    assert diagnostic['outcomes'] == [{'status': 'unverified', 'reason': 'native_fact_source_not_owned_read'}]
             if mode=='unknown_second' and number==2:
                 value={'binding':binding,'phase':'unknown','provider_send_state':'possibly_sent',
                     'provider_id':'codex_native','model_id':'gpt-6-luna','thread_id':'same-owned-luna','turn_id':'closed-2'}
@@ -67,6 +75,8 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
             raw=(packet(actions[0]) if mode=='no_progress' else packet(actions[number-1]) if number<3
                 else packet(sufficient=True,basis='material_exhausted'))
         value=receipt(binding,context,raw,number)
+        if mode == 'closed_bad_basis' and number == 1:
+            value['result']['facts'] = [{'text': 'Controlled candidate with a rejected reference'}]
         adapter._checkpoint_receipt(binding,value)
         return {'result':value['result'],'receipt':value}
     monkeypatch.setattr('street_story.fact_agents.run_tool_agent',invoke)
@@ -88,7 +98,7 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
             assert state['continuation_blocker']=='same_action_without_new_input'
             assert state['native_completion']['stop_basis']=='unresolved_gap'
             assert len(calls)==2
-        elif mode=='complete':
+        elif mode in {'complete', 'closed_bad_basis'}:
             assert state['native_completion']['research_sufficient'] and len(calls)==3
             assert len(state['history'])==2
         with service.store.connection() as db:
@@ -96,7 +106,7 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
         if mode!='no_progress':
             service.store=Store(service.store.path)
             await run_fact_agents(adapter,job,'headless-run','No new independent investigation')
-            assert len(calls)==(3 if mode=='complete' else 2)
+            assert len(calls)==(3 if mode in {'complete', 'closed_bad_basis'} else 2)
     finally:
         await reader.search_http.aclose()
 

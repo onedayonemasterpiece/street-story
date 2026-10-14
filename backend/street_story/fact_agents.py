@@ -393,6 +393,13 @@ def native_agent_context(service, story, identity, goal, run_id):
                 'WHERE a.story_id=? ORDER BY a.assertion_id', (story['id'],))]
         for item in context['known']:
             item.pop('sources_json', None)
+            # Known claims are context, never a substitute for an own read.
+            # Keep every source/version/span reference without resending whole
+            # article chunks once per accepted claim on every continuation.
+            for source in item['sources']:
+                source.pop('confirmed_fragment', None)
+                source['supports'] = [{key: value for key, value in support.items() if key != 'text'}
+                    for support in source.get('supports') or []]
         reviews = []
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_review_packets'").fetchone():
             current = {item['fact_id']: item['revision_digest'] for item in context['known']}
@@ -702,9 +709,16 @@ async def run_fact_agents(adapter, job, run_id, goal):
             result = await one_step(route_id)
             completion = result.get('native_completion') or {}
             action = completion.get('next_action')
+            unresolved = [row for row in result.get('outcomes', []) if row.get('status') == 'unverified']
+            # A closed native packet with a rejected own-source reference has
+            # no outstanding judge send. Return the actual mechanical rejection
+            # to the model; only its next guarded assessment can repair it.
+            closed_reference_errors = bool(unresolved) and all(
+                row.get('reason') == 'native_fact_source_not_owned_read' and not row.get('receipt')
+                and not row.get('confirmation') for row in unresolved)
             if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
                     or completion.get('research_sufficient') or not action or action.get('kind') == 'ask_owner'
-                    or any(row.get('status') == 'unverified' for row in result.get('outcomes', []))):
+                    or unresolved and not closed_reference_errors):
                 return result
             guard()
             with adapter.service.store.connection() as db:
@@ -738,6 +752,13 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 'parent_turn_id': parent['turn_id'], 'next_action': action, 'parent_sha256': native_parent_digest(parent)}
             next_context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
             next_context['native_continuation'] = pointer
+            if closed_reference_errors:
+                next_context['native_continuation_diagnostics'] = {
+                    'original_attempt_id': result['attempt_id'],
+                    'kind': 'closed_local_source_reference_rejection_not_provider_unknown',
+                    'outcomes': unresolved,
+                    'meaning': 'Rejected references were not admitted. Correct them only from actual own frozen reads; '
+                        'the host has not repaired evidence or accepted the unsupported claim.'}
             with adapter.service.store.connection() as db:
                 load_native_parent(db, pointer, binding=parent['binding'], context=next_context)
             state = {'phase': 'created', 'provider_id': 'codex_native', 'parent_attempt_id': result['attempt_id'],

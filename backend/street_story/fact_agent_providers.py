@@ -35,6 +35,9 @@ TOOLS = [{'name': 'websearch', 'description': 'Discover public article URLs; sni
           'parameters': {'type': 'object', 'properties': {'url': {'type': 'string', 'maxLength': 2048},
                          'cursor': {'type': 'string', 'maxLength': 12000}},
                          'required': ['url'], 'additionalProperties': False}}]
+# Native Codex discovers with its hosted search. Its only product callback
+# reads and freezes a public document; other providers retain both adapters.
+NATIVE_TOOLS = [item for item in TOOLS if item['name'] == 'webfetch']
 def wire_tools():
     """SDK Schema supports a narrower subset; host validation stays strict."""
     return [{**item, 'parameters': {'type': 'object',
@@ -419,6 +422,8 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         'model_id': route.model_id, 'frozen_prompt': prompt, 'frozen_schema': RESULT_SCHEMA,
         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
         'provider_send_state': 'not_sent', 'sources': [], 'model_attempts': []}
+    if route.provider_id == 'codex_native':
+        receipt['provided_tools'] = copy.deepcopy(NATIVE_TOOLS)
     if route.provider_id == 'codex_native' and binding.get('phase') not in {None, 'created'}:
         with adapter.service.store.connection() as db:
             saved = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
@@ -438,6 +443,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             parent = load_native_parent(db, pointer, binding=binding, context=context)
         family = parent.get('native_family') or {}
         receipt.update(thread_id=parent['thread_id'], native_threads=copy.deepcopy(parent['native_threads']),
+            provided_tools=copy.deepcopy(parent.get('provided_tools', TOOLS)),
             native_tool_calls={key: {**copy.deepcopy(call), 'inherited_from_attempt_id': pointer['original_attempt_id']}
                 for key, call in parent.get('native_tool_calls', {}).items() if call.get('phase') == 'completed'},
             sources=copy.deepcopy(parent.get('sources') or []),
@@ -476,7 +482,8 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         guard()
         if _retained_cohort is not None:
             raise ValueError('retained_source_tool_outside_scope')
-        declaration = next((item for item in TOOLS if item['name'] == name), None)
+        allowed_tools = receipt.get('provided_tools', TOOLS) if route.provider_id == 'codex_native' else TOOLS
+        declaration = next((item for item in allowed_tools if item['name'] == name), None)
         if not declaration or not Draft202012Validator(declaration['parameters']).is_valid(args):
             raise ValueError('agent_tool_outside_scope')
         client = adapter.service.providers.gemini
@@ -573,7 +580,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 if binding.get('phase') in {None, 'created'}:
                     receipt['frozen_schema'] = copy.deepcopy(NATIVE_SCHEMA)
                 native = await route.client.run(binding=binding, receipt=receipt, prompt=prompt,
-                    schema=receipt['frozen_schema'], tools=TOOLS, callback=tool, guard=guard)
+                    schema=receipt['frozen_schema'], tools=receipt.get('provided_tools', TOOLS), callback=tool, guard=guard)
                 receipt, text = native['receipt'], native['text']
                 receipt['raw_result_text'] = text
                 receipt['raw_result'] = json.loads(text)

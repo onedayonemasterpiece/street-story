@@ -44,7 +44,17 @@ async def test_pdf_delivery_preserves_every_chunk_and_page_after_url_version_cha
                 source_page(db, run_id='foreign-run', url=URL, cursor=first['next_cursor'])
             with pytest.raises(ValueError, match='cursor_invalid'):
                 source_page(db, run_id='headless-run', url='https://example.org/another', cursor=first['next_cursor'])
-            changed = json.loads(base64.urlsafe_b64decode(first['next_cursor']))
+            assert len(first['next_cursor']) < 80
+            # Previously issued long cursors stay readable with exact binding.
+            changed = {'url': URL, 'version': old['source_version_id'],
+                'sha256': old['content_sha256'], 'chunk': first['chunk_offset']+len(first['chunks']),
+                'page': len(first['pdf']['pages'])}
+            legacy = base64.urlsafe_b64encode(json.dumps(changed).encode()).decode()
+            assert source_page(db, run_id='headless-run', url=URL, cursor=legacy, byte_budget=8000) == packets[1]
+            token = first['next_cursor']
+            mutated = token[:-1]+('0' if token[-1] != '0' else '1')
+            with pytest.raises(ValueError, match='cursor_invalid'):
+                source_page(db, run_id='headless-run', url=URL, cursor=mutated)
             changed['sha256'] = '0' * 64
             bad = base64.urlsafe_b64encode(json.dumps(changed).encode()).decode()
             with pytest.raises(ValueError, match='cursor_invalid'):

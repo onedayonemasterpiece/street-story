@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T13:06:38.737034+00:00",
-  "last_useful_progress_at_utc": "2026-10-14T12:59:15.954121+00:00",
+  "updated_at_utc": "2026-10-14T13:22:29.442389+00:00",
+  "last_useful_progress_at_utc": "2026-10-14T13:16:22.862579+00:00",
   "stage": 1,
   "status": "working",
-  "last_action": "Actual102 hosted-search qualification verified against exact current native route profile;19controlled qualification/continuation tests passed. Added ordinary-worker acceptance path and preserved native hosted search leads. Next frozen commit then normal product more, first job remains closed.",
+  "last_action": "Ordinary product102 explicit more closed476.7s,7same-thread attempts,12addedcards,total15,original3preserved. Final candidate rejected local source reference, not provider UNKNOWN; saturation not reached. Local fixes: freshNative own hosted search only, compactknown source bodies, short exactsource cursors, wrapperoutcome forwarding, guarded model continuation after closed local source reference rejection. Scoped final worker/cursor/closed-basis tests20passed; hosted/tool/fact cohort131passed plus132passed with one cursor diagnostic mismatch subsequently corrected. Ruffpassed.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -58,9 +58,13 @@
     {
       "scope": "visual_acceptance",
       "reason": "Issue258 open: legacy geometry distortion, full executor model/version/seed fields not yet recovered."
+    },
+    {
+      "scope": "native_current_profile_acceptance",
+      "reason": "Native search/tool/cursor contract changed after actualbc58139 ordinary run; current profile needs real canary qualification. Same-family continuation proved onbc58139, final saturation blocked by closed source reference rejection. Historical129 UNKNOWN still protected."
     }
   ],
-  "next_step": "Run one explicit more request in existing102 story via service.run_once with verified actual qualification; observe model-action continuation and original IDs.",
+  "next_step": "Finish scoped checks/commit; verify changed native profile with originalGPS canary and current105registry owner address, then ordinary worker + editorial/visual/E2E.",
   "stages": [
     {
       "stage": 0,
@@ -88,7 +92,12 @@
         "Bounded source delivery across all original chunks and PDF page index; cursors retain exact source version after URL changes. Admission unions only actually completed received chunks.",
         "Executable concrete model action continuation in same Luna thread/job; closed packet admitted before next action, UNKNOWN only original readback, unchanged action reported blocked, closed native resource failure enables qualified fallback.",
         "Actual native102: hosted discovery3, owned webfetch3,3eligible cards persisted in61.2s; model requests further reading, not saturated.",
-        "Current-route qualification checked against immutable actual102 receipt, allowing owned executed hosted search plus frozen reader. Ordinary worker acceptance path added, real continuation not yet verified."
+        "Current-route qualification checked against immutable actual102 receipt, allowing owned executed hosted search plus frozen reader. Ordinary worker acceptance path added, real continuation not yet verified.",
+        "Real ordinary102 more:7same-thread model turns with packet admission before nextaction,12new cards/15total,original3preserved; final source-reference rejection remains explicit.",
+        "Fresh native profile exposes only frozen webfetch; built-in hosted search owns discovery. Generic provider search adapters preserved.",
+        "Known source metadata retains every version/span reference but suppresses repeated full text in model context; persistent evidence unchanged.",
+        "Short reference cursor binds URL/version/content/positions; original long cursor readback retained.",
+        "Ordinary product wrappers now forward research outcome to worker; closed local source-reference failure can return diagnostics to model nextaction, no host proof repair."
       ],
       "photo_metrics": [
         {
@@ -153,6 +162,57 @@
             "cost": "unknown"
           },
           "app_e2e": false
+        },
+        {
+          "ordinal": 0,
+          "job_id": "job_f578cc2ceb0148018617c6ed",
+          "run_id": "research_561ca607703213e0ef2cdf7d",
+          "started_at": 1791983255.6925917,
+          "before_fact_ids": [
+            "claim_98d717bb5c62d9a92305",
+            "claim_bf073aabe3d468a28039",
+            "claim_c0f89b31a172655ffc88"
+          ],
+          "status": "useful_partial",
+          "execution_path": "ordinary_service.run_once",
+          "elapsed_seconds": 476.70190811157227,
+          "job_state": "done",
+          "job_error": null,
+          "added_fact_ids": [
+            "claim_110b6a40472d561f3e58",
+            "claim_1d281a392217ee2ae77d",
+            "claim_34f5d5e30872706a3396",
+            "claim_372e8c727db318bb2e4d",
+            "claim_4e0e9c5424669513f415",
+            "claim_91639990f72a4c58bd8c",
+            "claim_a948281e40b5348df931",
+            "claim_af3f64c2f62c0c8fa3a4",
+            "claim_bff8d75be9cb30dffbcb",
+            "claim_d9f3eef8f5a229c7afb4",
+            "claim_df92cdd4c0e88cabe58c",
+            "claim_e2e4e3ba18960a40c6e3"
+          ],
+          "preserved_previous": true,
+          "total": 15,
+          "native_attempt_ids": [
+            "rattempt_f903d19f8cc53611b609b93b",
+            "rattempt_7f8b93e94d0a3e98d201e8f3",
+            "rattempt_67e076cc228b5954c405d330",
+            "rattempt_a6f5e4ae8572cfba81c00c38",
+            "rattempt_77d0dfdeaeca4042d3b12633",
+            "rattempt_23dcea4c470af676b9b4a9cf",
+            "rattempt_79506e81c6bad27d979dfea9"
+          ],
+          "photo": 102,
+          "story_id": "story_c4cada470b3409d81213e7e3",
+          "atomic_N_H_V_Q_U_F": "not_yet_compared",
+          "Delta": "N/A",
+          "source_sha": "bc58139edf875f8c90ca92cef8190908a05cd03f",
+          "final_blocker": "native_fact_source_not_owned_read on last closed candidate; research not saturated. Product wrappers dropped returned useful_partial outcome (source fix prepared).",
+          "app_e2e": false,
+          "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/material-0.json",
+          "plan": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/plan-0.json",
+          "logs": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/research.log"
         }
       ],
       "logs": [
@@ -213,7 +273,12 @@
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-preflight-current.json",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-e051/campaign.json",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-qualification-check.json",
-        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/hosted-qualification-r1.xml"
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/hosted-qualification-r1.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-bc58139/live-checkpoint.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-hosted-only-r2.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/short-cursor-r4.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/worker-outcome-r1.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/closed-basis-worker-r2.xml"
       ],
       "blockers": [
         "Real hosted discovery, same-family continuation and qualified closed fallback still need provider verification.",
@@ -254,7 +319,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "e051d3d53ff7e7c2d6d5a33d35fa650effc889fa",
+  "checked_out_commit": "bc58139edf875f8c90ca92cef8190908a05cd03f",
   "code_changes": "pushed to existing PR257; current backend and Android CI succeeded",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",

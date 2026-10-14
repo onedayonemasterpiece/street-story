@@ -47,7 +47,7 @@ async def test_native_model_receives_exact_failed_read_outcome_from_its_run(tmp_
 
 
 @pytest.mark.asyncio
-async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as_source_text(tmp_path):
+async def test_native_discovery_uses_hosted_search_and_never_dispatches_ddg_callback(tmp_path):
     service, job, _, reader, _ = await fixture(tmp_path)
     raw = {'type': 'web_search', 'title': 'Catalog', 'url': 'https://example.org/catalog',
         'supports': [{'kind': 'search_snippet', 'text': 'A stale statement absent from the actual page.'}]}
@@ -57,7 +57,9 @@ async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as
     received, saved = [], []
     class Native:
         async def run(self, **kwargs):
-            received.append(await kwargs['callback']('websearch', {'query': 'Selected building'}))
+            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch']
+            with pytest.raises(ValueError, match='agent_tool_outside_scope'):
+                await kwargs['callback']('websearch', {'query': 'Selected building'})
             kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')
             return {'text': '{"facts":[]}', 'receipt': kwargs['receipt']}
     adapter = SimpleNamespace(service=service,
@@ -65,10 +67,8 @@ async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as
     try:
         await run_tool_agent(adapter, AgentRoute('codex_native', 'gpt-6-luna', 'native', Native()),
             {}, {'run_id': 'headless-run'}, binding={'attempt_id': 'own'}, guard=lambda: None)
-        assert received == [{'sources': [{'type': 'unverified_search_lead', 'title': 'Catalog',
-            'url': 'https://example.org/catalog'}], 'evidence_role': 'discovery_only_read_before_support'}]
-        assert saved[-1]['raw_search_discovery'] == [{'query': 'Selected building', 'sources': [raw]}]
-        assert saved[-1]['completed_tool_transcript'][0]['result'] == received[0]
+        assert not received and 'raw_search_discovery' not in saved[-1]
+        assert 'completed_tool_transcript' not in saved[-1]
     finally:
         await reader.search_http.aclose()
 
@@ -111,6 +111,13 @@ async def test_native_known_context_explains_own_current_and_stale_reviews_witho
         assert [(r['packet_ref'], r['current_revision']) for r in history] == [('current', True), ('stale', False)]
         assert all(r['reason'] == 'Claim absent from the actual frozen page' for r in history)
         assert all(r['kind'] == 'own_review_history_context_not_evidence' for r in history)
+        assert context['known'][0]['sources']
+        assert all('text' not in span for source in context['known'][0]['sources'] for span in source['supports'])
+        assert all('confirmed_fragment' not in source for source in context['known'][0]['sources'])
+        # The product ledger retains the original supporting text unchanged.
+        with service.store.connection() as db:
+            original_sources = json.loads(db.execute('SELECT sources_json FROM facts WHERE story_id=?', (story['id'],)).fetchone()[0])
+        assert any(span.get('text') for source in original_sources for span in source['supports'])
     finally:
         await reader.search_http.aclose()
 
