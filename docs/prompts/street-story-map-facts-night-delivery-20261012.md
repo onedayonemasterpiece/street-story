@@ -179,6 +179,23 @@ Exo вернул 410, обе Ling недоступны, Step прерван по
 ## 8. Живые указания watchdog
 
 - run: SS-MAP-20261012
+- revision: 44
+- state: retain_unknown_review_and_continue_independent_native_baseline
+- nonce: SS-MAP-REV44-20261014T2114
+- текущий native-тред: `01a131ed-8e0a-7bb1-b824-1f52768f8b76`
+
+Адресный retained_review старого fallback-пула не является предварительным условием single-session baseline. Код87ab08d: product_recovery_acceptance.retained_review вызывает HeadlessFactReview и старый _fact_pool_routes; native research_agent_facts → run_fact_agents является другим путём. Не превращать разбор двух карточек в бесконечного обязательного второго судью.
+
+Сначала сверить исходную MiMo UNKNOWN по её текущим session/message/attempt IDs; не отправлять дубль и не обходить действующий fence. Сохранить исходные две карточки, source evidence, статусы и review-результаты прослеживаемыми;105 не объявлять закрытым. Пока исходная операция ожидает, продолжить независимый single-session baseline102, если он действительно независим по ресурсам и блокировкам. Не менять БД и не ослаблять контроль ради обхода UNKNOWN. Если независимость не соблюдается, назвать конкретный общий blocker.
+
+Использовать существующий native путь и доступные инструменты. Новая review-система или ещё один слой оркестрации не нужны. Цель следующего этапа — измеренный baseline и затем продуктовый E2E, а не завершение старого harness любой ценой.
+
+Подтверди WATCHDOG_ACK revision=44 и решение по независимому продолжению. Уже начатую исходную операцию не дублировать.
+
+### История: revision 43
+
+
+- run: SS-MAP-20261012
 - revision: 43
 - state: ordinary_house_facts_without_mechanical_multi_address_gate
 - nonce: SS-MAP-REV43-20261014T2054
