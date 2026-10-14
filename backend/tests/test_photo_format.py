@@ -1,7 +1,11 @@
 import pytest
 from street_story.photo_format import set_photo_format
 from street_story.service import ConflictError
-from test_mvp_visual import service, create_story, PHOTO_SHA
+from test_mvp_visual import service, create_story as create_mvp_story, PHOTO_SHA
+
+
+def create_story(svc):
+    return create_mvp_story(svc, portrait=False)
 
 
 def test_owner_format_persists_replays_without_job_and_old_visual_cannot_be_current(tmp_path):
@@ -121,3 +125,84 @@ async def test_saved_visual_review_delivers_actual_result_without_generating(tmp
         red, green, blue = result.getpixel((100, 100))
         assert red > 245 and green < 10 and blue < 10
     assert events[-1]['type'] == 'visual_review_context'
+
+
+def test_mira_context_exposes_actual_source_frame_for_semantic_layout_editing():
+    from street_story.live import StreetStoryLiveAdapter
+    frame = {'copy': {'title': 'Court', 'body': 'Source2022'}, 'layout': {'text_box': [.1, .1, .8, .3]}}
+    projected = StreetStoryLiveAdapter._compact_context({'story': {'facts': [], 'visual': {'source_frame': frame, 'output_frame_evidence': {'width': 1080, 'height': 1350}}}, 'editor': {}})
+    assert projected['visual']['source_frame'] == frame
+    assert projected['visual']['render_canvas_size'] == [1080, 1350]
+
+
+@pytest.mark.asyncio
+async def test_photo_choice_never_infers_source_frame_from_model_copy(tmp_path):
+    from street_story.live import StreetStoryLiveAdapter
+    from test_live_editor import mark_identity_ready
+    svc = service(tmp_path)
+    sid = create_story(svc)['id']
+    mark_identity_ready(svc, sid)
+    set_photo_format(svc, sid, 'owner-original', {'mode': 'original', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    captured = []
+    async def request(_sid, _key, body):
+        captured.append(body)
+        return svc.story(_sid)
+    svc.request_visual = request
+    adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, lambda _session, _message: None)
+    args = {'fact_ids': [], 'visual_copy': {'title': 'Original photo'},
+        'visual_layout': {'text_box': [.1, .01, .8, .1]}}
+    await adapter._generate_visual(sid, 'copy-complete', args)
+    assert 'preserve_source_frame' not in captured[-1]
+    assert captured[-1]['visual_copy'] == args['visual_copy']
+    await adapter._generate_visual(sid, 'explicit-other-mode', {**args, 'preserve_source_frame': False})
+    assert captured[-1]['preserve_source_frame'] is False
+    await adapter._generate_visual(sid, 'missing-semantic-layout', {'fact_ids': []})
+    assert 'visual_copy' not in captured[-1] and 'preserve_source_frame' not in captured[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode,size', [('original', (40, 30)), ('crop_4_5', (24, 30))])
+async def test_artistic_tune_uses_actual_owner_frame_without_source_composition(tmp_path, mode, size):
+    import io
+    from PIL import Image
+    from test_mvp_visual import FrameBoundary, visual_context
+    class ArtisticBoundary(FrameBoundary):
+        async def ingress_asset(self, data, mime_type, request_key):
+            with Image.open(io.BytesIO(data)) as image:
+                assert image.size == size
+            return await super().ingress_asset(data, mime_type, request_key)
+        async def visual(self, payload, request_key):
+            command = payload['command']
+            if command['kind'] == 'select':
+                return await super().visual(payload, request_key)
+            assert command['kind'] == 'tune' and command['copy'] == {}
+            assert command['formats'] == ['original' if mode == 'original' else 'post_4_5']
+            assert 'handwritten' in command['brief'] and 'single tasteful accent' in command['brief']
+            assert 'Never add floors, arches' in command['brief']
+            return {'operation_id': 'frame-op', 'state': 'accepted', 'visual_job_id': 'frame-job'}
+    vp = ArtisticBoundary({'width': size[0] * 2, 'height': size[1] * 2})
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    set_photo_format(svc, sid, 'owner-format', {'mode': mode, 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review',draft_text='Keep owner draft' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'owner-artistic-request', {'selected_fact_ids': [], 'visual_instruction': 'Ink sketch, one amber accent.'})
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    await svc._run_visual(job)
+    ctx = visual_context(svc, sid)
+    assert 'source_frame' not in ctx
+    assert ctx['output_frame_evidence']['state'] == 'verified'
+    assert svc.story(sid)['draft_text'] == 'Keep owner draft'
+    assert ctx['source_image_transform']['output_size'] == list(size)
+    assert ctx['source_photo_sha256'] == PHOTO_SHA
+
+
+def test_artistic_original_rejects_wrong_aspect_instead_of_stretching():
+    from street_story.product import ProductStreetStoryService, ORIGINAL_ART_FRAME_CONTRACT
+    ctx = {'output_frame_contract': ORIGINAL_ART_FRAME_CONTRACT,
+        'source_image_transform': {'output_size': [3000, 4000]}}
+    assert ProductStreetStoryService._frame_dimensions_match(ctx, 768, 1024)
+    assert not ProductStreetStoryService._frame_dimensions_match(ctx, 1024, 1350)

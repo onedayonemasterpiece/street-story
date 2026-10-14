@@ -35,6 +35,7 @@ POST_4_5_FRAME_INSTRUCTION = (
 )
 POST_4_5_FRAME_CONTRACT = "post_4_5_v1"
 ORIGINAL_PHOTO_FRAME_CONTRACT = 'source-original-frame-v1'
+ORIGINAL_ART_FRAME_CONTRACT = 'original-art-aspect-v1'
 
 _VOCAL_FILLERS = re.compile(
     r"(?iu)(?<!\w)(?:э(?:[-–—]?э)+|ээ+|эм+|м(?:[-–—]?м)+|а(?:[-–—]?а)+)(?!\w)[,;:\s]*"
@@ -300,6 +301,9 @@ class ProductStreetStoryService(StreetStoryService):
             return 5*width == 4*height
         if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
             return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
+        if context.get('output_frame_contract') == ORIGINAL_ART_FRAME_CONTRACT:
+            size = (context.get('source_image_transform') or {}).get('output_size')
+            return bool(size and width * size[1] == height * size[0])
         return False
 
     def _record_visual_frame(self, story_id, context, receipt, *, candidate=None, job=None):
@@ -323,7 +327,7 @@ class ProductStreetStoryService(StreetStoryService):
         reason = None
         if receipt.get('operation_id') != context.get('operation_id'):
             reason = 'visual_format_operation_mismatch'
-        elif (context.get('output_frame_contract') not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT}
+        elif (context.get('output_frame_contract') not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT}
                 or not candidate.get('candidate_id', candidate.get('id'))
                 or not candidate.get('asset_ref')
                 or not re.fullmatch(r'[a-f0-9]{64}', str(candidate.get('sha256') or ''))):
@@ -377,7 +381,7 @@ class ProductStreetStoryService(StreetStoryService):
         if not contract:
             return
         proof = context.get('output_frame_evidence') or {}
-        if (contract not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT} or context.get('output_frame_contract') != contract
+        if (contract not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT} or context.get('output_frame_contract') != contract
                 or proof.get('state') != 'verified' or proof.get('contract') != contract
                 or proof.get('content_revision') != context.get('content_revision')
                 or request.get('visual_content_revision', context.get('content_revision')) != context.get('content_revision')
@@ -479,6 +483,7 @@ class ProductStreetStoryService(StreetStoryService):
             "selected_sha256",
             "output_frame_contract",
             "output_frame_evidence",
+            "source_frame",
         )
         result["visual"] = {key: visual.get(key) for key in safe_visual_keys if visual.get(key) is not None}
         if result["visual"]:

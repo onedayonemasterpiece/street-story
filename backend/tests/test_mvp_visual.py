@@ -22,7 +22,7 @@ PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = '02a91163ac8982aec18ab77f8eda4a952d36dafdef157f61653a6757a0efd7b2'
+PROMPT_SHA = '5ac0af03cfa5c3ac4e4590ad22ddafd0774bcd5f2c76183876dd0759ea262028'
 
 
 class NoopOSM:
@@ -103,8 +103,8 @@ def service(tmp_path: Path, vp=None) -> MvpProductStreetStoryService:
     )
 
 
-def create_story(svc: MvpProductStreetStoryService):
-    return svc.create_story(
+def create_story(svc: MvpProductStreetStoryService, *, portrait=True):
+    story = svc.create_story(
         key="create-mvp",
         client_story_id="story-mvp",
         photo_sha256=PHOTO_SHA,
@@ -114,6 +114,13 @@ def create_story(svc: MvpProductStreetStoryService):
         lat=54.7104,
         lon=20.4522,
     )
+    if not portrait:
+        return story
+    # These existing worker fixtures exercise the explicit portrait flow.
+    from street_story.photo_format import set_photo_format
+    return set_photo_format(svc, story['id'], 'fixture-owner-portrait', {
+        'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': story['identity_generation']})
 
 
 def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
@@ -137,7 +144,7 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "safe area about 8%" in brief
     assert "Nothing important may touch or cross an edge" in brief
     assert "exact portrait 4:5" in brief
-    assert "no white bars, blank padding or borders" in brief
+    assert "blank padding or borders" in brief
     assert "Extend peripheral background" not in brief
     assert "Never outpaint" in brief
     assert len(brief) <= 5000
@@ -199,7 +206,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v3"
+    assert result["visual"]["prompt_version"] == "street-story-image-v4"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:

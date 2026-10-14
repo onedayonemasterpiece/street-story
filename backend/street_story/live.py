@@ -936,8 +936,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'For an explicit Original or4:5 choice use continue_story(stage=photo_format) and execute that same request. '
                 'Honor visual_photo_format in composition: never stretch, outpaint or add hidden contain fields. '
                 'Inspect the chosen crop; if essential building/context cannot fit, explain and offer Original. '
-                'For an explicit image request use generate_visual with preserve_source_frame=true, visual_copy and visual_layout after inspecting the transformed SOURCE, '
-                'saved concept and a readable subset of selected eligible fact_ids. '
+                'For an explicit image request use the existing artistic tune via generate_visual with visual_instruction, '
+                'saved concept and a readable subset of selected eligible fact_ids after inspecting the transformed SOURCE. '
+                'Use hybrid photo and architectural ink sketch, readable handwritten city notes and one accent color. '
+                'Keep the visible building geometry faithful; sketch surroundings inside the selected frame are allowed. '
+                'preserve_source_frame is an optional explicit photo-composition request, never inferred from format or copy/layout. '
                 'Observe existing image outcomes with observe_existing_visual=true before another '
                 'generation. Publication preparation and separate confirmation belong to publication.'
             )
@@ -946,8 +949,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'crop_rect is an in-bounds exact4:5 rectangle of oriented SOURCE pixels. '
                 'Inspect the photo: preserve essential building/context; if it cannot fit, explain and offer original. '
                 'Honor visual_photo_format: original retains aspect;4:5 is actual pixel crop, never hidden contain/stretch/outpaint. '
-                'Only an explicit creation request uses generate_visual with preserve_source_frame=true and model-authored visual_copy/visual_layout. '
-                'Place short qualified annotations in actual free space; preserve selection and draft. '
+                'Only an explicit creation request uses generate_visual through the existing artistic tune with visual_instruction. '
+                'Preserve visible architecture in a hybrid photo/ink sketch; artistic surroundings inside the frame are allowed. '
+                'Use readable handwritten qualified annotations and one accent color; preserve selection and draft. '
                 'Observe unknown operations before any new request. Other editing belongs to editor.')
         elif capability == 'dictation':
             overlay = ('Verbatim dictation uses the existing literal_begin, literal_finish and literal_cancel tools. '
@@ -2568,6 +2572,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "content_revision": visual.get("content_revision"),
                 "stale": visual.get("stale", False),
                 "processed_image_url": story.get("processed_image_url"),
+                "source_frame": visual.get("source_frame"),
+                "render_canvas_size": [(visual.get("output_frame_evidence") or {}).get(key) for key in ("width", "height")],
             },
             "scheduled_for": story.get("scheduled_for"),
             "jobs": state.get("jobs", []),

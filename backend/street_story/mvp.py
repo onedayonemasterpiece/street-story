@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .product import ORIGINAL_PHOTO_FRAME_CONTRACT, POST_4_5_FRAME_CONTRACT, POST_4_5_FRAME_INSTRUCTION, ProductStreetStoryService, _receipt
+from .product import ORIGINAL_ART_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, POST_4_5_FRAME_CONTRACT, ProductStreetStoryService, _receipt
 from .providers import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, InvalidStateError, canonical, digest
 
@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v3"
+    PROMPT_VERSION = "street-story-image-v4"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v3.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v4.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -83,8 +83,17 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
 
         base = template.replace(self.PROMPT_TOKEN, "")
+        transform = context.get('source_image_transform') or {}
+        size = transform.get('output_size')
+        frame_instruction = (
+            f'\n\nOUTPUT FRAME: preserve original aspect {size[0]}:{size[1]} from the supplied oriented photo.'
+            if transform.get('mode') == 'original' and size else
+            '\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350); the supplied photo is already cropped.')
+        frame_instruction += (' Never outpaint, stretch, correct perspective or invent architecture. '
+            'No hidden contain fields, blank padding or borders. Keep all supplied frame boundaries. '
+            'Artistic sketch surroundings within this frame are allowed.')
         dynamic_budget = (self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
-                          - len(POST_4_5_FRAME_INSTRUCTION))
+                          - len(frame_instruction))
         if dynamic_budget <= 0:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -104,7 +113,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 break
             themes += ("\n" if themes else "") + note[:remaining]
 
-        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule + POST_4_5_FRAME_INSTRUCTION
+        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule + frame_instruction
         if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -144,7 +153,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 with self.store.connection() as db:
                     current = self._story_row(db, story_id)
                     rejected = self._closed_rejected_frame(db, current, previous, observed)
-                if body.get('preserve_source_frame') is not True or not rejected:
+                if not rejected:
                     raise ConflictError('visual_observation_required',
                         'Import and review the existing result before requesting another generation.')
             if observed.get('operation_id') != operation or not (
@@ -307,8 +316,6 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             research = json.loads(story["research_json"] or "{}")
             from .photo_format import choice
             photo_choice = choice(research)
-            if source_frame is None and photo_choice['revision'] > 0 and not body.get('reuse_generated_art'):
-                raise ConflictError('visual_source_frame_required', 'Попросите Миру оформить исходное фото в выбранном формате.')
             voice_ids = [
                 row["session_id"]
                 for row in db.execute(
@@ -339,12 +346,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             }
             if source_frame is not None:
                 frozen['source_frame'] = source_frame
-                from .visual_source import photo_transform
-                _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
-                    story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
-                if transform['original_sha256'] != story['photo_sha256']:
-                    raise ConflictError('visual_source_original_changed', 'Original source changed.')
-                frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
+            from .visual_source import photo_transform
+            _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
+                story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
+            if transform['original_sha256'] != story['photo_sha256']:
+                raise ConflictError('visual_source_original_changed', 'Original source changed.')
+            frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}
                 for field in ('prompt_version', 'prompt_sha256', 'source_orientation_contract'):
@@ -367,13 +374,13 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     'job_id': previous['visual_job_id'], 'candidate_id': previous['candidate_id'],
                     'expected_visual_revision': observed['visual_revision'],
                     'expected_sha256': previous['selected_sha256'],
-                    'format': 'original' if source_frame is not None and photo_choice['mode'] == 'original' else 'post_4_5',
+                    'format': 'original' if photo_choice['mode'] == 'original' else 'post_4_5',
                 }
             if previous.get('operation_id'):
                 frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
             if not frozen.get('recompose_source') or previous.get('output_frame_contract'):
-                frozen['output_frame_contract'] = (ORIGINAL_PHOTO_FRAME_CONTRACT
-                    if source_frame is not None and photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
+                frozen['output_frame_contract'] = ((ORIGINAL_PHOTO_FRAME_CONTRACT if source_frame is not None
+                    else ORIGINAL_ART_FRAME_CONTRACT) if photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
                 frozen['identity_generation'] = int(research.get('identity_generation') or 0)
             content_revision = digest(frozen)
             context = {
@@ -494,7 +501,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                         "source": {"source": {"kind": "asset", "id": source_asset}},
                         "brief": brief,
                         "candidates": 1,
-                        "formats": ["post_4_5"],
+                        "formats": ["original" if (context.get('source_image_transform') or {}).get('mode') == 'original' else "post_4_5"],
                         "selection": "human",
                         "copy": {},
                     }
