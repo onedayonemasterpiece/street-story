@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from street_story.config import Settings
 from street_story.errors import RetryableProviderError
@@ -131,8 +132,6 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "resolve_fact_conflict" in names
     assert "start_research" not in names
 
-
-from PIL import Image
 
 _photo_stream = io.BytesIO()
 Image.new('RGB', (40, 30), 'blue').save(_photo_stream, format='JPEG')
