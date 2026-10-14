@@ -90,6 +90,51 @@ def test_native_open_preserves_returned_window_without_inventing_total_lines():
     assert '5000' not in result['content']
 
 
+def open_result(url, ref, body):
+    return (f'Archive ({url})\n【{ref}】 [wordlim:200] Content type:text/html; '
+        f'Source: open({json.dumps({"ref_id": url, "lineno": None})}); Total lines:5000\n{body}')
+
+
+def test_completed_multi_open_retains_second_owned_document(tmp_path, monkeypatch):
+    thread, rows = owned_journal(tmp_path, monkeypatch)
+    second_url = 'https://official.example/identity'
+    args = {'open': [{'ref_id': URL}, {'ref_id': second_url}], 'response_length': 'long'}
+    rows[4]['payload']['input'] = 'const r=await tools.web__run(' + json.dumps(args) + '); text(r)'
+    first_body = 'L69: Actual historical name.\nL70: Its context.'
+    second_body = 'L72: Historical name at documented site 3–5.\nL73: Context.'
+    rows[5]['payload']['output'][1]['text'] = (open_result(URL, 'turn0view0', first_body)
+        + '\n' + '-' * 80 + '\n' + open_result(second_url, 'turn0view1', second_body))
+    with open(thread['path'], 'w') as stream:
+        stream.write(''.join(json.dumps(r) + '\n' for r in rows))
+    result = owned_native_source(thread, 'turn', prompt=PROMPT, source_ref='turn0view1',
+        url=second_url, before=1792000000)
+    assert result['content'] == second_body
+    assert result['call_id'] == 'read' and result['result_item_id'] == 'result'
+    result = owned_native_source(thread, 'turn', prompt=PROMPT, source_ref='turn0view0',
+        url=URL, before=1792000000)
+    assert result['content'] == first_body
+
+
+@pytest.mark.parametrize('change', ['not_requested', 'wrong_operation', 'unnumbered_export', 'publisher_header'])
+def test_second_document_requires_native_open_operation_and_numbered_boundaries(change):
+    second_url = 'https://official.example/identity'
+    request = {'open': [{'ref_id': URL}, {'ref_id': second_url}]}
+    first = open_result(URL, 'turn0view0', 'L69: Actual historical name.')
+    second = open_result(second_url, 'turn0view1', 'L72: Identity link.')
+    if change == 'not_requested':
+        request['open'].pop()
+    elif change == 'wrong_operation':
+        second = second.replace(json.dumps({'ref_id': second_url, 'lineno': None}),
+            json.dumps({'ref_id': 'turn_fake', 'lineno': None}))
+    elif change == 'unnumbered_export':
+        first = RESULT
+    else:
+        second = '\n'.join('L70: ' + line for line in second.splitlines())
+    with pytest.raises(ValueError, match='requires_own_open'):
+        received_document(first + '\n' + '-' * 80 + '\n' + second,
+            source_ref='turn0view1', url=second_url, request=request)
+
+
 def test_literal_request_with_punctuation_in_query_is_not_modified():
     args = {'search_query': [{'q': 'street: {name} ); text("fake")'}], 'response_length': 'long'}
     script = 'const r=await tools.web__run(' + json.dumps(args) + '); text(r)'

@@ -48,12 +48,12 @@ def native_tools():
     from .native_fact_contract import LEGACY_RESULT_SCHEMA
     return [*copy.deepcopy(NATIVE_TOOLS), {
         'name': 'retain_native_source',
-        'description': 'Retain content already returned by your completed native web search/open, identified by its actual citation ref and URL. No HTTP download or new inference. Returns existing immutable source/chunk IDs for save_facts. Search leads without received document content remain discovery only. For a nonfirst search result, open that source with your native reader first.',
+        'description': 'Retain content already returned by your completed native web search/open, identified by its actual citation ref and URL, including individual documents from a multi-open result. No HTTP download or new inference. Returns existing immutable source/chunk IDs for save_facts. Search leads without received document content remain discovery only. For a nonfirst search result, open that source with your native reader first. A rejection means this attachment failed, not that native reading never happened; resolve it or use a supplied verified frozen identity receipt.',
         'parameters': {'type': 'object', 'additionalProperties': False,
             'properties': {'url': {'type': 'string', 'maxLength': 2048},
                 'source_ref': {'type': 'string', 'maxLength': 200}},
             'required': ['url', 'source_ref']}}, {'name': 'save_facts',
-        'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
+        'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. First check physical scope: a documented site does not prove the selected body; keep complex_or_site/documented_site unless an actual read distinguishes it. Identify retained identity source version/chunk/passage in reason for cross-source name links; keep fact text within attached source support. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
         'parameters': copy.deepcopy(LEGACY_RESULT_SCHEMA)}]
 
 

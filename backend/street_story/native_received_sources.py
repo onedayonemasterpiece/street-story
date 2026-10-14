@@ -15,7 +15,7 @@ from .article_media import public_url
 CONTRACT = 'native-owned-received-content-v1'
 _DIRECT = re.compile(r'^\s*const\s+([a-zA-Z_]\w*)\s*=\s*await\s+tools\.web__run\s*'
     r'\((.*?)\)\s*;\s*text\s*\(\1\)\s*;?\s*$', re.S)
-_HEADER = re.compile(r'(?m)^([^\n]*?)\((https://[^\n]+)\)\s*\n'
+_HEADER = re.compile(r'(?m)^(?!L\d+:)([^\n]*?)\((https://[^\n]+)\)\s*\n'
     r'(?:\ue200cite\ue202([^\ue201]+)\ue201|【([^】]+)】)')
 
 
@@ -64,15 +64,42 @@ def direct_web_arguments(script):
     return value
 
 
-def received_document(text, *, source_ref, url):
-    # Only the first provider-rendered source header is accepted. A fake header
-    # inside publisher text cannot introduce another trusted URL/ref. Other
-    # search hits should be opened independently with the native reader.
+def _numbered_open(block, header, request):
+    """Recognize the native renderer's open boundary, not publisher headers."""
+    numbered = re.search(r'(?m)^L\d+:', block)
+    operation = re.search(r'Source: open\(', block[:numbered.start()] if numbered else '')
+    if not operation:
+        return False
+    try:
+        args, end = json.JSONDecoder().raw_decode(block, operation.end())
+    except json.JSONDecodeError:
+        return False
+    requested = {item.get('ref_id') for item in (request or {}).get('open', []) if isinstance(item, dict)}
+    ref = args.get('ref_id') if isinstance(args, dict) else None
+    if not isinstance(ref, str) or ref not in requested or block[end:end+1] != ')':
+        return False
+    if ref.startswith('https://') and public_url(ref) != public_url(header[2]):
+        return False
+    # Publisher lines are prefixed by the native renderer. An unnumbered fake
+    # header in a search export cannot introduce a second trusted document.
+    lines = block[numbered.start():].strip().splitlines()
+    if lines and lines[-1] == '-' * 80:
+        lines.pop()
+    return bool(lines) and all(not line.strip() or re.match(r'^L\d+:', line) for line in lines)
+
+
+def received_document(text, *, source_ref, url, request=None):
     headers = list(_HEADER.finditer(text))
-    header = next(iter(headers), None)
-    if not header or (header[3] or header[4]) != source_ref or public_url(header[2]) != public_url(url):
+    matches = [(index, header) for index, header in enumerate(headers)
+        if (header[3] or header[4]) == source_ref and public_url(header[2]) == public_url(url)]
+    if len(matches) != 1:
         raise ValueError('native_source_ref_requires_own_open')
-    block = text[header.end():headers[1].start() if len(headers) > 1 else len(text)]
+    index, header = matches[0]
+    blocks = [text[item.end():headers[i+1].start() if i+1 < len(headers) else len(text)]
+        for i, item in enumerate(headers)]
+    if index and not all(_numbered_open(blocks[i], headers[i], request) for i in range(index+1)):
+        raise ValueError('native_source_ref_requires_own_open')
+    block = blocks[index]
     exported = re.search(r'(?:^|\s)(?:Text aus|Text from|Content from)\s*\n', block)
     if exported:
         content = block[exported.end():].strip()
@@ -81,6 +108,8 @@ def received_document(text, *, source_ref, url):
         if not numbered:
             raise ValueError('native_source_document_content_not_returned')
         content = block[numbered.start():].strip()
+        if content.endswith('\n' + '-' * 80):
+            content = content[:-(81)].rstrip()
     if not content:
         raise ValueError('native_source_document_content_empty')
     return {'url': public_url(url), 'source_ref': source_ref, 'title': header[1].strip(),
@@ -118,10 +147,10 @@ def owned_native_source(thread, turn_id, *, prompt, source_ref, url, before):
             call_id = payload.get('call_id')
             if payload.get('type') == 'custom_tool_call' and payload.get('name') == 'exec':
                 try:
-                    direct_web_arguments(payload.get('input'))
+                    request = direct_web_arguments(payload.get('input'))
                 except (ValueError, TypeError, json.JSONDecodeError):
                     continue
-                calls[call_id] = payload
+                calls[call_id] = (payload, request)
             elif payload.get('type') == 'custom_tool_call_output' and call_id in calls:
                 completed = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
                 if completed > before:
@@ -134,7 +163,7 @@ def owned_native_source(thread, turn_id, *, prompt, source_ref, url, before):
                 if not isinstance(text, str):
                     continue
                 try:
-                    source = received_document(text, source_ref=source_ref, url=url)
+                    source = received_document(text, source_ref=source_ref, url=url, request=calls[call_id][1])
                 except ValueError as exc:
                     header = _HEADER.search(text)
                     if header and (header[3] or header[4]) == source_ref and public_url(header[2]) == public_url(url):
@@ -143,7 +172,7 @@ def owned_native_source(thread, turn_id, *, prompt, source_ref, url, before):
                 found.append({**source, 'contract': CONTRACT, 'thread_id': thread['id'],
                     'turn_id': turn_id, 'call_id': call_id, 'result_item_id': payload.get('id'),
                     'completed_at': completed, 'result_sha256': hashlib.sha256(text.encode()).hexdigest(),
-                    'request_sha256': hashlib.sha256(calls[call_id]['input'].encode()).hexdigest(),
+                    'request_sha256': hashlib.sha256(calls[call_id][0]['input'].encode()).hexdigest(),
                     'meaning': 'Actual received native document excerpt, not full-publication or current HTTP proof.'})
     if not matched:
         raise ValueError('native_source_owned_result_unverified')
