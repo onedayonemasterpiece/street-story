@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T19:43:05.646398+00:00",
+  "updated_at_utc": "2026-10-14T19:56:00.677727+00:00",
   "last_useful_progress_at_utc": "2026-10-14T17:28:02.258576+00:00",
   "stage": 3,
   "status": "working",
@@ -14,11 +14,12 @@
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
     "story_id": "story_98d60ad1f6bda1196ea3e7f2",
-    "job_id": "job_e64433596f2745e5ae3f418a",
-    "run_id": "research_c851c79397f9dc53274bf5df",
-    "thread_id": "01a13af0-73da-74d2-8d30-5c2a394d491b",
-    "status": "closed_response_native_interrupted_observed_no_resend",
-    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-product-memory-e28e23e/campaign.json"
+    "job_id": "job_05766cef48e442de85a3db6f",
+    "run_id": "research_a4265e873a4b4d8e901cb845",
+    "status": "closed_completed_source_blocked_no_resend",
+    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-identity-save-component-7503c72/campaign.json",
+    "thread_id": "01a13bf1-a91e-7bd1-b224-910c95925b2b",
+    "turn_id": "01a13bf1-b1c8-7dd2-b7e1-c1c784939a64"
   },
   "task_inventory": {
     "limit": 100,
@@ -75,7 +76,7 @@
       "reason": "Full one-house baseline/atomic comparison, actual map and voice, artistic Original, test publication and other required photos remain incomplete."
     }
   ],
-  "next_step": "Freeze universal prompt, then short actual Luna105 adapter reads municipal identity + primary event source through own webfetch/save_facts; compare saved knowledge atoms, not card-count alone. No full product study for this scoped component.",
+  "next_step": "Freeze corrected reader and use distinct actually readable primary DDE source + owned municipal identity in one scoped native save component; do not repeat unchanged FES/browser-verification request.",
   "stages": [
     {
       "stage": 0,
@@ -710,7 +711,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "89a8d8ea43477bf0e036fa0a273b09efac3a8a73",
+  "checked_out_commit": "7503c72b40d0ce425055f1facdc800de957c2ffa",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -746,7 +747,7 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "89a8d8ea43477bf0e036fa0a273b09efac3a8a73",
+  "code_commit": "7503c72b40d0ce425055f1facdc800de957c2ffa",
   "ci": {
     "head": "89a8d8ea43477bf0e036fa0a273b09efac3a8a73",
     "backend": {
@@ -782,9 +783,9 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "freeze_corrected_identity_prompt_then_owned_adapter",
-  "current_blocker": "Direct search/scope component passed after first failed repeat. Actual model unproven for direct children; own native adapter source-read/save proof still pending. Full baseline/observer/Android and E2E outstanding.",
-  "updated_at": "2026-10-14T19:43:05.646398+00:00",
+  "current_stage": "freeze_reader_size_fix_then_finish_owned_source_component",
+  "current_blocker": "DDE archive own-reader acquisition now succeeds with partial_text_limit; final source assessment/save still unverified. SBC diagnostic pending separately. Full baseline/observer and Android/E2E remain incomplete.",
+  "updated_at": "2026-10-14T19:56:00.677727+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38607689217,
@@ -896,5 +897,62 @@
     "autonomous_r2_manifest": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-research-autonomous-r2-rev40/manifest.json",
     "autonomous_r2_status": "direct_search_and_site_scope_pass",
     "autonomous_r2_report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-research-autonomous-r2-rev40/research-report.md"
+  },
+  "real_native_identity_component": {
+    "status": "CLOSED_READER_BLOCKED_NO_SAVED_FACTS",
+    "source_sha": "7503c72b40d0ce425055f1facdc800de957c2ffa",
+    "story_id": "story_98d60ad1f6bda1196ea3e7f2",
+    "job_id": "job_05766cef48e442de85a3db6f",
+    "run_id": "research_a4265e873a4b4d8e901cb845",
+    "attempt_id": "rattempt_26772ba8ceecea70e37737a6",
+    "thread_id": "01a13bf1-a91e-7bd1-b224-910c95925b2b",
+    "turn_id": "01a13bf1-b1c8-7dd2-b7e1-c1c784939a64",
+    "phase": "completed",
+    "native_terminal_status": "completed",
+    "actual_execution_contexts": [
+      {
+        "turn_id": "01a13bf1-b1c8-7dd2-b7e1-c1c784939a64",
+        "model": "gpt-6-luna",
+        "effort": "medium"
+      }
+    ],
+    "elapsed_seconds": 35.10942077636719,
+    "new_knowledge_atoms": 0,
+    "new_card_ids": [],
+    "save_calls": 0,
+    "preserved_previous": true,
+    "total_cards": 17,
+    "usage": {
+      "input": 337059,
+      "cached_input": 270080,
+      "uncached_input": 66979,
+      "output": 649,
+      "total": 337708,
+      "cost": "unknown"
+    },
+    "source_outcomes": {
+      "municipal_identity": "owned read completed, documents Otto Braun historic name → modern3–5 site; exact body3 not proved",
+      "FES_event": "owned read twice delivered same browser-verification version rather than newspaper text; not support"
+    },
+    "raw_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-identity-save-component-7503c72/receipt-0.json",
+    "qualification": "NOT passed full read/save chain; actual Luna model/own reads/closed blocker qualified. Earlier102 save component independently demonstrates writer only.",
+    "source_urls_supplied": true,
+    "url_origin": "Previously directly read research sources for explicit component, not benchmark answers",
+    "production_writes": false,
+    "publication_dispatches": 0,
+    "at_utc": "2026-10-14T19:49:21.192770+00:00"
+  },
+  "source_reader_fix": {
+    "reason": "Source reader borrowed2MiB media-page acquisition limit; actual DDE/SBC blocked with article_media_size.",
+    "source_request_max_bytes": 33554432,
+    "media_request_max_bytes": 2097152,
+    "shared_acquisition_cache": true,
+    "ssrf_dns_redirect_fences_preserved": true,
+    "new_framework": false,
+    "checks": "28 passed; Ruff passed",
+    "probe": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-identity-save-component-7503c72/alternative-reader-after-size-fix.json",
+    "dde_read_status": "partial_text_limit",
+    "dde_text_chars": 120000,
+    "no_model_probe": true
   }
 }

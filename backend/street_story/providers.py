@@ -657,6 +657,9 @@ class _ReadablePageParser(HTMLParser):
         return "\n".join(line for line in lines if line).strip()[: self.limit]
 
 
+MAX_RESEARCH_SOURCE_BYTES = 32 * 1024 * 1024
+
+
 def _read_article_text(html: str, *, limit: int = 120_000) -> tuple[str, bool]:
     """Select declared article structure; leave semantic evidence decisions to Live."""
     page = BeautifulSoup(html, "html.parser")
@@ -1665,7 +1668,8 @@ class GeminiClient:
                 error_code = None
                 try:
                     from .article_media import cached_public_page
-                    current_url, public_mime, public_body = await cached_public_page(self.store, client, requested_url)
+                    current_url, public_mime, public_body = await cached_public_page(
+                        self.store, client, requested_url, maximum=MAX_RESEARCH_SOURCE_BYTES)
                     # Public reader pins DNS and validates every redirect/TLS/size.
                     response = httpx.Response(200, content=public_body,
                         headers={'content-type': public_mime}, request=httpx.Request('GET', current_url))
@@ -1688,7 +1692,6 @@ class GeminiClient:
                     if not raw_bytes:
                         error_code = "empty_body"
                         raise ValueError(error_code)
-                    body_limited = len(raw_bytes) > 768_000
 
                     # Public acquisition stores raw bytes and MIME, so decoding
                     # must honor the document charset rather than httpx's UTF-8
@@ -1731,9 +1734,7 @@ class GeminiClient:
                         raise ValueError(error_code)
 
                     read_status = pdf['read_status'] if pdf is not None else (
-                        "partial_body_limit"
-                        if body_limited
-                        else "partial_text_limit"
+                        "partial_text_limit"
                         if text_limited
                         else "complete"
                     )
@@ -1798,6 +1799,8 @@ class GeminiClient:
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:
                     if isinstance(exc,httpx.HTTPStatusError):
                         error_code = f'http_{exc.response.status_code}'
+                    if isinstance(exc, ValueError) and str(exc).startswith(('article_media_', 'pdf_')):
+                        error_code = error_code or str(exc)
                     error_code = error_code or type(exc).__name__
                     if run_id:
                         with self.store.tx() as db:

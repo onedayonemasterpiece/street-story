@@ -31,8 +31,9 @@ def controlled_public_dns(monkeypatch):
     async def public(host):
         return '8.8.8.8'
 
-    async def acquire(store, client, raw):
-        return await original(store, client, raw, resolver=public)
+    async def acquire(store, client, raw, **kwargs):
+        kwargs.setdefault('resolver', public)
+        return await original(store, client, raw, **kwargs)
 
     monkeypatch.setattr(article_media, 'cached_public_page', acquire)
 
