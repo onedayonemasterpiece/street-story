@@ -702,7 +702,7 @@ FUNCTIONS = [
                 "description": "Owner visual-only change.",
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
-            "observe_existing_visual": {"type": "boolean", "description": "Read existing operation only; omit visual_instruction. Never resend unknown."},
+            "observe_existing_visual": {"type": "boolean", "description": "Read existing operation and inspect its saved image; omit visual_instruction. Never resend unknown."},
             "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Honor visual_photo_format: original aspect or true4:5 crop. Inspect SOURCE; supply copy/layout. Separate review still required."},
             "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
                 ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
@@ -1458,6 +1458,45 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self.service, session.resource_id, session.id, "backend", "visual_context", payload
         )
 
+    async def _send_saved_visual_snapshot(self, session) -> None:
+        """Show the actual owned result for visual review; never generate here."""
+        try:
+            import io
+            from PIL import Image
+            with self.service.store.connection() as db:
+                row = self.service._story_row(db, session.resource_id)
+                context = json.loads(row['visual_context_json'] or '{}')
+                if not row['processed_image_url'] or not row['vibepublish_asset_ref']:
+                    return
+                if context.get('output_frame_contract') and not self.service._photo_format_current(row, context):
+                    return
+                asset_ref = row['vibepublish_asset_ref']
+            data, _mime = await self.service.asset(session.resource_id)
+            with self.service.store.connection() as db:
+                current = self.service._story_row(db, session.resource_id)
+                if (current['vibepublish_asset_ref'] != asset_ref or current['photo_sha256'] != row['photo_sha256']
+                        or current['visual_context_json'] != row['visual_context_json']):
+                    return
+            with Image.open(io.BytesIO(data)) as opened:
+                image = opened.convert('RGB')
+                image.thumbnail((768, 768), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                image.save(buffer, format='JPEG', quality=68, optimize=True)
+                snapshot = buffer.getvalue()
+            if len(snapshot) > 220*1024:
+                return
+            self.write(session, {'type': 'snapshot', 'mime_type': 'image/jpeg',
+                'data': base64.b64encode(snapshot).decode('ascii'), 'optional': True,
+                'context': {'kind': 'saved_visual', 'story_id': session.resource_id, 'asset_ref': asset_ref}})
+            self.emit(session, {'type': 'visual_review_context', 'status': 'ready', 'asset_ref': asset_ref})
+            record_live_diagnostic(self.service, session.resource_id, session.id, 'backend',
+                'visual_review_context', {'status': 'ready', 'asset_ref': asset_ref,
+                    'width': image.width, 'height': image.height, 'jpeg_bytes': len(snapshot)})
+        except Exception as exc:
+            self.emit(session, {'type': 'visual_review_context', 'status': 'unavailable'})
+            logger.warning('street_story_saved_visual_snapshot_failed story_id=%s type=%s',
+                           session.resource_id, type(exc).__name__)
+
     def on_started(self, session) -> None:
         record_live_diagnostic(
             self.service,
@@ -1788,6 +1827,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = self._undo(story_id, command_id)
         elif name == "generate_visual":
             result = await self._generate_visual(story_id, command_id, args)
+            if args.get("observe_existing_visual") is True:
+                await self._send_saved_visual_snapshot(session)
         elif name == "prepare_publication":
             result = await self._prepare_publication(story_id, command_id, args)
             self.emit(session, {"type": "publication_confirmation", **result["confirmation"]})

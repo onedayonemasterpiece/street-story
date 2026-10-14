@@ -89,3 +89,35 @@ def test_visual_mira_snapshot_uses_chosen_crop_but_identity_keeps_original(tmp_p
         assert image.size == (24, 30)
     import hashlib
     assert hashlib.sha256(svc._source_photo_bytes(sid)).hexdigest() == PHOTO_SHA
+
+
+@pytest.mark.asyncio
+async def test_saved_visual_review_delivers_actual_result_without_generating(tmp_path):
+    from street_story.live import StreetStoryLiveAdapter
+    from types import SimpleNamespace
+    from PIL import Image
+    import io
+    import base64
+    svc = service(tmp_path)
+    sid = create_story(svc)['id']
+    stream = io.BytesIO()
+    Image.new('RGB', (1200, 800), 'red').save(stream, format='PNG')
+    calls = []
+    async def read_asset(ref):
+        calls.append(ref)
+        return stream.getvalue(), 'image/png'
+    svc.providers.vibepublish.read_asset = read_asset
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET vibepublish_asset_ref=?,processed_image_url=? WHERE id=?',
+            ('owned-result', '/processed/owned-result', sid))
+    writes, events = [], []
+    adapter = StreetStoryLiveAdapter(svc, lambda _s, e: events.append(e), lambda _s, e: writes.append(e))
+    session = SimpleNamespace(id='visual-review', resource_id=sid)
+    await adapter._send_saved_visual_snapshot(session)
+    assert calls == ['owned-result'] and len(writes) == 1
+    assert writes[0]['context'] == {'kind': 'saved_visual', 'story_id': sid, 'asset_ref': 'owned-result'}
+    with Image.open(io.BytesIO(base64.b64decode(writes[0]['data']))) as result:
+        assert result.size == (768, 512)
+        red, green, blue = result.getpixel((100, 100))
+        assert red > 245 and green < 10 and blue < 10
+    assert events[-1]['type'] == 'visual_review_context'
