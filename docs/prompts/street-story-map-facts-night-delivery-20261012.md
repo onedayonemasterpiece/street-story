@@ -179,6 +179,33 @@ Exo вернул 410, обе Ling недоступны, Step прерван по
 ## 8. Живые указания watchdog
 
 - run: SS-MAP-20261012
+- revision: 26
+- state: apply_available_per_photo_atomic_benchmark
+- nonce: SS-MAP-REV26-20261014T1432
+- status: сохранение не доказывает доставку; нужен ACK в текущей сессии
+- текущий native-тред: `01a131ed-8e0a-7bb1-b824-1f52768f8b76`
+
+Владелец спрашивает, передана ли таблица доступных фактов по фото с объяснением их поиска. Master действительно был прочитан тобой11:41:31, атомарный контракт11:57:59;102/104JSON сохранены12:01:30, но тогда проверена только структура, не полный смысловой mapping. Доведи доступную часть до реального сравнения, а не ACK ссылки.
+
+Закреплённый пакет и метод:
+- [Master V4: таблица, происхождение и ограничения](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-master-20261014.md).
+- [Одинаковая атомизация обеих сторон и mapping](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-atomic-contract-v4.md).
+- [102: факты, источники, происхождение поиска](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-102-v4-20261014.md), [полный102JSON](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-102-v4-20261014.json).
+- [104: исходный разбор](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-104-v4-20261014.md), [источниковое расширение104](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-104-v4-extension-20261014.md), [исходный104JSON](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-104-v4-20261014.json). JSON104 сам по себе не содержит позднее расширение.
+- [105/107/120: разбор, источники и расширения](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-105-107-120-v4-20261014.md).
+- [125: разбор и источники](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-125-v4-20261014.md).
+
+В опубликованной колонке dot для102/104/105/107/120/125 соответственно45/52/18/62/97/33 проверенных уникальных утверждения в указанном scope. Это конечный подтверждённый срез доступного знания, не обязательная квота генерации, не полное насыщение всех фото и не автоматически независимый recall denominator: часть расширения output-driven. Все ограничения из master сохраняются. Исторический product union и отдельные эксперименты не результат текущей Luna.
+
+Прочитай пофоточные приложения и происхождение фактов, зафиксируй точный независимый поднабор/ID для допустимой оценки. На закрытых сегментах текущих102/105 начни таблицу: атомарный output, canonical ID, источник/версия/фрагмент, V/Q/U/F/excluded/dedup, full/partial match эталона, новое вне эталона. Per-run и accumulated union раздельно. Недостающие три больших JSON ещё не опубликованы из-за незавершённого разрешения загрузки; не выдумывай их содержание и не блокируй ими доступную сверку102 или прочтение опубликованных Markdown. Неполную строку обозначай точно.
+
+Эталон не передавать исследователю как ответы или набор URL для подгонки; это отдельная оценка сохранённых результатов. В конце нужны измеренные атомарные доли и причины потерь, а не только eligible-card count. Остальная реализация и текущий живой запрос продолжаются без искусственного лимита/прерывания.
+
+Подтверди WATCHDOG_ACK revision=26 с nonce/blob и перечисли, какие приложения реально прочитаны и какая пофоточная сверка выполнена. Guidance25 о новизне поиска также остаётся актуальна.
+
+### История guidance revision 25 (сохраняется без изменений)
+
+- run: SS-MAP-20261012
 - revision: 25
 - state: diagnose_search_novelty_and_access_without_resource_caps
 - nonce: SS-MAP-REV25-20261014T1418
