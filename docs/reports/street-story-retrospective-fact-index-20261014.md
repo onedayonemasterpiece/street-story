@@ -44,37 +44,74 @@
 
 |---|---|---|---|---|
 
-|104|warm 14; затемwarm 13, сохранено 8/8 исходных basis|46a6aa5;00ea5d6,10 октября|По текущей проекции точная facts-модель не установлена|Первыйwarm 14 испортил прежниеbasis; не лучший качественный результат только потому, что14>13|
+|104|warm 14; затемwarm 13, сохранено 8/8 исходных basis|46a6aa5;00ea5d6,10 октября|По текущей проекции точная facts-модель не установлена|Первый warm 14 испортил прежние basis; не лучший качественный результат только потому, что 14 > 13|
 
 |102|4→6→7; послеreview5 eligible + 5 unreviewed repair children|85dff57,13 октября|gpt-6-luna;Sol не вызван|research_836286d0bc5f4ec19cf8c427; research_12274429995b4b12b4efde13;research_8549150757ab41679b216fe0|
 
-|105|0→5, из них4 содержательные и 1 адресная связь|85dff57,13 октября|gpt-6-luna|research_f4d4a343fe46461591e3845c;research_77073386e8b549308066b48a;вопросыдаты/субъекта не полностью закрыты|
+|105|0→5, из них4 содержательные и 1 адресная связь|85dff57,13 октября|gpt-6-luna|research_f4d4a343fe46461591e3845c;research_77073386e8b549308066b48a;вопросы даты/субъекта не полностью закрыты|
 
 |131|2 eligible; продолжение не добавило|85dff57,13 октября|gpt-6-luna|research_dce936787560498990df4c3b;research_33557ffc5f0545429e31681c|
 
-|104|3 eligible|f6fd150,13 октября|GigaChat-2:2.0.30.01;подтверждениеgemini-3.1-flash-lite|research_0ccc911c11811c63ef195141|
+|104|3 eligible|f6fd150,13 октября|GigaChat-2:2.0.30.01;подтверждение gemini-3.1-flash-lite|research_0ccc911c11811c63ef195141|
 
-|129|4 eligible, 2 withheld|ae5c7e1 и последующее восстановление324d0d2,13 октября|GigaChat-2:2.0.30.01;подтверждениеgemini-3.1-flash-lite|Спорный1903исключён изчерновика;2исходныхreviewUNKNOWN|
+|129|4 eligible, 2 withheld|ae5c7e1 и последующее восстановление324d0d2,13 октября|GigaChat-2:2.0.30.01;подтверждение gemini-3.1-flash-lite|Спорный 1903 исключён из черновика; 2 исходных review UNKNOWN|
 
-|14|3 eligible в старом ledger;0 полностью доказанных выбранному корпусу в сохранённом независимом аудите|056931e,13 октября|GigaChat-2:2.0.30.01;подтверждениеgemini-3.1-flash-lite|research_99fbda8814851cda1640e26e;2контексткомплекса+1план→идущиеработы|
+|14|3 eligible в старом ledger;0 полностью доказанных выбранному корпусу в сохранённом независимом аудите|056931e,13 октября|GigaChat-2:2.0.30.01;подтверждение gemini-3.1-flash-lite|research_99fbda8814851cda1640e26e;2 контекст комплекса + 1 план → идущие работы|
 
-|122|0 eligible; 6 raw claims → 1 candidate → 0 accepted|f507eefaa57700621c2e263b2ed05d4156e4c936,13 октября12:41–12:47|GigaChat;judgegemini-3.1-flash-lite|research_f93d257d82ab68314b98dc0c;5source_not_read,1YouTubefooterinsufficient;304,666с|
+|122|0 eligible; 6 raw claims → 1 candidate → 0 accepted|f507eefaa57700621c2e263b2ed05d4156e4c936,13 октября12:41–12:47|GigaChat;judgegemini-3.1-flash-lite|research_f93d257d82ab68314b98dc0c;5 source_not_read, 1 YouTube footer insufficient; 304,666 с|
 
 ## Поздний одновременный15-photo observation
 
-На11 октября continuation-ce190fd-15 все15 остались без eligible и без установленной identity. Это отдельный прогон admission/identity с1200-секунднымокном, а не доказательство нулевой способности исследовать факты. Сохраняется полный нулевой фактический выход, но conditional factquality не определена.
+На11 октября continuation-ce190fd-15 все 15 остались без eligible и без установленной identity. Это отдельный прогон admission/identity с1200-секундным окном, а не доказательство нулевой способности исследовать факты. Сохраняется полный нулевой фактический выход, но conditional fact quality не определена.
 
 ## Источники и глубина проверки
 
-Дляcoldсверены18case/readbackrows,45полныхclaimtexts, research_runIDs, sourceURLs, sourcebasis и workerlogs. Исторический [репозиторныйотчёт](https://github.com/onedayonemasterpiece/street-story/blob/af2cd7b2bdbdde30db9429edf033cb52f55b2dc9/docs/reports/product-recovery-implementation-20261010.md). Логи конкретно связывают102/107/120/125сgemini-3.8-livefacts;Lunaвэтихcold выполнялаidentity, неfactextraction.
+Для cold сверены 18 case/readback rows, 45 полных текстов утверждений, research_run IDs, source URLs, source basis и worker logs. Исторический [репозиторный отчёт](https://github.com/onedayonemasterpiece/street-story/blob/af2cd7b2bdbdde30db9429edf033cb52f55b2dc9/docs/reports/product-recovery-implementation-20261010.md). Логи конкретно связывают 102/107/120/125 с gemini-3.8-live facts; Luna в этих cold выполняла identity, не fact extraction.
 
-Fresh13 октября: стабильный сохранённый журнал native01a131ed-8e0a-7bb1-b824-1f52768f8b76, записи7089–7120;122: 4344–4432, включаятерминальныйreadback. Новые исследования дляэтогоиндекса не запускались.
+Свежие результаты 13 октября: стабильный сохранённый журнал native 01a131ed-8e0a-7bb1-b824-1f52768f8b76, записи 7089–7120;122: 4344–4432, включая терминальный readback. Новые исследования для этого индекса не запускались.
 
 Для 7/8/121/139/140/143/144 product facts outputs не найдены в рекурсивно просмотренных 667 локальных md/json/jsonl/txt/log-артефактах. Проверены независимые исследования, four-new identity/EXIF reports и сохранённые страницы native 4338–4432. Полный удалённый журнал и все GitHub-ветки не прочитаны: это не доказательство, что тестов никогда не было.
 
+## Достаточность журналирования: что сохранено и что было потеряно в представлении
+
+Проверка 14 октября 2026. Код не изменялся. Сводка карточек не заменяет полный журнал кандидатов, источников и решений.
+
+### Подтверждённый исторический разрыв 122 уже исправлен
+
+- Запуск `fresh-122-f507eef`, `story_a031fc76e5c379a64d21d242`, `research_f93d257d82ab68314b98dc0c`. В сохранённом read-only разборе native-сессии `01a131ed-8e0a-7bb1-b824-1f52768f8b76`, запись4432, указано: SQLite сохранила `partial/resource_blocked` с причиной `research_agent_route_failed`, а REST `research_outcome` оказался null. Пять кандидатов отсеяны как `source_not_read`; единственный дошедший до judge источник был 195-символьным YouTube footer, решение `insufficient`. Нет пригодных фактов, но есть реальный фактовый запуск.
+- Код этой версии действительно отдавал только `automatic_research_outcome`: [service.py447 на f507eef](https://github.com/onedayonemasterpiece/street-story/blob/f507eefaa57700621c2e263b2ed05d4156e4c936/backend/street_story/service.py#L447). Исследователь сохраняет другой ключ `research_outcome`.
+- В текущем HEAD этот конкретный разрыв закрыт: [service.py449–450 на be0eeb3](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/service.py#L449-L450) использует fallback на `research_outcome`, если automatic отсутствует. Нельзя выдавать историческую ошибку за ещё не внесённое исправление. Нужна регрессия сериализации состояния122 на сохранённом fixture; новый платный поиск для неё не нужен.
+
+### Что текущий native-путь уже пишет
+
+[NativeFactResearch103–178](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/native_fact_research.py#L103-L178) сохраняет неизменяемые prompt/schema, исходные thread/turn, вызовы инструментов и их результаты, ресурсный остаток. [306–319](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/native_fact_research.py#L306-L319) сохраняют полный `raw_result_text`, разобранный `raw_result`, проекцию фактов и длительность. [348–387](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/native_fact_research.py#L348-L387) проверяют исполненные модели и usage по собственным сессиям; стоимость явно `unknown`, а не нулевая.
+
+[agent_evidence.py568–623](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/agent_evidence.py#L568-L623) связывает утверждение с source version, chunk IDs, scope, датой, assessment и исходной операцией. У Native это `verification_level=one_model`: независимого судью нельзя дорисовывать из статуса eligible. Дополнительный judge, если был, должен иметь свой receipt и verdict.
+
+### Реальные оставшиеся ограничения
+
+1. **История полноты не используется следующим запросом полностью.** [fact_agents.py411–436](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/fact_agents.py#L411-L436) передаёт leads, read outcomes и IDs, но не прошлый `completion.remaining_gaps` и не исходный query для каждого lead. Это конкретная потеря контекста продолжения, хотя исходный receipt сохранён.
+2. **Причины ошибок callback упрощаются.** [native_research_tools.py62–69](https://github.com/onedayonemasterpiece/street-story/blob/be0eeb3cea9b52dd59d978aacd94f2b568296c5c/backend/street_story/native_research_tools.py#L62-L69) возвращает общий код и класс исключения. Безопасный whitelist причины/остатка бюджета полезнее для следующего действия; секретный exception body публиковать не требуется.
+3. **Извлечённые сводки неполны.** В доступных выдержках некоторых запусков отсутствует текст кандидатов либо третьей карточки; это ограничение нашего доступа/выгрузки, не доказанная утрата в БД. Для атомарного сравнения нельзя восстанавливать текст по счётчику или заменять его другой версией запуска.
+4. **Нет единой атомарной метрики.** Набор eligible-карточек и тематический пакет фасада не являются одинаковой единицей. Перед сравнением нужно разбить обе стороны на минимальные самостоятельно проверяемые утверждения; отдельные свойства фасада не схлопывать ради малого числа, а повтор одного свойства не считать дважды. Даты, субъект и модальность остаются частью утверждения. Таблица тематических пакетов допустима лишь как дополнительная навигация.
+
+### Минимальные требования к проверяемому результату без новой платформы
+
+Использовать существующие receipts/ledger и один экспорт, соединённый по `photo SHA + выбранный physical ID + generation + run + attempt`:
+
+- Query и результат discovery; URL выбранной страницы; успешное/неуспешное чтение и причина; immutable source version/hash/chunk; полный или частичный текст.
+- Для каждого атомарного утверждения: точный текст, субъект, период/модальность, source IDs, собственное model assessment; отдельный judge ID/verdict только если он реально вызывался.
+- Терминальные взаимоисключающие классы: поддержано; недостаточно доказательств; опровергнуто; дубль другого atom ID; ещё ожидает. Технический unread/error не называть ложным фактом. Составную карточку с одной ошибочной частью не целиком принимать и не целиком списывать.
+- Числа по каждой стадии должны сходиться с перечисленными IDs. Укрупнённая карточка может давать несколько atoms; несколько URL поддерживают один atom. Source coverage и recall считаются по заранее опубликованной атомарной версии эталона, а не меняющемуся тематическому знаменателю.
+- Отличать первый полезный результат от терминального, холодный прогон от reuse, завершённый источник от поискового сниппета, actual model от requested model. Сохранять причины Stop/partial/UNKNOWN и cost unknown.
+- Проверки на сохранённых данных: SQLite→REST outcome совпадает; число и IDs проекции равны ledger; один malformed atom не уничтожает независимые supported atoms; дубли и новые источники не увеличивают число знаний; repeated delivery не создаёт новые claims; источник и full raw result остаются доступны после reopen.
+
+Это требования к использованию уже существующих доказательств и минимальным разрывам. Они не предлагают новый оркестратор, обязательный второй судейский вызов для каждого факта или новый модельный прогон ради составления отчёта.
+
+
 ## Полные исторические тексты карточек
 
-Это дословная сохранённая модельная выдача, а не одобрение её точности. Адресные строки, compoundclaims, спорные даты и неверныйscope отдельно подлежат сравнению сэталоном.
+Это дословная сохранённая модельная выдача, а не одобрение её точности. Адресные строки, составные утверждения, спорные даты и неверный scope отдельно подлежат сравнению с эталоном.
 
 ## 104 / cold-bb073d1 / 8 карточек
 
