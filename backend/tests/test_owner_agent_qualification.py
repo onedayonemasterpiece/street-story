@@ -113,8 +113,7 @@ def test_receipt_path_cannot_escape_controlled_managed_root(tmp_path):
         load_agent_qualification(path, routes=routes)
 
 
-@pytest.mark.parametrize('fault', [None, 'foreign_thread', 'no_search', 'no_read', 'disabled_hosted', 'unsafe_tool'])
-def test_native_hosted_discovery_requires_executed_owned_search_and_frozen_reader(tmp_path, fault):
+def native_fixture(tmp_path):
     from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS
     from street_story.native_fact_research import CONTRACT, INSTRUCTIONS as NATIVE_INSTRUCTIONS
     path, routes = fixture(tmp_path)
@@ -145,6 +144,12 @@ def test_native_hosted_discovery_requires_executed_owned_search_and_frozen_reade
             'completion': {'research_sufficient': False, 'reason': 'More history remains',
                 'remaining_gaps': ['History'], 'stop_basis': 'unresolved_gap', 'next_action': None}})
     receipt['tool_receipts'] = receipt['tool_receipts'][1:]
+    return path, routes[:1], proof, evidence, receipt_path, receipt
+
+
+@pytest.mark.parametrize('fault', [None, 'foreign_thread', 'no_search', 'no_read', 'disabled_hosted', 'unsafe_tool'])
+def test_native_hosted_discovery_requires_executed_owned_search_and_frozen_reader(tmp_path, fault):
+    path, routes, proof, evidence, receipt_path, receipt = native_fixture(tmp_path)
     if fault == 'foreign_thread':
         receipt['native_discovery'][0]['thread_id'] = 'foreign'
     elif fault == 'no_search':
@@ -164,3 +169,49 @@ def test_native_hosted_discovery_requires_executed_owned_search_and_frozen_reade
     else:
         actual, metadata = load_agent_qualification(path, routes=routes[:1])
         assert actual == proof and metadata['qualified_provider_count'] == 1
+
+
+@pytest.mark.parametrize('fault', [None, 'foreign_thread', 'foreign_turn', 'changed_hash',
+                                  'changed_url', 'changed_ref', 'uncompleted_read', 'tampered_result'])
+def test_native_retention_and_incremental_save_qualify_without_second_http_read(tmp_path, fault):
+    from street_story.native_received_sources import CONTRACT
+    path, routes, proof, evidence, receipt_path, receipt = native_fixture(tmp_path)
+    arguments = {'url': 'https://test.example/source', 'source_ref': 'turn0view0'}
+    provenance = {'contract': CONTRACT, 'thread_id': 'owned', 'turn_id': 'turn',
+        'url': arguments['url'], 'source_ref': arguments['source_ref'], 'content_sha256': 'content',
+        'call_id': 'native-open', 'result_item_id': 'native-result', 'result_sha256': 'native-hash',
+        'request_sha256': 'request-hash', 'completed_at': 1}
+    if fault == 'foreign_thread':
+        provenance['thread_id'] = 'foreign'
+    elif fault == 'foreign_turn':
+        provenance['turn_id'] = 'other-turn'
+    elif fault == 'changed_hash':
+        provenance['content_sha256'] = 'changed'
+    elif fault == 'changed_url':
+        provenance['url'] = 'https://foreign.example/source'
+    elif fault == 'changed_ref':
+        provenance['source_ref'] = 'turn1view0'
+    elif fault == 'uncompleted_read':
+        provenance['completed_at'] = 3
+    result = {'documents': [{'source_version_id': 'version', 'content_sha256': 'content',
+        'requested_url': arguments['url'], 'chunks': [{'chunk_id': 'chunk', 'text': 'Short quote'}],
+        'native_source_provenance': provenance}]}
+    tool = {'name': 'retain_native_source', 'arguments': arguments, 'completed_at': 2,
+        'result_sha256': hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+    receipt['tool_receipts'] = [tool]
+    receipt['completed_tool_transcript'] = [{**tool, 'result': result}]
+    if fault == 'tampered_result':
+        result['documents'][0]['title'] = 'Modified after receipt'
+    saved = {'facts': receipt['raw_result']['facts']}
+    receipt['raw_result']['facts'] = []
+    receipt['native_tool_calls']['save'] = {'phase': 'completed', 'input': {
+        'name': 'save_facts', 'thread_id': 'owned', 'turn_id': 'turn', 'arguments': saved}}
+    receipt_path.write_text(json.dumps(receipt))
+    evidence['sha256'] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    path.write_text(json.dumps(proof))
+    if fault:
+        with pytest.raises(ValueError, match='Actual agent search/read receipt'):
+            load_agent_qualification(path, routes=routes)
+    else:
+        actual, _ = load_agent_qualification(path, routes=routes)
+        assert actual == proof

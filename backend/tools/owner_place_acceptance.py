@@ -106,6 +106,36 @@ def load_research_qualification(installer, *, research_directory=None, qualifica
     return qualification, caches, provenance
 
 
+def _native_retained_read_verified(receipt):
+    """Match a completed retention receipt to its original native read proof."""
+    from street_story.native_received_sources import CONTRACT
+    sources = {(item.get('source_version_id'), item.get('content_sha256'))
+               for item in receipt.get('sources') or []}
+    for tool in receipt.get('completed_tool_transcript') or []:
+        if tool.get('name') != 'retain_native_source':
+            continue
+        result = tool.get('result') or {}
+        digest = hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if not any(item.get('name') == tool['name'] and item.get('arguments') == tool.get('arguments')
+                   and item.get('completed_at') == tool.get('completed_at')
+                   and item.get('result_sha256') == digest for item in receipt.get('tool_receipts') or []):
+            continue
+        for doc in result.get('documents') or []:
+            proof = doc.get('native_source_provenance') or {}
+            args = tool.get('arguments') or {}
+            if (proof.get('contract') == CONTRACT and proof.get('thread_id') == receipt.get('thread_id')
+                    and proof.get('turn_id') == receipt.get('turn_id')
+                    and proof.get('url') == args.get('url') == doc.get('requested_url')
+                    and proof.get('source_ref') == args.get('source_ref')
+                    and (doc.get('source_version_id'), proof.get('content_sha256')) in sources
+                    and proof.get('content_sha256') == doc.get('content_sha256')
+                    and doc.get('chunks') and all(proof.get(key) for key in
+                        ('call_id', 'result_item_id', 'result_sha256', 'request_sha256', 'completed_at'))
+                    and proof['completed_at'] <= tool.get('completed_at', 0)):
+                return True
+    return False
+
+
 def load_agent_qualification(path, *, routes=None):
     """New agent-role proof only: immutable actual tool receipts plus current profile."""
     from street_story.fact_agents import QUALIFICATION_KEY
@@ -154,17 +184,15 @@ def load_agent_qualification(path, *, routes=None):
             tool_names = {item.get('name') for item in tools}
             discovery_verified = tool_names == {'websearch', 'webfetch'}
             if native:
-                from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS, source_candidates
+                from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS
                 from street_story.native_fact_research import CONTRACT as NATIVE_CONTRACT, INSTRUCTIONS as NATIVE_INSTRUCTIONS
                 schema, prefix = NATIVE_SCHEMA, NATIVE_INSTRUCTIONS + '\n' + FINAL_INSTRUCTIONS + '\nINPUT='
                 if (receipt.get('native_contract') != NATIVE_CONTRACT or receipt.get('native_terminal_status') != 'completed'
                         or not receipt.get('thread_id') or not receipt.get('turn_id')
                         or not receipt.get('native_threads') or not receipt.get('native_tool_calls')):
                     raise ValueError('Native agent requires original executed-session/source readback')
-                # Hosted search is observed in the original owned native turn;
-                # its snippets remain discovery, while support still requires
-                # the supplied frozen webfetch. A flag or an unrelated thread
-                # cannot substitute for an executed search receipt.
+                # Discovery and retained document content keep separate proofs.
+                # Native reading needs no second HTTP download for qualification.
                 executed_threads = {item.get('thread_id') for item in receipt.get('model_attempts') or []}
                 hosted_search = any(
                     item.get('type') in {'webSearch', 'webSearchCall'} and item.get('id')
@@ -176,8 +204,8 @@ def load_agent_qualification(path, *, routes=None):
                         or (item.get('action') or {}).get('queries'))
                     and isinstance(item.get('results'), list)
                     for item in receipt.get('native_discovery') or [])
-                discovery_verified = discovery_verified or (
-                    tool_names - {'read_research_memory'} == {'webfetch'} and hosted_search
+                discovery_verified = discovery_verified or (hosted_search
+                    and ('webfetch' in tool_names or _native_retained_read_verified(receipt))
                     and ((receipt.get('applied_controls') or {}).get('profile_overrides') or {}).get('web_search') == 'live')
             if (receipt.get('phase') != 'completed' or receipt.get('provider_id') != route.get('provider_id')
                     or receipt.get('model_id') != route.get('model_id') or not binding.get('attempt_id')
@@ -188,14 +216,18 @@ def load_agent_qualification(path, *, routes=None):
                     or not receipt.get('model_attempts') or not tools
                     or not discovery_verified):
                 raise ValueError('Actual agent search/read receipt required; legacy reader flags cannot qualify')
-            from street_story.fact_agent_providers import NATIVE_TOOLS
-            declarations = TOOLS + NATIVE_TOOLS if native else TOOLS
+            from street_story.fact_agent_providers import native_tools
+            declarations = native_tools() if native else TOOLS
             for tool in tools:
                 declaration = next((item for item in declarations if item['name'] == tool.get('name')), None)
                 if (not declaration or not Draft202012Validator(declaration['parameters']).is_valid(tool.get('arguments'))
                         or not tool.get('completed_at') or not tool.get('result_sha256')):
                     raise ValueError('Agent observed tool receipt outside current read-only scope')
-            facts = source_candidates(receipt.get('raw_result'))['facts'] if native else validate_result(receipt.get('result'))['facts']
+            if native:
+                from street_story.native_fact_contract import delivered_candidates
+                facts = delivered_candidates(receipt)['facts']
+            else:
+                facts = validate_result(receipt.get('result'))['facts']
             read_urls = {source.get(key) for source in receipt.get('sources') or []
                          if source.get('source_version_id') and source.get('content_sha256')
                          for key in ('requested_url', 'final_url')}
