@@ -57,6 +57,6 @@
 
 - [Замороженный мастер V4](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-benchmark-master-20261014.md).
 - [Контракт V4](https://github.com/onedayonemasterpiece/street-story/blob/f4690fc67bf5800e192b9f7560ff2ed901413550/docs/testing/fact-atomic-contract-v4.md).
-- [Полный JSON этой сверки](street-story-current-atomic-comparison-20261014.json): тексты карточек, канонические сопоставления, источники, полные/частичные множества, пропуски и оговорки.
+- [Индекс JSON этой сверки](street-story-current-atomic-comparison-20261014.json): шесть файлов по фотографиям, тексты карточек, канонические сопоставления, источники, полные/частичные множества, пропуски и оговорки. Индекс содержит SHA256 и Git blob SHA1 каждого файла; все шесть JSON повторно прочитаны с GitHub, разобраны парсером и сверены по checksum.
 
 Этот отчёт публикуется отдельно. Он не заменяет старые эталоны скрыто, не возобновляет остановленную публикацию JSON V4 и не объявляет насыщение всего корпуса.
