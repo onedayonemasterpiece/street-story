@@ -32,6 +32,13 @@ RESULT_SCHEMA['properties']['completion'] = {'type': 'object', 'additionalProper
         'stop_basis': {'type': 'string', 'enum': ['material_exhausted', 'resource_unavailable', 'unresolved_gap']}},
     'required': ['research_sufficient', 'reason', 'remaining_gaps', 'stop_basis']}
 RESULT_SCHEMA['required'].append('completion')
+COMPLETION_V1_SCHEMA = copy.deepcopy(RESULT_SCHEMA)
+RESULT_SCHEMA['properties']['completion']['properties']['next_action'] = {
+    'type': ['object', 'null'], 'additionalProperties': False,
+    'properties': {'kind': {'type': 'string', 'enum': ['search', 'read', 'extract', 'linkage', 'ask_owner']},
+        'request': {'type': 'string', 'minLength': 1}, 'reason': {'type': 'string', 'minLength': 1}},
+    'required': ['kind', 'request', 'reason']}
+RESULT_SCHEMA['properties']['completion']['required'].append('next_action')
 
 # Codex's strict JSON contract requires explicit types for string enums.
 def _strict(node):
@@ -47,6 +54,7 @@ def _strict(node):
 
 _strict(RESULT_SCHEMA)
 _strict(LEGACY_RESULT_SCHEMA)
+_strict(COMPLETION_V1_SCHEMA)
 
 FINAL_INSTRUCTIONS = (
     'Return facts as distinct semantic claims, with a stable claim_key and Russian text. '
@@ -75,7 +83,17 @@ FINAL_INSTRUCTIONS = (
     'warrants the permitted scoped Sol child. Do not claim sufficiency from a count. '
     'Distinguish previously withheld claims from known usable knowledge; a complete '
     'own-source correction may preserve valid independent content without reviving '
-    'an unsupported clause or silently overriding conflict arbitration.')
+    'an unsupported clause or silently overriding conflict arbitration. '
+    'If work remains actionable, provide completion.next_action with kind '
+    '(search, read, extract, linkage), the concrete query/URL/cursor or evidence '
+    'relationship to investigate, and its reason. The host will retain your '
+    'facts and continue this same research family; completed turn is not '
+    'completed investigation. For actual owner clarification use ask_owner. '
+    'Use null only when no worthwhile action remains or a concrete resource '
+    'prevents it. Do not repeat an unchanged action without new input. '
+    'If INPUT.native_continuation is present, continue the specified owned '
+    'parent turn in this same thread, preserving its read versions and useful '
+    'facts; it is not permission to reidentify the selected house.')
 
 
 def source_candidates(raw):
@@ -88,7 +106,9 @@ def source_candidates(raw):
     """
     # Exact write recovery still accepts closed historical facts-only packets.
     # NativeFactResearch enforces the frozen current schema for new operations.
-    Draft202012Validator(RESULT_SCHEMA if 'completion' in raw else LEGACY_RESULT_SCHEMA).validate(raw)
+    contract = (RESULT_SCHEMA if 'next_action' in raw.get('completion', {}) else COMPLETION_V1_SCHEMA
+        if 'completion' in raw else LEGACY_RESULT_SCHEMA)
+    Draft202012Validator(contract).validate(raw)
     result = []
     for fact in raw['facts']:
         if not fact['sources']:
@@ -103,6 +123,40 @@ def source_candidates(raw):
                 'source_date': claim['source_date'], 'native_fact': copy.deepcopy(fact),
                 'native_basis': copy.deepcopy(source)})
     return {'facts': result}
+
+
+def native_parent_digest(receipt):
+    """Fingerprint immutable closed inference/read ownership, excluding accounting retries."""
+    packet = {key: receipt.get(key) for key in ('binding', 'native_contract', 'provider_id', 'model_id',
+        'thread_id', 'turn_id', 'frozen_prompt', 'raw_result', 'native_tool_calls', 'native_threads')}
+    return hashlib.sha256(json.dumps(packet, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def load_native_parent(db, pointer, *, binding, context):
+    row = db.execute('SELECT role,receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+        (pointer.get('original_attempt_id'),)).fetchone()
+    parent = json.loads(row['receipt_json']) if row else {}
+    owner = parent.get('binding') or {}
+    try:
+        original_context = json.loads(parent['frozen_prompt'].split('\nINPUT=', 1)[1])
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError('native_continuation_parent_unverified') from exc
+    completion = (parent.get('raw_result') or {}).get('completion') or {}
+    if (not row['role'].startswith('facts_agent_') or parent.get('native_contract') != CONTRACT
+            or parent.get('phase') != 'completed' or parent.get('provider_send_state') != 'response_closed'
+            or parent.get('native_terminal_status') != 'completed' or completion.get('research_sufficient')
+            or not completion.get('next_action') or completion['next_action'].get('kind') == 'ask_owner'
+            or parent.get('provider_id') != 'codex_native' or parent.get('model_id') != 'gpt-6-luna'
+            or pointer.get('thread_id') != parent.get('thread_id')
+            or pointer.get('parent_turn_id') != parent.get('turn_id')
+            or pointer.get('next_action') != completion.get('next_action')
+            or pointer.get('parent_sha256') != native_parent_digest(parent)
+            or any(owner.get(key) != binding.get(key) for key in
+                ('story_id', 'photo_sha256', 'generation', 'job_id', 'control_revision'))
+            or original_context.get('run_id') != context.get('run_id')
+            or original_context.get('selected_object') != context.get('selected_object')):
+        raise ValueError('native_continuation_parent_unverified')
+    return parent
 
 
 def owned_assessment(db, candidate, agent, *, story, run_id):
@@ -155,26 +209,35 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     if any(row[key] != candidate[key] for key in ('text', 'subject_scope', 'source_date')):
         raise ValueError('native_fact_assessment_claim_changed')
     version = basis['source_version_id']
-    read = next((doc for call in receipt.get('native_tool_calls', {}).values()
+    reads = [doc for call in receipt.get('native_tool_calls', {}).values()
         if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
         for doc in (call.get('result') or {}).get('documents', [])
         if doc.get('source_version_id') == version and doc.get('content_sha256') == basis['content_sha256']
-        and basis['url'] in {doc.get('requested_url'), doc.get('final_url')}), None)
+        and basis['url'] in {doc.get('requested_url'), doc.get('final_url')}]
+    read = next(iter(reads), None)
     # research_run_sources is a latest-per-URL pointer. The immutable chunk/run
     # relation retains earlier versions read in the same operation.
     frozen = db.execute('SELECT * FROM source_versions WHERE source_version_id=?', (version,)).fetchone()
     chunks = {row[0]: row[1] for row in db.execute('SELECT c.chunk_id,c.chunk_text FROM source_chunks c '
         'JOIN research_chunk_runs r ON r.chunk_id=c.chunk_id WHERE r.run_id=? AND c.source_version_id=?',
         (origin_run_id or run_id, version))}
-    received = {chunk.get('chunk_id'): chunk.get('text', chunk.get('chunk_text'))
-        for chunk in (read or {}).get('chunks', [])}
+    from .native_source_reads import SOURCE_PAGE_CONTRACT
+    paged = bool(reads) and all(doc.get('read_contract') == SOURCE_PAGE_CONTRACT for doc in reads)
+    received = {}
+    for document in reads if paged else [read or {}]:
+        for chunk in document.get('chunks', []):
+            key, text = chunk.get('chunk_id'), chunk.get('text', chunk.get('chunk_text'))
+            if key in received and received[key] != text:
+                raise ValueError('native_fact_source_read_changed')
+            received[key] = text
     required = set(row['chunk_ids']) | set(row['checks']['relation_basis']['chunk_ids'])
     compact = (read or {}).get('read_contract') == SOURCE_READ_CONTRACT
     if (not read or not frozen or frozen['access_scope'] != 'public' or not chunks
             or not required.issubset(chunks.keys() & received.keys())
             or any(received[key] != chunks[key] for key in required)
             or (compact and received != chunks)
-            or (not compact and read.get('normalized_text') != frozen['normalized_text'])
+            or (paged and any(chunks.get(key) != text for key, text in received.items()))
+            or (not compact and not paged and read.get('normalized_text') != frozen['normalized_text'])
             or frozen['content_sha256'] != basis['content_sha256']
             or hashlib.sha256(frozen['normalized_text'].encode()).hexdigest() != basis['content_sha256']):
         raise ValueError('native_fact_source_not_owned_read')

@@ -52,7 +52,7 @@ async def test_native_discovery_preserves_raw_snippet_but_does_not_deliver_it_as
     raw = {'type': 'web_search', 'title': 'Catalog', 'url': 'https://example.org/catalog',
         'supports': [{'kind': 'search_snippet', 'text': 'A stale statement absent from the actual page.'}]}
     async def search(query):
-        return SimpleNamespace(grounding_sources=[raw])
+        return SimpleNamespace(grounding_sources=[raw], payload={})
     service.providers.gemini._public_web_search = search
     received, saved = [], []
     class Native:

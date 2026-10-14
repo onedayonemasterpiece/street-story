@@ -117,7 +117,7 @@ async def cached_public_page(store, client, raw, *, resolver=resolve_public):
             if hashlib.sha256(body).hexdigest() == saved['sha256']:
                 return saved['final_url'], saved['mime'], body
         final_url, mime, body = await fetch_public(client, target, MAX_PAGE_BYTES, resolver=resolver)
-        if mime in {'text/html', 'application/xhtml+xml', 'text/plain'}:
+        if mime in {'text/html', 'application/xhtml+xml', 'text/plain', 'application/pdf'}:
             entry = {'final_url': final_url, 'mime': mime, 'body': base64.b64encode(body).decode(),
                      'sha256': hashlib.sha256(body).hexdigest(), 'acquired_at': store.now()}
             store.cache_put(key, entry, 86400)

@@ -32,9 +32,15 @@ def test_new_plan_shuffles_copy_and_keeps_two_independent_services(fixed_shuffle
     original = list(rows)
     plan = route_plan(rows)
     assert rows == original
-    assert plan == [rows[4], rows[2], rows[3], rows[1]]
+    assert plan == [rows[4], rows[2], rows[3], rows[1], rows[0]]
     assert len({row.provider_id for row in plan[:2]}) == 2
-    assert len({row.route_id for row in plan}) == 4
+    assert len({row.route_id for row in plan}) == 5
+
+
+def test_native_is_one_primary_but_does_not_suppress_qualified_fallback():
+    rows = [route('codex_native', 'gpt-6-luna'), route('gigachat', 'GigaChat-2'),
+            route('google', 'configured-google')]
+    assert route_plan(rows) == rows
 
 
 @pytest.mark.asyncio

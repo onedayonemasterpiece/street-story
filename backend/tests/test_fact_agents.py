@@ -23,8 +23,8 @@ def test_plan_prefers_independent_services_without_blocking_a_single_provider(mo
         route('google', 'custom-google'), route('gigachat', 'custom-giga'), route('google', 'last')]
     plan = route_plan(rows)
     assert [row.provider_id for row in plan[:2]] == ['opencode', 'google']
-    assert len(plan) == 4
-    assert len({row.route_id for row in plan}) == 4
+    assert len(plan) == 5
+    assert len({row.route_id for row in plan}) == 5
 
 
 def test_agent_input_cannot_hydrate_old_poi_facts_or_photo_camera():

@@ -138,13 +138,13 @@ def configured_routes(adapter, *, include_unqualified=False):
 
 
 def route_plan(routes):
-    """Up to two independent services, with at most four qualified routes total."""
+    """Bound concurrent primaries, retaining every qualified fallback route."""
     routes = list(routes)
     native = [route for route in routes if route.provider_id == 'codex_native']
     if native:
         # Luna owns the decision and native child call; no host count heuristic
         # starts Sol or a second simultaneous research operation.
-        return native[:1]
+        return native[:1] + [route for route in routes if route.provider_id != 'codex_native']
     SystemRandom().shuffle(routes)
     primary, tail, seen = [], [], set()
     for route in routes:
@@ -153,7 +153,7 @@ def route_plan(routes):
             seen.add(route.provider_id)
         else:
             tail.append(route)
-    return primary + tail[:max(0, 4-len(primary))]
+    return primary + tail
 
 
 def _coverage_gaps(state):
@@ -168,13 +168,15 @@ def _coverage_gaps(state):
     if isinstance(completion, dict) and (not completion.get('research_sufficient')
             or completion.get('remaining_gaps')):
         gaps.append('model_reported_research_gap')
-    if state.get('phase') == 'completed' and not state.get('candidate_count', len(state.get('outcomes', []))):
+    native_decision = state.get('provider_id') == 'codex_native' and isinstance(completion, dict)
+    if (not native_decision and state.get('phase') == 'completed'
+            and not state.get('candidate_count', len(state.get('outcomes', [])))):
         gaps.append('no_source_backed_candidates')
         if state.get('source_read_failures'):
             gaps.append('source_read_unavailable')
     if state.get('rejected_candidate_count'):
         gaps.append('candidate_format_rejections')
-    if state.get('unproposed_source_version_ids'):
+    if not native_decision and state.get('unproposed_source_version_ids'):
         gaps.append('read_sources_without_candidates')
     if any(row.get('status') not in {'supported', 'duplicate'} for row in state.get('outcomes', [])):
         gaps.append('candidate_admission_unresolved')
@@ -232,7 +234,8 @@ def _healthy_routes(adapter, routes):
     return healthy
 
 
-def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_id=None, state=None, recovery=False):
+def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_id=None, state=None, recovery=False,
+                  continuation=False):
     """Freeze discovery inputs once; merge only route progress under owner fences."""
     from .service import ConflictError, canonical
     store = adapter.service.store
@@ -253,9 +256,13 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
                 raise ConflictError('agent_research_plan_changed', 'The route is outside the original agent plan.')
             routes = saved.setdefault('routes', {})
             old = routes.get(route_id, {})
+            if continuation and (old.get('phase') != 'completed' or old.get('provider_id') != 'codex_native'
+                    or state.get('phase') != 'created' or state.get('parent_attempt_id') != old.get('attempt_id')
+                    or not (old.get('native_completion') or {}).get('next_action')):
+                raise ConflictError('agent_research_continuation_changed', 'Closed owned model action required.')
             if (old.get('phase') not in {'completed', 'failed'} or recovery
                     and state.get('phase') in {old.get('phase'), 'completed'} and state.get('attempt_id')
-                    and state['attempt_id'] == old.get('attempt_id')):
+                    and state['attempt_id'] == old.get('attempt_id') or continuation):
                 routes[route_id] = state
                 db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
                     (canonical(saved), job['id'], stage))
@@ -409,7 +416,7 @@ def native_agent_context(service, story, identity, goal, run_id):
                         'source_version_ids': sorted({e['source_version_id'] for e in item.get('evidence', [])
                             if e.get('source_version_id')}), 'kind': 'own_review_history_context_not_evidence'})
         context['source_review_history'] = reviews
-        prior, leads = [], []
+        prior, leads, queries = [], [], []
         for record in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
                 "AND role LIKE 'facts_agent_%' ORDER BY created_at", (story['id'],)):
             receipt = json.loads(record[0])
@@ -423,15 +430,19 @@ def native_agent_context(service, story, identity, goal, run_id):
                     continue
                 value = call.get('result') or {}
                 if (call.get('input') or {}).get('name') == 'websearch':
+                    queries.append({'query': (call['input'].get('arguments') or {}).get('query'),
+                        'cursor': (call['input'].get('arguments') or {}).get('cursor'),
+                        'original_attempt_id': binding.get('attempt_id')})
                     for source in value.get('sources', []):
                         leads.append({'title': source.get('title'), 'url': source.get('url'),
                             'original_attempt_id': binding.get('attempt_id'), 'kind': 'unverified_search_lead'})
             prior.append(binding.get('attempt_id'))
         context['prior_search_leads'] = leads
+        context['prior_search_queries'] = queries
         context['prior_read_outcomes'] = [dict(row) for row in db.execute(
             'SELECT s.url,s.status,s.error_code,s.source_version_id,r.run_id FROM research_run_sources s '
             'JOIN research_runs r ON r.run_id=s.run_id WHERE r.story_id=? AND r.identity_generation=? '
-            "AND r.run_id!=? ORDER BY s.updated_at", (story['id'], story['_identity_generation'], run_id))]
+            "ORDER BY s.updated_at", (story['id'], story['_identity_generation']))]
         context['prior_native_attempt_ids'] = prior
     conflicts, cursor = [], None
     while True:
@@ -465,7 +476,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
         if any(route.provider_id == 'codex_native' for route in plan):
             context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
         saved = {'pipeline': QUALIFICATION_KEY, 'route_ids': [r.route_id for r in plan],
-            'primary_count': min(2, len({r.provider_id for r in plan})),
+            'primary_count': (1 if plan[0].provider_id == 'codex_native'
+                else min(2, len({r.provider_id for r in plan}))),
             'provider_availability': 'independent' if len({r.provider_id for r in plan}) > 1 else 'reduced',
             'context': context,
             'routes': {}}
@@ -604,9 +616,11 @@ async def run_fact_agents(adapter, job, run_id, goal):
         saved['routes'][route_id] = persisted['routes'][route_id]
         return saved['routes'][route_id]
 
-    async def one(route_id):
+    async def one_step(route_id):
         guard()
         state = saved['routes'].get(route_id, {})
+        context = state.get('operation_context') or saved['context']
+        lineage = {key: state[key] for key in ('operation_context', 'history', 'continuation_keys') if key in state}
         route = routes_by_id.get(route_id)
         if not state:
             recovered = _recover_route_state(adapter, job, run_id, story, context, route_id)
@@ -662,12 +676,68 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 state = {'phase': 'unknown' if receipt.get('phase') not in {'failed', 'completed', 'created'} else 'failed',
                     'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id'),
                     **_source_coverage(receipt)}
-        state = {**state, **({'provider_id': route.provider_id} if route else {})}
+        state = {**state, **lineage, **({'provider_id': route.provider_id} if route else {})}
         persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state)
         state = saved['routes'][route_id] = persisted['routes'][route_id]
         LOG.info('street_story_fact_agent run_id=%s route_id=%s phase=%s candidates=%s',
             run_id, route_id, state['phase'], state.get('candidate_count', 0))
         return await retained(route_id, state)
+
+    async def one(route_id):
+        # Each closed packet is admitted before the model's next action. New
+        # turns stay in its existing thread and this same durable job/run.
+        # Neither a fact count nor a continuation count decides saturation.
+        while True:
+            result = await one_step(route_id)
+            completion = result.get('native_completion') or {}
+            action = completion.get('next_action')
+            if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
+                    or completion.get('research_sufficient') or not action or action.get('kind') == 'ask_owner'
+                    or any(row.get('status') == 'unverified' for row in result.get('outcomes', []))):
+                return result
+            guard()
+            with adapter.service.store.connection() as db:
+                row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                    (result.get('attempt_id'),)).fetchone()
+                parent = json.loads(row[0]) if row else {}
+                # Stable newly observed inputs; repeating an unchanged action
+                # is an explicit blocked loop, never "material exhausted".
+                knowledge = [dict(row) for row in db.execute('SELECT assertion_id,revision_digest FROM fact_assertions '
+                    'WHERE story_id=? ORDER BY assertion_id', (story['id'],))]
+            if (parent.get('phase') != 'completed' or parent.get('provider_send_state') != 'response_closed'
+                    or parent.get('native_terminal_status') != 'completed'):
+                return result
+            from .native_fact_contract import native_parent_digest, load_native_parent
+            reads = sorted({(doc.get('source_version_id'), doc.get('content_sha256'), chunk.get('chunk_id'))
+                for call in parent.get('native_tool_calls', {}).values() if call.get('phase') == 'completed'
+                for doc in (call.get('result') or {}).get('documents', []) for chunk in doc.get('chunks', [])})
+            failures = sorted({(attempt.get('requested_url'), attempt.get('status'), attempt.get('error_code'))
+                for call in parent.get('native_tool_calls', {}).values() if call.get('phase') == 'completed'
+                for attempt in (call.get('result') or {}).get('read_attempts', [])})
+            progress_key = hashlib.sha256(json.dumps([action, knowledge, reads, failures],
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            keys = result.get('continuation_keys') or []
+            if progress_key in keys:
+                state = {**result, 'continuation_blocker': 'same_action_without_new_input'}
+                _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state, recovery=True)
+                LOG.warning('street_story_native_continuation run_id=%s attempt_id=%s status=blocked reason=same_action_without_new_input',
+                    run_id, result['attempt_id'])
+                return state
+            pointer = {'original_attempt_id': result['attempt_id'], 'thread_id': parent['thread_id'],
+                'parent_turn_id': parent['turn_id'], 'next_action': action, 'parent_sha256': native_parent_digest(parent)}
+            next_context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
+            next_context['native_continuation'] = pointer
+            with adapter.service.store.connection() as db:
+                load_native_parent(db, pointer, binding=parent['binding'], context=next_context)
+            state = {'phase': 'created', 'provider_id': 'codex_native', 'parent_attempt_id': result['attempt_id'],
+                'operation_context': next_context, 'continuation_keys': [*keys, progress_key],
+                'history': [*(result.get('history') or []), {key: value for key, value in result.items()
+                    if key not in {'history', 'continuation_keys'}}]}
+            persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id,
+                state=state, continuation=True)
+            saved['routes'][route_id] = persisted['routes'][route_id]
+            LOG.info('street_story_native_continuation run_id=%s parent_attempt_id=%s thread_id=%s action=%s status=ready',
+                run_id, result['attempt_id'], parent['thread_id'], action['kind'])
 
     ids = saved['route_ids']
     primary_count = saved.get('primary_count', min(2, len(ids)))
@@ -680,6 +750,18 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 result = task.result()
                 outcomes.append(result)
                 if _coverage_gaps(result):
+                    # Native work retains its original Luna/Sol family. The
+                    # existing non-native read-only pool may still do bounded
+                    # independent work while an exact original is observed;
+                    # unknown_providers below excludes that original resource.
+                    if (result.get('provider_id') == 'codex_native'
+                            and (result.get('phase') == 'unknown' or result.get('original_send_unresolved')
+                                 or (result.get('retained') or {}).get('phase') == 'unknown')):
+                        continue
+                    if (result.get('provider_id') == 'codex_native'
+                            and result.get('phase') == 'completed'
+                            and (result.get('native_completion') or {}).get('stop_basis') != 'resource_unavailable'):
+                        continue  # The owned model's next action governs its continuation.
                     unknown_providers = {part.get('provider_id') or (routes_by_id[part_id].provider_id
                         if part_id in routes_by_id else None)
                         for original_id, original in saved['routes'].items()

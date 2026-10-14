@@ -564,7 +564,7 @@ class _DuckDuckGoResultParser(HTMLParser):
         url = self._target_url(self.current.get("href", ""))
         title = " ".join(self.current.get("title", "").split())
         snippet = " ".join(self.current.get("snippet", "").split())
-        if url and title and len(self.results) < 12:
+        if url and title:
             self.results.append({"url": url, "title": title[:300], "snippet": snippet[:700]})
         self.current = None
 
@@ -1447,6 +1447,7 @@ class GeminiClient:
         self,
         query: str,
         excluded_urls: set[str] | None = None,
+        cursor: str | None = None,
     ) -> GroundedResearch:
         """Emergency independent web discovery after Google-grounding exhaustion.
 
@@ -1460,11 +1461,24 @@ class GeminiClient:
             headers={"User-Agent": "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"},
         )
         try:
-            response = await client.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query[:1000]},
-                headers={"Accept": "text/html,application/xhtml+xml"},
-            )
+            endpoint = 'https://html.duckduckgo.com/html/'
+            query_hash = hashlib.sha256(query.encode()).hexdigest()
+            if cursor:
+                import base64
+                try:
+                    position = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                    fields = position['fields']
+                    if (position['query_sha256'] != query_hash or not isinstance(fields, dict)
+                            or fields.get('q') != query
+                            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in fields.items())):
+                        raise ValueError()
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise RetryableProviderError('public_web_search_cursor_invalid') from exc
+                response = await client.post(endpoint, data=fields,
+                    headers={'Accept': 'text/html,application/xhtml+xml'})
+            else:
+                response = await client.get(endpoint, params={'q': query},
+                    headers={'Accept': 'text/html,application/xhtml+xml'})
             response.raise_for_status()
             text = response.text
             if len(text.encode("utf-8")) > 1_500_000:
@@ -1472,6 +1486,27 @@ class GeminiClient:
             parser = _DuckDuckGoResultParser()
             parser.feed(text)
             results = parser.finish()
+            # Follow only the provider's actually returned Next form. No
+            # fabricated API, page number or arbitrary off-site action.
+            next_cursor = None
+            from urllib.parse import urljoin
+            for form in BeautifulSoup(text, 'html.parser').find_all('form'):
+                if str(form.get('method') or '').lower() != 'post':
+                    continue
+                action = urljoin(endpoint, str(form.get('action') or ''))
+                if action != endpoint:
+                    continue
+                inputs = form.find_all('input')
+                if not any(str(item.get('value') or '').casefold() in {'next', 'next page'}
+                           for item in inputs if str(item.get('type') or '').lower() == 'submit'):
+                    continue
+                fields = {str(item['name']): str(item.get('value') or '') for item in inputs if item.get('name')}
+                if fields.get('q') != query:
+                    continue
+                import base64
+                next_cursor = base64.urlsafe_b64encode(json.dumps({'query_sha256': query_hash,
+                    'fields': fields}, ensure_ascii=False).encode()).decode()
+                break
             if not results:
                 raise RetryableProviderError("public_web_search_empty")
 
@@ -1520,7 +1555,7 @@ class GeminiClient:
             return GroundedResearch(
                 payload={
                     "summary": (
-                        f"Google Search grounding сейчас недоступен. Получено {len(sources)} "
+                        f"Получено {len(sources)} "
                         "discovery-источников; evidence находится в sources[].supports и не является "
                         "автоматически доказанными фактами."
                     ),
@@ -1528,6 +1563,9 @@ class GeminiClient:
                     "facts": facts,
                     "search_provider": "duckduckgo_html_fallback",
                     "sources_skipped_completed": skipped,
+                    'has_more': next_cursor is not None,
+                    'next_cursor': next_cursor,
+                    'pagination_status': 'next_form_available' if next_cursor else 'no_supported_next_form',
                 },
                 grounding_sources=sources,
             )
@@ -1604,6 +1642,9 @@ class GeminiClient:
                     with self.store.connection() as db:
                         saved = reusable_source_document(db, run_id=run_id, url=requested_url, now=self.store.now())
                     if saved is not None:
+                        from .pdf_sources import pdf_metadata
+                        with self.store.connection() as db:
+                            saved.update(pdf_metadata(db, saved['source_version_id']))
                         documents[requested_url] = {**saved,
                             **_cached_document_discovery(self.store, requested_url, saved)}
                         continue
@@ -1638,7 +1679,7 @@ class GeminiClient:
                     content_type = str(response.headers.get("content-type") or "").casefold()
                     if content_type and not any(
                         kind in content_type
-                        for kind in ("text/html", "application/xhtml+xml", "text/plain")
+                        for kind in ("text/html", "application/xhtml+xml", "text/plain", "application/pdf")
                     ):
                         error_code = "unsupported_content_type"
                         raise ValueError(error_code)
@@ -1657,7 +1698,14 @@ class GeminiClient:
                         publisher_sid, _ = canonical_article(requested_url)
                     except ValueError:
                         publisher_sid = None
-                    if publisher_sid is not None:
+                    pdf = None
+                    if content_type.split(';')[0].strip() == 'application/pdf':
+                        from .pdf_sources import extract_pdf, public_pdf_metadata
+                        pdf = await asyncio.to_thread(extract_pdf, raw_bytes)
+                        normalized_text = pdf['normalized_text']
+                        text_limited = False
+                        source_encoding, page = 'pdf-text-extraction', ''
+                    elif publisher_sid is not None:
                         # Reuse the publisher's body contract on the SAME acquired
                         # bytes. Navigation/login text is not an article fallback.
                         try:
@@ -1678,11 +1726,11 @@ class GeminiClient:
                         normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
                         source_encoding = decoded.original_encoding
                         page = decoded.unicode_markup
-                    if len(normalized_text) < 80:
+                    if pdf is None and len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
 
-                    read_status = (
+                    read_status = pdf['read_status'] if pdf is not None else (
                         "partial_body_limit"
                         if body_limited
                         else "partial_text_limit"
@@ -1703,8 +1751,12 @@ class GeminiClient:
                                 normalized_text=normalized_text,
                                 read_status=read_status,
                                 access_scope='public',
+                                source_bytes_sha256=pdf['raw_sha256'] if pdf else None,
                                 now=self.store.now(),
                             )
+                            if pdf is not None:
+                                from .pdf_sources import persist_pdf
+                                persist_pdf(db, persisted['source_version_id'], raw_bytes, pdf)
                     else:
                         content_sha = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
                         source_version_id = "srcv_" + hashlib.sha256(
@@ -1731,6 +1783,7 @@ class GeminiClient:
 
                     documents[requested_url] = {
                         **persisted,
+                        **({'pdf': public_pdf_metadata(pdf)} if pdf else {}),
                         "requested_url": requested_url,
                         "final_url": current_url,
                         "title": source_titles.get(requested_url) or source_titles.get(current_url) or current_url,

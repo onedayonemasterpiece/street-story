@@ -28,10 +28,12 @@ CANDIDATE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties
 RESULT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
     'facts': {'type': 'array', 'maxItems': 24, 'items': CANDIDATE_SCHEMA}}, 'required': ['facts']}
 TOOLS = [{'name': 'websearch', 'description': 'Discover public article URLs; snippets are discovery only.',
-          'parameters': {'type': 'object', 'properties': {'query': {'type': 'string', 'maxLength': 500}},
+          'parameters': {'type': 'object', 'properties': {'query': {'type': 'string', 'maxLength': 500},
+                         'cursor': {'type': 'string', 'maxLength': 12000}},
                          'required': ['query'], 'additionalProperties': False}},
-         {'name': 'webfetch', 'description': 'Read a public article. Read it before citing its URL.',
-          'parameters': {'type': 'object', 'properties': {'url': {'type': 'string', 'maxLength': 2048}},
+         {'name': 'webfetch', 'description': 'Read a public source before citing it. Follow next_cursor with the same URL to read remaining frozen chunks and PDF pages; a partial reply is not the whole document.',
+          'parameters': {'type': 'object', 'properties': {'url': {'type': 'string', 'maxLength': 2048},
+                         'cursor': {'type': 'string', 'maxLength': 12000}},
                          'required': ['url'], 'additionalProperties': False}}]
 def wire_tools():
     """SDK Schema supports a narrower subset; host validation stays strict."""
@@ -424,6 +426,28 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         if not saved:
             raise ResearchUnavailable('native_research_original_receipt_missing', {'phase': 'unknown', 'retry_safe': False})
         receipt = route.client.original_receipt(binding) or json.loads(saved[0])
+        # Recovery reads the exact frozen original, including historical
+        # instructions/schema. Current profile changes never rewrite UNKNOWN.
+        prompt = receipt['frozen_prompt']
+        if json.loads(prompt.split('\nINPUT=', 1)[1]) != context:
+            raise ValueError('native_research_original_context_changed')
+    elif route.provider_id == 'codex_native' and context.get('native_continuation'):
+        from .native_fact_contract import load_native_parent
+        pointer = context['native_continuation']
+        with adapter.service.store.connection() as db:
+            parent = load_native_parent(db, pointer, binding=binding, context=context)
+        family = parent.get('native_family') or {}
+        receipt.update(thread_id=parent['thread_id'], native_threads=copy.deepcopy(parent['native_threads']),
+            native_tool_calls={key: {**copy.deepcopy(call), 'inherited_from_attempt_id': pointer['original_attempt_id']}
+                for key, call in parent.get('native_tool_calls', {}).items() if call.get('phase') == 'completed'},
+            sources=copy.deepcopy(parent.get('sources') or []),
+            native_events=copy.deepcopy(parent.get('native_events') or []),
+            applied_controls=copy.deepcopy(parent.get('applied_controls') or {}),
+            native_family={'root_attempt_id': family.get('root_attempt_id') or pointer['original_attempt_id'],
+                'parent_attempt_id': pointer['original_attempt_id'], 'parent_turn_id': parent['turn_id'],
+                'parent_sha256': pointer['parent_sha256'],
+                'prior_family_total_tokens': (parent.get('usage') or {}).get('family_total_tokens',
+                    (parent.get('usage') or {}).get('total_tokens'))})
     if _retained_cohort is not None:
         receipt.update(contract=OWNED_SOURCE_CONTRACT, retained_source_packet=copy.deepcopy(_retained_cohort),
             route_id=route.route_id, profile_sha256=route.profile_fingerprint,
@@ -458,8 +482,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         client = adapter.service.providers.gemini
         if name == 'websearch':
             try:
-                result = await client._public_web_search(args['query'])
-                value = {'sources': result.grounding_sources}
+                result = await client._public_web_search(args['query'], **({'cursor': args['cursor']} if args.get('cursor') else {}))
+                # Existing discovery adapters may return only grounding_sources.
+                # Missing pagination metadata is unknown, not "no more pages".
+                pagination = getattr(result, 'payload', None) or {}
+                value = {'sources': result.grounding_sources,
+                    **{key: pagination[key] for key in ('has_more', 'next_cursor', 'pagination_status') if key in pagination}}
             except RetryableProviderError as exc:
                 if str(exc) not in {'public_web_search_empty', 'public_web_search_no_https_results'}:
                     raise
@@ -474,17 +502,30 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                     'title': source.get('title'), 'url': source.get('url')}
                     for source in value['sources']], 'evidence_role': 'discovery_only_read_before_support'}
         else:
-            docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
-            docs = list(docs.values())
+            from .native_source_reads import source_page
+            if args.get('cursor'):
+                with adapter.service.store.connection() as db:
+                    docs = [source_page(db, run_id=context['run_id'], url=args['url'], cursor=args['cursor'])]
+            else:
+                docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
+                docs = list(docs.values())
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
+            for document, source in zip(value['documents'], docs):
+                # Keep the qualified small-text non-native contract unchanged.
+                # Large bodies/PDFs use the same immutable cursor, while native
+                # assessments always receive owned chunk identifiers.
+                if (route.provider_id != 'codex_native' and not args.get('cursor') and not source.get('pdf')
+                        and len(str(source.get('normalized_text') or '').encode()) <= 24000):
+                    continue
+                with adapter.service.store.connection() as db:
+                    document.clear()
+                    document.update(source_page(db, run_id=context['run_id'], url=args['url'],
+                        version=source['source_version_id'], cursor=args.get('cursor')))
+                if route.provider_id != 'codex_native':
+                    document['normalized_text'] = '\n'.join(chunk['text'] for chunk in document['chunks'])
             if route.provider_id == 'codex_native':
-                from .native_fact_contract import SOURCE_READ_CONTRACT
                 for document, source in zip(value['documents'], docs):
-                    # The full immutable text is already delivered in chunks.
-                    # Duplicating it makes code-mode output lose later metadata.
-                    document.pop('normalized_text', None)
-                    document['read_contract'] = SOURCE_READ_CONTRACT
                     document.update({key: source[key] for key in
                         ('discovery_links', 'discovery_links_provenance') if key in source})
                 with adapter.service.store.connection() as db:
@@ -494,12 +535,8 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                         'status': attempted['status'] if attempted else 'rejected',
                         'error_code': attempted['error_code'] if attempted else 'source_url_not_read',
                         'source_version_id': attempted['source_version_id'] if attempted else None}]
-                    for document in value['documents']:
-                        document['chunks'] = [{'chunk_id': row['chunk_id'], 'text': row['chunk_text']}
-                            for row in db.execute('SELECT chunk_id,chunk_text FROM source_chunks '
-                                'WHERE source_version_id=? ORDER BY ordinal', (document.get('source_version_id'),))]
             for doc in docs:
-                if doc.get('normalized_text') and doc.get('source_version_id') and doc.get('content_sha256'):
+                if (doc.get('normalized_text') or doc.get('chunks')) and doc.get('source_version_id') and doc.get('content_sha256'):
                     fetched.update(value for value in (doc.get('requested_url'), doc.get('final_url'))
                         if isinstance(value, str) and value)
                 receipt['sources'].append({key: doc.get(key) for key in ('requested_url', 'final_url',
@@ -528,13 +565,15 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         return {'result': raw, 'receipt': receipt, 'sources': receipt['sources']}
 
     try:
-        async with asyncio.timeout(720):
+        # Each provider/RPC request retains its own timeout and admission. A
+        # complete investigation has no terminal host timer or turn counter.
+        async with asyncio.timeout(None):
             if route.provider_id == 'codex_native':
                 from .native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, source_candidates
                 if binding.get('phase') in {None, 'created'}:
                     receipt['frozen_schema'] = copy.deepcopy(NATIVE_SCHEMA)
                 native = await route.client.run(binding=binding, receipt=receipt, prompt=prompt,
-                    schema=NATIVE_SCHEMA, tools=TOOLS, callback=tool, guard=guard)
+                    schema=receipt['frozen_schema'], tools=TOOLS, callback=tool, guard=guard)
                 receipt, text = native['receipt'], native['text']
                 receipt['raw_result_text'] = text
                 receipt['raw_result'] = json.loads(text)
@@ -552,7 +591,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 config = types.GenerateContentConfig(tools=[types.Tool(function_declarations=[
                     types.FunctionDeclaration(**item) for item in wire_tools()])], max_output_tokens=4096)
                 strict_final_required = _retained_cohort is not None
-                for _ in range(24):
+                while True:
                     guard()
                     forced_tool = 'websearch' if not fetched and not search_has_sources else 'webfetch' if not fetched else None
                     if strict_final_required:
@@ -631,9 +670,11 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                     {'role': 'user', 'content': prompt if _retained_cohort is not None else json.dumps(context, ensure_ascii=False)}]
                 from ai_resource_control.client import estimate_input_tokens
                 strict_final_required = _retained_cohort is not None
-                for turn in range(24):
+                turn = -1
+                while True:
+                    turn += 1
                     guard()
-                    final_turn = strict_final_required or turn == 23
+                    final_turn = strict_final_required
                     tool_names = {item['name'] for item in receipt.get('tool_receipts', [])}
                     body = {'model': route.model_id, 'messages': messages, 'stream': False,
                         'max_tokens': 4096, 'functions': wire_tools(),

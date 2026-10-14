@@ -87,6 +87,49 @@ async def test_complete_single_model_basis_is_admitted_without_new_fetch_or_judg
 
 
 @pytest.mark.asyncio
+async def test_paged_assessment_requires_actual_received_chunks_across_owned_calls(tmp_path):
+    from street_story.native_fact_contract import owned_assessment
+    from street_story.native_source_reads import source_page
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path)
+    try:
+        story = HeadlessFacts(service)._snapshot(job, 'headless-run')[0]
+        with service.store.tx() as db:
+            frozen = persist_source_version(db, run_id='headless-run', requested_url=URL, final_url=URL,
+                title='Long own history', content_type='text/html', http_status=200, redirect_chain=[],
+                normalized_text='История выбранных ворот. Музей принимает посетителей с 2005 года.\n' * 400,
+                read_status='complete', access_scope='public', now=service.store.now())
+            first = source_page(db, run_id='headless-run', url=URL, version=frozen['source_version_id'], byte_budget=1)
+            second = source_page(db, run_id='headless-run', url=URL, cursor=first['next_cursor'], byte_budget=1)
+        fact = receipt['raw_result']['facts'][0]
+        basis = fact['sources'][0]
+        basis.update(source_version_id=frozen['source_version_id'], content_sha256=frozen['content_sha256'])
+        basis['assessment']['chunk_ids'] = [first['chunks'][0]['chunk_id'], second['chunks'][0]['chunk_id']]
+        basis['assessment']['checks']['relation_basis']['chunk_ids'] = [first['chunks'][0]['chunk_id']]
+        receipt['native_tool_calls']['original-read']['result']['documents'] = [first]
+        save()
+        candidate = source_candidates(receipt['raw_result'])['facts'][0]
+        with service.store.connection() as db, pytest.raises(ValueError, match='source_not_owned_read'):
+            owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+        receipt['native_tool_calls']['tail-read'] = {'phase': 'completed', 'input': {'name': 'webfetch'},
+            'result': {'documents': [second]}}
+        save()
+        with service.store.connection() as db:
+            owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+        # A pending callback and a modified chunk never become received proof.
+        receipt['native_tool_calls']['tail-read']['phase'] = 'submitted'
+        save()
+        with service.store.connection() as db, pytest.raises(ValueError, match='source_not_owned_read'):
+            owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+        receipt['native_tool_calls']['tail-read']['phase'] = 'completed'
+        second['chunks'][0]['text'] += ' fabricated suffix'
+        save()
+        with service.store.connection() as db, pytest.raises(ValueError, match='source_not_owned_read'):
+            owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_one_claim_keeps_two_frozen_versions_of_same_url(tmp_path):
     service, job, reader, _, agent, receipt, _ = await setup(tmp_path, two_sources=True)
     try:

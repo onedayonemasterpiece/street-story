@@ -155,6 +155,163 @@ async def test_original_completed_turn_with_local_readback_failure_is_observed_w
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('boundary', ['complete', 'stop', 'quota'])
+async def test_owned_native_tools_continue_past_24_with_stop_quota_and_no_resend(tmp_path, monkeypatch, boundary):
+    """Actual tool-owner callback, with a controlled provider turn and journal."""
+    from street_story import native_fact_research as native
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch, receipt={'phase': 'created'})
+    original_factory = provider.client_factory
+    effects, callbacks = [], []
+    stopped = False
+
+    class Client(original_factory):
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/start':
+                calls.append((method, copy.deepcopy(params)))
+                assert params['config']['web_search'] == 'live'
+                assert params['config']['features.shell_tool'] is False
+                assert params['config']['features.apps'] is False
+                assert params['sandbox'] == 'read-only'
+                return {'thread': {'id': THREAD}, 'model': native.MODEL,
+                        'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
+            if method == 'turn/start':
+                calls.append((method, copy.deepcopy(params)))
+                assert params['sandboxPolicy'] == {'type': 'readOnly', 'networkAccess': False}
+                return {'turn': {'id': TURN}}
+            return await super().request(method, params, timeout)
+
+    def attach(client, callback):
+        callbacks.append(callback)
+        return client
+
+    @asynccontextmanager
+    async def admission(*args):
+        async def finalize(*args):
+            pass
+        yield SimpleNamespace(finalize=finalize, before_send=finalize)
+
+    async def permission(*args, **kwargs):
+        if boundary == 'quota' and len(effects) >= 25:
+            raise RetryableProviderError('resource_daily_budget')
+        return {'permitted': True}
+
+    original_readback = native.native_turn_readback
+    first = True
+    async def readback(*args):
+        nonlocal first, stopped
+        if first:
+            first = False
+            for number in range(26):
+                if boundary == 'stop' and number == 25:
+                    stopped = True
+                value = await callbacks[0]({'threadId': THREAD, 'turnId': TURN,
+                    'callId': f'owned-{number}', 'tool': 'websearch', 'arguments': {'query': f'gap {number}'}})
+                assert value['research_resources']['public_tool_call_limit'] is None
+            # Duplicate delivery joins the exact completed owned call.
+            replay = await callbacks[0]({'threadId': THREAD, 'turnId': TURN,
+                'callId': 'owned-25', 'tool': 'websearch', 'arguments': {'query': 'gap 25'}})
+            assert replay == receipt['native_tool_calls']['owned-25']['result']
+        return await original_readback(*args)
+
+    def guard():
+        if stopped:
+            raise ConflictError('fact_research_cancelled', 'Owner stopped this generation')
+
+    async def tool(name, args):
+        effects.append(args['query'])
+        return {'sources': [{'url': 'https://example.org/' + str(len(effects))}]}
+
+    provider.client_factory = Client
+    provider.admission = admission
+    monkeypatch.setattr(provider.permission, 'ensure', permission)
+    monkeypatch.setattr(native, 'attach_research_tools', attach)
+    monkeypatch.setattr(native, 'native_turn_readback', readback)
+    kwargs = dict(binding={'attempt_id': 'owned-beyond-24'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=[], callback=tool, guard=guard)
+    if boundary == 'complete':
+        await provider.run(**kwargs)
+        assert effects == [f'gap {number}' for number in range(26)]
+        assert saved[-1]['phase'] == 'completed'
+    else:
+        expected = ConflictError if boundary == 'stop' else RetryableProviderError
+        with pytest.raises(expected):
+            await provider.run(**kwargs)
+        assert effects == [f'gap {number}' for number in range(25)]
+        assert receipt['phase'] == 'unknown'
+        assert any(method == 'turn/interrupt' for method, _ in calls) == (boundary == 'stop')
+    assert sum(method == 'thread/start' for method, _ in calls) == 1
+    assert sum(method == 'turn/start' for method, _ in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_continuation_resumes_same_thread_and_accounts_only_new_turn(tmp_path, monkeypatch):
+    from pathlib import Path
+    from street_story import native_fact_research as native
+    provider, original, calls, saved = setup(tmp_path, monkeypatch)
+    base = provider.client_factory
+    next_turn = 'new-owned-continuation'
+    prompt = 'Continue the concrete historical query in this family'
+    accounting = []
+    class Client(base):
+        instances = 0
+        def __init__(self):
+            Client.instances += 1
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/resume':
+                calls.append((method,copy.deepcopy(params)))
+                assert params['threadId']==THREAD and params['config']['web_search']=='live'
+                return {'thread':{'id':THREAD},'model':native.MODEL,'approvalPolicy':'never','sandbox':{'type':'readOnly'}}
+            if method == 'turn/start':
+                calls.append((method,copy.deepcopy(params)))
+                assert params['threadId']==THREAD and params['input']==[{'type':'text','text':prompt}]
+                thread = (await super().request('thread/read',{'threadId':THREAD,'includeTurns':False}))['thread']
+                rows=[{'type':'event_msg','payload':{'type':'task_started','turn_id':next_turn}},
+                    {'type':'turn_context','payload':{'turn_id':next_turn,'model':native.MODEL}},
+                    {'type':'response_item','payload':{'type':'message','role':'user',
+                        'content':[{'type':'input_text','text':prompt}]}},
+                    {'type':'response_item','payload':{'type':'message','role':'assistant','phase':'final_answer',
+                        'content':[{'type':'output_text','text':'{"status":"continued"}'}]}},
+                    {'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':{
+                        'input_tokens':220,'cached_input_tokens':0,'output_tokens':30,'reasoning_output_tokens':0,'total_tokens':250}}}},
+                    {'type':'event_msg','payload':{'type':'task_complete','turn_id':next_turn}}]
+                with Path(thread['path']).open('a') as f:
+                    f.write(''.join(json.dumps(row)+'\n' for row in rows))
+                return {'turn':{'id':next_turn}}
+            return await super().request(method,params,timeout)
+        def cached_status(self, thread_id):
+            return None, {'id':next_turn,'status':'completed'}
+    @asynccontextmanager
+    async def admission(*args):
+        async def finalize(metadata,state):
+            accounting.append((metadata,state))
+        async def before_send(*args):
+            pass
+        yield SimpleNamespace(finalize=finalize,before_send=before_send)
+    async def permission(*args,**kwargs):
+        return {'permitted':True}
+    provider.client_factory=Client
+    await invoke(provider, original)
+    receipt = {'phase':'created', 'thread_id':THREAD, 'native_threads':copy.deepcopy(original['native_threads']),
+        'native_family':{'parent_attempt_id':'original-owned','parent_turn_id':TURN,'prior_family_total_tokens':119},
+        'applied_controls':{'profile_overrides':{'web_search':'live','features.shell_tool':False}}}
+    provider.admission=admission
+    monkeypatch.setattr(provider.permission,'ensure',permission)
+    async def unused(*args):
+        raise AssertionError('No new tool effects for this controlled readback')
+    result=await provider.run(binding={'attempt_id':'continued-owned'},receipt=receipt,prompt=prompt,
+        schema={'type':'object'},tools=[],callback=unused,guard=lambda:None)
+    assert result['text']=='{"status":"continued"}'
+    assert receipt['thread_id']==THREAD and receipt['turn_id']==next_turn
+    assert not any(method=='thread/start' for method,_ in calls)
+    assert Client.instances==1 and list(provider.clients)==['continued-owned']
+    assert sum(method=='thread/resume' for method,_ in calls)==1
+    assert sum(method=='turn/start' for method,_ in calls)==1
+    assert receipt['usage']['family_total_tokens']==250 and receipt['usage']['total_tokens']==131
+    assert accounting[0][0]['actual_total_tokens']==131
+    assert saved[-1]['phase']=='completed'
+
+
+@pytest.mark.asyncio
 async def test_adapter_recovers_only_addressed_completed_native_projection_failure(tmp_path):
     from street_story.native_fact_research import CONTRACT
     from street_story.research_adapter import ProductResearchAdapter
