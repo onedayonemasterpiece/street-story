@@ -1,0 +1,1307 @@
+{
+  "method": "SPO+time; distinct architectural predicates split; list members split; address metadata excluded; source-verification and exact baseline coverage are separate axes",
+  "baseline_frozen_source": "benchmark-expansion-8cases.md",
+  "cases": {
+    "120": {
+      "baseline": [
+        {
+          "id": "120-B01",
+          "subject": "глазная клиника",
+          "predicate": "период строительства",
+          "object": "1875–1877",
+          "time": "1875–1877",
+          "status": "verified",
+          "sources": [
+            "https://www.deutsche-biographie.de/sfz36693.html",
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-01",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B02",
+          "subject": "здание",
+          "predicate": "первоначальная функция",
+          "object": "офтальмологическая клиника",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya",
+            "https://www.klgd.ru/activity/architecture/memory/reg_2409.pdf"
+          ],
+          "original_bundle": "120-02",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B03",
+          "subject": "клиника",
+          "predicate": "принадлежность",
+          "object": "Кёнигсбергский университет",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya",
+            "https://www.klgd.ru/activity/architecture/memory/reg_2409.pdf"
+          ],
+          "original_bundle": "120-02",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B04",
+          "subject": "Юлиус Якобсон",
+          "predicate": "роль при создании клиники",
+          "object": "основатель/инициатор",
+          "time": "создание",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya",
+            "https://korolevskievorota.ru/ulica-barnaulskaya-sennoj-rynok-poet-lirik-i-muzej-yantaryat/"
+          ],
+          "original_bundle": "120-03",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B05",
+          "subject": "Юлиус Якобсон",
+          "predicate": "окончание руководства клиникой",
+          "object": "1889",
+          "time": "до1889",
+          "status": "verified",
+          "sources": [
+            "https://www.deutsche-biographie.de/sfz36693.html",
+            "https://korolevskievorota.ru/ulica-barnaulskaya-sennoj-rynok-poet-lirik-i-muzej-yantaryat/"
+          ],
+          "original_bundle": "120-03",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B06",
+          "subject": "фасад",
+          "predicate": "облицовочный материал",
+          "object": "клинкерный кирпич",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B07",
+          "subject": "клинкерная облицовка",
+          "predicate": "цвет",
+          "object": "жёлтый",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B08",
+          "subject": "фасад",
+          "predicate": "содержит декоративный материал",
+          "object": "фигурный кирпич",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B09",
+          "subject": "фасад",
+          "predicate": "содержит декоративный материал",
+          "object": "плитка",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B10",
+          "subject": "декоративная плитка",
+          "predicate": "цветовое исполнение",
+          "object": "цветная",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B11",
+          "subject": "декоративная плитка",
+          "predicate": "характер рисунка",
+          "object": "орнаментальный",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://kgd.ru/news/society/item/49245-kjonigsberg-v-detalyah-ulica-lange-raje--barnaulskaya"
+          ],
+          "original_bundle": "120-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B12",
+          "subject": "клиника",
+          "predicate": "планировочная схема",
+          "object": "коридорная",
+          "time": "исходная схема",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-05",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B13",
+          "subject": "коридорная схема",
+          "predicate": "разделяет функции",
+          "object": "палаты и вспомогательные помещения",
+          "time": "исходная схема",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-05",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B14",
+          "subject": "коридор",
+          "predicate": "источник естественного света",
+          "object": "торцы",
+          "time": "исходная схема",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-05",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B15",
+          "subject": "здание",
+          "predicate": "получало добавления",
+          "object": "пристройки",
+          "time": "период работы клиники",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-06",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B16",
+          "subject": "добавление пристроек",
+          "predicate": "причина",
+          "object": "теснота",
+          "time": "период работы клиники",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-06",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B17",
+          "subject": "здание",
+          "predicate": "военное состояние",
+          "object": "повреждено",
+          "time": "Вторая мировая война",
+          "status": "verified",
+          "sources": [
+            "https://korolevskievorota.ru/ulica-barnaulskaya-sennoj-rynok-poet-lirik-i-muzej-yantaryat/"
+          ],
+          "original_bundle": "120-07",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B18",
+          "subject": "здание",
+          "predicate": "восстановление",
+          "object": "восстановлено",
+          "time": "начало1950-х",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P",
+            "https://korolevskievorota.ru/ulica-barnaulskaya-sennoj-rynok-poet-lirik-i-muzej-yantaryat/"
+          ],
+          "original_bundle": "120-08",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B19",
+          "subject": "здание",
+          "predicate": "послевоенное использование",
+          "object": "рабочее общежитие",
+          "time": "начало1950-х и далее",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P",
+            "https://korolevskievorota.ru/ulica-barnaulskaya-sennoj-rynok-poet-lirik-i-muzej-yantaryat/"
+          ],
+          "original_bundle": "120-08",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B20",
+          "subject": "старые лестницы",
+          "predicate": "состояние",
+          "object": "сохранились",
+          "time": "обследование Кёстера до2000",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-09",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B21",
+          "subject": "старые перила",
+          "predicate": "состояние",
+          "object": "сохранились",
+          "time": "обследование Кёстера до2000",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "120-09",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B22",
+          "subject": "дом",
+          "predicate": "охранный статус",
+          "object": "ОКН регионального значения",
+          "time": "реестровое состояние",
+          "status": "verified",
+          "sources": [
+            "https://www.klgd.ru/activity/architecture/memory/reg_2409.pdf"
+          ],
+          "original_bundle": "120-10",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B23",
+          "subject": "дом",
+          "predicate": "входит в охраняемый объект",
+          "object": "комплекс университетских клиник",
+          "time": "реестровое состояние",
+          "status": "verified",
+          "sources": [
+            "https://www.klgd.ru/activity/architecture/memory/reg_2409.pdf"
+          ],
+          "original_bundle": "120-10",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B24",
+          "subject": "охранный статус",
+          "predicate": "акт присвоения",
+          "object": "постановление132 от23.03.2007",
+          "time": "23.03.2007",
+          "status": "verified",
+          "sources": [
+            "https://www.klgd.ru/activity/architecture/memory/reg_2409.pdf"
+          ],
+          "original_bundle": "120-10",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B25",
+          "subject": "ремонт здания",
+          "predicate": "разрешённый этап",
+          "object": "проектирование",
+          "time": "июль2021",
+          "status": "verified",
+          "sources": [
+            "https://ruwest.ru/news/113055/"
+          ],
+          "original_bundle": "120-11",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B26",
+          "subject": "дом",
+          "predicate": "использование",
+          "object": "квартиры",
+          "time": "февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-12",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B27",
+          "subject": "дом",
+          "predicate": "использование",
+          "object": "туристические апартаменты",
+          "time": "февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-12",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B28",
+          "subject": "капремонт",
+          "predicate": "запланированный элемент",
+          "object": "фасад",
+          "time": "объявление февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B29",
+          "subject": "капремонт",
+          "predicate": "запланированный элемент",
+          "object": "фундамент",
+          "time": "объявление февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B30",
+          "subject": "капремонт",
+          "predicate": "запланированный элемент",
+          "object": "отмостка",
+          "time": "объявление февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B31",
+          "subject": "капремонт",
+          "predicate": "требование",
+          "object": "сохранение декора",
+          "time": "объявление февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B32",
+          "subject": "капремонт",
+          "predicate": "объявленный бюджет",
+          "object": "около20.5млн рублей",
+          "time": "февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "120-B33",
+          "subject": "капремонт",
+          "predicate": "объявленная длительность",
+          "object": "340дней",
+          "time": "февраль2026",
+          "status": "verified",
+          "sources": [
+            "https://klops.ru/kaliningrad/2026-02-13/377648-v-kaliningrade-otremontiruyut-oftalmologicheskuyu-kliniku-xix-veka"
+          ],
+          "original_bundle": "120-13",
+          "provenance": "independent_baseline"
+        }
+      ],
+      "output": [
+        {
+          "id": "120-O01",
+          "subject": "здание",
+          "predicate": "первоначальная функция",
+          "object": "офтальмологическая клиника",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 1,
+          "baseline_match": "120-B02",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O02",
+          "subject": "здание",
+          "predicate": "первоначальная функция",
+          "object": "офтальмологическая поликлиника",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 1,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U01",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O03",
+          "subject": "клиника",
+          "predicate": "принадлежность",
+          "object": "Кёнигсбергский университет",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 1,
+          "baseline_match": "120-B03",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O04",
+          "subject": "глазная клиника",
+          "predicate": "период строительства",
+          "object": "1875–1877",
+          "time": "1875–1877",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 3,
+          "baseline_match": "120-B01",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O05",
+          "subject": "здание",
+          "predicate": "форма плана",
+          "object": "П-образная",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U02",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O06",
+          "subject": "здание",
+          "predicate": "число объёмов",
+          "object": "4",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U03",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O07",
+          "subject": "здание",
+          "predicate": "имеет объём",
+          "object": "центральный",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U04",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O08",
+          "subject": "здание",
+          "predicate": "имеет объём",
+          "object": "юго-западный",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U05",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O09",
+          "subject": "здание",
+          "predicate": "имеет объём",
+          "object": "угловой южный",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U06",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O10",
+          "subject": "здание",
+          "predicate": "имеет объём",
+          "object": "северный",
+          "time": "описание существующего объёма",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U07",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O11",
+          "subject": "капитальные стены",
+          "predicate": "материал",
+          "object": "керамический кирпич",
+          "time": "описание конструкции",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U08",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O12",
+          "subject": "кирпич капитальных стен",
+          "predicate": "полнотелость",
+          "object": "полнотелый",
+          "time": "описание конструкции",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U09",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O13",
+          "subject": "кирпич капитальных стен",
+          "predicate": "цвет",
+          "object": "красный",
+          "time": "описание конструкции",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U10",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O14",
+          "subject": "кладка капитальных стен",
+          "predicate": "раствор",
+          "object": "сложный",
+          "time": "описание конструкции",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U11",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O15",
+          "subject": "фасад",
+          "predicate": "облицовочный материал",
+          "object": "клинкерный кирпич",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": "120-B06",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O16",
+          "subject": "клинкерная облицовка",
+          "predicate": "цвет",
+          "object": "жёлтый",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": "120-B07",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O17",
+          "subject": "клинкерная облицовка",
+          "predicate": "цвет",
+          "object": "красный",
+          "time": "исторический фасад",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "union_new_id": "120-U12",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "120-O18",
+          "subject": "здание",
+          "predicate": "послевоенное использование",
+          "object": "общежитие",
+          "time": "послевоенный период",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 6,
+          "baseline_match": null,
+          "baseline_partial": "120-B19",
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output",
+          "note": "Смысл функции совпадает, но не указаны рабочий профиль и начало1950-х; не полный exact match."
+        },
+        {
+          "id": "120-O19",
+          "subject": "дом",
+          "predicate": "охранный статус",
+          "object": "ОКН регионального значения",
+          "time": "реестровое состояние",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 7,
+          "baseline_match": "120-B22",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "120-O20",
+          "subject": "охранный статус",
+          "predicate": "акт присвоения",
+          "object": "постановление132 от23.03.2007",
+          "time": "23.03.2007",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2540"
+          ],
+          "card": 7,
+          "baseline_match": "120-B24",
+          "baseline_partial": null,
+          "scope": "офтальмологический корпус8",
+          "provenance": "historical_agent_output"
+        }
+      ],
+      "metadata": [
+        {
+          "card": 2,
+          "predicate": "исторический адрес",
+          "object": "Кёнигсберг, Lange Reihe1",
+          "status": "qualified",
+          "reason": "Противоречие исторической нумерации1/2; metadata excluded"
+        }
+      ],
+      "duplicate_count": 0,
+      "scope": "conditional photo identity; named building verification",
+      "counts": {
+        "verified": 20,
+        "qualified": 0,
+        "unverified": 0,
+        "false": 0,
+        "baseline_atoms": 33,
+        "exact_baseline_matches": 7,
+        "partial_baseline_matches": 1,
+        "new_union_atoms": 12,
+        "metadata": 1,
+        "duplicates": 0,
+        "union_atoms": 45,
+        "exact_union_covered": 19
+      }
+    },
+    "107": {
+      "baseline": [
+        {
+          "id": "107-B01",
+          "subject": "жилой ансамбль",
+          "predicate": "период строительства",
+          "object": "1905–1910",
+          "time": "1905–1910",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-01",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B02",
+          "subject": "ансамбль",
+          "predicate": "первоначальная функция",
+          "object": "жилые дома",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P",
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-02",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B03",
+          "subject": "северный угол",
+          "predicate": "форма",
+          "object": "срезанный",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-03",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B04",
+          "subject": "северный угол",
+          "predicate": "имеет элемент",
+          "object": "крытый балкон",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-03",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B05",
+          "subject": "угловой щипец",
+          "predicate": "форма",
+          "object": "криволинейная",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-03",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B06",
+          "subject": "ансамбль",
+          "predicate": "стиль",
+          "object": "эклектика",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://www.newkaliningrad.ru/news/briefs/community/24153576-zhiloy-dom-nachala-xx-veka-na-ul-komsomolskoy-v-kaliningrade-priznali-okn.html"
+          ],
+          "original_bundle": "107-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B07",
+          "subject": "ансамбль",
+          "predicate": "стилевые элементы",
+          "object": "югендстиль",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B08",
+          "subject": "фасад",
+          "predicate": "декоративный элемент",
+          "object": "картуши",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B09",
+          "subject": "фасад",
+          "predicate": "декоративный элемент",
+          "object": "гирлянды",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B10",
+          "subject": "проёмы",
+          "predicate": "оформление",
+          "object": "декоративные обрамления",
+          "time": "историческая архитектура",
+          "status": "verified",
+          "sources": [
+            "https://djvu.online/file/XKuC7huuQAk1P"
+          ],
+          "original_bundle": "107-04",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B11",
+          "subject": "ансамбль",
+          "predicate": "получение охранного статуса",
+          "object": "выявленный ОКН, приказ17",
+          "time": "28.03.2011",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-05",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B12",
+          "subject": "ансамбль",
+          "predicate": "включение в реестр",
+          "object": "ОКН муниципального значения",
+          "time": "апрель2026",
+          "status": "verified",
+          "sources": [
+            "https://www.newkaliningrad.ru/news/briefs/community/24153576-zhiloy-dom-nachala-xx-veka-na-ul-komsomolskoy-v-kaliningrade-priznali-okn.html"
+          ],
+          "original_bundle": "107-06",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B13",
+          "subject": "ансамбль",
+          "predicate": "число основных этажей",
+          "object": "3",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-07",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B14",
+          "subject": "ансамбль",
+          "predicate": "нижний ярус",
+          "object": "цоколь",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-07",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B15",
+          "subject": "ансамбль",
+          "predicate": "верхнее пространство",
+          "object": "мансарды",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-07",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B16",
+          "subject": "крыши",
+          "predicate": "форма",
+          "object": "мансардная",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-07",
+          "provenance": "independent_baseline"
+        },
+        {
+          "id": "107-B17",
+          "subject": "крыши",
+          "predicate": "покрытие",
+          "object": "черепица",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "original_bundle": "107-07",
+          "provenance": "independent_baseline"
+        }
+      ],
+      "output": [
+        {
+          "id": "107-O01",
+          "subject": "жилой ансамбль",
+          "predicate": "период строительства",
+          "object": "началоXX века",
+          "time": "началоXX века",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 1,
+          "baseline_match": null,
+          "baseline_partial": "107-B01",
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "note": "Более широкая датировка; не exact1905–1910."
+        },
+        {
+          "id": "107-O02",
+          "subject": "ансамбль",
+          "predicate": "первоначальная функция",
+          "object": "жилые дома",
+          "time": "исходное использование",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 1,
+          "baseline_match": "107-B02",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O03",
+          "subject": "ансамбль",
+          "predicate": "число основных этажей",
+          "object": "3",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 3,
+          "baseline_match": "107-B13",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O04",
+          "subject": "ансамбль",
+          "predicate": "нижний ярус",
+          "object": "цоколь",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 3,
+          "baseline_match": "107-B14",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O05",
+          "subject": "ансамбль",
+          "predicate": "верхнее пространство",
+          "object": "мансарды",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 3,
+          "baseline_match": "107-B15",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O06",
+          "subject": "крыши",
+          "predicate": "форма",
+          "object": "мансардная",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 3,
+          "baseline_match": "107-B16",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O07",
+          "subject": "крыши",
+          "predicate": "покрытие",
+          "object": "черепица",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 3,
+          "baseline_match": "107-B17",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        },
+        {
+          "id": "107-O08",
+          "subject": "башенка",
+          "predicate": "расположение",
+          "object": "на ризалите северо-западного фасада",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "union_new_id": "107-U01",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "107-O09",
+          "subject": "башенка",
+          "predicate": "завершение",
+          "object": "шпиль",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 4,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "union_new_id": "107-U02",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "107-O10",
+          "subject": "северный угол",
+          "predicate": "имеет элемент",
+          "object": "эркер",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": "107-B04",
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "note": "Тот же угловой сюжет, но covered balcony/эркер не объявлены тождественными без натурной проверки."
+        },
+        {
+          "id": "107-O11",
+          "subject": "северный эркер",
+          "predicate": "высотное положение",
+          "object": "уровни2–3 этажей",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "union_new_id": "107-U03",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "107-O12",
+          "subject": "западный фасад",
+          "predicate": "имеет элемент",
+          "object": "эркер",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "union_new_id": "107-U04",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "107-O13",
+          "subject": "западный эркер",
+          "predicate": "высотное положение",
+          "object": "уровни2–3 этажей",
+          "time": "исторический объём",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 5,
+          "baseline_match": null,
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output",
+          "union_new_id": "107-U05",
+          "union_provenance": "discovered_from_agent"
+        },
+        {
+          "id": "107-O14",
+          "subject": "ансамбль",
+          "predicate": "получение охранного статуса",
+          "object": "выявленный ОКН, приказ17",
+          "time": "28.03.2011",
+          "status": "verified",
+          "sources": [
+            "https://www.prussia39.ru/sight/index.php?sid=2519"
+          ],
+          "card": 6,
+          "baseline_match": "107-B11",
+          "baseline_partial": null,
+          "scope": "весь ансамбль53–61",
+          "provenance": "historical_agent_output"
+        }
+      ],
+      "metadata": [
+        {
+          "card": 2,
+          "predicate": "историческая локализация",
+          "object": "Кёнигсберг, Хуфен, Luisenallee",
+          "status": "verified",
+          "reason": "metadata excluded"
+        }
+      ],
+      "duplicate_count": 0,
+      "scope": "all source-backed claims ensemble scoped; do not equate with photograph corner61",
+      "counts": {
+        "verified": 14,
+        "qualified": 0,
+        "unverified": 0,
+        "false": 0,
+        "baseline_atoms": 17,
+        "exact_baseline_matches": 7,
+        "partial_baseline_matches": 2,
+        "new_union_atoms": 5,
+        "metadata": 1,
+        "duplicates": 0,
+        "union_atoms": 22,
+        "exact_union_covered": 12
+      }
+    }
+  }
+}
