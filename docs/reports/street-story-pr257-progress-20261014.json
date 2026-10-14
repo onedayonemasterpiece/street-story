@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T10:46:03.987799+00:00",
-  "last_useful_progress_at_utc": "2026-10-14T10:46:03.987799+00:00",
-  "stage": 0,
+  "updated_at_utc": "2026-10-14T12:25:32.008663+00:00",
+  "last_useful_progress_at_utc": "2026-10-14T12:25:32.008663+00:00",
+  "stage": 1,
   "status": "working",
-  "last_action": "Verified same native session is readable by DevCoveer; read four owner-supplied documents and issue258; confirmed five code boundaries and original visual incident; production health200 remains93a0878.",
+  "last_action": "Committed core corrections8d0fb83. Full backend before compatibility fix3684passed27failed5skipped; affected rerun after both compatibility corrections103passed. Cleanup freed1.65GiB and7clean unused worktrees; production health200SHA93a. No new research job or provider request.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -42,39 +42,113 @@
   "baseline": {
     "full_comparable_old_run": null,
     "status": "N/A until verified",
-    "independent_v4_reference": "locating canonical existing artifact; no reference expansion started",
+    "independent_v4_reference": "Pinned partial package f4690fc; master read. Full102/104 JSON and partition pending inspection; remaining large JSON unpublished.",
     "photo_registry": "b393a12d3df109788cd822ae981b0e0993312043:docs/testing/photo-registry.json",
     "unique_registered_source_photos": 43,
     "all_registry_records": 92,
-    "stage0_frozen_manifest": "pending"
+    "stage0_frozen_manifest": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/corpus-freeze-43.json",
+    "partial_v4_saved_files_manifest": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/v4-reference/manifest.json",
+    "v4_atomic_contract_read": true
   },
   "blockers": [
     {
       "scope": "stage0_metrics",
-      "reason": "Canonical V4 artifact and independent/output-driven partition need exact identification."
+      "reason": "Partial V4 now available at f4690fc. Full freeze and independent/output-driven partition pending; only numerical acceptance blocked."
     },
     {
       "scope": "visual_acceptance",
       "reason": "Issue258 open: legacy geometry distortion, full executor model/version/seed fields not yet recovered."
     }
   ],
-  "next_step": "Freeze existing original/V4 IDs and hashes; implement five linked corrections in current components with scoped regressions, then measured fact runs, geometry acceptance and matched APK/backend E2E.",
+  "next_step": "Push committed corrections/checkpoint to existing PR257; verify actual discovery/PDF/continuation/fallback through existing research work, then measured P0 facts and full product E2E. No second coding/research job over UNKNOWN.",
   "stages": [
     {
       "stage": 0,
       "status": "working",
-      "results": [],
+      "results": [
+        "43 original file hashes verified without copies; 35 have internal EXIF GPS; 8 excluded from GPS intake.",
+        "Pinned partial V4 master located/read; full reference freeze not complete."
+      ],
       "photo_metrics": [],
-      "logs": [],
-      "blockers": []
+      "logs": [
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/corpus-freeze-43.json"
+      ],
+      "blockers": [
+        "Partial V4 package: remaining JSON not published and independent/output-driven partition not yet frozen."
+      ]
     },
     {
       "stage": 1,
-      "status": "pending",
-      "results": [],
+      "status": "working",
+      "results": [
+        "No native cumulative tool-call or default investigation timer; real quota/Stop/UNKNOWN preserved.",
+        "Hosted live discovery configured; actual model discovery not yet verified.",
+        "Qualified non-native fallback retained in route plan; actual closed-failure fallback not yet verified.",
+        "PDF original bytes and all page outcomes retained; large acquisition and tool-output continuation still incomplete.",
+        "Bounded source delivery across all original chunks and PDF page index; cursors retain exact source version after URL changes. Admission unions only actually completed received chunks.",
+        "Executable concrete model action continuation in same Luna thread/job; closed packet admitted before next action, UNKNOWN only original readback, unchanged action reported blocked, closed native resource failure enables qualified fallback."
+      ],
       "photo_metrics": [],
-      "logs": [],
-      "blockers": []
+      "logs": [
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-owner-r3.xml",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "scope": "controlled local regression; no product E2E claim"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/agent-plan-r2.xml",
+          "tests": 31,
+          "failures": 0,
+          "errors": 0,
+          "scope": "controlled local regression; no product E2E claim"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/pdf.xml",
+          "tests": 19,
+          "failures": 0,
+          "errors": 0,
+          "scope": "controlled local regression; no product E2E claim"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/source-pages-r2.xml",
+          "tests": 63,
+          "failures": 0,
+          "scope": "controlled local regression; no product E2E claim"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/continuation-r1.xml",
+          "tests": 88,
+          "failures": 0,
+          "scope": "controlled regressions"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/continuation-r3.xml",
+          "tests": 60,
+          "failures": 0,
+          "scope": "controlled same-thread client reuse and source/continuation regressions"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-full-r1.xml",
+          "tests": 3716,
+          "passed": 3684,
+          "failures": 27,
+          "skipped": 5,
+          "scope": "full local backend before pagination adapter compatibility fix"
+        },
+        {
+          "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-fix-r2.xml",
+          "tests": 103,
+          "failures": 0,
+          "scope": "Affected full-suite failures plus native/page continuations, after compatibility corrections. Full original failure report retained; not represented as a repeated full-suite PASS."
+        }
+      ],
+      "blockers": [
+        "Real hosted discovery, same-family continuation and qualified closed fallback still need provider verification.",
+        "Large source acquisition retains explicit byte safety boundary; full PDF delivery verified only on controlled sources.",
+        "Current-code measured P0 facts, visual geometry and compatible APK/backend E2E still outstanding."
+      ]
     },
     {
       "stage": 2,
@@ -108,5 +182,33 @@
       "logs": [],
       "blockers": []
     }
-  ]
+  ],
+  "checked_out_commit": "8d0fb8318d3d22d96f75e434f9d57696264d10b0",
+  "code_changes": "committed; documentation checkpoint pending",
+  "interruption": {
+    "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
+    "owner_requested_resume": true,
+    "completion_claimed": false
+  },
+  "watchdog_ack": {
+    "run": "SS-MAP-20261012",
+    "revision": 20,
+    "document_commit": "eeb82edef0c172b8bf51176baeb0b8577985bcbc",
+    "blob": "35b5860649c66b632943c066ddf520fdc4f0a7ab",
+    "nonce": "SS-MAP-REV20-20261014T1121",
+    "at_utc": "2026-10-14T11:41:23Z",
+    "v4_master_read_commit": "f4690fc67bf5800e192b9f7560ff2ed901413550",
+    "full_json_read": false,
+    "applied": "Partial V4 only; independent denominator separate from output-driven union; no accepted90% threshold."
+  },
+  "active_local_checks": null,
+  "cleanup": {
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-result-20261014.json",
+    "removed_worktrees": 7,
+    "actual_free_delta_bytes": 1772736512,
+    "free_after_bytes": 3119865856,
+    "compressed": false,
+    "production_health_after": 200
+  },
+  "code_commit": "8d0fb8318d3d22d96f75e434f9d57696264d10b0"
 }
