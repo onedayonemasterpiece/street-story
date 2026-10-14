@@ -309,6 +309,50 @@ async def test_source_frame_request_preserves_layout_and_uses_existing_visual_wo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', [None, 'running', 'unknown', 'other_candidate', 'changed_hash', 'stale_photo', 'unrejected'])
+async def test_new_source_frame_requires_this_exact_closed_rejected_candidate(tmp_path, mutation):
+    from street_story.service import ConflictError
+    vp = FrameBoundary({'width': 1024, 'height': 1350})
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    original = visual_context(svc, sid)
+    status = await vp.status('frame-op')
+    status['operation_complete'] = True
+    if mutation in {'running', 'unknown'}:
+        status['state'] = 'running' if mutation == 'running' else 'outcome_unknown'
+        status['operation_complete'] = False
+    elif mutation == 'other_candidate':
+        status['candidates'][0]['id'] = 'different'
+    elif mutation == 'changed_hash':
+        status['candidates'][0]['sha256'] = 'f'*64
+    elif mutation in {'stale_photo', 'unrejected'}:
+        with svc.store.tx() as db:
+            changed = json.loads(svc._story_row(db, sid)['visual_context_json'])
+            if mutation == 'stale_photo':
+                changed['output_frame_evidence']['source_photo_sha256'] = 'other-photo'
+            else:
+                changed['output_frame_evidence']['state'] = 'verified'
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(changed), sid))
+    async def closed_status(operation):
+        assert operation == 'frame-op'
+        return status
+    vp.status = closed_status
+    body = {'selected_fact_ids': [], 'preserve_source_frame': True, 'visual_copy': {'title': 'Исходное фото'},
+        'visual_layout': {'text_box': [.05, .02, .9, .14]}}
+    if mutation:
+        with pytest.raises(ConflictError):
+            await svc.request_visual(sid, 'distinct-source-composition', body)
+        assert visual_context(svc, sid)['content_revision'] == original['content_revision']
+    else:
+        await svc.request_visual(sid, 'distinct-source-composition', body)
+        next_context = visual_context(svc, sid)
+        assert next_context['source_frame']['copy'] == body['visual_copy']
+        assert next_context['attempt_history'][-1]['output_frame_evidence'] == original['output_frame_evidence']
+    assert vp.tune_calls == 1 and vp.select_calls == 0 and not vp.publish_effects
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('dimensions,reason', [
     ({'width': 1080, 'height': 810}, 'visual_format_mismatch'),
     ({'width': 1080}, 'visual_format_dimensions_missing'),

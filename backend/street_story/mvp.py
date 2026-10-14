@@ -141,8 +141,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         if operation:
             observed = _receipt(await self.providers.vibepublish.status(operation), operation)
             if observed.get('operation_id') == operation and observed.get('state') == 'needs_selection':
-                raise ConflictError('visual_observation_required',
-                    'Import and review the existing result before requesting another generation.')
+                with self.store.connection() as db:
+                    current = self._story_row(db, story_id)
+                    rejected = self._closed_rejected_frame(db, current, previous, observed)
+                if body.get('preserve_source_frame') is not True or not rejected:
+                    raise ConflictError('visual_observation_required',
+                        'Import and review the existing result before requesting another generation.')
             if observed.get('operation_id') != operation or not (
                 observed.get('state') in {'verified', 'needs_selection'}
                 or (observed.get('state') in {'failed', 'cancelled'} and observed.get('retry_safe') is True)
@@ -150,6 +154,29 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 raise ConflictError('visual_outcome_unresolved',
                                     'Observe the original generation outcome before requesting another visual.')
         return self.mutate_visual(story_id, key, body, expected_revision=revision, previous_receipt=observed)
+
+    def _closed_rejected_frame(self, db, row, context, observed):
+        """Fresh explicit composition after this exact closed, unpublishable result."""
+        proof = context.get('output_frame_evidence') or {}
+        candidates = observed.get('candidates')
+        candidate = candidates[0] if isinstance(candidates, list) and len(candidates) == 1 else {}
+        if not isinstance(candidate, dict):
+            return False
+        return (observed.get('operation_complete') is True
+            and observed.get('operation_id') == context.get('operation_id') == proof.get('operation_id')
+            and proof.get('observed_operation_id') == observed.get('operation_id')
+            and observed.get('visual_job_id') == context.get('visual_job_id')
+            and context.get('output_frame_contract') == proof.get('contract') == POST_4_5_FRAME_CONTRACT
+            and proof.get('state') == 'rejected' and proof.get('reason') == 'visual_format_mismatch'
+            and proof.get('content_revision') == context.get('content_revision')
+            and all(proof.get(key) == context.get(key) for key in
+                ('source_photo_sha256', 'identity_generation', 'fact_revision_bundle'))
+            and self._frame_inputs_current(db, row, context)
+            and all(proof.get(key) == candidate.get(source_key) for key, source_key in
+                [('candidate_id', 'id'), ('asset_ref', 'asset_ref'), ('sha256', 'sha256'),
+                 ('width', 'width'), ('height', 'height')])
+            and type(proof.get('width')) is int and type(proof.get('height')) is int
+            and proof['width'] > 0 and proof['height'] > 0 and 5*proof['width'] != 4*proof['height'])
 
     async def _observe_existing_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         """Resume the normal importer for the saved operation; never generate."""
@@ -346,7 +373,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if previous.get('operation_id'):
                 history = list(previous.get('attempt_history') or [])
                 history.append({k: previous.get(k) for k in ('operation_id', 'visual_job_id', 'content_revision',
-                                                            'visual_request_key', 'candidate_id', 'asset_ref')})
+                                                            'visual_request_key', 'candidate_id', 'asset_ref',
+                                                            'output_frame_evidence')})
                 history[-1]['outcome'] = previous_receipt
                 context['attempt_history'] = history
             context["brief"] = previous['brief'] if frozen.get('recompose_source') else self._visual_brief(dict(story), context)

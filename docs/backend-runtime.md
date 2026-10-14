@@ -244,6 +244,14 @@ generation/recovery keeps its original frozen operation. This is an opt-in
 consumer capability; VibePublish production activation and actual frame-source
 acceptance remain pending, and there is no automatic generator fallback.
 
+A distinct explicit source-frame composition can follow an original closed
+candidate whose exact format-mismatch proof is already retained. The freshly
+observed candidate ID/hash/dimensions/operation/job and current source/identity/
+fact bindings must match that rejection. The old candidate is never selected;
+its proof/outcome stay in history. Pending, unknown, changed or unreviewed results
+retain the original observation requirement. This does not automatically retry
+Imagegen or reinterpret a geometry/semantic assessment as a mechanical proof.
+
 Android house markers now use an interior scanline interval of the observed
 footprint, respecting courtyard holes, concavity and disjoint components. This
 changes only the displayed marker; contour, candidate ID and confirmation remain
