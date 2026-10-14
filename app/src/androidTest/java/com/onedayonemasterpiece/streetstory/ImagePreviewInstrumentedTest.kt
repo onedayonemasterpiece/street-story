@@ -14,6 +14,27 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ImagePreviewInstrumentedTest {
     @Test
+    fun chosenCropShowsSourcePixelsAndOriginalRestoresWholePhoto() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val file = File(context.cacheDir, "photo-format-preview.png")
+        val source = Bitmap.createBitmap(80, 60, Bitmap.Config.ARGB_8888)
+        for (x in 0 until 80) for (y in 0 until 60) source.setPixel(x, y, android.graphics.Color.rgb(x * 3, y * 4, 20))
+        FileOutputStream(file).use { source.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val before = file.readBytes()
+        val crop = PhotoFormatWire().apply { mode = "crop_4_5"; orientedSize = listOf(80, 60); cropRect = listOf(16, 0, 48, 60) }
+        val cropped = ImagePreviewDecoder.decodePhotoFormat(context, file.absolutePath, 100, 100, crop)!!
+        assertEquals(48, cropped.width)
+        assertEquals(60, cropped.height)
+        assertEquals(source.getPixel(16, 0), cropped.getPixel(0, 0))
+        assertEquals(source.getPixel(63, 59), cropped.getPixel(47, 59))
+        val original = ImagePreviewDecoder.decodePhotoFormat(context, file.absolutePath, 100, 100, PhotoFormatWire())!!
+        assertEquals(80, original.width)
+        assertEquals(60, original.height)
+        org.junit.Assert.assertArrayEquals(before, file.readBytes())
+        source.recycle(); cropped.recycle(); original.recycle(); file.delete()
+    }
+
+    @Test
     fun exifRotationIsAppliedWithoutChangingStoredPhoto() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val file = File(context.cacheDir, "orientation-preview-test.jpg")

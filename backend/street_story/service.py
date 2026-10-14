@@ -347,6 +347,7 @@ class StreetStoryService:
         return {"ok": True, "story_id": story_id}
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        from .photo_format import projection as photo_format_projection
         from .place_selection import camera_point
         from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
         from .research_control import KINDS, PURPOSES, research_stopped
@@ -446,6 +447,8 @@ class StreetStoryService:
                 'photo_sha256': row['photo_sha256'], 'identity_generation': generation,
             } for purpose in PURPOSES},
             "research_pending": pending_research,
+            "visual_photo_format": photo_format_projection(research,
+                json.loads(row['visual_context_json'] or '{}'), row['vibepublish_asset_ref']),
             "research_outcome": (research.get('automatic_research_outcome')
                 if research.get('automatic_research_outcome') is not None else research.get('research_outcome')),
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],

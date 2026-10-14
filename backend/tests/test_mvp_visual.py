@@ -293,6 +293,9 @@ async def test_source_frame_request_preserves_layout_and_uses_existing_visual_wo
     body = {'selected_fact_ids': [], 'preserve_source_frame': True,
         'visual_copy': {'title': 'Исходное фото'},
         'visual_layout': {'text_box': [.05, .02, .9, .14], 'title_size': 42, 'body_size': 28}}
+    from street_story.photo_format import set_photo_format
+    set_photo_format(svc, sid, 'choose-crop', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
     svc.mutate_visual(sid, 'source-frame', body)
     with svc.store.connection() as db:
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())

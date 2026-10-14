@@ -48,7 +48,16 @@ class PublicationWire {
     @SerializedName("scheduled_for") var scheduledFor: String? = null
 }
 
+class PhotoFormatWire {
+    var mode: String = "original"
+    var revision: Int = 0
+    @SerializedName("crop_rect") var cropRect: List<Int>? = null
+    @SerializedName("oriented_size") var orientedSize: List<Int>? = null
+    @SerializedName("current_visual") var currentVisual: Boolean = false
+}
+
 class StoryWire {
+    @SerializedName("visual_photo_format") var visualPhotoFormat: PhotoFormatWire? = null
     @SerializedName("identity_mode") var identityMode: String? = null
     @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
     @SerializedName("place_navigation_active") var placeNavigationActive: Boolean = false
@@ -400,7 +409,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity", "place-navigation", "place-unknown"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity", "place-navigation", "place-unknown", "photo-format"))
         if (endpoint == "research-control") {
             val receipt = requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey,
                 ResearchControlReceiptWire::class.java)

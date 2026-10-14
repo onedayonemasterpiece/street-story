@@ -495,6 +495,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def visual(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "visual", idempotency_key)
 
+    @app.post('/v1/stories/{story_id}/photo-format', dependencies=[Depends(auth)])
+    async def photo_format(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        from .photo_format import set_photo_format
+        return set_photo_format(service, story_id, idem(idempotency_key), await request.json())
+
     @app.post("/v1/stories/{story_id}/publish", dependencies=[Depends(auth)])
     async def publish(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "publish", idempotency_key)

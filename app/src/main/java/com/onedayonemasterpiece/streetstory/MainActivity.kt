@@ -34,6 +34,8 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -50,6 +52,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class MainActivity : Activity() {
+    private val PHOTO_ORIGINAL = View.generateViewId()
+    private val PHOTO_CROP = View.generateViewId()
     private val store by lazy { AppGraph.store(this) }
     private val config by lazy { AppGraph.config(this) }
     private val live by lazy { AppGraph.live(this) }
@@ -81,6 +85,8 @@ class MainActivity : Activity() {
 
     private var topicTitleView: TextView? = null
     private var topicStatusView: TextView? = null
+    private var photoFormatChoices: RadioGroup? = null
+    private var updatingPhotoFormat = false
     private var previewImage: ImageView? = null
     private var previewText: TextView? = null
     private var literalBanner: TextView? = null
@@ -448,6 +454,16 @@ class MainActivity : Activity() {
         val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
         val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
         column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(photoHeight)))
+        photoFormatChoices = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            contentDescription = "photo-format-choice"
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_ORIGINAL; text = "Оригинал" })
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_CROP; text = "4:5" })
+            setOnCheckedChangeListener { _, selected ->
+                if (!updatingPhotoFormat) selectPhotoFormat(storyId, if (selected == PHOTO_CROP) "crop_4_5" else "original")
+            }
+        }
+        column.addView(photoFormatChoices, blockMargins(top = 4))
         placeMapPanel = PlaceMapPanel(this, storyId, store, research, config, { navigateOwnerPlace(storyId) }, { markOwnerPlaceUnknown(storyId) }, {
             requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.")
         })
@@ -643,11 +659,23 @@ class MainActivity : Activity() {
             visibility = if (meaningful) View.VISIBLE else View.GONE
         }
 
-        val imagePath = story.processedImagePath?.takeIf(PhotoAssets::available) ?: story.photoPath
-        if (shownImagePath != imagePath) {
-            shownImagePath = imagePath
-            previewImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 1200, 1000))
-            stickyImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 240, 320))
+        val pendingFormat = store.pendingOperations(id).lastOrNull { it.kind == "photo-format" }
+        val selectedFormat = pendingFormat?.let {
+            runCatching { gson.fromJson(it.payloadJson, PhotoFormatWire::class.java) }.getOrNull()
+        } ?: research.get(id)?.visualPhotoFormat
+        updatingPhotoFormat = true
+        photoFormatChoices?.check(if (selectedFormat?.mode == "crop_4_5") PHOTO_CROP else PHOTO_ORIGINAL)
+        photoFormatChoices?.isEnabled = pendingFormat == null
+        for (index in 0 until (photoFormatChoices?.childCount ?: 0)) photoFormatChoices?.getChildAt(index)?.isEnabled = pendingFormat == null
+        updatingPhotoFormat = false
+        val processed = pendingFormat == null && (selectedFormat == null || selectedFormat.currentVisual)
+        val imagePath = story.processedImagePath?.takeIf { processed && PhotoAssets.available(it) } ?: story.photoPath
+        val imageKey = imagePath + ":" + gson.toJson(selectedFormat)
+        if (shownImagePath != imageKey) {
+            shownImagePath = imageKey
+            val format = if (imagePath == story.photoPath) selectedFormat else null
+            previewImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 1200, 1000, format))
+            stickyImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 240, 320, format))
         }
 
         previewText?.apply {
@@ -1428,6 +1456,7 @@ class MainActivity : Activity() {
         stopMicPulse()
         topicTitleView = null
         topicStatusView = null
+        photoFormatChoices = null
         previewImage = null
         previewText = null
         literalBanner = null
@@ -1973,6 +2002,18 @@ class MainActivity : Activity() {
                 )
             }
         }
+    }
+
+    private fun selectPhotoFormat(storyId: String, mode: String) {
+        val story = store.story(storyId) ?: return
+        if (store.pendingOperations(storyId).any { it.kind == "photo-format" }) return
+        val command = "ss-photo-format-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "photo-format", command, gson.toJson(mapOf(
+            "mode" to mode, "expected_photo_sha256" to story.photoSha256,
+            "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))))
+        shownImagePath = null
+        refreshTopicDetail()
+        SyncScheduler.enqueue(this)
     }
 
     private fun navigationPayload(storyId: String, commandId: String): String {

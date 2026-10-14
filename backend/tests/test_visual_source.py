@@ -57,3 +57,40 @@ def test_exif_orientations_preserve_all_source_pixels_and_leave_original_unchang
     assert receipt['original_preserved']
     if orientation == 1:
         assert data == raw and mime == 'image/jpeg'
+
+
+@pytest.mark.parametrize('orientation', [1, 6, 8])
+def test_photo_choice_original_and_actual_crop_have_exact_oriented_pixels(orientation):
+    from street_story.visual_source import photo_transform
+    source = Image.new('RGB', (80, 60))
+    for x in range(80):
+        for y in range(60):
+            source.putpixel((x, y), (x * 3, y * 4, (x + y) % 255))
+    exif = Image.Exif()
+    exif[274] = orientation
+    stream = io.BytesIO()
+    source.save(stream, format='JPEG', exif=exif)
+    raw = stream.getvalue()
+    with Image.open(io.BytesIO(raw)) as image:
+        expected = ImageOps.exif_transpose(image).convert('RGB')
+    full, _, original = photo_transform(raw, 'image/jpeg', 'original')
+    with Image.open(io.BytesIO(full)) as result:
+        assert result.size == expected.size
+        assert ImageChops.difference(expected, result.convert('RGB')).getbbox() is None
+    crop, _, metadata = photo_transform(raw, 'image/jpeg', 'crop_4_5')
+    x, y, width, height = metadata['crop_rect']
+    assert width * 5 == height * 4 and metadata['output_size'] == [width, height]
+    with Image.open(io.BytesIO(crop)) as result:
+        assert result.tobytes() == expected.crop((x, y, x + width, y + height)).tobytes()
+    assert original['original_sha256'] == metadata['original_sha256'] == hashlib.sha256(raw).hexdigest()
+    assert metadata['output_sha256'] == hashlib.sha256(crop).hexdigest()
+
+
+@pytest.mark.parametrize('rect', [[0, 0, 80, 100], [0, 0, 30, 30], [-1, 0, 24, 30], [0, 0, 24.0, 30]])
+def test_photo_crop_rejects_expansion_stretch_and_noninteger_window(rect):
+    from street_story.visual_source import photo_transform
+    from street_story.service import ConflictError
+    stream = io.BytesIO()
+    Image.new('RGB', (40, 30)).save(stream, format='PNG')
+    with pytest.raises(ConflictError):
+        photo_transform(stream.getvalue(), 'image/png', 'crop_4_5', rect)

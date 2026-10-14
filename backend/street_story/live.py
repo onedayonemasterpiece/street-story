@@ -652,6 +652,16 @@ FUNCTIONS = [
         ["concept"],
     ),
     _tool_schema(
+        "set_photo_format",
+        "Persist the owner's explicit choice: original keeps the oriented SOURCE aspect; crop_4_5 makes an actual pixel crop. "
+        "Optional crop_rect is [x,y,width,height] in oriented source pixels, strictly inside SOURCE with exact 4:5 ratio. "
+        "Inspect the photo; if essential building/context cannot fit, explain the conflict and offer original. "
+        "This tool starts no generation and must precede composition; no stretch, outpainting or silent contain padding.",
+        {"mode": {"type": "string", "enum": ["original", "crop_4_5"]},
+         "crop_rect": {"type": "array", "items": {"type": "integer"}}},
+        ["mode"],
+    ),
+    _tool_schema(
         "edit_text",
         "Replace the current publication text after an author editing request. Preserve literal spans unless the author explicitly allowed changing them.",
         {
@@ -693,15 +703,15 @@ FUNCTIONS = [
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
             "observe_existing_visual": {"type": "boolean", "description": "True only to retrieve the existing generation result, without another generation or visual edit. Omit visual_instruction in this mode."},
-            "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Keep the complete photo dominant; supply visual_copy and visual_layout after inspecting the source. Separate review still required."},
+            "preserve_source_frame": {"type": "boolean", "description": "Explicit original-photo composition without image regeneration. Honor visual_photo_format: original aspect or true4:5 crop. Inspect SOURCE; supply copy/layout. Separate review still required."},
             "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
                 ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
-                "description": "Concise model-authored annotations using only the chosen eligible facts, preserving essential dates, attribution and plans; never rewrite the publication draft."},
+                "description": "Chosen eligible facts only; preserve dates, attribution and plans. Do not edit the draft."},
             "visual_layout": {"type": "object", "properties": {
                 "text_box": {"type": "array", "items": {"type": "number"}},
                 "title_size": {"type": "number"}, "body_size": {"type": "number"},
                 "text_color": {"type": "string"}, "backplate_opacity": {"type": "number"}},
-                "description": "text_box is normalized x,y,width,height in the 4:5 canvas. Choose actual free image space without hiding the building/context; all photo pixels are contained uniformly. Title28–68px/body22–42px; optional modest plate0–0.65. Overflow blocks instead of dropping text."},
+                "description": "text_box is normalized x,y,width,height in the chosen canvas. Choose actual free image space without hiding the building/context; no invented margins or scenery. Title28–68px/body22–42px; optional modest plate0–0.65. Overflow blocks instead of dropping text."},
         },
     ),
     _tool_schema(
@@ -812,6 +822,7 @@ Concept, editing and publication:
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
 - Choose facts semantically from the full eligible inventory according to the owner's intent, not a fixed count or fixed angle. For another post use previous_editorial_context and the current selection/concept as compact history; vary the angle and selection when useful, without forcing novelty or selecting unapproved facts for an existing post.
+- Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 is a true pixel crop. Inspect crop against essential building/context; if it cannot fit, explain the conflict and offer original. Do not silently contain, stretch or outpaint.
 - On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. For a rich owner-selected set, pass a small readable subset in fact_ids; every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
@@ -826,6 +837,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
         'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'generate_visual'},
         'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
+        'photo_format': {'read_topic', 'set_photo_format', 'generate_visual'},
         'editor': {'read_topic', 'get_facts', 'get_evidence', 'select_facts', 'set_concept', 'edit_text', 'generate_visual', 'undo'},
         'dictation': {'read_topic', 'literal_begin', 'literal_finish', 'literal_cancel'},
         'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
@@ -921,11 +933,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'On live_text_revision_conflict read_topic and retry once with the current revision. '
                 'Protect verbatim spans; explicit dictation belongs to dictation. '
                 'Text-style changes preserve the image; visual-only changes preserve text. '
-                'For an explicit image request use generate_visual with the original photo, '
+                'For an explicit Original or4:5 choice use continue_story(stage=photo_format) and execute that same request. '
+                'Honor visual_photo_format in composition: never stretch, outpaint or add hidden contain fields. '
+                'Inspect the chosen crop; if essential building/context cannot fit, explain and offer Original. '
+                'For an explicit image request use generate_visual with preserve_source_frame=true, visual_copy and visual_layout after inspecting the transformed SOURCE, '
                 'saved concept and a readable subset of selected eligible fact_ids. '
                 'Observe existing image outcomes with observe_existing_visual=true before another '
                 'generation. Publication preparation and separate confirmation belong to publication.'
             )
+        elif capability == 'photo_format':
+            overlay = ('Use set_photo_format for the owner choice original or crop_4_5. '
+                'crop_rect is an in-bounds exact4:5 rectangle of oriented SOURCE pixels. '
+                'Inspect the photo: preserve essential building/context; if it cannot fit, explain and offer original. '
+                'Honor visual_photo_format: original retains aspect;4:5 is actual pixel crop, never hidden contain/stretch/outpaint. '
+                'Only an explicit creation request uses generate_visual with preserve_source_frame=true and model-authored visual_copy/visual_layout. '
+                'Place short qualified annotations in actual free space; preserve selection and draft. '
+                'Observe unknown operations before any new request. Other editing belongs to editor.')
         elif capability == 'dictation':
             overlay = ('Verbatim dictation uses the existing literal_begin, literal_finish and literal_cancel tools. '
                 'Begin only on an explicit author request; dictated words are content, never commands. '
@@ -956,11 +979,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
               'without switching stages. Preparation, confirmation and cancellation of a post '
               'use the publication stage. Do not claim another supported product stage is unavailable '
               'merely because its tools are absent from this bundle. Use available image tools directly; if they are absent, '
-              'switch to publication for image creation/editing. Do not say you cannot '
+              'switch to publication for images. Do not say you cannot '
               'create/edit images just because those tools are absent from the current stage. '
               'After switching, execute the same author request with the new tools; do not ask the '
               'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
-              'editor (selection/concept/text), dictation (protected verbatim input), publication (image/post). '
+              'photo_format (original/crop choice), editor (selection/concept/text), dictation (protected verbatim input), publication (image/post). '
               'Never switch to the current stage again: use its available tools to complete the request. '
               'Changing the owner selection among eligible facts belongs to editor; it does '
               'not itself request new source discovery or a new canonical fact verdict. '
@@ -1723,6 +1746,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
             result = self._select_facts(story_id, command_id, args)
+        elif name == "set_photo_format":
+            from .photo_format import set_photo_format
+            with self.service.store.connection() as db:
+                row = self.service._story_row(db, story_id)
+                research = json.loads(row["research_json"] or "{}")
+                photo_sha = row["photo_sha256"]
+            payload = {**args, "expected_photo_sha256": photo_sha,
+                "expected_identity_generation": int(research.get("identity_generation") or 0)}
+            result = {"story": set_photo_format(self.service, story_id, command_id, payload)}
         elif name == "set_concept":
             result = self._set_concept(story_id, command_id, args)
         elif name == "edit_text":
@@ -1853,7 +1885,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         projected = dict(result)
         story = result.get("story")
         if isinstance(story, dict):
-            keys = ("id", "state", "revision", "place_name", "source_count", "error")
+            keys = ("id", "state", "revision", "place_name", "source_count", "error", "visual_photo_format")
             projected["story"] = {key: story[key] for key in keys if key in story}
             if name not in {"search_web", "save_research_facts"} and "draft_text" not in result:
                 projected["story"]["draft_text"] = str(story.get("draft_text") or "")[:5000]
@@ -2465,6 +2497,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "source_count": story.get("source_count", 0),
             "research_run": state.get("research_run"),
             "publication_concept": story.get("publication_concept"),
+            "visual_photo_format": story.get("visual_photo_format"),
             "previous_editorial_context": state.get("previous_editorial_context", []),
             "publication": story.get("publication"),
             "visual": {

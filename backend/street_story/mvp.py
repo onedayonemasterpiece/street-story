@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .product import POST_4_5_FRAME_CONTRACT, POST_4_5_FRAME_INSTRUCTION, ProductStreetStoryService, _receipt
+from .product import ORIGINAL_PHOTO_FRAME_CONTRACT, POST_4_5_FRAME_CONTRACT, POST_4_5_FRAME_INSTRUCTION, ProductStreetStoryService, _receipt
 from .providers import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, InvalidStateError, canonical, digest
 
@@ -305,6 +305,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 )
 
             research = json.loads(story["research_json"] or "{}")
+            from .photo_format import choice
+            photo_choice = choice(research)
+            if source_frame is None and photo_choice['revision'] > 0 and not body.get('reuse_generated_art'):
+                raise ConflictError('visual_source_frame_required', 'Попросите Миру оформить исходное фото в выбранном формате.')
             voice_ids = [
                 row["session_id"]
                 for row in db.execute(
@@ -335,6 +339,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             }
             if source_frame is not None:
                 frozen['source_frame'] = source_frame
+                from .visual_source import photo_transform
+                _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
+                    story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
+                if transform['original_sha256'] != story['photo_sha256']:
+                    raise ConflictError('visual_source_original_changed', 'Original source changed.')
+                frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}
                 for field in ('prompt_version', 'prompt_sha256', 'source_orientation_contract'):
@@ -343,7 +353,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     else:
                         frozen.pop(field, None)
                 same_inputs = ('source_photo_sha256', 'fact_revision_bundle', 'publication_concept',
-                               'prompt_version', 'prompt_sha256', 'visual_instruction', 'source_frame')
+                               'prompt_version', 'prompt_sha256', 'visual_instruction', 'source_frame',
+                               'source_image_transform', 'photo_format_revision')
                 if (observed.get('state') != 'verified'
                         or observed.get('visual_job_id') != previous.get('visual_job_id')
                         or observed.get('selected_asset_ref') != previous.get('selected_asset_ref')
@@ -355,12 +366,14 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 frozen['recompose_source'] = {
                     'job_id': previous['visual_job_id'], 'candidate_id': previous['candidate_id'],
                     'expected_visual_revision': observed['visual_revision'],
-                    'expected_sha256': previous['selected_sha256'], 'format': 'post_4_5',
+                    'expected_sha256': previous['selected_sha256'],
+                    'format': 'original' if source_frame is not None and photo_choice['mode'] == 'original' else 'post_4_5',
                 }
             if previous.get('operation_id'):
                 frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
             if not frozen.get('recompose_source') or previous.get('output_frame_contract'):
-                frozen['output_frame_contract'] = POST_4_5_FRAME_CONTRACT
+                frozen['output_frame_contract'] = (ORIGINAL_PHOTO_FRAME_CONTRACT
+                    if source_frame is not None and photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
                 frozen['identity_generation'] = int(research.get('identity_generation') or 0)
             content_revision = digest(frozen)
             context = {
@@ -431,14 +444,23 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 photo = self._source_photo_for_job(story_id)
                 source_mime = story['photo_mime_type']
                 orientation = None
-                if context.get('source_orientation_contract'):
+                if context.get('source_image_transform'):
+                    from .visual_source import photo_transform
+                    frozen_transform = context['source_image_transform']
+                    photo, source_mime, transform = photo_transform(photo, source_mime,
+                        frozen_transform['mode'], frozen_transform['crop_rect'] if frozen_transform['mode'] == 'crop_4_5' else None)
+                    if transform != frozen_transform:
+                        raise PermanentProviderError('visual_source_transform_changed')
+                    orientation = transform['orientation']
+                elif context.get('source_orientation_contract'):
                     from .visual_source import CONTRACT, oriented_visual_source
                     if context['source_orientation_contract'] != CONTRACT:
                         raise PermanentProviderError('visual_source_orientation_contract_unknown')
                     photo, source_mime, orientation = oriented_visual_source(photo, source_mime)
                     if orientation['original_sha256'] != context['source_photo_sha256']:
                         raise PermanentProviderError('visual_source_original_changed')
-                ingress_binding = (canonical([story_id, orientation]) if orientation
+                ingress_binding = (canonical([story_id, context['source_image_transform']]) if context.get('source_image_transform')
+                    else canonical([story_id, orientation]) if orientation
                     else f"{story_id}:{story['photo_sha256']}")
                 ingress_key = "ss-vp-asset-" + hashlib.sha256(ingress_binding.encode()).hexdigest()[:48]
                 ingress = await self.providers.vibepublish.ingress_asset(
@@ -483,7 +505,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     frame = context['source_frame']
                     command = {'command': {'kind': 'frame_source',
                         'source': {'source': {'kind': 'asset', 'id': source_asset}},
-                        'copy': frame['copy'], 'layout': frame['layout'], 'format': 'post_4_5'}}
+                        'copy': frame['copy'], 'layout': frame['layout'],
+                        'format': 'original' if context['source_image_transform']['mode'] == 'original' else 'post_4_5'}}
                 visual_key = "ss-vp-visual-" + hashlib.sha256(
                     canonical([story_id, content_revision, source_asset, command]).encode()
                 ).hexdigest()[:48]

@@ -13,6 +13,40 @@ from .errors import PermanentProviderError
 CONTRACT = 'visual-source-exif-orientation-v1'
 
 
+def photo_transform(data, mime, mode, crop_rect=None):
+    """Only EXIF transpose and a declared pixel crop; never outpaint/stretch."""
+    from .service import ConflictError
+    if mode not in {'original', 'crop_4_5'}:
+        raise ConflictError('photo_format_invalid', 'Choose original or crop_4_5.')
+    oriented, oriented_mime, orientation = oriented_visual_source(data, mime)
+    width, height = orientation['oriented_size']
+    rect = [0, 0, width, height]
+    if mode == 'original':
+        if crop_rect is not None:
+            raise ConflictError('photo_crop_not_selected', 'Original preserves the complete oriented frame.')
+        output, output_mime = oriented, oriented_mime
+    else:
+        if crop_rect is None:
+            unit = min(width//4, height//5)
+            rect = [(width-4*unit)//2, (height-5*unit)//2, 4*unit, 5*unit]
+        else:
+            rect = crop_rect
+        if (not isinstance(rect, list) or len(rect) != 4 or any(type(v) is not int or v < 0 for v in rect)
+                or rect[2] <= 0 or rect[3] <= 0 or rect[0]+rect[2] > width or rect[1]+rect[3] > height
+                or 5*rect[2] != 4*rect[3]):
+            raise ConflictError('photo_crop_invalid', 'Supply an in-bounds exact 4:5 rectangle of oriented source pixels.')
+        with Image.open(io.BytesIO(oriented)) as image:
+            cropped = image.crop((rect[0], rect[1], rect[0]+rect[2], rect[1]+rect[3])).convert('RGB')
+            stream = io.BytesIO()
+            cropped.save(stream, format='PNG')
+            output, output_mime = stream.getvalue(), 'image/png'
+    return output, output_mime, {'contract': 'owner-photo-transform-v1', 'mode': mode,
+        'original_sha256': hashlib.sha256(data).hexdigest(), 'orientation': orientation,
+        'oriented_size': [width, height], 'crop_rect': rect, 'output_size': rect[2:],
+        'output_sha256': hashlib.sha256(output).hexdigest(), 'original_preserved': True,
+        'pixel_operations': ['exif_orientation'] + (['crop'] if mode == 'crop_4_5' else [])}
+
+
 def source_frame_input(body):
     from .service import ConflictError
     if body.get('preserve_source_frame') is not True:

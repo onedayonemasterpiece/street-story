@@ -34,6 +34,7 @@ POST_4_5_FRAME_INSTRUCTION = (
     "Verify the final image is 4:5 and the complete original camera frame is preserved."
 )
 POST_4_5_FRAME_CONTRACT = "post_4_5_v1"
+ORIGINAL_PHOTO_FRAME_CONTRACT = 'source-original-frame-v1'
 
 _VOCAL_FILLERS = re.compile(
     r"(?iu)(?<!\w)(?:э(?:[-–—]?э)+|ээ+|эм+|м(?:[-–—]?м)+|а(?:[-–—]?а)+)(?!\w)[,;:\s]*"
@@ -278,7 +279,28 @@ class ProductStreetStoryService(StreetStoryService):
         active = db.execute('SELECT state,attempts FROM jobs WHERE id=?', (job['id'],)).fetchone() if job else None
         return (latest.get('content_revision') == context.get('content_revision')
                 and self._frame_inputs_current(db, row, context)
+                and self._photo_format_current(row, context)
                 and not (active and (active['state'] == 'cancelled' or active['attempts'] != job['attempts'])))
+
+    def _photo_format_current(self, row, context):
+        from .photo_format import choice
+        current = choice(json.loads(row['research_json'] or '{}'))
+        transform = context.get('source_image_transform')
+        if transform is None:
+            return current['revision'] == 0  # Historical frozen work is never rewritten.
+        return (context.get('photo_format_revision') == current['revision']
+            and transform.get('mode') == current['mode']
+            and (current['mode'] == 'original' or transform.get('crop_rect') == current.get('crop_rect')))
+
+    @staticmethod
+    def _frame_dimensions_match(context, width, height):
+        if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+            return False
+        if context.get('output_frame_contract') == POST_4_5_FRAME_CONTRACT:
+            return 5*width == 4*height
+        if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
+            return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
+        return False
 
     def _record_visual_frame(self, story_id, context, receipt, *, candidate=None, job=None):
         if not context.get('output_frame_contract'):
@@ -301,7 +323,7 @@ class ProductStreetStoryService(StreetStoryService):
         reason = None
         if receipt.get('operation_id') != context.get('operation_id'):
             reason = 'visual_format_operation_mismatch'
-        elif (context.get('output_frame_contract') != POST_4_5_FRAME_CONTRACT
+        elif (context.get('output_frame_contract') not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT}
                 or not candidate.get('candidate_id', candidate.get('id'))
                 or not candidate.get('asset_ref')
                 or not re.fullmatch(r'[a-f0-9]{64}', str(candidate.get('sha256') or ''))):
@@ -311,7 +333,7 @@ class ProductStreetStoryService(StreetStoryService):
             reason = 'visual_format_asset_mismatch'
         elif type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
             reason = 'visual_format_dimensions_missing'
-        elif 5 * width != 4 * height:
+        elif not self._frame_dimensions_match(context, width, height):
             reason = 'visual_format_mismatch'
         proof = {
             'contract': context['output_frame_contract'], 'state': 'rejected' if reason else 'verified',
@@ -337,7 +359,7 @@ class ProductStreetStoryService(StreetStoryService):
                 db.execute("UPDATE stories SET visual_context_json=?,state='needs_review',error_code=?,"
                            "error_message=?,processed_image_url=NULL,vibepublish_asset_ref=NULL,"
                            'revision=revision+1,updated_at=? WHERE id=?',
-                           (canonical(latest), reason, 'Визуал не соответствует формату 4:5. Нужна проверка.',
+                           (canonical(latest), reason, 'Визуал не соответствует выбранному формату. Нужна проверка.',
                             self.store.now(), story_id))
             else:
                 db.execute('UPDATE stories SET visual_context_json=?,updated_at=? WHERE id=?',
@@ -355,7 +377,7 @@ class ProductStreetStoryService(StreetStoryService):
         if not contract:
             return
         proof = context.get('output_frame_evidence') or {}
-        if (contract != POST_4_5_FRAME_CONTRACT or context.get('output_frame_contract') != contract
+        if (contract not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT} or context.get('output_frame_contract') != contract
                 or proof.get('state') != 'verified' or proof.get('contract') != contract
                 or proof.get('content_revision') != context.get('content_revision')
                 or request.get('visual_content_revision', context.get('content_revision')) != context.get('content_revision')
@@ -369,10 +391,10 @@ class ProductStreetStoryService(StreetStoryService):
                 or proof.get('asset_ref') != request.get('asset_ref')
                 or proof.get('asset_ref') != row['vibepublish_asset_ref']
                 or type(proof.get('width')) is not int or type(proof.get('height')) is not int
-                or proof['width'] <= 0 or proof['height'] <= 0 or 5 * proof['width'] != 4 * proof['height']
-                or not self._frame_inputs_current(db, row, context)):
+                or not self._frame_dimensions_match(context, proof['width'], proof['height'])
+                or not self._frame_inputs_current(db, row, context) or not self._photo_format_current(row, context)):
             LOG.warning('street_story_publish_frame_blocked story_id=%s', story_id)
-            raise PermanentProviderError('visual_format_unverified: Сначала нужен проверенный визуал формата 4:5.')
+            raise PermanentProviderError('visual_format_unverified: Сначала нужен проверенный визуал выбранного формата.')
 
     def _migrate_product_projection(self) -> None:
         additions = {
