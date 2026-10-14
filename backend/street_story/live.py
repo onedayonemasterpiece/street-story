@@ -1673,7 +1673,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = self._topic_state(story_id)
             compact = self._compact_context(result)
             self.emit(session, {"type": "product_state", "state": compact})
-            return compact if getattr(session, 'capability', None) == 'place_map' or result['story'].get('identity_mode') == 'manual' else await self._next_visual_result(session, compact)
+            capability = getattr(session, 'capability', None)
+            model_context = self._capability_context(compact, capability)
+            return model_context if capability == 'place_map' or result['story'].get('identity_mode') == 'manual' else await self._next_visual_result(session, model_context)
         if name == "get_facts":
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
@@ -5687,7 +5689,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         'Visual facts must be a subset of the current owner-selected eligible facts.')
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
         for field in ('preserve_source_frame', 'visual_copy', 'visual_layout'):
-            if field in args:
+            if field in args and args[field] is not None:
                 body[field] = args[field]
         if args.get('observe_existing_visual') is True:
             body['observe_existing_visual'] = True
