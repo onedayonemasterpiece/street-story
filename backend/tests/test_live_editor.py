@@ -132,7 +132,11 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "start_research" not in names
 
 
-PHOTO = b"live-photo"
+from PIL import Image
+
+_photo_stream = io.BytesIO()
+Image.new('RGB', (40, 30), 'blue').save(_photo_stream, format='JPEG')
+PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 
 

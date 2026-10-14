@@ -163,6 +163,8 @@ Facts have stable `fact_id`, `evidence_supported`, selection state and source ob
 
 Revision 34 owner contract restores the existing artistic `tune` path. The versioned `street-story-image-v4` template carries the image-v1 hybrid photo/ink-sketch, handwritten annotations and single accent style, with selected fact qualifications and faithful visible architecture. The model may sketch surroundings within the owner's selected frame. Source-frame composition remains explicit and optional; format choice or copy/layout never enables it automatically. New visual requests freeze EXIF orientation and the persisted Original or real 4:5 pixel crop before ingress. Original artistic candidates must retain the input aspect (native generated resolution may differ); 4:5 candidates must be exactly portrait 4:5. A dimension check is mechanical evidence only: actual artistic style, roof/windows/geometry, annotation legibility and any spatial fact pointers still require review. Old frozen requests and UNKNOWN operations are observed without changing their inputs or resending them.
 
+Native research checks the common Codex account's provider quota afresh before every send, including continuation and permitted Sol help. A cached 15-minute snapshot is diagnostic history, never permission to send after other products or development consumed quota. Existing credential-change checks, 3% reserve and per-attempt admission remain enforced; this does not cap useful research or authorize additional accounts.
+
 Supported lineage: VibePublish commit `dec1c69920f09ebdc0551132e6bdffba73d03e8e` or compatible newer deployment.
 
 Street Story uses the actual supported HTTP boundary:
