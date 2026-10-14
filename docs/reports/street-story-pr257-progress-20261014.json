@@ -6,20 +6,19 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T21:06:59.946371+00:00",
+  "updated_at_utc": "2026-10-14T21:52:17.985888+00:00",
   "last_useful_progress_at_utc": "2026-10-14T17:28:02.258576+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "Fresh autonomous child preserved ordinary house scope and proposed newspaper-supported event text with owned native reads, no callback/save claimed. Native PDF range/find support added; focused tests passed.",
+  "last_action": "Exclude reconsidered candidates from eligible-known model inventory without changing ledger. Clarify distinct existing-ID namespace.99tests and direct guided+autonomous source-packet checks passed.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "story_id": "story_98d60ad1f6bda1196ea3e7f2",
-    "job_id": "job_ef706fc5dd5e4e9684c45fb9",
-    "run_id": "research_1ca2dc47336243fb8fd0f7cb",
-    "status": "closed_completed_review_required_no_resend",
-    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-native-save-component-57c8408/campaign.json",
-    "thread_id": "01a13c1d-c986-7070-a222-ebb7db0b72f4",
-    "turn_id": "01a13c1d-cbb6-72d3-b7cd-a75a96b91852"
+    "job_id": "job_6f7658a0a16f4328a4e43af5",
+    "status": "all_sent_operations_closed_no_valid_review_response",
+    "original_source_model": "mimo-v2.6-flash-free",
+    "original_session_id": "ses_ec3bf4d10ffeeO7P2XgWFQ99H2",
+    "original_message_id": "msg_13c40b1bb001edcacd1b3b75a9",
+    "readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-addressed-review-87ab08d/original-reconciliation.json"
   },
   "task_inventory": {
     "limit": 100,
@@ -76,7 +75,7 @@
       "reason": "Full one-house baseline/atomic comparison, actual map and voice, artistic Original, test publication and other required photos remain incomplete."
     }
   ],
-  "next_step": "Fresh autonomous corrected43 prompt with primary source; then fixed-version product retention and addressed repair of the saved event text, without reidentification or losing historical content.",
+  "next_step": "Freeze corrected source-review input and run only addressed new packet on original105; preserve old receipts, do not repeat unchanged scope. Continue independent102/E2E after attachment/repair.",
   "stages": [
     {
       "stage": 0,
@@ -743,7 +742,7 @@
       ]
     }
   ],
-  "checked_out_commit": "57c84080255afb40c6b65ffad43e21bec36940e6",
+  "checked_out_commit": "87ab08d76ceb9ea84ca3bca26bc24a480115e463",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -780,16 +779,16 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "57c84080255afb40c6b65ffad43e21bec36940e6",
+  "code_commit": "87ab08d76ceb9ea84ca3bca26bc24a480115e463",
   "ci": {
-    "head": "57c84080255afb40c6b65ffad43e21bec36940e6",
+    "head": "87ab08d76ceb9ea84ca3bca26bc24a480115e463",
     "backend": {
-      "run": 38632913180,
+      "run": 38637837234,
       "status": "completed",
       "conclusion": "success"
     },
     "android": {
-      "run": 38632913144,
+      "run": 38637837232,
       "status": "completed",
       "conclusion": "success"
     }
@@ -815,8 +814,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "fixed_revision43_product_attachment_and_addressed_repair",
-  "current_blocker": "Mechanical address-range scope gate removed; primary municipal register describes one named building. Two historical-event texts still append address clause outside attached newspaper support; addressed model repair/persistence pending. No scope-only withdrawal or new competing job.",
+  "current_stage": "fixed_review_inventory_product_verification",
+  "current_blocker": "Native105 two texts require model-owned atomic repair. PriorMiMo UNKNOWN closed through original6GETreadback; no new inference. ActualNemotron response showed invalid self-reference from candidates also exposed as eligible knowledge; corrected input/direct autonomous diagnostics pass, fixed product packet not yet tested.",
   "updated_at": "2026-10-14T20:40:55.380241+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
@@ -855,7 +854,7 @@
     "lost_observed_atoms_N12": 0,
     "independent_support_and_dispute_returns": "not_fully_classified"
   },
-  "current_ci_status": "57c8408 backend and Android success; prior89a8 emulator failure evidence preserved, root cause not established. CI does not qualify native105 scope or product E2E.",
+  "current_ci_status": "87ab08d backend+Android success; product native105 text repair and E2E incomplete.",
   "implementation_in_progress": {
     "changes": "Removed address-range gate; native received PDF page/line/find retention",
     "checks": "115tests PASS; Ruff PASS; diff check PASS",
@@ -1093,7 +1092,7 @@
       }
     }
   ],
-  "work_revision": 63,
+  "work_revision": 64,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1109,5 +1108,20 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-autonomous-house-facts-rev43/report.json",
     "actual_execution_model": "unexposed",
     "product_admissions": 0
+  },
+  "review_packet_fix": {
+    "cause_evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-addressed-review-87ab08d/segment.json",
+    "original_product_model": "nemotron-3-ultra-free",
+    "schema_error": "candidate own IDs invalid as equivalent_to_existing; displayed among eligible known facts",
+    "guided_child": "/root/review_packet_diagnostic_rev43",
+    "autonomous_child": "/root/review_packet_autonomous_rev43",
+    "qualification_scope": "requestedLuna direct component, not actualNemotron same-route qualification or product admission",
+    "autonomous_report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-review-autonomous-rev43/qualification.json",
+    "tests": "99passed, JUnit retained"
+  },
+  "cleanup_this_turn": {
+    "removed_bytes": 163006471,
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
+    "real_provider_evidence_preserved": true
   }
 }
