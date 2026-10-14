@@ -38,7 +38,11 @@ INSTRUCTIONS = (
     'known facts/conflicts; wait for its actual response and continue here. A child must '
     'not delegate further. Do not always delegate, do not use another model and do not '
     'start an alternative operation over UNKNOWN. No shell, local files, MCP, apps, '
-    'publication, image generation or other actions. No count target determines when '
+    'publication, image generation or other actions. save_facts is the only permitted '
+    'write: complete own-source assessments enter the existing ledger incrementally. '
+    'After a save, perform the next worthwhile research step yourself in this same turn; '
+    'do not end a turn just to hand a query or URL back to the host. '
+    'No count target determines when '
     'research is complete. Return the supplied JSON contract; incomplete claims remain '
     'candidates. Only actually completed own reads can support a claim. '
     'A blocked or empty read is a technical outcome, not evidence that building '
@@ -89,9 +93,9 @@ class NativeFactResearch:
     def profile_fingerprint(self):
         from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA, PROJECTION_CONTRACT, SOURCE_READ_CONTRACT
         from .native_source_reads import SOURCE_PAGE_CONTRACT, CURSOR_CONTRACT
-        from .fact_agent_providers import NATIVE_TOOLS
+        from .fact_agent_providers import native_tools
         return hashlib.sha256(json.dumps({'contract': CONTRACT, 'instructions': INSTRUCTIONS,
-            'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': NATIVE_TOOLS,
+            'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': native_tools(),
             'source_read_contract': SOURCE_READ_CONTRACT,
             'source_page_contract': SOURCE_PAGE_CONTRACT,
             'source_cursor_contract': CURSOR_CONTRACT,
@@ -162,23 +166,38 @@ class NativeFactResearch:
             if (cached.get('id') != turn or tid == receipt['thread_id'] and turn != receipt.get('turn_id')):
                 raise ValueError('native_research_tool_owner_invalid')
             expected = MODEL if tid == receipt['thread_id'] else 'gpt-6.1-sol'
-            self._execution_contexts(thread, model=expected, turn_id=turn)
+            contexts = self._execution_contexts(thread, model=expected, turn_id=turn)
             receipt['native_threads'].setdefault(tid, {}).update(turn_id=turn, model_id=expected)
-            await self.permission.ensure(client, model=expected)
+            # Persisting an already delivered assessment is a local effect,
+            # not another inference. Quota loss must not discard useful work.
+            if params.get('tool') != 'save_facts':
+                await self.permission.ensure(client, model=expected)
             guard()
             frozen = {'thread_id': tid, 'turn_id': turn, 'name': params.get('tool'),
                 'arguments': copy.deepcopy(params.get('arguments'))}
+            saving = frozen['name'] == 'save_facts'
+            if saving:
+                if tid != receipt['thread_id']:
+                    raise ValueError('native_fact_checkpoint_root_required')
+                frozen['execution_contexts'] = [{key: row.get(key) for key in ('turn_id', 'model', 'effort')}
+                    for row in contexts]
             prior = receipt['native_tool_calls'].get(cid)
             if prior:
                 if prior['input'] != frozen:
                     raise ValueError('native_research_tool_call_changed')
                 if prior.get('phase') == 'completed':
                     return prior['result']
-                raise ValueError('native_research_tool_original_pending')
-            call = {'input': frozen, 'phase': 'submitted'}
+                if not saving:
+                    raise ValueError('native_research_tool_original_pending')
+                # Only the exact local ledger save is recoverable here. Its
+                # atomic confirmation outcome prevents duplicated observations.
+            call = prior or {'input': frozen, 'phase': 'submitted', 'submitted_at': self.service.store.now()}
             receipt['native_tool_calls'][cid] = call
             await save()
-            result = await self.owner_callbacks[key]['callback'](frozen['name'], frozen['arguments'])
+            callback = self.owner_callbacks[key]['callback']
+            result = (await callback(frozen['name'], frozen['arguments'],
+                checkpoint_owner={'call_id': cid, 'thread_id': tid, 'turn_id': turn})
+                if saving else await callback(frozen['name'], frozen['arguments']))
             guard()
             result = {**result, 'research_resources': {
                 'contract': 'native-provider-quota-stop-v2',
@@ -359,10 +378,11 @@ class NativeFactResearch:
                         await self._execution_readback(client, receipt)
                         raw = json.loads(receipt['raw_result_text'])
                         Draft202012Validator(schema).validate(raw)
-                        from .native_fact_contract import RESULT_SCHEMA as FACT_SCHEMA, source_candidates
+                        from .native_fact_contract import RESULT_SCHEMA as FACT_SCHEMA, delivered_candidates
                         # Close with an admission-ready durable packet. A worker
                         # lost after accounting must retry writes, not research.
-                        projected = source_candidates(raw) if schema == FACT_SCHEMA else raw
+                        receipt['raw_result'] = raw
+                        projected = delivered_candidates(receipt) if schema == FACT_SCHEMA else raw
                         receipt.update(phase='completed', provider_send_state='response_closed',
                             raw_result=raw, result=projected, elapsed_seconds=time.monotonic()-started)
                         await save()

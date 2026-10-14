@@ -44,6 +44,13 @@ NATIVE_TOOLS += [{'name': 'read_research_memory',
         'section': {'type': 'string', 'enum': ['prior_search_leads', 'prior_search_queries']},
         'cursor': {'type': 'string', 'maxLength': 200}},
         'required': ['section'], 'additionalProperties': False}}]
+def native_tools():
+    from .native_fact_contract import LEGACY_RESULT_SCHEMA
+    return [*copy.deepcopy(NATIVE_TOOLS), {'name': 'save_facts',
+        'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
+        'parameters': copy.deepcopy(LEGACY_RESULT_SCHEMA)}]
+
+
 def wire_tools():
     """SDK Schema supports a narrower subset; host validation stays strict."""
     return [{**item, 'parameters': {'type': 'object',
@@ -431,7 +438,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
         'provider_send_state': 'not_sent', 'sources': [], 'model_attempts': []}
     if route.provider_id == 'codex_native':
-        receipt['provided_tools'] = copy.deepcopy(NATIVE_TOOLS)
+        receipt['provided_tools'] = native_tools()
         receipt['frozen_research_memory'] = research_memory
     if route.provider_id == 'codex_native' and binding.get('phase') not in {None, 'created'}:
         with adapter.service.store.connection() as db:
@@ -490,7 +497,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             receipt['last_send'] = metadata
         adapter._checkpoint_receipt(binding, receipt)
 
-    async def tool(name, args):
+    async def tool(name, args, *, checkpoint_owner=None):
         nonlocal search_has_sources
         guard()
         if _retained_cohort is not None:
@@ -500,7 +507,29 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         if not declaration or not Draft202012Validator(declaration['parameters']).is_valid(args):
             raise ValueError('agent_tool_outside_scope')
         client = adapter.service.providers.gemini
-        if name == 'read_research_memory':
+        if name == 'save_facts':
+            if route.provider_id != 'codex_native' or not checkpoint_owner:
+                raise ValueError('native_fact_checkpoint_owner_missing')
+            from .native_fact_contract import source_candidates
+            with adapter.service.store.connection() as db:
+                job_row = db.execute('SELECT * FROM jobs WHERE id=? AND story_id=?',
+                    (binding['job_id'], story['id'])).fetchone()
+            if job_row is None:
+                raise ValueError('native_fact_checkpoint_job_missing')
+            agent = {'route_id': route.route_id, 'provider_id': route.provider_id,
+                'model_id': route.model_id, 'attempt_id': binding['attempt_id']}
+            outcomes = []
+            for candidate in source_candidates(args)['facts']:
+                guard()
+                candidate['native_checkpoint_call_id'] = checkpoint_owner['call_id']
+                outcome = await adapter.service.confirm_agent_fact(dict(job_row), context['run_id'], candidate, agent)
+                outcomes.append({key: outcome.get(key) for key in
+                    ('status', 'reason', 'fact_id', 'source_version_id', 'subject_scope')})
+            value = {'outcomes': outcomes,
+                'saved_fact_ids': sorted({x['fact_id'] for x in outcomes
+                    if x.get('status') == 'supported' and x.get('fact_id')}),
+                'meaning': 'Durable partial delivery; continue worthwhile research in this same turn. No sufficiency or overall completion implied.'}
+        elif name == 'read_research_memory':
             value = memory_page(research_memory, args['section'], args.get('cursor'))
         elif name == 'websearch':
             try:
@@ -591,7 +620,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         # complete investigation has no terminal host timer or turn counter.
         async with asyncio.timeout(None):
             if route.provider_id == 'codex_native':
-                from .native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, source_candidates
+                from .native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, delivered_candidates
                 if binding.get('phase') in {None, 'created'}:
                     receipt['frozen_schema'] = copy.deepcopy(NATIVE_SCHEMA)
                 native = await route.client.run(binding=binding, receipt=receipt, prompt=prompt,
@@ -599,7 +628,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 receipt, text = native['receipt'], native['text']
                 receipt['raw_result_text'] = text
                 receipt['raw_result'] = json.loads(text)
-                raw = source_candidates(receipt['raw_result'])
+                raw = delivered_candidates(receipt)
                 guard()
                 receipt.update(phase='completed', provider_send_state='response_closed', result=raw,
                     elapsed_seconds=time.monotonic()-started)

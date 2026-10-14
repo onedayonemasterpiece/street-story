@@ -84,13 +84,19 @@ FINAL_INSTRUCTIONS = (
     'Distinguish previously withheld claims from known usable knowledge; a complete '
     'own-source correction may preserve valid independent content without reviving '
     'an unsupported clause or silently overriding conflict arbitration. '
-    'If work remains actionable, provide completion.next_action with kind '
-    '(search, read, extract, linkage), the concrete query/URL/cursor or evidence '
-    'relationship to investigate, and its reason. The host will retain your '
-    'facts and continue this same research family; completed turn is not '
-    'completed investigation. For actual owner clarification use ask_owner. '
-    'Use null only when no worthwhile action remains or a concrete resource '
-    'prevents it. Do not repeat an unchanged action without new input. '
+    'Perform available worthwhile actions yourself rather than returning a '
+    'query/URL/cursor for the host to execute in a new turn. Finish only on '
+    'semantic sufficiency, a concrete resource blocker or an owner decision. '
+    'completion.next_action is normally null; use ask_owner for actual owner '
+    'clarification, or record a genuinely blocked action and its reason for '
+    'rare explicit recovery. Do not repeat an unchanged action without new input. '
+    'When save_facts is among the frozen tools, deliver complete assessments through '
+    'that tool as soon as useful knowledge is ready, then perform your next '
+    'worthwhile search/read/extraction inside this same turn. Do not close a turn '
+    'just to request a host continuation. After saving, retain all sources and '
+    'durable fact IDs; final facts need not repeat already saved equivalents. '
+    'Return next_action only for an actual blocker or owner decision after your '
+    'autonomous exploration, never as a substitute for an available next step. '
     'If INPUT.native_continuation is present, continue the specified owned '
     'parent turn in this same thread, preserving its read versions and useful '
     'facts; it is not permission to reidentify the selected house. '
@@ -140,6 +146,25 @@ def source_candidates(raw):
                 'source_date': claim['source_date'], 'native_fact': copy.deepcopy(fact),
                 'native_basis': copy.deepcopy(source)})
     return {'facts': result}
+
+
+def delivered_candidates(receipt):
+    """Current-turn save packets retain their exact call proof at final admission."""
+    final = source_candidates(receipt['raw_result'])
+    delivered = []
+    for call_id, call in receipt.get('native_tool_calls', {}).items():
+        owner = call.get('input') or {}
+        if (call.get('phase') != 'completed' or owner.get('name') != 'save_facts'
+                or owner.get('thread_id') != receipt.get('thread_id')
+                or owner.get('turn_id') != receipt.get('turn_id')):
+            continue
+        for candidate in source_candidates(owner['arguments'])['facts']:
+            # Exact copies may be omitted from final prose; this is mechanical
+            # replay deduplication, never semantic equivalence inferred by code.
+            final['facts'] = [x for x in final['facts'] if x != candidate]
+            candidate['native_checkpoint_call_id'] = call_id
+            delivered.append(candidate)
+    return {'facts': [*delivered, *final['facts']]}
 
 
 def native_parent_digest(receipt):
@@ -205,20 +230,48 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
                 or origin['identity_generation'] != current['identity_generation']):
             raise ValueError('native_fact_recovery_origin_unverified')
     if (not attempt['role'].startswith('facts_agent_') or receipt.get('native_contract') != CONTRACT
-            or receipt.get('phase') != 'completed' or receipt.get('provider_send_state') != 'response_closed'
             or receipt.get('provider_id') != 'codex_native' or receipt.get('model_id') != 'gpt-6-luna'
             or agent.get('provider_id') != 'codex_native' or agent.get('model_id') != 'gpt-6-luna'
             or any(binding.get(key) != value for key, value in {
                 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
                 'generation': story['_identity_generation'], 'control_revision': story['_fact_research_control_revision'],
                 **({} if origin_run_id else {'job_id': story['_research_job_id']})}.items())
-            or receipt.get('native_terminal_status') != 'completed'
-            or fact not in (receipt.get('raw_result') or {}).get('facts', [])
             or basis not in fact.get('sources', [])):
         raise ValueError('native_fact_operation_unverified')
     parent = receipt.get('native_threads', {}).get(receipt.get('thread_id')) or {}
-    if (parent.get('model_id') != 'gpt-6-luna' or not parent.get('execution_contexts')
-            or parent.get('turn_id') != receipt.get('turn_id')):
+    if parent.get('model_id') != 'gpt-6-luna' or parent.get('turn_id') != receipt.get('turn_id'):
+        raise ValueError('native_fact_executed_model_unverified')
+    checkpoint_call_id = candidate.get('native_checkpoint_call_id')
+    checkpoint_at = None
+    if checkpoint_call_id is not None:
+        # The complete assessment was delivered by a verified root tool call;
+        # the enclosing inference may still be running or have an unknown tail.
+        # Its original final-result proof branch remains unchanged below.
+        call = receipt.get('native_tool_calls', {}).get(checkpoint_call_id) or {}
+        delivered = call.get('input') or {}
+        packet = delivered.get('arguments') or {}
+        contexts = delivered.get('execution_contexts') or []
+        checkpoint_at = call.get('submitted_at')
+        declaration = next((tool for tool in receipt.get('provided_tools', []) if tool.get('name') == 'save_facts'), None)
+        try:
+            frozen_context = json.loads(receipt['frozen_prompt'].split('\nINPUT=', 1)[1])
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise ValueError('native_fact_checkpoint_input_unverified') from None
+        if (not declaration or declaration.get('parameters') != LEGACY_RESULT_SCHEMA
+                or type(checkpoint_at) not in (int, float)
+                or call.get('phase') not in {'submitted', 'completed'} or delivered.get('name') != 'save_facts'
+                or delivered.get('thread_id') != receipt.get('thread_id')
+                or delivered.get('turn_id') != receipt.get('turn_id')
+                or frozen_context.get('run_id') != run_id
+                or not Draft202012Validator(LEGACY_RESULT_SCHEMA).is_valid(packet)
+                or fact not in packet['facts'] or not contexts
+                or any(x.get('model') != 'gpt-6-luna' or x.get('turn_id') != receipt.get('turn_id') for x in contexts)):
+            raise ValueError('native_fact_checkpoint_operation_unverified')
+    elif (receipt.get('phase') != 'completed' or receipt.get('provider_send_state') != 'response_closed'
+            or receipt.get('native_terminal_status') != 'completed'
+            or fact not in (receipt.get('raw_result') or {}).get('facts', [])):
+        raise ValueError('native_fact_operation_unverified')
+    elif not parent.get('execution_contexts'):
         raise ValueError('native_fact_executed_model_unverified')
     row = basis['assessment']
     if not Draft202012Validator(NETWORK_SCHEMA).is_valid(row):
@@ -230,6 +283,8 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     observed_url = _read_url_key(basis['url'])
     reads = [doc for call in receipt.get('native_tool_calls', {}).values()
         if call.get('phase') == 'completed' and (call.get('input') or {}).get('name') == 'webfetch'
+        and (checkpoint_at is None or type(call.get('completed_at')) in (int, float)
+            and call['completed_at'] <= checkpoint_at)
         for doc in (call.get('result') or {}).get('documents', [])
         if doc.get('source_version_id') == version and doc.get('content_sha256') == basis['content_sha256']
         and observed_url is not None
@@ -272,5 +327,11 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
         'verification_level': 'one_model', 'new_inference_sent': False}
     if origin_run_id:
         assessment['recovery_origin_run_id'] = origin_run_id
+    if checkpoint_call_id is not None:
+        assessment['original_native_checkpoint_call_id'] = checkpoint_call_id
+        assessment['assessment_delivery'] = {'contract': 'native-root-tool-assessment-delivery-v1',
+            'state': 'received', 'call_id': checkpoint_call_id, 'thread_id': receipt['thread_id'],
+            'turn_id': receipt['turn_id'], 'received_at': checkpoint_at,
+            'arguments_sha256': hashlib.sha256(json.dumps(packet, ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
     return {**dict(frozen), 'title': read.get('title') or basis['url']}, {
         'result': copy.deepcopy(row), 'receipt': assessment}

@@ -83,7 +83,7 @@ async def test_native_active_lane_exhausted_provider_quota_never_sends_turn(tmp_
 
 
 @pytest.mark.asyncio
-async def test_native_active_independent_pairs_share_existing_fifteen_minute_grant(tmp_path, monkeypatch):
+async def test_native_active_independent_pairs_check_fresh_shared_account_quota(tmp_path, monkeypatch):
     adapter, story, _ = ready(tmp_path)
     provider, client, original, context, sends = real_native(adapter, story, tmp_path, monkeypatch)
     for index in range(2):
@@ -93,5 +93,5 @@ async def test_native_active_independent_pairs_share_existing_fifteen_minute_gra
         assert result['receipt']['quota_permission']['expires_at'] == 1900
     assert len(sends) == 2
     assert sum(method == 'turn/start' for method, _ in client.calls) == 2
-    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2
     await provider.close()

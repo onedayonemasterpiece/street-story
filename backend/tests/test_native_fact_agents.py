@@ -16,6 +16,80 @@ from test_opencode_research import Harness
 from test_shared_devcoveer_research import Backend
 
 
+@pytest.mark.asyncio
+async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_canonical_outcome(tmp_path):
+    from test_native_fact_basis import setup
+    from street_story.native_fact_research import CONTRACT
+    from test_headless_facts import URL
+    service, job, reader, fetches, agent, original, _ = await setup(tmp_path)
+    fact = copy.deepcopy(original['raw_result']['facts'][0])
+    document = original['native_tool_calls']['original-read']['result']['documents'][0]
+    source_reads, saves = [], []
+    async def frozen_read(urls, context):
+        assert urls == [URL] and context['research_run_id'] == 'headless-run'
+        source_reads.append(URL)
+        return {URL: copy.deepcopy(document)}
+    service.providers.gemini._fetch_page_documents = frozen_read
+    binding = {**original['binding'], 'attempt_id': agent['attempt_id']}
+    def checkpoint(_binding, receipt):
+        with service.store.tx() as db:
+            db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                (json.dumps(receipt), binding['attempt_id']))
+    class Native:
+        async def run(self, **kwargs):
+            receipt = kwargs['receipt']
+            receipt.update(native_contract=CONTRACT, phase='submitted', provider_send_state='possibly_sent',
+                thread_id='original-luna', turn_id='original-turn', native_threads={
+                    'original-luna': {'model_id': 'gpt-6-luna', 'turn_id': 'original-turn'}}, native_tool_calls={})
+            read = await kwargs['callback']('webfetch', {'url': URL})
+            receipt['native_tool_calls']['read-one'] = {'phase': 'completed',
+                'input': {'name': 'webfetch'}, 'result': read, 'completed_at': 1}
+            packet = {'facts': [fact]}
+            receipt['native_tool_calls']['save-one'] = {'phase': 'submitted', 'submitted_at': 2, 'input': {
+                'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
+                'arguments': packet, 'execution_contexts': [
+                    {'model': 'gpt-6-luna', 'effort': 'medium', 'turn_id': 'original-turn'}]}}
+            checkpoint(binding, receipt)
+            saved = await kwargs['callback']('save_facts', packet, checkpoint_owner={
+                'call_id': 'save-one', 'thread_id': 'original-luna', 'turn_id': 'original-turn'})
+            assert saved['saved_fact_ids'] and receipt['phase'] == 'submitted'
+            assert service.story(job['story_id'])['facts'][0]['eligibility'] == 'eligible'
+            replay = await kwargs['callback']('save_facts', packet, checkpoint_owner={
+                'call_id': 'save-one', 'thread_id': 'original-luna', 'turn_id': 'original-turn'})
+            assert replay == saved
+            saves.append(saved)
+            receipt['native_tool_calls']['save-one'].update(phase='completed', result=saved)
+            later = await kwargs['callback']('webfetch', {'url': URL})
+            receipt['native_tool_calls']['read-two'] = {'phase': 'completed',
+                'input': {'name': 'webfetch'}, 'result': later, 'completed_at': 3}
+            receipt['native_threads']['original-luna']['execution_contexts'] = [
+                {'model': 'gpt-6-luna', 'effort': 'medium', 'turn_id': 'original-turn'}]
+            receipt.update(phase='completed', provider_send_state='response_closed', native_terminal_status='completed')
+            return {'receipt': receipt, 'text': json.dumps({'facts': [], 'completion': {
+                'research_sufficient': False, 'reason': 'Controlled component only, not research sufficiency.',
+                'remaining_gaps': ['Independent history remains'], 'stop_basis': 'unresolved_gap', 'next_action': None}})}
+    route = AgentRoute('codex_native', 'gpt-6-luna', 'native', Native())
+    adapter = SimpleNamespace(service=service, _checkpoint_receipt=checkpoint)
+    try:
+        result = await run_tool_agent(adapter, route, {'id': job['story_id']},
+            {'run_id': 'headless-run'}, binding=binding, guard=lambda: None)
+        assert result['receipt']['raw_result']['facts'] == []
+        assert len(result['result']['facts']) == 1
+        assert result['result']['facts'][0]['native_checkpoint_call_id'] == 'save-one'
+        with service.store.connection() as db:
+            before = db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0]
+        outcome = await service.confirm_agent_fact(job, 'headless-run', result['result']['facts'][0],
+            {**agent, 'route_id': route.route_id})
+        assert outcome['fact_id'] == saves[0]['saved_fact_ids'][0]
+        with service.store.connection() as db:
+            assert db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0] == before
+        assert len(service.story(job['story_id'])['facts']) == 1
+        assert len(source_reads) == 2 and len(fetches) == 1
+        assert not result['receipt']['raw_result']['completion']['research_sufficient']
+    finally:
+        await reader.search_http.aclose()
+
+
 def test_discovery_union_keeps_all_distinct_leads_and_attempt_provenance():
     from street_story.fact_agents import _distinct_discovery_context
     base = {'title': 'Archive', 'url': 'https://example.org/archive',
@@ -98,7 +172,7 @@ async def test_native_discovery_uses_hosted_search_and_never_dispatches_ddg_call
     received, saved = [], []
     class Native:
         async def run(self, **kwargs):
-            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch', 'read_research_memory']
+            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch', 'read_research_memory', 'save_facts']
             with pytest.raises(ValueError, match='agent_tool_outside_scope'):
                 await kwargs['callback']('websearch', {'query': 'Selected building'})
             kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')

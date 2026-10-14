@@ -646,8 +646,16 @@ class AgentEvidenceMixin:
                 [source], run['goal'], self.store.now(), research_run_id=run_id)
             sync_poi_review_from_story(db, story['id'], self.store.now())
             db.execute("UPDATE stories SET state='researching',revision=revision+1,updated_at=? WHERE id=?", (self.store.now(), story['id']))
-        outcome.update(fact_id=fact_id, subject_scope=row['subject_scope'])
-        with self.store.tx() as db:
+            # The existing acceptance writer and its replay outcome must commit
+            # together, including POI projection. Losing a callback reply after
+            # this transaction is a read/recovery, never another admission.
+            outcome.update(fact_id=fact_id, subject_scope=row['subject_scope'])
+            if (verified['receipt'].get('assessment_delivery') or {}).get('contract') == 'native-root-tool-assessment-delivery-v1':
+                # This receipt completes the concrete local save, atomically
+                # with facts/POI. It never closes the enclosing native inference.
+                outcome['native_save_receipt'] = {
+                    **verified['receipt']['assessment_delivery'], 'state': 'completed',
+                    'fact_id': fact_id, 'status': outcome['status'], 'completed_at': self.store.now()}
             _write_confirmation_checkpoint(db, job['id'], stage, {'outcome': outcome, 'owner': owner}, self.store.now())
         LOG.info('street_story_agent_fact_confirmed story_id=%s run_id=%s fact_id=%s model=%s source_version=%s scope=%s',
             story['id'], run_id, fact_id, verified['receipt']['model_id'], version, row['subject_scope'])

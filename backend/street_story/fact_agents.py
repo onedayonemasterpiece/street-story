@@ -548,6 +548,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                 (job['story_id'],))} & fact_ids
         return {'phase': 'completed', 'attempt_id': agent['attempt_id'], 'outcomes': outcomes,
+            'autonomous_native_turn': receipt.get('provider_id') == 'codex_native'
+                and any(tool.get('name') == 'save_facts' for tool in receipt.get('provided_tools', [])),
             **_source_coverage(receipt), 'candidate_count': len(outcomes),
             'eligible_fact_ids': sorted(eligible), 'supported_count': len(eligible)}
 
@@ -747,6 +749,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 row.get('reason') == 'native_fact_source_not_owned_read' and not row.get('receipt')
                 and not row.get('confirmation') for row in unresolved)
             if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
+                    or result.get('autonomous_native_turn')
                     or completion.get('research_sufficient') or not action or action.get('kind') == 'ask_owner'
                     or unresolved and not closed_reference_errors):
                 return result

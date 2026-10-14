@@ -114,6 +114,76 @@ def test_only_direct_owned_sol_child_can_use_parent_source_tools():
             NativeFactResearch._verify_thread({'id': 'child', 'source': source}, 'root')
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('lost_local_reply', [False, True])
+async def test_owned_save_callback_recovers_same_call_without_inference_or_quota_discard(tmp_path, monkeypatch, lost_local_reply):
+    from street_story import native_fact_research as native
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch, receipt={'phase': 'created'})
+    callbacks, effects, quota_reads = [], [], []
+    base = provider.client_factory
+    class Client(base):
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/start':
+                calls.append((method, copy.deepcopy(params)))
+                return {'thread': {'id': THREAD}, 'model': 'gpt-6-luna',
+                    'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
+            if method == 'turn/start':
+                calls.append((method, copy.deepcopy(params)))
+                return {'turn': {'id': TURN}}
+            return await super().request(method, params, timeout)
+    @asynccontextmanager
+    async def admission(*args):
+        class Lease:
+            async def before_send(self, metadata):
+                pass
+            async def finalize(self, *args):
+                pass
+        yield Lease()
+    async def quota(*args, **kwargs):
+        quota_reads.append(True)
+        if len(quota_reads) > 1:
+            raise RetryableProviderError('native_quota_below_reserve')
+        return {'remaining_percent': 50}
+    def attach(client, callback):
+        callbacks.append(callback)
+        return client
+    local = {}
+    async def persist(name, args, *, checkpoint_owner):
+        assert name == 'save_facts' and args == {'facts': []}
+        assert checkpoint_owner == {'call_id': 'save-current', 'thread_id': THREAD, 'turn_id': TURN}
+        if not local:
+            effects.append('existing atomic ledger outcome')
+            local.update(saved_fact_ids=['already-committed'], partial=True)
+            if lost_local_reply:
+                raise RuntimeError('controlled loss after local commit')
+        return copy.deepcopy(local)
+    async def readback(client, tid, turn, input_parts):
+        request = {'threadId': THREAD, 'turnId': TURN, 'callId': 'save-current',
+            'tool': 'save_facts', 'arguments': {'facts': []}}
+        if lost_local_reply:
+            with pytest.raises(RuntimeError, match='after local commit'):
+                await callbacks[0](request)
+            assert receipt['native_tool_calls']['save-current']['phase'] == 'submitted'
+        result = await callbacks[0](request)
+        assert result['saved_fact_ids'] == ['already-committed']
+        assert await callbacks[0](request) == result
+        with pytest.raises(ValueError, match='call_changed'):
+            await callbacks[0]({**request, 'arguments': {'facts': ['different payload']}})
+        return {'thread': {'id': THREAD, 'turns': [{'id': TURN, 'status': 'completed',
+            'items': [{'type': 'userMessage', 'content': input_parts},
+                {'type': 'agentMessage', 'text': '{"status":"match"}'}]}]}}
+    provider.client_factory, provider.admission = Client, admission
+    provider.permission.ensure = quota
+    monkeypatch.setattr(native, 'attach_research_tools', attach)
+    monkeypatch.setattr(native, 'native_turn_readback', readback)
+    from street_story.fact_agent_providers import native_tools
+    await provider.run(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=native_tools(), callback=persist, guard=lambda: None)
+    assert len(effects) == 1 and len(quota_reads) == 1
+    assert sum(method == 'turn/start' for method, _ in calls) == 1
+    assert saved[-1]['native_tool_calls']['save-current']['phase'] == 'completed'
+
+
 def test_native_v2_empty_annotation_projection_preserves_exact_input_binding():
     projected = [{**INPUT[0], 'text_elements': []}]
     assert NativeFactResearch._input_matches(projected, INPUT)

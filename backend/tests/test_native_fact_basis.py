@@ -87,6 +87,97 @@ async def test_complete_single_model_basis_is_admitted_without_new_fetch_or_judg
 
 
 @pytest.mark.asyncio
+async def test_ledger_and_confirmation_outcome_rollback_together_then_recover_without_inference(tmp_path, monkeypatch):
+    import street_story.agent_evidence as module
+    service, job, reader, fetches, agent, receipt, _ = await setup(tmp_path)
+    original = module._write_confirmation_checkpoint
+    def fail_at_outcome(db, job_id, stage, value, now):
+        if value.get('outcome', {}).get('fact_id'):
+            raise RuntimeError('controlled post-ledger checkpoint failure')
+        return original(db, job_id, stage, value, now)
+    try:
+        candidate = source_candidates(receipt['raw_result'])['facts'][0]
+        monkeypatch.setattr(module, '_write_confirmation_checkpoint', fail_at_outcome)
+        with pytest.raises(RuntimeError, match='post-ledger checkpoint failure'):
+            await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
+        with service.store.connection() as db:
+            assert db.execute('SELECT COUNT(*) FROM fact_assertions').fetchone()[0] == 0
+            assert db.execute('SELECT COUNT(*) FROM poi_research_facts').fetchone()[0] == 0
+        monkeypatch.setattr(module, '_write_confirmation_checkpoint', original)
+        saved = await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
+        assert saved['status'] == 'supported'
+        with service.store.connection() as db:
+            before = db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0]
+        assert await service.confirm_agent_fact(job, 'headless-run', candidate, agent) == saved
+        with service.store.connection() as db:
+            assert db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0] == before
+        assert len(fetches) == 1 and len(service.story(job['story_id'])['facts']) == 1
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage', [None, 'missing_call', 'child_thread', 'wrong_turn', 'wrong_model', 'missing_context', 'unread_chunk', 'late_read', 'missing_declaration', 'changed_run', 'stop'])
+async def test_incremental_native_assessment_requires_exact_root_delivery_and_owned_source(tmp_path, damage):
+    from street_story.fact_agent_providers import native_tools
+    service, job, reader, fetches, agent, receipt, save = await setup(tmp_path)
+    fact = copy.deepcopy(receipt['raw_result']['facts'][0])
+    receipt.update(phase='submitted', provider_send_state='possibly_sent', native_terminal_status=None,
+        raw_result={}, provided_tools=native_tools(), frozen_prompt='Component instructions\nINPUT={"run_id":"headless-run"}')
+    receipt['native_threads']['original-luna'].pop('execution_contexts')
+    receipt['native_tool_calls']['original-read']['completed_at'] = 1
+    call = {'phase': 'submitted', 'submitted_at': 2, 'input': {'thread_id': 'original-luna', 'turn_id': 'original-turn',
+        'name': 'save_facts', 'arguments': {'facts': [fact]},
+        'execution_contexts': [{'model': 'gpt-6-luna', 'effort': 'medium', 'turn_id': 'original-turn'}]}}
+    receipt['native_tool_calls']['save-current'] = call
+    candidate = source_candidates({'facts': [fact]})['facts'][0]
+    candidate['native_checkpoint_call_id'] = 'save-current'
+    if damage == 'missing_call':
+        candidate['native_checkpoint_call_id'] = 'foreign'
+    elif damage == 'child_thread':
+        call['input']['thread_id'] = 'child-sol'
+    elif damage == 'wrong_turn':
+        call['input']['turn_id'] = 'old-turn'
+    elif damage == 'wrong_model':
+        call['input']['execution_contexts'][0]['model'] = 'gpt-6.1-sol'
+    elif damage == 'missing_context':
+        call['input']['execution_contexts'] = []
+    elif damage == 'unread_chunk':
+        receipt['native_tool_calls']['original-read']['phase'] = 'submitted'
+    elif damage == 'late_read':
+        receipt['native_tool_calls']['original-read']['completed_at'] = 3
+    elif damage == 'missing_declaration':
+        receipt['provided_tools'] = []
+    elif damage == 'changed_run':
+        receipt['frozen_prompt'] = 'INPUT={"run_id":"other-run"}'
+    save()
+    if damage == 'stop':
+        with service.store.tx() as db:
+            db.execute("UPDATE jobs SET state='cancelled' WHERE id=?", (job['id'],))
+    try:
+        outcome = await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
+        if damage:
+            assert outcome['status'] in {'unverified', 'stale'}
+            assert not service.story(job['story_id'])['facts']
+        else:
+            assert outcome['status'] == 'supported'
+            assert receipt['phase'] == 'submitted' and receipt['provider_send_state'] == 'possibly_sent'
+            assert outcome['confirmation']['original_native_checkpoint_call_id'] == 'save-current'
+            assert outcome['native_save_receipt']['state'] == 'completed'
+            assert outcome['native_save_receipt']['call_id'] == 'save-current'
+            assert service.story(job['story_id'])['facts'][0]['eligibility'] == 'eligible'
+            # Overall UNKNOWN does not undo a completed own assessment or turn
+            # it into final research sufficiency. Exact local replay stays one fact.
+            receipt['phase'] = 'unknown'
+            save()
+            assert await service.confirm_agent_fact(job, 'headless-run', candidate, agent) == outcome
+            assert len(service.story(job['story_id'])['facts']) == 1
+        assert len(fetches) == 1
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('alias', [URL+'/', URL+'?different=1', 'https://unread.example/gate-history'])
 async def test_owned_native_url_equivalence_preserves_host_query_version_and_chunks(tmp_path, alias):
     from street_story.native_fact_contract import owned_assessment
