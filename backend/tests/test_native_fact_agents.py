@@ -16,6 +16,47 @@ from test_opencode_research import Harness
 from test_shared_devcoveer_research import Backend
 
 
+def test_discovery_union_keeps_all_distinct_leads_and_attempt_provenance():
+    from street_story.fact_agents import _distinct_discovery_context
+    base = {'title': 'Archive', 'url': 'https://example.org/archive',
+        'kind': 'unverified_search_lead', 'discovery_provider': 'native_hosted'}
+    items = [{**base, 'original_attempt_id': 'one'}] * 300
+    items += [{**base, 'original_attempt_id': 'two'},
+        {**base, 'title': 'Different title', 'original_attempt_id': 'three'},
+        {**base, 'url': base['url'] + '?revision=2', 'original_attempt_id': 'four'}]
+    original = copy.deepcopy(items)
+    result = _distinct_discovery_context(items)
+    assert len(result) == 3
+    assert result[0]['original_attempt_ids'] == ['one', 'two']
+    assert [item['title'] for item in result] == ['Archive', 'Different title', 'Archive']
+    assert result[2]['url'].endswith('?revision=2')
+    assert items == original
+
+
+def test_native_conflict_context_preserves_both_claims_and_all_source_refs(tmp_path):
+    from street_story.fact_agents import native_agent_context
+    from street_story.conflict_journal import conflict_journal
+    from test_conflict_journal import journal_fixture
+    service, _, session, _, _, _ = journal_fixture(tmp_path)
+    with service.store.connection() as db:
+        row = dict(service._story_row(db, session.resource_id))
+    row['_identity_generation'] = 0
+    before = conflict_journal(service, session.resource_id)['items']
+    context = native_agent_context(service, row, {}, 'Continue actual gaps', 'new-run')
+    after = context['conflict_journal']
+    assert len(after) == len(before) == 1
+    for side in ('left', 'right'):
+        assert after[0][side]['text'] == before[0][side]['text']
+        assert after[0][side]['recorded_revision_digest'] == before[0][side]['recorded_revision_digest']
+        spans = after[0][side]['sources'][0]['supports']
+        assert len(spans) == 6
+        assert [(s['source_version_id'], s['page_number']) for s in spans] == [(f'v{n}', n) for n in range(6)]
+        assert all('text' not in span for span in spans)
+    assert {k: v for k, v in after[0].items() if k not in ('left', 'right')} == {
+        k: v for k, v in before[0].items() if k not in ('left', 'right')}
+    assert conflict_journal(service, session.resource_id)['items'] == before
+
+
 @pytest.mark.asyncio
 async def test_native_model_receives_exact_failed_read_outcome_from_its_run(tmp_path):
     from street_story.research_runs import register_discovered_source
@@ -57,7 +98,7 @@ async def test_native_discovery_uses_hosted_search_and_never_dispatches_ddg_call
     received, saved = [], []
     class Native:
         async def run(self, **kwargs):
-            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch']
+            assert [tool['name'] for tool in kwargs['tools']] == ['webfetch', 'read_research_memory']
             with pytest.raises(ValueError, match='agent_tool_outside_scope'):
                 await kwargs['callback']('websearch', {'query': 'Selected building'})
             kwargs['receipt'].update(phase='completed', provider_send_state='response_closed')

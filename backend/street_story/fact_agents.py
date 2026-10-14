@@ -378,6 +378,31 @@ def agent_context(identity, goal, run_id, now):
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
 
 
+def _context_source_refs(sources):
+    """Keep exact provenance; full bodies remain in the owned reader/ledger."""
+    return [{**{key: value for key, value in source.items()
+                if key not in ('confirmed_fragment', 'supports')},
+        'supports': [{key: value for key, value in support.items() if key != 'text'}
+            for support in source.get('supports') or []]} for source in sources]
+
+
+def _distinct_discovery_context(items):
+    """Losslessly union repeated discovery observations, never rank or truncate."""
+    from .service import canonical
+    distinct = {}
+    for item in items:
+        fields = {key: value for key, value in item.items() if key != 'original_attempt_id'}
+        key = canonical(fields)
+        if key not in distinct:
+            distinct[key] = dict(item)
+        else:
+            saved = distinct[key]
+            attempts = saved.setdefault('original_attempt_ids', [saved['original_attempt_id']])
+            if item['original_attempt_id'] not in attempts:
+                attempts.append(item['original_attempt_id'])
+    return list(distinct.values())
+
+
 def native_agent_context(service, story, identity, goal, run_id):
     """Owned accumulated knowledge and the existing complete conflict journal."""
     from .conflict_journal import conflict_journal
@@ -396,10 +421,7 @@ def native_agent_context(service, story, identity, goal, run_id):
             # Known claims are context, never a substitute for an own read.
             # Keep every source/version/span reference without resending whole
             # article chunks once per accepted claim on every continuation.
-            for source in item['sources']:
-                source.pop('confirmed_fragment', None)
-                source['supports'] = [{key: value for key, value in support.items() if key != 'text'}
-                    for support in source.get('supports') or []]
+            item['sources'] = _context_source_refs(item['sources'])
         reviews = []
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_review_packets'").fetchone():
             current = {item['fact_id']: item['revision_digest'] for item in context['known']}
@@ -423,7 +445,7 @@ def native_agent_context(service, story, identity, goal, run_id):
                         'source_version_ids': sorted({e['source_version_id'] for e in item.get('evidence', [])
                             if e.get('source_version_id')}), 'kind': 'own_review_history_context_not_evidence'})
         context['source_review_history'] = reviews
-        prior, leads, queries = [], [], []
+        prior, leads, queries, receipts = [], [], [], []
         for record in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
                 "AND role LIKE 'facts_agent_%' ORDER BY created_at", (story['id'],)):
             receipt = json.loads(record[0])
@@ -432,6 +454,7 @@ def native_agent_context(service, story, identity, goal, run_id):
                     or binding.get('generation') != story['_identity_generation']
                     or receipt.get('provider_id') != 'codex_native'):
                 continue
+            receipts.append(receipt)
             for call in receipt.get('native_tool_calls', {}).values():
                 if call.get('phase') != 'completed':
                     continue
@@ -455,17 +478,24 @@ def native_agent_context(service, story, identity, goal, run_id):
                             'original_attempt_id': binding.get('attempt_id'), 'kind': 'unverified_search_lead',
                             'discovery_provider': 'native_hosted'})
             prior.append(binding.get('attempt_id'))
-        context['prior_search_leads'] = leads
-        context['prior_search_queries'] = queries
+        context['prior_search_leads'] = _distinct_discovery_context(leads)
+        context['prior_search_queries'] = _distinct_discovery_context(queries)
         context['prior_read_outcomes'] = [dict(row) for row in db.execute(
             'SELECT s.url,s.status,s.error_code,s.source_version_id,r.run_id FROM research_run_sources s '
             'JOIN research_runs r ON r.run_id=s.run_id WHERE r.story_id=? AND r.identity_generation=? '
             "ORDER BY s.updated_at", (story['id'], story['_identity_generation']))]
         context['prior_native_attempt_ids'] = prior
+        from .native_source_memory import source_memory
+        context['source_memory'] = source_memory(db, receipts, context['known'])
     conflicts, cursor = [], None
     while True:
         page = conflict_journal(service, story['id'], cursor)
-        conflicts.extend(page['items'])
+        for item in page['items']:
+            # A conflict must keep both claims and every decision/revision,
+            # but does not need to repeat each entire article yet again.
+            for side in ('left', 'right'):
+                item[side]['sources'] = _context_source_refs(item[side]['sources'])
+            conflicts.append(item)
         if not page['has_more']:
             break
         cursor = page['next_cursor']

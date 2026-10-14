@@ -93,7 +93,24 @@ FINAL_INSTRUCTIONS = (
     'prevents it. Do not repeat an unchanged action without new input. '
     'If INPUT.native_continuation is present, continue the specified owned '
     'parent turn in this same thread, preserving its read versions and useful '
-    'facts; it is not permission to reidentify the selected house.')
+    'facts; it is not permission to reidentify the selected house. '
+    'Use INPUT.source_memory to distinguish discovery, partial delivery, all stored '
+    'chunks delivered, extracted claims and blocked access. All delivered does not '
+    'mean exhausted for every question or complete OCR/acquisition. Cached bytes '
+    'do not make needless model rereading useful. Before repeating a read, identify '
+    'an unread cursor, new immutable version, new substantive question or specific '
+    'error recovery; avoid repeating already extracted clauses. '
+    'Explore relevant source families and substantive directions: construction and '
+    'architecture, historical address records, residents, tenants/organizations, '
+    'events and dated later changes. Change direction/family when additional '
+    'paraphrases of the same query no longer produce relevant new knowledge. '
+    'Rich sources may support many distinct claims, but there is no numeric target. '
+    'In completion.reason explain novelty versus prior knowledge, explored directions '
+    'and concrete access/linkage gaps. For next_action.reason explain the expected '
+    'new claim, independent support or gap closure and how it differs from completed '
+    'actions. Do not continue solely because the same unanswered question remains. '
+    'Semantic saturation follows diminishing useful novelty after diverse relevant '
+    'research, not turn count or a failed source. A technical blocker remains explicit.')
 
 
 def source_candidates(raw):

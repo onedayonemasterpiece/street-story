@@ -213,6 +213,24 @@ Photo-search target (2026-10-08): [three equal identity methods and Prussia39 di
 
 ### Durable background research (owner override, 2026-10-11)
 
+Native research context now unions identical discovery observations while retaining
+every originating attempt. Known claims and both conflict sides retain their exact
+source/version/span references; full source bodies remain immutable in the ledger
+and owned reader. Oversized discovery histories are frozen in the attempt receipt
+and delivered through `read_research_memory` pages with content-bound cursors.
+Nothing is ranked away or expired by this transport boundary. Codex discovery
+uses hosted `web_search`; this memory reader performs no search or network request.
+
+`source_memory` reports actual delivered chunks, first unread cursor, extracted
+claim IDs and failed read requests. Inherited calls count once. Full stored-chunk
+delivery is distinct from complete acquisition, OCR or semantic exhaustion.
+Historical network/cache counts and question exhaustion remain explicitly unknown
+where receipts do not record them. The model must explain the expected novel
+contribution of the next action, justify rereading and consider varied source
+families/directions. These instructions do not impose a fact/turn target or decide
+physical linkage in code. Current provider acceptance of the new profile remains
+pending; local tests alone do not establish product completeness.
+
 Accepted photo intake belongs to backend jobs, independently of client sockets.
 Identity, reference comparison, fact research and refinement have no terminal
 180/480-second upload deadline and no cumulative local ceiling on comparisons,

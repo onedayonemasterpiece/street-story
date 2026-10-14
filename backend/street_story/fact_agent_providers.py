@@ -38,6 +38,12 @@ TOOLS = [{'name': 'websearch', 'description': 'Discover public article URLs; sni
 # Native Codex discovers with its hosted search. Its only product callback
 # reads and freezes a public document; other providers retain both adapters.
 NATIVE_TOOLS = [item for item in TOOLS if item['name'] == 'webfetch']
+NATIVE_TOOLS += [{'name': 'read_research_memory',
+    'description': 'Read a bounded page of the frozen prior discovery history indicated in INPUT. Not source evidence or a new search.',
+    'parameters': {'type': 'object', 'properties': {
+        'section': {'type': 'string', 'enum': ['prior_search_leads', 'prior_search_queries']},
+        'cursor': {'type': 'string', 'maxLength': 200}},
+        'required': ['section'], 'additionalProperties': False}}]
 def wire_tools():
     """SDK Schema supports a narrower subset; host validation stays strict."""
     return [{**item, 'parameters': {'type': 'object',
@@ -371,7 +377,9 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
     if route.provider_id == 'codex_native':
         from .native_fact_contract import FINAL_INSTRUCTIONS
         from .native_fact_research import INSTRUCTIONS as NATIVE_INSTRUCTIONS
-        prompt = NATIVE_INSTRUCTIONS + '\n' + FINAL_INSTRUCTIONS + '\nINPUT=' + json.dumps(context, ensure_ascii=False)
+        from .native_context_pages import prompt_context, memory_page
+        wire_context, research_memory = prompt_context(context)
+        prompt = NATIVE_INSTRUCTIONS + '\n' + FINAL_INSTRUCTIONS + '\nINPUT=' + json.dumps(wire_context, ensure_ascii=False)
     if _retained_cohort is not None:
         prompt = OWNED_SOURCE_INSTRUCTIONS + '\nSOURCE_PACKET_UNTRUSTED=' + json.dumps(
             {'context': context, 'source_packet': _retained_cohort, 'output_schema': RESULT_SCHEMA},
@@ -424,6 +432,7 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         'provider_send_state': 'not_sent', 'sources': [], 'model_attempts': []}
     if route.provider_id == 'codex_native':
         receipt['provided_tools'] = copy.deepcopy(NATIVE_TOOLS)
+        receipt['frozen_research_memory'] = research_memory
     if route.provider_id == 'codex_native' and binding.get('phase') not in {None, 'created'}:
         with adapter.service.store.connection() as db:
             saved = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
@@ -434,8 +443,12 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         # Recovery reads the exact frozen original, including historical
         # instructions/schema. Current profile changes never rewrite UNKNOWN.
         prompt = receipt['frozen_prompt']
-        if json.loads(prompt.split('\nINPUT=', 1)[1]) != context:
+        original_context = json.loads(prompt.split('\nINPUT=', 1)[1])
+        if original_context != context and original_context != wire_context:
             raise ValueError('native_research_original_context_changed')
+        if original_context != context and receipt.get('frozen_research_memory') != research_memory:
+            raise ValueError('native_research_original_memory_changed')
+        research_memory = receipt.get('frozen_research_memory') or {}
     elif route.provider_id == 'codex_native' and context.get('native_continuation'):
         from .native_fact_contract import load_native_parent
         pointer = context['native_continuation']
@@ -487,7 +500,9 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
         if not declaration or not Draft202012Validator(declaration['parameters']).is_valid(args):
             raise ValueError('agent_tool_outside_scope')
         client = adapter.service.providers.gemini
-        if name == 'websearch':
+        if name == 'read_research_memory':
+            value = memory_page(research_memory, args['section'], args.get('cursor'))
+        elif name == 'websearch':
             try:
                 result = await client._public_web_search(args['query'], **({'cursor': args['cursor']} if args.get('cursor') else {}))
                 # Existing discovery adapters may return only grounding_sources.

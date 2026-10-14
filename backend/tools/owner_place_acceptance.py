@@ -177,7 +177,7 @@ def load_agent_qualification(path, *, routes=None):
                     and isinstance(item.get('results'), list)
                     for item in receipt.get('native_discovery') or [])
                 discovery_verified = discovery_verified or (
-                    tool_names == {'webfetch'} and hosted_search
+                    tool_names - {'read_research_memory'} == {'webfetch'} and hosted_search
                     and ((receipt.get('applied_controls') or {}).get('profile_overrides') or {}).get('web_search') == 'live')
             if (receipt.get('phase') != 'completed' or receipt.get('provider_id') != route.get('provider_id')
                     or receipt.get('model_id') != route.get('model_id') or not binding.get('attempt_id')
@@ -188,8 +188,10 @@ def load_agent_qualification(path, *, routes=None):
                     or not receipt.get('model_attempts') or not tools
                     or not discovery_verified):
                 raise ValueError('Actual agent search/read receipt required; legacy reader flags cannot qualify')
+            from street_story.fact_agent_providers import NATIVE_TOOLS
+            declarations = TOOLS + NATIVE_TOOLS if native else TOOLS
             for tool in tools:
-                declaration = next((item for item in TOOLS if item['name'] == tool.get('name')), None)
+                declaration = next((item for item in declarations if item['name'] == tool.get('name')), None)
                 if (not declaration or not Draft202012Validator(declaration['parameters']).is_valid(tool.get('arguments'))
                         or not tool.get('completed_at') or not tool.get('result_sha256')):
                     raise ValueError('Agent observed tool receipt outside current read-only scope')
