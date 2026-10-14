@@ -127,13 +127,20 @@ async def test_native_continuation_receives_own_failed_leads_but_excludes_foreig
                     ('foreign', 5, 'https://example.org/foreign')]:
                 receipt = {'provider_id': 'codex_native', 'binding': {'attempt_id': attempt,
                     'photo_sha256': story['photo_sha256'], 'generation': generation},
+                    'native_discovery': [{'action': {'type': 'search', 'queries': [attempt+' hosted history']},
+                        'results': [{'url': url+'/hosted', 'title': attempt,
+                            'snippet': 'Untrusted indexed text must never become evidence.'}]}],
                     'native_tool_calls': {'original-search': {'phase': 'completed',
                         'input': {'name': 'websearch'}, 'result': {'sources': [{'title': attempt, 'url': url}]}}}}
                 db.execute('INSERT INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) '
                     'VALUES(?,?,?,?,?,?,?)', (attempt, attempt, story['id'], 'facts_agent_native', json.dumps(receipt), 1, 1))
         context = native_agent_context(service, story, research['visual_identity'], 'Continue actual source gaps', 'headless-run')
         assert context['prior_search_leads'] == [{'title': 'own', 'url': 'https://example.org/own',
-            'original_attempt_id': 'own', 'kind': 'unverified_search_lead'}]
+            'original_attempt_id': 'own', 'kind': 'unverified_search_lead'},
+            {'title': 'own', 'url': 'https://example.org/own/hosted', 'original_attempt_id': 'own',
+             'kind': 'unverified_search_lead', 'discovery_provider': 'native_hosted'}]
+        assert context['prior_search_queries'][-1] == {'query': 'own hosted history', 'cursor': None,
+            'original_attempt_id': 'own', 'discovery_provider': 'native_hosted'}
         assert context['prior_native_attempt_ids'] == ['own']
     finally:
         await reader.search_http.aclose()

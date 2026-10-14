@@ -436,6 +436,17 @@ def native_agent_context(service, story, identity, goal, run_id):
                     for source in value.get('sources', []):
                         leads.append({'title': source.get('title'), 'url': source.get('url'),
                             'original_attempt_id': binding.get('attempt_id'), 'kind': 'unverified_search_lead'})
+            for discovery in receipt.get('native_discovery') or []:
+                action = discovery.get('action') or {}
+                if action.get('type') == 'search':
+                    for query in action.get('queries') or ([action['query']] if action.get('query') else []):
+                        queries.append({'query': query, 'cursor': None,
+                            'original_attempt_id': binding.get('attempt_id'), 'discovery_provider': 'native_hosted'})
+                for source in discovery.get('results') or []:
+                    if isinstance(source.get('url'), str):
+                        leads.append({'title': source.get('title'), 'url': source['url'],
+                            'original_attempt_id': binding.get('attempt_id'), 'kind': 'unverified_search_lead',
+                            'discovery_provider': 'native_hosted'})
             prior.append(binding.get('attempt_id'))
         context['prior_search_leads'] = leads
         context['prior_search_queries'] = queries

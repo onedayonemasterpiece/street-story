@@ -1,4 +1,4 @@
-"""Bounded fact-only qualification of the existing native research adapter.
+"""Fact qualification and qualified product research on the existing adapter.
 
 Uses normal EXIF intake, explicit mapped selection, durable job admission and
 ledger writes. No app/voice/publication acceptance is implied. Qualification
@@ -22,6 +22,61 @@ from owner_place_acceptance import author_context, registry_item
 from product_recovery_acceptance import managed, require_frozen_checkout, save
 
 BACKEND = Path(__file__).resolve().parents[1]
+
+
+async def qualified_product_round(service, sid, output, ordinal, campaign):
+    """Observe the ordinary worker; acceptance code never claims or finishes it."""
+    with service.store.connection() as db:
+        jobs = list(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='research' "
+            "AND state IN ('ready','retry') ORDER BY created_at", (sid,)))
+    if len(jobs) != 1:
+        raise ValueError('Exactly one ordinary product research request required')
+    job = dict(jobs[0])
+    payload = json.loads(job['payload_json'])
+    run_id = 'research_'+hashlib.sha256(f"{job['id']}:{payload['input_revision']}".encode()).hexdigest()[:24]
+    before = {fact['fact_id'] for fact in service.story(sid)['facts']}
+    record = {'ordinal': ordinal, 'job_id': job['id'], 'run_id': run_id, 'started_at': time.time(),
+        'before_fact_ids': sorted(before), 'status': 'RUNNING', 'execution_path': 'ordinary_service.run_once'}
+    campaign['attempts'].append(record)
+    save(output/'campaign.json', campaign)
+
+    async def observe():
+        while True:
+            facts = service.story(sid)['facts']
+            with (output/f'observations-{ordinal}.jsonl').open('a') as stream:
+                stream.write(json.dumps({'elapsed_seconds': time.time()-record['started_at'],
+                    'fact_ids': [fact['fact_id'] for fact in facts if fact.get('eligibility') == 'eligible']})+'\n')
+            await asyncio.sleep(1)
+
+    observer = asyncio.create_task(observe())
+    try:
+        if not await service.run_once(claim_kind='research', claim_story_id=sid):
+            raise ValueError('Ordinary product research request was not claimed')
+    finally:
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+        with service.store.connection() as db:
+            final_job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone())
+            receipts = [json.loads(row[0]) for row in db.execute(
+                'SELECT receipt_json FROM research_provider_attempts WHERE story_id=? '
+                "AND role LIKE 'facts_agent_%' AND json_extract(receipt_json,'$.binding.job_id')=? "
+                'ORDER BY created_at,rowid', (sid, job['id']))]
+        for receipt in receipts:
+            save(output/('receipt-'+receipt['binding']['attempt_id']+'.json'), receipt)
+        current = service.story(sid)
+        after = {fact['fact_id'] for fact in current['facts']}
+        record.update(status='COMPLETED' if final_job['state'] == 'done' else 'INCOMPLETE',
+            elapsed_seconds=time.time()-record['started_at'], job_state=final_job['state'],
+            job_error=final_job['last_error'], added_fact_ids=sorted(after-before),
+            preserved_previous=before.issubset(after), total=len(after),
+            native_attempt_ids=[receipt['binding']['attempt_id'] for receipt in receipts])
+        save(output/f'plan-{ordinal}.json', service.store.checkpoint_get(job['id'], 'fact_agent_plan:'+run_id))
+        save(output/f'material-{ordinal}.json', current)
+        save(output/'campaign.json', campaign)
+    if record['status'] != 'COMPLETED':
+        raise ValueError('Original product research operation remains unresolved; inspect its exact saved IDs')
+    if not any(fact.get('eligibility') == 'eligible' for fact in current['facts']):
+        raise ValueError('No useful admitted material; fix the affected control before another research attempt')
 
 
 async def recover_assessments(args):
@@ -170,10 +225,17 @@ async def run(args):
     adapter = service.providers.research
     route = next(route for route in configured_routes(adapter, include_unqualified=True)
         if route.provider_id == 'codex_native')
+    if args.agent_qualification:
+        from owner_place_acceptance import load_agent_qualification
+        from street_story.fact_agents import QUALIFICATION_KEY
+        proof, provenance = load_agent_qualification(args.agent_qualification, routes=[route])
+        service.store.cache_put(QUALIFICATION_KEY, proof, 3600)
     campaign = {'status': 'PREPARING', 'mode': 'native_fact_only_qualification', 'source_sha': sha,
         'message_id': args.message, 'photo_sha256': item['sha256'], 'route_id': route.route_id,
         'profile_sha256': route.profile_fingerprint, 'attempts': [], 'publication_dispatches': 0,
         'app_e2e': False, 'reference_facts_or_urls_supplied': False, 'cost': 'unknown'}
+    if args.agent_qualification:
+        campaign.update(mode='qualified_product_fact_research', qualification_provenance=provenance)
     if args.coverage_goal:
         campaign['explicit_new_coverage_goal'] = args.coverage_goal
     if owner_context:
@@ -249,6 +311,9 @@ async def run(args):
                 service._research_request(sid, key, request)  # Same delivered command joins.
             else:
                 service._schedule_confirmed_facts()
+            if args.agent_qualification:
+                await qualified_product_round(service, sid, output, ordinal, campaign)
+                continue
             job = service._claim(claim_kind='research', claim_story_id=sid)
             if not job:
                 raise ValueError('Ordinary fact research request was not claimed')
@@ -357,6 +422,8 @@ if __name__ == '__main__':
     parser.add_argument('--message', type=int, choices=[102, 105, 131], required=True)
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--additions', type=int, choices=[0, 1, 2], default=0)
+    parser.add_argument('--agent-qualification', type=Path,
+        help='Verified actual current-profile receipts; execute the existing product plan and its same-job model continuations')
     parser.add_argument('--resume-closed-native', action='store_true',
         help='Observe the original completed turn after a local input-readback projection failure; never resend it')
     parser.add_argument('--recover-assessments-from', type=Path,
@@ -369,6 +436,8 @@ if __name__ == '__main__':
     parser.add_argument('--owner-address-from-registry', action='store_true',
         help='Supply only a documented owner-confirmed address through the existing selection owner_context')
     args = parser.parse_args()
+    if args.agent_qualification and (args.resume_closed_native or args.recover_assessments_from):
+        parser.error('Qualified product research cannot substitute for original readback/write recovery')
     if args.owner_address_from_registry and (args.continue_from or args.resume_closed_native
             or args.recover_assessments_from):
         parser.error('An owner address requires a fresh explicit selection; existing selected stories stay unchanged')

@@ -151,6 +151,8 @@ def load_agent_qualification(path, *, routes=None):
             tools = receipt.get('tool_receipts') or []
             schema, prefix = RESULT_SCHEMA, INSTRUCTIONS + '\nINPUT='
             native = route.get('provider_id') == 'codex_native'
+            tool_names = {item.get('name') for item in tools}
+            discovery_verified = tool_names == {'websearch', 'webfetch'}
             if native:
                 from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS, source_candidates
                 from street_story.native_fact_research import CONTRACT as NATIVE_CONTRACT, INSTRUCTIONS as NATIVE_INSTRUCTIONS
@@ -159,6 +161,24 @@ def load_agent_qualification(path, *, routes=None):
                         or not receipt.get('thread_id') or not receipt.get('turn_id')
                         or not receipt.get('native_threads') or not receipt.get('native_tool_calls')):
                     raise ValueError('Native agent requires original executed-session/source readback')
+                # Hosted search is observed in the original owned native turn;
+                # its snippets remain discovery, while support still requires
+                # the supplied frozen webfetch. A flag or an unrelated thread
+                # cannot substitute for an executed search receipt.
+                executed_threads = {item.get('thread_id') for item in receipt.get('model_attempts') or []}
+                hosted_search = any(
+                    item.get('type') in {'webSearch', 'webSearchCall'} and item.get('id')
+                    and item.get('thread_id') in executed_threads
+                    and item.get('thread_id') in receipt['native_threads']
+                    and item.get('evidence_role') == 'discovery_only_read_before_support'
+                    and (item.get('action') or {}).get('type') == 'search'
+                    and ((item.get('action') or {}).get('query')
+                        or (item.get('action') or {}).get('queries'))
+                    and isinstance(item.get('results'), list)
+                    for item in receipt.get('native_discovery') or [])
+                discovery_verified = discovery_verified or (
+                    tool_names == {'webfetch'} and hosted_search
+                    and ((receipt.get('applied_controls') or {}).get('profile_overrides') or {}).get('web_search') == 'live')
             if (receipt.get('phase') != 'completed' or receipt.get('provider_id') != route.get('provider_id')
                     or receipt.get('model_id') != route.get('model_id') or not binding.get('attempt_id')
                     or not binding.get('story_id') or binding.get('purpose') != 'facts'
@@ -166,7 +186,7 @@ def load_agent_qualification(path, *, routes=None):
                     or receipt.get('frozen_schema') != schema
                     or not str(receipt.get('frozen_prompt') or '').startswith(prefix)
                     or not receipt.get('model_attempts') or not tools
-                    or {item.get('name') for item in tools} != {'websearch', 'webfetch'}):
+                    or not discovery_verified):
                 raise ValueError('Actual agent search/read receipt required; legacy reader flags cannot qualify')
             for tool in tools:
                 declaration = next((item for item in TOOLS if item['name'] == tool.get('name')), None)

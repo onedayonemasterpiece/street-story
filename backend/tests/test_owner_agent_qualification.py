@@ -111,3 +111,56 @@ def test_receipt_path_cannot_escape_controlled_managed_root(tmp_path):
     path.write_text(json.dumps(proof))
     with pytest.raises(ValueError, match='managed test root'):
         load_agent_qualification(path, routes=routes)
+
+
+@pytest.mark.parametrize('fault', [None, 'foreign_thread', 'no_search', 'no_read', 'disabled_hosted', 'unsafe_tool'])
+def test_native_hosted_discovery_requires_executed_owned_search_and_frozen_reader(tmp_path, fault):
+    from street_story.native_fact_contract import RESULT_SCHEMA as NATIVE_SCHEMA, FINAL_INSTRUCTIONS
+    from street_story.native_fact_research import CONTRACT, INSTRUCTIONS as NATIVE_INSTRUCTIONS
+    path, routes = fixture(tmp_path)
+    proof = json.loads(path.read_text())
+    proof['routes'] = proof['routes'][:1]
+    route = proof['routes'][0]
+    route.update(provider_id='codex_native', model_id='gpt-6-luna')
+    routes[0].provider_id, routes[0].model_id = 'codex_native', 'gpt-6-luna'
+    evidence = route['qualification_receipts'][0]
+    receipt_path = Path(evidence['path'])
+    receipt = json.loads(receipt_path.read_text())
+    claim = {'text': 'Факт', 'claim_key': 'controlled', 'subject_scope': 'selected_building', 'source_date': None}
+    assessment = {**claim, 'verdict': 'supported', 'confirmed_fragment': 'Short quote', 'chunk_ids': ['chunk'],
+        'reason': 'Controlled semantic assessment', 'existing_fact_id': '', 'conflicts_with_existing': [],
+        'checks': {'source_physical_subject': 'Building', 'object_relation': 'selected_building',
+            'relation_basis': {'fragment': 'Building', 'chunk_ids': ['chunk']},
+            'material_kind': 'history', 'temporal_basis': 'historical', 'temporal_preserved': True}}
+    receipt.update(provider_id='codex_native', model_id='gpt-6-luna', native_contract=CONTRACT,
+        native_terminal_status='completed', thread_id='owned', turn_id='turn', native_threads={'owned': {}},
+        native_tool_calls={'call': {'phase': 'completed'}}, model_attempts=[{'thread_id': 'owned'}],
+        frozen_schema=NATIVE_SCHEMA, frozen_prompt=NATIVE_INSTRUCTIONS+'\n'+FINAL_INSTRUCTIONS+'\nINPUT={}',
+        applied_controls={'profile_overrides': {'web_search': 'live'}},
+        native_discovery=[{'type': 'webSearch', 'id': 'search', 'thread_id': 'owned',
+            'evidence_role': 'discovery_only_read_before_support',
+            'action': {'type': 'search', 'queries': ['Building history']}, 'results': []}],
+        raw_result={'facts': [{**claim, 'sources': [{'url': 'https://test.example/source',
+            'source_version_id': 'version', 'content_sha256': 'content', 'assessment': assessment}]}],
+            'completion': {'research_sufficient': False, 'reason': 'More history remains',
+                'remaining_gaps': ['History'], 'stop_basis': 'unresolved_gap', 'next_action': None}})
+    receipt['tool_receipts'] = receipt['tool_receipts'][1:]
+    if fault == 'foreign_thread':
+        receipt['native_discovery'][0]['thread_id'] = 'foreign'
+    elif fault == 'no_search':
+        receipt['native_discovery'] = []
+    elif fault == 'no_read':
+        receipt['tool_receipts'] = []
+    elif fault == 'disabled_hosted':
+        receipt['applied_controls']['profile_overrides']['web_search'] = 'disabled'
+    elif fault == 'unsafe_tool':
+        receipt['tool_receipts'].append({'name': 'bash', 'arguments': {}})
+    receipt_path.write_text(json.dumps(receipt))
+    evidence['sha256'] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    path.write_text(json.dumps(proof))
+    if fault:
+        with pytest.raises(ValueError):
+            load_agent_qualification(path, routes=routes[:1])
+    else:
+        actual, metadata = load_agent_qualification(path, routes=routes[:1])
+        assert actual == proof and metadata['qualified_provider_count'] == 1
