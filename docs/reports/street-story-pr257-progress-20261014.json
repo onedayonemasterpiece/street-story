@@ -6,20 +6,21 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T14:14:06.268433+00:00",
-  "last_useful_progress_at_utc": "2026-10-14T14:03:11.103965+00:00",
+  "updated_at_utc": "2026-10-14T15:47:35.877838+00:00",
+  "last_useful_progress_at_utc": "2026-10-14T14:30:02.991852+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "Current ordinary hosted-only102 has16eligiblecards; zero DDG callbacks, same thread/job lineage saved, still active. Visual EXIF loss reproduced exactly against original102andoldasset; new consumer transpose/promptV3 has59targetedtests passed. No new visual inference/E2E acceptance yet. Visual changes ready: V3geometry-preservation brief, separate EXIF-transposed ingress with new exact content key, legacy frozen operations/art unaffected.59focusedtests/Ruffpassed.",
+  "last_action": "SS639e47f andVibe6336b9b/PR80 pushed.639backend38590590614 andAndroid38590590605success; markerJVM compile/test CIpassed, actualmap/photoURI tapping stillpending. NormalcurrentMira source-frame request being observed on same102/store throughSS8192/Vibe8193, no newImagegen/publication.105originalactive14eligible;partialV4per105/107/120Markdown readfully, semanticoutputmapping stillpending.",
   "active_jobs_started_by_this_continuation": [
-    "job_1ec250e9f8f541cdb787c5fb"
+    "job_e64433596f2745e5ae3f418a"
   ],
   "active_provider_request": {
-    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-product-more-428348b/campaign.json",
-    "story_id": "story_61426cf85338fe71b4e915a4",
-    "job_id": "job_1ec250e9f8f541cdb787c5fb",
-    "run_id": "research_82cd44937ac8a313b70d9857",
-    "status": "observing_exact_original"
+    "story_id": "story_98d60ad1f6bda1196ea3e7f2",
+    "job_id": "job_e64433596f2745e5ae3f418a",
+    "run_id": "research_c851c79397f9dc53274bf5df",
+    "thread_id": "01a13af0-73da-74d2-8d30-5c2a394d491b",
+    "status": "running_observe_original",
+    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-product-memory-e28e23e/campaign.json"
   },
   "task_inventory": {
     "limit": 100,
@@ -60,23 +61,27 @@
   },
   "blockers": [
     {
-      "scope": "stage0_metrics",
-      "reason": "Partial V4 now available at f4690fc. Full freeze and independent/output-driven partition pending; only numerical acceptance blocked."
+      "scope": "research_method_acceptance",
+      "reason": "Oversizedrequestmechanism fixed and real qualificationpassed; actualordinarycontinuation/novelty/saturation stillbeingchecked. Sourcecache/networkhistoricalcounts unknown."
     },
     {
       "scope": "visual_acceptance",
-      "reason": "Issue258 open: legacy geometry distortion, full executor model/version/seed fields not yet recovered."
+      "reason": "Newop86eeeec49f43409abf4d5ef6a9094964 completed;1024x1350 wrong4:5 and alteredgeometry. Publication not requested. Prompt-only correction insufficient."
     },
     {
-      "scope": "native_current_profile_acceptance",
-      "reason": "Native search/tool/cursor contract changed after actualbc58139 ordinary run; current profile needs real canary qualification. Same-family continuation proved onbc58139, final saturation blocked by closed source reference rejection. Historical129 UNKNOWN still protected."
+      "scope": "owner_map_UI",
+      "reason": "Revision27 owner screenshot rejectsviewport rectangle/GPS ashouse. Need real buildingfootprint tap/screenshot/persisted ID evidence, blackpreview separate."
+    },
+    {
+      "scope": "atomic_V4",
+      "reason": "Frozen102/104files read structure only; atomicsemanticmapping/independentdenominator not yet complete."
     },
     {
       "scope": "photo105",
-      "reason": "Owner address saved/current registry f2922ff used with unchanged originalEXIF. Native model could not distinguish historical3–5 site from selectedway105154961; no history absence claimed and no selected-house override."
+      "reason": "Physical linkage3–5 toselectedcontour uncertain; ordinary model continuation remains permitted."
     }
   ],
-  "next_step": "Observe current ordinary more on428348b; qualified native hosted-only discovery and guarded own-source fact/subject assessment. No automatic acceptance of prior18century/restaurant candidates; continue105linkage/P0andvisual.",
+  "next_step": "Freeze compatible source-frame consumer/Vibe changes and validate actual normalMira frame composition on original102. Observe unchanged105. RealAndroidmap/photoURI tap evidence and frozenV4atomiccomparison stillpending; no publication/deploy/merge.",
   "stages": [
     {
       "stage": 0,
@@ -109,7 +114,9 @@
         "Fresh native profile exposes only frozen webfetch; built-in hosted search owns discovery. Generic provider search adapters preserved.",
         "Known source metadata retains every version/span reference but suppresses repeated full text in model context; persistent evidence unchanged.",
         "Short reference cursor binds URL/version/content/positions; original long cursor readback retained.",
-        "Ordinary product wrappers now forward research outcome to worker; closed local source-reference failure can return diagnostics to model nextaction, no host proof repair."
+        "Ordinary product wrappers now forward research outcome to worker; closed local source-reference failure can return diagnostics to model nextaction, no host proof repair.",
+        "Context-growth controlledregressions49pass; history dedup510of1457 preservesallvariants/origins; bothconflictsides retainclaims/refs/decisions withoutfullbodyduplicates. Source memory and frozenpaging implementation notyetproviderverified.",
+        "Losslesshistorypaging/frozen-source memory:68affectedtests+22continuationqualificationtests+3callbacktests passed. Actualcurrentprofilemodelprompt173740chars accepted and +1sourceassessedcardpersisted."
       ],
       "photo_metrics": [
         {
@@ -296,6 +303,234 @@
           "Delta": "N/A",
           "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-a4d3111/material-0.json",
           "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-a4d3111/receipt-0.json"
+        },
+        {
+          "ordinal": 0,
+          "job_id": "job_1ec250e9f8f541cdb787c5fb",
+          "run_id": "research_82cd44937ac8a313b70d9857",
+          "started_at": 1791984862.6547625,
+          "before_fact_ids": [],
+          "status": "COMPLETED",
+          "execution_path": "ordinary_service.run_once",
+          "elapsed_seconds": 3138.1541833877563,
+          "job_state": "done",
+          "job_error": "research_agent_route_failed",
+          "added_fact_ids": [
+            "claim_10646c554252bb487b8a",
+            "claim_11ce77beacc60029d864",
+            "claim_24c4bbaa9559884394af",
+            "claim_2c95065f4bc0981374da",
+            "claim_2efb4ceadc1affb09653",
+            "claim_40f10ed1a0ff44456d40",
+            "claim_4d20776c914a6c86f6cf",
+            "claim_4d53a01b07850a02cdd3",
+            "claim_66720a952bcb168b4c57",
+            "claim_672c34547a7cc9dff0e1",
+            "claim_93e31bbd51b7c9f19ab9",
+            "claim_974c9a349eecbcf2df16",
+            "claim_9c0ebc99ddb11fd99c43",
+            "claim_a621c1e7fdbc43eced3e",
+            "claim_a95360272055f1f459ad",
+            "claim_b4680b1d81ba6c297f67",
+            "claim_d8730a5a6517f2d886f5",
+            "claim_e05e471af725771eca41",
+            "claim_e2f3a1dee7089358592b",
+            "claim_e76f8e75672b86b895be",
+            "claim_f4aa078104b2eec20791",
+            "claim_f61ebcecf10a0fb8d917",
+            "claim_fd45102bfbd7e0fe4277"
+          ],
+          "preserved_previous": true,
+          "total": 23,
+          "native_attempt_ids": [
+            "rattempt_79e0fa04f988caf69ecad088",
+            "rattempt_a06715d08b389aa32e08b413",
+            "rattempt_1d5d5b9d77117902fc181951",
+            "rattempt_4dbb3e0e2f1fe34c3eab2a30",
+            "rattempt_8bc899214f586145ab0694e8",
+            "rattempt_671006423378fde9c0bbe7b3",
+            "rattempt_f91a71336fbd4c70a1b45dfe",
+            "rattempt_bed5489c7bf93b06c859686d",
+            "rattempt_5050952c8fe084ee26cb2545",
+            "rattempt_25607d7573ae29d9fda515fb",
+            "rattempt_ee3ff98b83113b11bdc64b84",
+            "rattempt_263385245b5237ecdc41fd18",
+            "rattempt_972238fd1a0c8d6a1cdc1707",
+            "rattempt_7a6c17293c7db6da88ce6402",
+            "rattempt_b157cc44dcf0a96dada3cd37",
+            "rattempt_1ead05e338942891922c9338",
+            "rattempt_14206c7eb1001e01c9f4860c",
+            "rattempt_31cd46799618a3563dd4e65b",
+            "rattempt_ff61eb76233dd1fa8daf049c",
+            "rattempt_24029707bcdecf2244f29ed1",
+            "rattempt_8d776b9229ecb00ec14e24c2",
+            "rattempt_d3181f5e1eaf002405ae7334",
+            "rattempt_2d4c3f260d616b6b0acc41f1",
+            "rattempt_98a91c4c863678ae47c6fea4",
+            "rattempt_d4e90b3212664991009337a8",
+            "rattempt_1fcbcaa5664460d6c721d4c2",
+            "rattempt_136cdb76cdd62225b28e1f12",
+            "rattempt_7a4df819ffca0e5a7cea51b4",
+            "rattempt_da0efa0cc6ed98344b405d6f",
+            "rattempt_49e705de29d368155efbc50e",
+            "rattempt_53443a6456980d791a7e8615",
+            "rattempt_ac0e22c35cb04fc5a59a07f0",
+            "rattempt_7d61c2506743533d4d7929d4",
+            "rattempt_bbcabac717581b38838f3d7f",
+            "rattempt_a53febbbfb8e8adcdb31c980",
+            "rattempt_a0cbeb340e93e3e884d96099",
+            "rattempt_1665de7d990efbd95e88a5be",
+            "rattempt_31b21f5371064eed141e5488",
+            "rattempt_5e09bed0667aca59dcd9ee75"
+          ],
+          "photo": 102,
+          "story_id": "story_61426cf85338fe71b4e915a4",
+          "source_sha": "428348bae850315749dd476124194a80e9cdd2a9",
+          "atomic_N_H_V_Q_U_F": "pending",
+          "ddg_callbacks": 0,
+          "final_reason": "RESOURCE_INVALID_REQUEST not_sent754197charprompt"
+        },
+        {
+          "ordinal": 0,
+          "job_id": "job_f7dec32547224e37a20d80b3",
+          "run_id": "research_d850ba8ddad74b308c71a31b",
+          "started_at": 1791990032.675104,
+          "before_fact_ids": [
+            "claim_10646c554252bb487b8a",
+            "claim_11ce77beacc60029d864",
+            "claim_24c4bbaa9559884394af",
+            "claim_2c95065f4bc0981374da",
+            "claim_2efb4ceadc1affb09653",
+            "claim_40f10ed1a0ff44456d40",
+            "claim_4d20776c914a6c86f6cf",
+            "claim_4d53a01b07850a02cdd3",
+            "claim_66720a952bcb168b4c57",
+            "claim_672c34547a7cc9dff0e1",
+            "claim_93e31bbd51b7c9f19ab9",
+            "claim_974c9a349eecbcf2df16",
+            "claim_9c0ebc99ddb11fd99c43",
+            "claim_a621c1e7fdbc43eced3e",
+            "claim_a95360272055f1f459ad",
+            "claim_b4680b1d81ba6c297f67",
+            "claim_d8730a5a6517f2d886f5",
+            "claim_e05e471af725771eca41",
+            "claim_e2f3a1dee7089358592b",
+            "claim_e76f8e75672b86b895be",
+            "claim_f4aa078104b2eec20791",
+            "claim_f61ebcecf10a0fb8d917",
+            "claim_fd45102bfbd7e0fe4277"
+          ],
+          "status": "COMPLETED",
+          "attempt_id": "rattempt_79e46582eda0015676bf4c61",
+          "elapsed_seconds": 43.521554470062256,
+          "added_fact_ids": [
+            "claim_f68243b143c352d1fada"
+          ],
+          "preserved_previous": true,
+          "total": 24,
+          "usage": {
+            "by_thread": {
+              "01a13aed-fc70-7230-ba53-860e41a911fc": [
+                {
+                  "inputTokens": 295712,
+                  "cachedInputTokens": 214272,
+                  "outputTokens": 1672,
+                  "reasoningOutputTokens": 193,
+                  "totalTokens": 297384
+                }
+              ]
+            },
+            "total_tokens": 297384,
+            "usage_known": true,
+            "measurement": "owned_journal_cumulative_turn_delta",
+            "reported_last_inference_usage": {
+              "01a13aed-fc70-7230-ba53-860e41a911fc": [
+                {
+                  "inputTokens": 81010,
+                  "cachedInputTokens": 75520,
+                  "outputTokens": 1302,
+                  "reasoningOutputTokens": 104,
+                  "totalTokens": 82312
+                }
+              ]
+            },
+            "cost": "unknown"
+          },
+          "outcomes": [
+            {
+              "status": "supported",
+              "reason": "В статье указано, что кафе «Штайндамм 99» находится в обсуждаемом доме на Житомирской, а детали состояния ремонта и запланированных работ прямо изложены как сообщение директора Фонда. Факт сохраняет различие между уже выполненными тремя сторонами, запланированным восстановлением центра фасада и приостановленными работами. Он дополняет известную общую историю ремонта конкретными этапами и временной консервацией; не утверждает, что план восстановления был исполнен.",
+              "agent": {
+                "route_id": "642b477b5a8db8e859cf1167",
+                "provider_id": "codex_native",
+                "model_id": "gpt-6-luna",
+                "attempt_id": "rattempt_79e46582eda0015676bf4c61",
+                "prompt_sha256": "203656a5f3c92ae4ca745822974d783ebb81328e3f34e8eca5dd19cb362fa5e3"
+              },
+              "confirmation": {
+                "attempt_id": "rattempt_ff85b063b79e491c4c4c76c7",
+                "phase": "completed",
+                "provider_send_state": "response_closed",
+                "provider_id": "codex_native",
+                "model_id": "gpt-6-luna",
+                "contract": "agent-source-confirmation-v2",
+                "assessment_origin": "native_research_single_model",
+                "original_native_attempt_id": "rattempt_79e46582eda0015676bf4c61",
+                "thread_id": "01a13aed-fc70-7230-ba53-860e41a911fc",
+                "turn_id": "01a13aed-fe55-7b80-8367-1e52731722ca",
+                "source_version_id": "srcv_8453663c725a55e749ad2639",
+                "source_content_sha256": "0be9448a7bc64cd816381369bc9cbdf4203c900fe9c093daa7d706a7346e3a53",
+                "result": {
+                  "checks": {
+                    "source_physical_subject": "Дом №22 на Житомирской, где находится кафе «Штайндамм 99», и ремонт его фасада, крыши, стен, подвала и фундамента.",
+                    "object_relation": "selected_building",
+                    "relation_basis": {
+                      "fragment": "В здании, где располагается кафе «Штайндамм 99», решили обновить фасад и кровлю.",
+                      "chunk_ids": [
+                        "chunk_ee29a5f0abbac7dc13bd8e6a"
+                      ]
+                    },
+                    "material_kind": "event",
+                    "temporal_basis": "historical",
+                    "temporal_preserved": true
+                  },
+                  "verdict": "supported",
+                  "text": "13 октября 2023 года директор регионального Фонда капремонта Олег Туркин сообщил, что при ремонте дома на Житомирской, 22 на трёх сторонах здания работы уже выполнили, а центральную часть главного фасада предполагали восстановить в историческом виде — в том числе вернуть декор и башенку. После обнаружения разобранных прежними собственниками помещения несущих стен рабочие сняли штукатурку с главного фасада, нанесли временный защитный состав и приостановили работы для обследований и корректировки проекта; Туркин также сообщил о необходимости включить в смету ремонт подвалов и фундамента.",
+                  "claim_key": "2023_facade_pause_and_stabilization_details",
+                  "subject_scope": "selected_building",
+                  "confirmed_fragment": "Три стороны дома сделали, центральную часть хотели привести к историческому виду.",
+                  "source_date": "2023-10-13",
+                  "chunk_ids": [
+                    "chunk_ee29a5f0abbac7dc13bd8e6a"
+                  ],
+                  "reason": "В статье указано, что кафе «Штайндамм 99» находится в обсуждаемом доме на Житомирской, а детали состояния ремонта и запланированных работ прямо изложены как сообщение директора Фонда. Факт сохраняет различие между уже выполненными тремя сторонами, запланированным восстановлением центра фасада и приостановленными работами. Он дополняет известную общую историю ремонта конкретными этапами и временной консервацией; не утверждает, что план восстановления был исполнен.",
+                  "existing_fact_id": "",
+                  "conflicts_with_existing": []
+                },
+                "verification_level": "one_model",
+                "new_inference_sent": false,
+                "binding": {
+                  "story_id": "story_61426cf85338fe71b4e915a4",
+                  "run_id": "research_d850ba8ddad74b308c71a31b",
+                  "job_id": "job_f7dec32547224e37a20d80b3",
+                  "generation": 1,
+                  "photo_sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+                  "fact_unit_id": "34979811a0d40ddfbb7fb75a",
+                  "contract": "agent-source-confirmation-v2"
+                }
+              },
+              "source_version_id": "srcv_8453663c725a55e749ad2639",
+              "fact_id": "claim_f68243b143c352d1fada",
+              "subject_scope": "selected_building"
+            }
+          ],
+          "photo": 102,
+          "source_sha": "e28e23e11e49269a50802a0d84c9b78ceecfd978",
+          "story_id": "story_61426cf85338fe71b4e915a4",
+          "execution_path": "direct_current_profile_qualification_not_product_continuation",
+          "atomic_N_H_V_Q_U_F": "pending",
+          "ddg_callbacks": 0,
+          "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-memory-e28e23e/receipt-0.json"
         }
       ],
       "logs": [
@@ -362,7 +597,9 @@
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/short-cursor-r4.xml",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/worker-outcome-r1.xml",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/closed-basis-worker-r2.xml",
-        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-url-guard-r1.xml"
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-url-guard-r1.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-context-paged-measurement.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-memory-qualification-check.json"
       ],
       "blockers": [
         "Real hosted discovery, same-family continuation and qualified closed fallback still need provider verification.",
@@ -384,27 +621,44 @@
       "results": [
         "Before/source/after258assets recovered read-only; exact hashes/dimensions saved; all3visually reviewed.",
         "EXIF6 original102 has4000x3000storedpixels. Vibe source PNG is pixel-identical to unoriented original and strips EXIF; correct mechanical transform is3000x4000. Contributing defect proved, not sole geometry rootcause.",
-        "Fresh visual input preserves original bytes and applies only EXIF transpose in separate PNG. ImageV3removes outpainting/scenery reconstruction and preserves complete source frame; actualgenerated comparison stillpending."
+        "Fresh visual input preserves original bytes and applies only EXIF transpose in separate PNG. ImageV3removes outpainting/scenery reconstruction and preserves complete source frame; actualgenerated comparison stillpending.",
+        "Actual currentvisualop86eeeec49f43409abf4d5ef6a9094964 closed;sourceorientation corrected,selectedannotation readable,geometry+4:5FAIL. No generation retry/publication.",
+        "ExplicitnormalLive visual request can use model-authoredcopy/textarea via existingVibeSVG sourceframe. Fullphoto across4:5, uniform contain/no crop. Realgeometry+layout review pending, smallphoto560px layout avoided."
       ],
       "photo_metrics": [],
       "logs": [
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/issue258-exact-visual-jobs.json",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/issue258-images/manifest.json",
         "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/issue258-exif-reproduction.json",
-        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/visual-source-r3.xml"
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/visual-source-r3.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-0e8a6eb/visual-semantic-review.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/source-frame-owner-server.log",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/source-frame-mira-client.log",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/vibe-source-contract-r7.xml",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/vibe-ingress-r9.xml"
       ],
       "blockers": [
-        "Actual new image geometry/selected-fact annotations not yet verified; existing generator can still alter geometry despite prompt.",
-        "Actual image-model/version/seed fields absent in oldvisual observation; requestedroute is recorded separately from unknown actualimageengine."
+        "Geometry+formatFAIL; existingSVG/Pillow immutable-source composition investigated. Actual imageengine/version/seed unavailable."
       ]
     },
     {
       "stage": 4,
-      "status": "pending",
-      "results": [],
+      "status": "working",
+      "results": [
+        "Actual Live HTTP on same original database/story, source0e8a6eb, normal continue_story/select_facts/set_concept/edit_text; no fabricatedfacts, directcaptionwrite orDBclone.",
+        "Mechanical Stop/new-client reopen passed; initial saved539char draft retained as semanticFAIL(timequalification/tea name). Normal distinct corrective edit saved current fully attributed draft; manualsemanticinspection passed againstselected3facts.",
+        "No Android/physicalmicrophone/retainednewpost acceptance claimed.",
+        "CurrentCI screenshot rectangle osm:way:fixture/blacksource is controlledsyntheticinput, not productionfallback rootcause. ExistinghouseMarker bboxcenter defect replacedwithinterior scanline forconcave/hole/disjoint geometries; actualtap screenshot stillrequired."
+      ],
       "photo_metrics": [],
-      "logs": [],
-      "blockers": []
+      "logs": [
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-0e8a6eb/owner-material/material-receipt.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-0e8a6eb/material-refinement-receipt.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-428-failure-evidence/instrumentation.txt"
+      ],
+      "blockers": [
+        "Visualgeometry/ratio failed. Owner-map actual screenshot/hit-test required. Voice/Android signedAPK/readback/publication E2E incomplete."
+      ]
     },
     {
       "stage": 5,
@@ -415,7 +669,7 @@
       "blockers": []
     }
   ],
-  "checked_out_commit": "428348bae850315749dd476124194a80e9cdd2a9",
+  "checked_out_commit": "639e47f583af53acd30e0a2dbc749ef0978db195",
   "code_changes": "pushed to existing PR257; current backend and Android CI succeeded",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -424,12 +678,16 @@
   },
   "watchdog_ack": {
     "run": "SS-MAP-20261012",
-    "revision": 24,
-    "document_commit": "e3fc412",
-    "blob": "b10a33300f01d9be5824741e045a3c067af54c3c",
-    "nonce": "SS-MAP-REV24-20261014T1340",
-    "at_utc": "2026-10-14T13:58:36Z",
-    "applied": "No production photoID/address/golden-answer rules. Same generic model-owned semantic research and integrity/ownership guards for allphotos.105linkage not forcibly accepted/refused; ordinary continuation next."
+    "revision": 28,
+    "document_commit": "0038017",
+    "blob": "6a20373956e753c85367616e813b27da592835c6",
+    "nonce": "SS-MAP-REV28-20261014T1510",
+    "at_utc": "2026-10-14T15:14:23Z",
+    "read_revisions": [
+      25,
+      26,
+      27
+    ]
   },
   "active_local_checks": null,
   "cleanup": {
@@ -440,16 +698,16 @@
     "compressed": false,
     "production_health_after": 200
   },
-  "code_commit": "a4d3111ff457d510c9ba88268bda171f27604fd4",
+  "code_commit": "639e47f583af53acd30e0a2dbc749ef0978db195",
   "ci": {
-    "head": "e051d3d53ff7e7c2d6d5a33d35fa650effc889fa",
+    "head": "639e47f583af53acd30e0a2dbc749ef0978db195",
     "backend": {
-      "run": 38563704408,
+      "run": 38590590614,
       "status": "completed",
       "conclusion": "success"
     },
     "android": {
-      "run": 38563704393,
+      "run": 38590590605,
       "status": "completed",
       "conclusion": "success"
     }
@@ -459,5 +717,15 @@
     "commit": "f2922ff",
     "sha256": "1b8ea90d41098f27d75ce633b2b736606d959949f59e75364d83142b853f3141",
     "reason": "contains saved owner105 address correction; previous frozen corpus/source files remain unchanged"
+  },
+  "visual_dependency": {
+    "repository": "onedayonemasterpiece/vibepublish",
+    "commit": "6336b9b2bf1c25a55173ae71d19ab3b5935c4230",
+    "pr": "https://github.com/onedayonemasterpiece/vibepublish/pull/80",
+    "production_activated": false,
+    "stand_port": 8193,
+    "stand_store": "same_existing_private_store",
+    "generator_calls": 0,
+    "framework_added": false
   }
 }
