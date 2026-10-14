@@ -1,0 +1,571 @@
+{
+  "policy": "fact-atomic-contract-v4.md",
+  "status": "PASS_FOR_DECLARED_RECOVERED_INPUTS",
+  "semantic_limit": "Structural validation checks inventories, mappings, status partitions and sets. Source truth and scope require the accompanying manual review; PASS does not mean saturation or a complete historical archive.",
+  "reports": {
+    "benchmark-102-combined-validation.json": {
+      "version": "102-v4-validated-reconciliation",
+      "counts": {
+        "product_verified": 51,
+        "dot_verified": 45,
+        "experimental_verified": 42,
+        "product_dot_intersection": 24,
+        "pre_experiment_unique": 72,
+        "experimental_new_to_pre": 11,
+        "combined_unique": 83
+      },
+      "checks": [
+        {
+          "check": "product_structural_checks",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experimental_unique_occurrence_ids",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experimental_accounting_equation",
+          "passed": true,
+          "detail": {
+            "excluded": 31,
+            "verified": 59,
+            "false": 6,
+            "unverified": 9,
+            "dedup": 21,
+            "qualified": 18
+          }
+        },
+        {
+          "check": "experimental_statuses",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experimental_verified_ids_resolve",
+          "passed": true,
+          "detail": []
+        },
+        {
+          "check": "experimental_verified_have_sources",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experimental_dedup_targets_resolve",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_space-bunny",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_space-bunny",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "numbered_claim_inventory_space-bunny",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_muse",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_muse",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "numbered_claim_inventory_muse",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_mimo",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_mimo",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "numbered_claim_inventory_mimo",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_ultra",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_ultra",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_lightning",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_lightning",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_bigpickle",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_bigpickle",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_longcat",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_longcat",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_ling3.0",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_ling3.0",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_ling3.1",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_ling3.1",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_exo",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_exo",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "experiment_run_equation_step",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "primary_file_hash_step",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "all_union_nodes_resolve",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "union_cardinality_inclusion_exclusion",
+          "passed": true,
+          "detail": null
+        },
+        {
+          "check": "union_threeway_arithmetic",
+          "passed": true,
+          "detail": null
+        }
+      ],
+      "structural_pass": true,
+      "semantic_review": "manual clause review plus scope/source adjudication; structuralPASSisnotproof of perfect semantics",
+      "product_raw_atoms": 129,
+      "experimental_raw_atoms": 144,
+      "experimental_status_counts": {
+        "excluded": 31,
+        "verified": 59,
+        "false": 6,
+        "unverified": 9,
+        "dedup": 21,
+        "qualified": 18
+      },
+      "complete_archive": false,
+      "limits": [
+        "four full productfinal families;v10twofullclaimtexts+twoeditorialsemanticextracts, unknown truncatedtail",
+        "11OpenCode taskoutputs reviewed, LongCatinterrupted contains3rawatoms;Bigpicklepartial",
+        "2knownnativeSol/Luna standaloneprimarymissing",
+        "GermanaddresscomplexN01–N05notbuildingverified, excludedfromcounts"
+      ]
+    },
+    "benchmark-104-v4-normalized.json": {
+      "checks": {
+        "full_visible_claim_inventory": true,
+        "all_claims_have_disposition": true,
+        "unique_occurrence_ids": true,
+        "canonical_ids_resolve": true,
+        "verified_sources_present": true,
+        "duplicate_of_resolves_same_run_node": true,
+        "raw_status_sum": true,
+        "sets_recomputed": true,
+        "old_raw_inventory_preserved": true,
+        "v10_visible_inventory": true,
+        "baseline_file_unchanged": true
+      },
+      "all_pass": true,
+      "missing_output_claims": 0,
+      "semantic_basis": "Four full outputs plus five complete visible v10 claims reread clause-by-clause; v10 accepted_basis tail remains truncated; old detail inventory preserved. Script checks inventory/math, not historic truth.",
+      "total_visible_claims": 43
+    },
+    "benchmark-104-v4-source-extension.json": {
+      "all_pass": true,
+      "checks": {
+        "all38_source_rows_mapped": true,
+        "all_source_ids_unique": true,
+        "all_canonical_ids_resolve": true,
+        "new_verified_have_urls": true,
+        "upgrades_not_new_ids": true,
+        "sets_equal_verified_registry": true,
+        "agent_no_new_credit": true,
+        "base_file_unchanged": true
+      },
+      "unmapped_source_rows": 0
+    },
+    "benchmark-v4-validation-107-120-105.json": [
+      {
+        "case": "107",
+        "status": "PASS",
+        "missing_claims": [],
+        "extra_claims": [],
+        "issues": [],
+        "raw_occurrences": 20,
+        "accounting": {
+          "verified": 14,
+          "dedup": 3,
+          "excluded": 3
+        },
+        "semantic_review": "Manualclause-by-clauseperformed; validatorchecksstructureonly,nottruthorscopejudgment"
+      },
+      {
+        "case": "120",
+        "status": "PASS",
+        "missing_claims": [],
+        "extra_claims": [],
+        "issues": [],
+        "raw_occurrences": 21,
+        "accounting": {
+          "verified": 19,
+          "excluded": 2
+        },
+        "semantic_review": "Manualclause-by-clauseperformed; validatorchecksstructureonly,nottruthorscopejudgment"
+      },
+      {
+        "case": "105",
+        "status": "PASS",
+        "missing_claims": [],
+        "extra_claims": [],
+        "issues": [],
+        "raw_occurrences": 20,
+        "accounting": {
+          "verified": 6,
+          "excluded": 8,
+          "dedup": 3,
+          "qualified": 2,
+          "unverified": 1
+        },
+        "semantic_review": "Manualfullclausecheck+mechanicalaccounting;sourceandphotoidentityremainseparate"
+      }
+    ],
+    "benchmark-125-v4-validation.json": {
+      "case_id": 125,
+      "contract": "fact-atomic-contract-v4.md",
+      "counts": {
+        "verified": 8,
+        "qualified": 6,
+        "excluded": 8,
+        "unverified": 5,
+        "false": 1,
+        "dedup": 1
+      },
+      "content_counts": {
+        "verified": 8,
+        "qualified": 6,
+        "unverified": 5,
+        "false": 1
+      },
+      "coverage_metrics": {
+        "verified_output_knowledge_nodes": 8,
+        "full_verified_union_node_coverage": 7,
+        "full_verified_baseline_node_coverage": 3,
+        "partial_verified_event_matches": 1,
+        "partial_match_id": "125-C10.01",
+        "reason": "28 May2018 event is supported, but output says unspecified constructions while canonical specifies facade."
+      },
+      "recount": {
+        "baseline_archived_verified": 44,
+        "baseline_v4_verified": 33,
+        "baseline_delta": -11,
+        "prior_union_archived_verified": 51,
+        "prior_union_v4_verified_core": 39,
+        "prior_union_verified_delta": -12,
+        "prior_union_archived_including_qualified": 55,
+        "prior_union_v4_total": 40,
+        "prior_union_v4_qualified_only_nodes": 1,
+        "prior_union_verified_nodes_with_qualified_subqualifiers": [
+          "125-V4-RESETTLEMENT",
+          "125-V4-DEGRADATION"
+        ],
+        "corrected_union_v4_total": 41,
+        "corrected_union_v4_verified_core": 39,
+        "corrected_union_v4_qualified_only_nodes": 2,
+        "new_verified_nodes_from_clause_gate": 0,
+        "new_qualified_relation_from_clause_gate": "125-V4-SIGN_LOCATION",
+        "undated_preservation_admission": "qualified raw claim retained as candidate; no new positive union admission without resolving time",
+        "extension_v4": "PENDING; old +45 verified/+1 qualified and 6 proposal facts are not added to this V4 denominator"
+      },
+      "coverage_gate": {
+        "all_raw_cards_read_fully": 10,
+        "manual_inventory_by_card": {
+          "1": 7,
+          "2": 6,
+          "3": 2,
+          "4": 1,
+          "5": 2,
+          "6": 1,
+          "7": 5,
+          "8": 2,
+          "9": 2,
+          "10": 1
+        },
+        "manual_inventory_total": 29,
+        "resolved_raw_spans": 29,
+        "missing_claims": 0,
+        "missing_claims_basis": "manual clause review including qualifier spans and scope exclusions; not inferred from array lengths",
+        "missing_prior_output_ids": [],
+        "unique_occurrence_ids": true,
+        "canonical_resolution_pass": true,
+        "source_links_on_all_verified": true,
+        "exact_span_checks_pass": true,
+        "arithmetic": "8V+6Q+5U+1F+8excluded+1contradictory-variant-dedup=29; content=20",
+        "immutable_input_sha_unchanged": true,
+        "publication_status": "PASS_FOR_RAW_CLAUSE_COVERAGE_AND_V4_CANONICAL_RECOUNT; not factual perfection; extension V4 pending"
+      },
+      "sets": {
+        "baseline_verified": [
+          "125-V4-ACTUAL_PALETTE",
+          "125-V4-AUCTION_2016",
+          "125-V4-B01",
+          "125-V4-B02",
+          "125-V4-B03",
+          "125-V4-B04",
+          "125-V4-B05",
+          "125-V4-B06",
+          "125-V4-B07",
+          "125-V4-B08",
+          "125-V4-B09",
+          "125-V4-B10",
+          "125-V4-B13",
+          "125-V4-B14",
+          "125-V4-B19",
+          "125-V4-B22",
+          "125-V4-B23",
+          "125-V4-B24",
+          "125-V4-B25",
+          "125-V4-B30",
+          "125-V4-B33",
+          "125-V4-B38",
+          "125-V4-B39",
+          "125-V4-B40",
+          "125-V4-B43",
+          "125-V4-B44",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-CONCEPT_SELECTION",
+          "125-V4-CURRENT_PROGRAM",
+          "125-V4-HOTEL_ABANDONMENT",
+          "125-V4-PHARMACY_USE",
+          "125-V4-RESTORATION_STAGE_2019",
+          "125-V4-TRANSFER_2002"
+        ],
+        "prior_union_verified_core": [
+          "125-V4-ACTUAL_PALETTE",
+          "125-V4-AUCTION_2016",
+          "125-V4-B01",
+          "125-V4-B02",
+          "125-V4-B03",
+          "125-V4-B04",
+          "125-V4-B05",
+          "125-V4-B06",
+          "125-V4-B07",
+          "125-V4-B08",
+          "125-V4-B09",
+          "125-V4-B10",
+          "125-V4-B13",
+          "125-V4-B14",
+          "125-V4-B19",
+          "125-V4-B22",
+          "125-V4-B23",
+          "125-V4-B24",
+          "125-V4-B25",
+          "125-V4-B30",
+          "125-V4-B33",
+          "125-V4-B38",
+          "125-V4-B39",
+          "125-V4-B40",
+          "125-V4-B43",
+          "125-V4-B44",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-CONCEPT_SELECTION",
+          "125-V4-CURRENT_PROGRAM",
+          "125-V4-DEGRADATION",
+          "125-V4-HOTEL_ABANDONMENT",
+          "125-V4-PHARMACY_USE",
+          "125-V4-RESETTLEMENT",
+          "125-V4-RESTORATION_STAGE_2019",
+          "125-V4-TRANSFER_2002",
+          "125-V4-U01",
+          "125-V4-U02",
+          "125-V4-U03",
+          "125-V4-U04"
+        ],
+        "prior_union_all": [
+          "125-V4-ACTUAL_PALETTE",
+          "125-V4-AUCTION_2016",
+          "125-V4-B01",
+          "125-V4-B02",
+          "125-V4-B03",
+          "125-V4-B04",
+          "125-V4-B05",
+          "125-V4-B06",
+          "125-V4-B07",
+          "125-V4-B08",
+          "125-V4-B09",
+          "125-V4-B10",
+          "125-V4-B13",
+          "125-V4-B14",
+          "125-V4-B19",
+          "125-V4-B22",
+          "125-V4-B23",
+          "125-V4-B24",
+          "125-V4-B25",
+          "125-V4-B30",
+          "125-V4-B33",
+          "125-V4-B38",
+          "125-V4-B39",
+          "125-V4-B40",
+          "125-V4-B43",
+          "125-V4-B44",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-CONCEPT_SELECTION",
+          "125-V4-CONSTRUCTION_H",
+          "125-V4-CURRENT_PROGRAM",
+          "125-V4-DEGRADATION",
+          "125-V4-HOTEL_ABANDONMENT",
+          "125-V4-PHARMACY_USE",
+          "125-V4-RESETTLEMENT",
+          "125-V4-RESTORATION_STAGE_2019",
+          "125-V4-TRANSFER_2002",
+          "125-V4-U01",
+          "125-V4-U02",
+          "125-V4-U03",
+          "125-V4-U04"
+        ],
+        "output_verified_claims": [
+          "125-V4-B13",
+          "125-V4-B22",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-TRANSFER_2002",
+          "125-V4-U01",
+          "125-V4-U02",
+          "125-V4-U03",
+          "125-V4-U04"
+        ],
+        "output_verified_full_coverage": [
+          "125-V4-B13",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-TRANSFER_2002",
+          "125-V4-U01",
+          "125-V4-U02",
+          "125-V4-U03",
+          "125-V4-U04"
+        ],
+        "corrected_union_verified_core": [
+          "125-V4-ACTUAL_PALETTE",
+          "125-V4-AUCTION_2016",
+          "125-V4-B01",
+          "125-V4-B02",
+          "125-V4-B03",
+          "125-V4-B04",
+          "125-V4-B05",
+          "125-V4-B06",
+          "125-V4-B07",
+          "125-V4-B08",
+          "125-V4-B09",
+          "125-V4-B10",
+          "125-V4-B13",
+          "125-V4-B14",
+          "125-V4-B19",
+          "125-V4-B22",
+          "125-V4-B23",
+          "125-V4-B24",
+          "125-V4-B25",
+          "125-V4-B30",
+          "125-V4-B33",
+          "125-V4-B38",
+          "125-V4-B39",
+          "125-V4-B40",
+          "125-V4-B43",
+          "125-V4-B44",
+          "125-V4-COLLAPSE_2001",
+          "125-V4-CONCEPT_SELECTION",
+          "125-V4-CURRENT_PROGRAM",
+          "125-V4-DEGRADATION",
+          "125-V4-HOTEL_ABANDONMENT",
+          "125-V4-PHARMACY_USE",
+          "125-V4-RESETTLEMENT",
+          "125-V4-RESTORATION_STAGE_2019",
+          "125-V4-TRANSFER_2002",
+          "125-V4-U01",
+          "125-V4-U02",
+          "125-V4-U03",
+          "125-V4-U04"
+        ]
+      }
+    }
+  },
+  "source_artifact_sha256": {
+    "fact-atomic-contract-v4.md": "2a9e821e4105c34531361b071984e380979b36e4f37a9826a2b0c01baa44d406",
+    "fact-benchmark-102-v4-20261014.json": "27d7faf9de5d7b56005b3da7fcd3bc2ee8ecc81f3f3acee3cf1c30fa0d42f30e",
+    "fact-benchmark-102-v4-20261014.md": "ace682607a41a56d9fa6431be7b44daf1cff17ad48321cd9a49fbc974d39da7b",
+    "fact-benchmark-104-v4-20261014.json": "19745ceccfc29c6949c381a458071565f7d9f3f3a332b0710b8b10eef832e1ae",
+    "fact-benchmark-104-v4-20261014.md": "8bfc8d55e3792a874f2637153c6be9cba044dfdb6755bf9869c83e7329823d30",
+    "fact-benchmark-104-v4-extension-20261014.json": "edc654924452f5fd9d11e7961ebf450dadc960b8e4b886ed906b6a957c04ec4c",
+    "fact-benchmark-104-v4-extension-20261014.md": "1360d004f225743ccefdfd87e8bb73a20880818a84c1ade86850a5f77a2c419b",
+    "fact-benchmark-105-107-120-v4-20261014.json": "f4c62dd607903b322f76f5d5c269451732f1113994b882c587a5c708b76ec1b2",
+    "fact-benchmark-105-107-120-v4-20261014.md": "b0770871a7b26c621878836510369b9985e518c4c7483a00ad1cc2c5cb2ab919",
+    "fact-benchmark-125-v4-20261014.json": "597c4761c31468bb985fab82c1f06c8692a7a663a4801cfd32c6707d23ca2533",
+    "fact-benchmark-125-v4-20261014.md": "fbe954bebe30801e1d18f05069b3cba28abd4316b57c2215b7225ff35c5cfbcc",
+    "fact-benchmark-corpus43-remaining-20261014.md": "b988c5bca3e4585918975dbc825c684b3711cda5009f49084f24e069177c52fa",
+    "fact-benchmark-129-working-20261014.md": "fe44c93049a2f43bb6dd1ca19d79bd7781142cae3fd187e7a02dde02c7e9ce26",
+    "fact-benchmark-131-working-20261014.md": "6e612d2b851a5272956da8c50c3da7ada1e64c1bd35a1b2eadf2c803281d3959"
+  }
+}
