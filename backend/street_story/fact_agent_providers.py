@@ -53,7 +53,7 @@ def native_tools():
             'properties': {'url': {'type': 'string', 'maxLength': 2048},
                 'source_ref': {'type': 'string', 'maxLength': 200}},
             'required': ['url', 'source_ref']}}, {'name': 'save_facts',
-        'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. First check physical scope: a documented site does not prove the selected body; keep complex_or_site/documented_site unless an actual read distinguishes it. Identify retained identity source version/chunk/passage in reason for cross-source name links; keep fact text within attached source support. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
+        'description': 'Save complete own-source semantic assessments through the existing ledger while this same turn continues. Assess the actual documented house: several address numbers may belong to one house and do not force site scope or uncertainty. Preserve distinctions where sources actually describe different buildings. Identify retained identity source version/chunk/passage in reason for cross-source name links; keep fact text within attached source support. This is incremental delivery, not research completion or Stop. Read the returned durable outcomes; never repeat an unknown inference.',
         'parameters': copy.deepcopy(LEGACY_RESULT_SCHEMA)}]
 
 

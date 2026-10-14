@@ -15,7 +15,8 @@ from .article_media import public_url
 CONTRACT = 'native-owned-received-content-v1'
 _DIRECT = re.compile(r'^\s*const\s+([a-zA-Z_]\w*)\s*=\s*await\s+tools\.web__run\s*'
     r'\((.*?)\)\s*;\s*text\s*\(\1\)\s*;?\s*$', re.S)
-_HEADER = re.compile(r'(?m)^(?!L\d+:)([^\n]*?)\((https://[^\n]+)\)\s*\n'
+_LINE = r'L\d+(?:@P\d+(?:-\d+)?)?:'
+_HEADER = re.compile(r'(?m)^(?!' + _LINE + r')([^\n]*?)\((https://[^\n]+)\)\s*\n'
     r'(?:\ue200cite\ue202([^\ue201]+)\ue201|【([^】]+)】)')
 
 
@@ -59,24 +60,25 @@ def direct_web_arguments(script):
             else:
                 raise ValueError('native_source_arguments_not_literal')
     value = json.loads(''.join(tokens))
-    if not isinstance(value, dict) or not any(key in value for key in ('search_query', 'open', 'click')):
+    if not isinstance(value, dict) or not any(key in value for key in ('search_query', 'open', 'click', 'find')):
         raise ValueError('native_source_request_not_read')
     return value
 
 
-def _numbered_open(block, header, request):
-    """Recognize the native renderer's open boundary, not publisher headers."""
-    numbered = re.search(r'(?m)^L\d+:', block)
-    operation = re.search(r'Source: open\(', block[:numbered.start()] if numbered else '')
+def _numbered_read(block, header, request):
+    """Recognize the native renderer's read boundary, not publisher headers."""
+    numbered = re.search(r'(?m)^' + _LINE, block)
+    operation = re.search(r'Source: (open|find|click)\(', block[:numbered.start()] if numbered else '')
     if not operation:
         return False
     try:
         args, end = json.JSONDecoder().raw_decode(block, operation.end())
     except json.JSONDecodeError:
         return False
-    requested = {item.get('ref_id') for item in (request or {}).get('open', []) if isinstance(item, dict)}
+    requested = [item for item in (request or {}).get(operation[1], []) if isinstance(item, dict)]
     ref = args.get('ref_id') if isinstance(args, dict) else None
-    if not isinstance(ref, str) or ref not in requested or block[end:end+1] != ')':
+    if (not isinstance(ref, str) or block[end:end+1] != ')'
+            or not any(item and all(args.get(key) == value for key, value in item.items()) for item in requested)):
         return False
     if ref.startswith('https://') and public_url(ref) != public_url(header[2]):
         return False
@@ -85,7 +87,7 @@ def _numbered_open(block, header, request):
     lines = block[numbered.start():].strip().splitlines()
     if lines and lines[-1] == '-' * 80:
         lines.pop()
-    return bool(lines) and all(not line.strip() or re.match(r'^L\d+:', line) for line in lines)
+    return bool(lines) and all(not line.strip() or re.match(r'^' + _LINE, line) for line in lines)
 
 
 def received_document(text, *, source_ref, url, request=None):
@@ -97,14 +99,14 @@ def received_document(text, *, source_ref, url, request=None):
     index, header = matches[0]
     blocks = [text[item.end():headers[i+1].start() if i+1 < len(headers) else len(text)]
         for i, item in enumerate(headers)]
-    if index and not all(_numbered_open(blocks[i], headers[i], request) for i in range(index+1)):
+    if index and not all(_numbered_read(blocks[i], headers[i], request) for i in range(index+1)):
         raise ValueError('native_source_ref_requires_own_open')
     block = blocks[index]
     exported = re.search(r'(?:^|\s)(?:Text aus|Text from|Content from)\s*\n', block)
     if exported:
         content = block[exported.end():].strip()
     else:
-        numbered = re.search(r'(?m)^L\d+:', block)
+        numbered = re.search(r'(?m)^' + _LINE, block)
         if not numbered:
             raise ValueError('native_source_document_content_not_returned')
         content = block[numbered.start():].strip()

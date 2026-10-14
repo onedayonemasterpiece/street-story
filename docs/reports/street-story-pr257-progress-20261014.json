@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T20:59:01.487137+00:00",
+  "updated_at_utc": "2026-10-14T21:06:59.946371+00:00",
   "last_useful_progress_at_utc": "2026-10-14T17:28:02.258576+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "Guided actual-save diagnosis closed; prompt/tool descriptions now require matching physical scope and owned identity provenance, prevent foreign address assertion. Fresh autonomous direct child running.",
+  "last_action": "Fresh autonomous child preserved ordinary house scope and proposed newspaper-supported event text with owned native reads, no callback/save claimed. Native PDF range/find support added; focused tests passed.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
     "story_id": "story_98d60ad1f6bda1196ea3e7f2",
@@ -76,7 +76,7 @@
       "reason": "Full one-house baseline/atomic comparison, actual map and voice, artistic Original, test publication and other required photos remain incomplete."
     }
   ],
-  "next_step": "Finish autonomous direct component; then scoped existing semantic review of the2affected cards and one fixed-version read/retain/save component; proceed ordinary worker and E2E.",
+  "next_step": "Fresh autonomous corrected43 prompt with primary source; then fixed-version product retention and addressed repair of the saved event text, without reidentification or losing historical content.",
   "stages": [
     {
       "stage": 0,
@@ -752,19 +752,19 @@
   },
   "watchdog_ack": {
     "run": "SS-MAP-20261012",
-    "revision": 42,
-    "document_commit": "cf0ed8c005a166650f4510619d8c5f46aa6c200e",
-    "blob": "63d67cc86ced714a1560ddd42766e64d26642705",
-    "nonce": "SS-MAP-REV42-20261014T1953",
-    "at_utc": "2026-10-14T20:01:10.489353+00:00",
+    "revision": 43,
+    "document_commit": "8f1413b",
+    "blob": "eb611dc1a442dc9d3e96afee5bb9afe40f9503fd",
+    "nonce": "SS-MAP-REV43-20261014T2054",
+    "at_utc": "2026-10-14T21:00:04Z",
     "read_revisions": [
       38,
       39,
       40,
       41,
-      42
-    ],
-    "strategy_read": "6be0421"
+      42,
+      43
+    ]
   },
   "active_local_checks": {
     "backend": 134,
@@ -815,8 +815,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "autonomous_direct_save_scope_qualification",
-  "current_blocker": "Real105 saved2cards have unsupported selected-body scope; pending addressed model reconsideration. Native multi-open owned retention fixed and real closed-journal replay passed. Whole product E2E incomplete.",
+  "current_stage": "fixed_revision43_product_attachment_and_addressed_repair",
+  "current_blocker": "Mechanical address-range scope gate removed; primary municipal register describes one named building. Two historical-event texts still append address clause outside attached newspaper support; addressed model repair/persistence pending. No scope-only withdrawal or new competing job.",
   "updated_at": "2026-10-14T20:40:55.380241+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
@@ -857,13 +857,9 @@
   },
   "current_ci_status": "57c8408 backend and Android success; prior89a8 emulator failure evidence preserved, root cause not established. CI does not qualify native105 scope or product E2E.",
   "implementation_in_progress": {
-    "files": [
-      "backend/street_story/native_received_sources.py",
-      "backend/street_story/native_fact_contract.py",
-      "backend/street_story/fact_agent_providers.py"
-    ],
-    "checks": "112tests PASS; Ruff PASS; diff check PASS",
-    "semantic_status": "direct autonomous pending; product105 two savedcards REVIEW_REQUIRED"
+    "changes": "Removed address-range gate; native received PDF page/line/find retention",
+    "checks": "115tests PASS; Ruff PASS; diff check PASS",
+    "semantic_status": "Direct43 narrow component passed; real product attachment/repair pending"
   },
   "real_native_save_component": {
     "status": "PASS_REAL_NATIVE_SAVE_COMPONENT",
@@ -1079,13 +1075,7 @@
     "raw_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-native-save-component-57c8408/receipt-0.json",
     "qualification": "Native evidence/persistence technical path demonstrated. Exact body scope and retained identity evidence incomplete; not whole-house/P0/E2E acceptance."
   },
-  "active_direct_child": {
-    "id": "/root/research_autonomous_save_scope_rev42",
-    "requested_model": "gpt-6-luna",
-    "effort": "medium",
-    "actual_model": "unexposed",
-    "artifact_dir": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-autonomous-save-scope-rev42"
-  },
+  "active_direct_child": null,
   "native_multi_open_replay": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-evidence-rev42/multi-open-city-replay.json",
   "ci_history": [
     {
@@ -1103,5 +1093,21 @@
       }
     }
   ],
-  "work_revision": 63
+  "work_revision": 63,
+  "revision43_correction": {
+    "removed": "multi-number→documented_site gate",
+    "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
+    "observed_native_ref": "turn94view0",
+    "received_passage": "L1269–1271@P21",
+    "guidance": "One municipal entry documents Otto Braun building at addresses3,5; model evaluates actual subject; no numbering rule decides scope.",
+    "guided_addendum": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-actual-save-scope-rev42/revision43-addendum.json",
+    "prior_review": "Original revision42 reports preserved and superseded on mechanical numbering premise. No ledger records reset."
+  },
+  "direct_house_facts_rev43": {
+    "child_id": "/root/research_autonomous_house_facts_rev43",
+    "status": "closed_autonomous_narrow_component_pass",
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-autonomous-house-facts-rev43/report.json",
+    "actual_execution_model": "unexposed",
+    "product_admissions": 0
+  }
 }

@@ -90,18 +90,27 @@ def test_native_open_preserves_returned_window_without_inventing_total_lines():
     assert '5000' not in result['content']
 
 
+def test_native_pdf_preserves_received_page_and_line_ranges():
+    body = 'L821@P13: One heritage building.\nL822@P13-14: Its address and register entry.'
+    result = received_document(open_result(URL, 'turn1view0', body), source_ref='turn1view0', url=URL)
+    assert result['content'] == body
+
+
 def open_result(url, ref, body):
     return (f'Archive ({url})\n【{ref}】 [wordlim:200] Content type:text/html; '
         f'Source: open({json.dumps({"ref_id": url, "lineno": None})}); Total lines:5000\n{body}')
 
 
-def test_completed_multi_open_retains_second_owned_document(tmp_path, monkeypatch):
+@pytest.mark.parametrize('second_body', [
+    'L72: Historical name at documented address 3,5.\nL73: Context.',
+    'L1269@P21: Historical building.\nL1270@P21-22: Address and register entry.',
+])
+def test_completed_multi_open_retains_second_owned_document(tmp_path, monkeypatch, second_body):
     thread, rows = owned_journal(tmp_path, monkeypatch)
     second_url = 'https://official.example/identity'
     args = {'open': [{'ref_id': URL}, {'ref_id': second_url}], 'response_length': 'long'}
     rows[4]['payload']['input'] = 'const r=await tools.web__run(' + json.dumps(args) + '); text(r)'
     first_body = 'L69: Actual historical name.\nL70: Its context.'
-    second_body = 'L72: Historical name at documented site 3–5.\nL73: Context.'
     rows[5]['payload']['output'][1]['text'] = (open_result(URL, 'turn0view0', first_body)
         + '\n' + '-' * 80 + '\n' + open_result(second_url, 'turn0view1', second_body))
     with open(thread['path'], 'w') as stream:
@@ -113,6 +122,18 @@ def test_completed_multi_open_retains_second_owned_document(tmp_path, monkeypatc
     result = owned_native_source(thread, 'turn', prompt=PROMPT, source_ref='turn0view0',
         url=URL, before=1792000000)
     assert result['content'] == first_body
+
+
+def test_completed_native_find_retains_actual_returned_pdf_passage(tmp_path, monkeypatch):
+    thread, rows = owned_journal(tmp_path, monkeypatch)
+    args = {'find': [{'ref_id': 'turn0view0', 'pattern': 'heritage'}], 'response_length': 'short'}
+    rows[4]['payload']['input'] = 'const r=await tools.web__run(' + json.dumps(args) + '); text(r)'
+    body = 'L1269@P21: Heritage building.\nL1270@P21: Its context.'
+    rows[5]['payload']['output'][1]['text'] = (f'Archive ({URL})\n【{REF}】 Content type: application/pdf; '
+        'Source: find({"ref_id":"turn0view0","pattern":"heritage"}); Total lines:1518\n' + body)
+    with open(thread['path'], 'w') as stream:
+        stream.write(''.join(json.dumps(r) + '\n' for r in rows))
+    assert read(thread)['content'] == body
 
 
 @pytest.mark.parametrize('change', ['not_requested', 'wrong_operation', 'unnumbered_export', 'publisher_header'])
