@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v2"
+    PROMPT_VERSION = "street-story-image-v3"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v2.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v3.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -300,9 +300,15 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "visual_instruction": str(body.get("visual_instruction") or "").strip()[:600],
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,
+                "source_orientation_contract": 'visual-source-exif-orientation-v1',
             }
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}
+                for field in ('prompt_version', 'prompt_sha256', 'source_orientation_contract'):
+                    if field in previous:
+                        frozen[field] = previous[field]
+                    else:
+                        frozen.pop(field, None)
                 same_inputs = ('source_photo_sha256', 'fact_revision_bundle', 'publication_concept',
                                'prompt_version', 'prompt_sha256', 'visual_instruction')
                 if (observed.get('state') != 'verified'
@@ -337,7 +343,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                                                             'visual_request_key', 'candidate_id', 'asset_ref')})
                 history[-1]['outcome'] = previous_receipt
                 context['attempt_history'] = history
-            context["brief"] = self._visual_brief(dict(story), context)
+            context["brief"] = previous['brief'] if frozen.get('recompose_source') else self._visual_brief(dict(story), context)
             if frozen.get('recompose_source'):
                 context['source_asset_ref'] = previous.get('source_asset_ref')
             now = self.store.now()
@@ -389,11 +395,20 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             source_asset = str(context.get("source_asset_ref") or "")
             if not source_asset:
                 photo = self._source_photo_for_job(story_id)
-                ingress_key = "ss-vp-asset-" + hashlib.sha256(
-                    f"{story_id}:{story['photo_sha256']}".encode()
-                ).hexdigest()[:48]
+                source_mime = story['photo_mime_type']
+                orientation = None
+                if context.get('source_orientation_contract'):
+                    from .visual_source import CONTRACT, oriented_visual_source
+                    if context['source_orientation_contract'] != CONTRACT:
+                        raise PermanentProviderError('visual_source_orientation_contract_unknown')
+                    photo, source_mime, orientation = oriented_visual_source(photo, source_mime)
+                    if orientation['original_sha256'] != context['source_photo_sha256']:
+                        raise PermanentProviderError('visual_source_original_changed')
+                ingress_binding = (canonical([story_id, orientation]) if orientation
+                    else f"{story_id}:{story['photo_sha256']}")
+                ingress_key = "ss-vp-asset-" + hashlib.sha256(ingress_binding.encode()).hexdigest()[:48]
                 ingress = await self.providers.vibepublish.ingress_asset(
-                    photo, story["photo_mime_type"], ingress_key
+                    photo, source_mime, ingress_key
                 )
                 source_asset = str(ingress.get("asset_id") or "")
                 if not source_asset:
@@ -401,11 +416,18 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 merged = self._merge_visual_context(
                     story_id,
                     content_revision,
-                    {"source_asset_ref": source_asset, "source_ingress_key": ingress_key},
+                    {"source_asset_ref": source_asset, "source_ingress_key": ingress_key,
+                     **({'source_orientation': orientation} if orientation else {})},
                 )
                 if merged is None:
                     return
                 context = merged
+                if orientation:
+                    logging.getLogger(__name__).info(
+                        'street_story_visual_source story_id=%s content_revision=%s contract=%s '
+                        'orientation=%s original_size=%s oriented_size=%s source_asset_ref=%s',
+                        story_id, content_revision, orientation['contract'], orientation['exif_orientation'],
+                        orientation['original_size'], orientation['oriented_size'], source_asset)
 
             command = context.get("visual_command")
             visual_key = str(context.get("visual_request_key") or "")

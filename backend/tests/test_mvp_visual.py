@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from street_story.config import Settings
 from street_story.mvp import MvpProductStreetStoryService
@@ -14,11 +16,13 @@ from street_story.providers import PermanentProviderError, RetryableProviderErro
 from test_product_checkpoint import ProductFakeVibePublish
 
 
-PHOTO = b"mvp-photo"
+_photo_stream = io.BytesIO()
+Image.new('RGB', (40, 30), 'blue').save(_photo_stream, format='JPEG')
+PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
+PROMPT_SHA = '02a91163ac8982aec18ab77f8eda4a952d36dafdef157f61653a6757a0efd7b2'
 
 
 class NoopOSM:
@@ -116,7 +120,7 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     prompt = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v2.txt"
     data = prompt.read_bytes()
     assert len(data) == 3369
-    assert hashlib.sha256(data).hexdigest() == PROMPT_SHA
+    assert hashlib.sha256(data).hexdigest() == '92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424'
 
     svc = service(tmp_path)
     brief = svc._visual_brief(
@@ -131,10 +135,11 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "all visible handwritten city notes and annotations" in brief
     assert "without adding text" not in brief
     assert "safe area about 8%" in brief
-    assert "Nothing important may touch, cross or be clipped" in brief
+    assert "Nothing important may touch or cross an edge" in brief
     assert "exact portrait 4:5" in brief
     assert "no white bars, blank padding or borders" in brief
-    assert "Extend peripheral background" in brief
+    assert "Extend peripheral background" not in brief
+    assert "Never outpaint" in brief
     assert len(brief) <= 5000
 
 
@@ -173,7 +178,7 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
     })
     assert all(fact in brief for fact in facts)
     assert "каждый выбранный факт" in brief
-    assert "every selected fact annotation" in brief
+    assert "Every selected fact must remain legible" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
@@ -194,7 +199,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v2"
+    assert result["visual"]["prompt_version"] == "street-story-image-v3"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:
@@ -215,7 +220,8 @@ def test_product_visual_brief_requests_portrait_without_losing_fact_context():
     assert fact in brief
     assert "exact portrait 4:5" in brief
     assert "no white bars, blank padding or borders" in brief
-    assert "do not crop the subject" in brief
+    assert "Do not crop the subject" in brief
+    assert "Never outpaint" in brief and "correct perspective" in brief
 
 
 class FrameBoundary(ProductFakeVibePublish):

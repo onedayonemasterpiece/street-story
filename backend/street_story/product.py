@@ -24,10 +24,14 @@ from .service import (
 LOG = logging.getLogger(__name__)
 
 POST_4_5_FRAME_INSTRUCTION = (
-    "\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350), full bleed; "
-    "no white bars, blank padding or borders. Preserve defining "
-    "architecture and every selected fact annotation. Extend peripheral background "
-    "to fit; do not crop the subject, stretch it or clip labels. Verify the final image is 4:5."
+    "\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350); "
+    "no white bars, blank padding or borders. Fit the complete original photograph "
+    "with uniform scaling only. Keep its camera angle, perspective, roofline, entrances "
+    "and every architectural proportion. Never outpaint or invent surrounding streets, "
+    "trees or buildings. Fill any remaining space with deliberate flat editorial graphic "
+    "areas and legible fact annotations, not reconstructed scenery. "
+    "Do not crop the subject, stretch it, correct perspective or clip labels. "
+    "Verify the final image is 4:5 and the complete original camera frame is preserved."
 )
 POST_4_5_FRAME_CONTRACT = "post_4_5_v1"
 
