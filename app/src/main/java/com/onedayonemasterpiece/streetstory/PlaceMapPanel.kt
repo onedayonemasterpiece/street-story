@@ -55,8 +55,11 @@ class PlaceMapWire {
     var camera: PlaceCameraWire? = null
     var center: PlaceCameraWire? = null
     var zoom: Double? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     var buildings: JsonObject? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     var streets: JsonObject? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     var selected: JsonObject? = null
 }
 

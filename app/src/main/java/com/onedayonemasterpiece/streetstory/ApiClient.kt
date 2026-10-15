@@ -62,7 +62,9 @@ class StoryWire {
     @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
     @SerializedName("place_navigation_active") var placeNavigationActive: Boolean = false
     @SerializedName("place_map") var placeMap: PlaceMapWire? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     @SerializedName("place_selection") var placeSelection: com.google.gson.JsonObject? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     @SerializedName("identity_clarification") var identityClarification: com.google.gson.JsonObject? = null
     @SerializedName("camera_point") var cameraPoint: PlaceCameraWire? = null
     @SerializedName("photo_sha256") var photoSha256: String? = null

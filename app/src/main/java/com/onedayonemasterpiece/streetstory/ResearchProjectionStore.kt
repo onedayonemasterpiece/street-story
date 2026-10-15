@@ -38,10 +38,12 @@ data class ResearchProjectionSnapshot(
     val researchPending: Map<String, Boolean> = emptyMap(),
     val backendRevision: Int = 0,
     val placeMap: PlaceMapWire? = null,
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     val placeSelection: com.google.gson.JsonObject? = null,
     val cameraPoint: PlaceCameraWire? = null,
     val identityMode: String? = null,
     val researchOutcome: ResearchOutcomeWire? = null,
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
     val identityClarification: com.google.gson.JsonObject? = null,
     val sourceAvailable: Boolean? = null,
     val placeMapFocus: PlaceMapFocusWire? = null,
