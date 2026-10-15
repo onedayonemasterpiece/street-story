@@ -12,6 +12,7 @@ import time
 import uuid
 from urllib.parse import unquote
 from collections import deque
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -850,7 +851,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
-        configuration['functions'] = [f for f in configuration['functions'] if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]
+        configuration['functions'] = [deepcopy(f) for f in configuration['functions']
+                                      if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]
+        if capability in {'research', 'editor', 'publication'}:
+            visual = next(f for f in configuration['functions'] if f['name'] == 'generate_visual')
+            properties = visual['parameters']['properties']
+            visual['parameters']['properties'] = {key: properties[key] for key in
+                ('visual_instruction', 'fact_ids', 'observe_existing_visual')}
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
@@ -954,6 +961,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Inspect the photo: preserve essential building/context; if it cannot fit, explain and offer original. '
                 'Honor visual_photo_format: original retains aspect;4:5 is actual pixel crop, never hidden contain/stretch/outpaint. '
                 'Only an explicit creation request uses generate_visual through the existing artistic tune with visual_instruction. '
+                'An explicit unchanged-photo composition instead uses preserve_source_frame=true with complete visual_copy and visual_layout. '
                 'Preserve visible architecture in a hybrid photo/ink sketch; artistic surroundings inside the frame are allowed. '
                 'Use readable handwritten qualified annotations and one accent color; preserve selection and draft. '
                 'Observe unknown operations before any new request. Other editing belongs to editor.')
@@ -975,7 +983,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "requires separate unambiguous author confirmation of that card. Copy the latest explicit owner "
                 "ISO time exactly. Preparation never publishes. Read state after unknown results."
             )
-        # Only the tool menu is filtered. Semantic rules must survive even when
+        if 'generate_visual' in self.CAPABILITY_TOOLS[capability]:
+            overlay += (
+                ' Only an explicit request to place text on unchanged photo pixels uses '
+                'continue_story(stage=photo_format) for composition options. Preserving architecture '
+                'or choosing Original does not request unchanged pixels. Artistic edits use '
+                'visual_instruction in the available image tool. For inspection only, set '
+                'observe_existing_visual=true and omit all creation options; mentioning defects '
+                'while asking to inspect does not authorize creation.'
+            )
+        # Stage menus constrain available tools/options. Semantic rules survive even when
         # they refer to a different stage (for example, do not re-review eligible
         # facts). Each stage has explicit guidance rather than line deletion by
         # function name.
