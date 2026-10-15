@@ -168,15 +168,15 @@ def _deployment_fixture(root: Path, sha: str, repository: str = "onedayonemaster
 
 def test_environment_retention_preserves_rollback_processes_and_all_source(monkeypatch, tmp_path):
     module = _load_installer()
-    releases = [_deployment_fixture(tmp_path, character * 40) for character in "abcd"]
+    releases = [_deployment_fixture(tmp_path, character * 40) for character in "abcde"]
     monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
     monkeypatch.setattr(module, "release_process_references", lambda: {"c" * 40})
 
-    receipt = module.prune_release_environments("a" * 40, "b" * 40)
+    receipt = module.prune_release_environments("a" * 40, "b" * 40, preserve=("d" * 40,))
 
-    assert receipt["removed"] == ["d" * 40]
-    assert all((release / "venv").exists() for release in releases[:3])
-    assert not (releases[3] / "venv").exists()
+    assert receipt["removed"] == ["e" * 40]
+    assert all((release / "venv").exists() for release in releases[:4])
+    assert not (releases[4] / "venv").exists()
     assert all((release / "source/backend/street_story/keep.py").read_text() == "historical source"
                for release in releases)
     assert all((release / ".street-story-release.json").exists() for release in releases)

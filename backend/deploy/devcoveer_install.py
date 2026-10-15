@@ -317,13 +317,16 @@ def release_process_references() -> set[str]:
     return used
 
 
-def prune_release_environments(current_sha: str, previous_sha: str | None) -> dict[str, Any]:
+def prune_release_environments(current_sha: str, previous_sha: str | None, *,
+                               preserve: tuple[str, ...] = ()) -> dict[str, Any]:
     """Remove only rebuildable dependency environments after the live health gate.
 
     Keep the deployed release, its predecessor, and every process-referenced
     release. Historical exact source, manifests, data, and evidence stay intact.
     """
-    protected = {current_sha, *([previous_sha] if previous_sha else [])}
+    if any(SHA_RE.fullmatch(sha) is None for sha in preserve):
+        raise DeployError('preserved release environment requires an exact SHA')
+    protected = {current_sha, *([previous_sha] if previous_sha else []), *preserve}
     try:
         protected.update(release_process_references())
         protected = protect_environment_owners(protected)
@@ -1540,7 +1543,11 @@ def main() -> int:
         help='Explicit published source branch; local HEAD and remote tip must both match expected SHA')
     parser.add_argument('--fact-agent-qualification', type=Path,
         help='Current immutable actual agent-tool proof; verify and install these routes without legacy pool requalification')
+    parser.add_argument('--keep-release-environment', action='append', default=[], metavar='SHA',
+        help='Preserve this exact dependency environment for an active review or recovery; repeat for multiple releases')
     args = parser.parse_args()
+    if any(SHA_RE.fullmatch(sha) is None for sha in args.keep_release_environment):
+        raise DeployError('preserved release environment requires an exact SHA')
     expected_sha = args.expected_sha.strip().lower()
 
     sha, tree_sha = exact_source(expected_sha, source_branch=args.source_branch)
@@ -1567,7 +1574,8 @@ def main() -> int:
 
     # Cleanup runs only after exact-SHA health/capability verification. A failed
     # installation must retain the previous working dependency environment.
-    environment_cleanup = prune_release_environments(sha, previous_sha)
+    environment_cleanup = prune_release_environments(sha, previous_sha,
+        preserve=tuple(args.keep_release_environment))
 
     final_status = _tracked_status()
     if final_status.strip():
