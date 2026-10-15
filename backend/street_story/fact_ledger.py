@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
+from contextlib import contextmanager
 from typing import Any
 
 from .model_facts import (
@@ -173,6 +175,39 @@ def accept_fact_basis(db, story_id, assertion_id, evidence_ids, *, operation, no
             operation.get('run_id'), len(basis['evidence']))
 
 
+_SUBJECTS: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar('fact_subjects', default=None)
+
+
+@contextmanager
+def subject_reads():
+    """Within one read pass, read each story's subject once instead of once per fact.
+
+    A story row carries its map snapshots, so every subject read costs a multi-MB
+    row. Use only around passes that do not change the story's visual identity.
+    """
+    if _SUBJECTS.get() is not None:
+        yield
+        return
+    token = _SUBJECTS.set({})
+    try:
+        yield
+    finally:
+        _SUBJECTS.reset(token)
+
+
+def _story_subject(db, story_id):
+    cache = _SUBJECTS.get()
+    if cache is not None and story_id in cache:
+        return cache[story_id]
+    # Only the subject is needed; never decode the whole map/source history.
+    row = db.execute("SELECT research_json->'$.visual_identity' AS identity FROM stories WHERE id=?",
+                     (story_id,)).fetchone()
+    identity = None if not row else json.loads(row['identity'] or 'null') or {}
+    if cache is not None:
+        cache[story_id] = identity
+    return identity
+
+
 def accepted_basis_valid(db, story_id, assertion):
     try:
         basis = json.loads(assertion['accepted_basis_json'] or '{}')
@@ -183,10 +218,9 @@ def accepted_basis_valid(db, story_id, assertion):
             or not isinstance(basis.get('evidence'), list) or not basis['evidence']
             or any(not isinstance(ev, dict) for ev in basis['evidence'])):
         return False
-    story = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
-    if not story:
+    identity = _story_subject(db, story_id)
+    if identity is None:
         return False
-    identity = json.loads(story['research_json'] or '{}').get('visual_identity') or {}
     from .poi_memory import memory_keys
     if basis.get('subject') not in memory_keys(db, identity):
         return False
@@ -711,6 +745,7 @@ def set_owner_selection(db, story_id: str, selected_ids: list[str], now: float) 
         )
 
 
+@subject_reads()
 def refresh_review_status(db, story_id: str, now: float) -> None:
     """Recompute eligibility from exact review revisions and all active blockers.
 

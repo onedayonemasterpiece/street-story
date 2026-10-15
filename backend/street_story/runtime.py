@@ -9,7 +9,7 @@ from .product import VibePublishBoundary
 from .agent_evidence import (
     AgentEvidenceMixin, CONTRACT, NETWORK_CONTRACT, confirmation_consistency_error, confirmation_excerpt,
 )
-from .fact_ledger import accepted_basis_valid
+from .fact_ledger import accepted_basis_valid, subject_reads
 
 
 def confirmed_fact_operation(db, story_id, assertion):
@@ -65,6 +65,7 @@ class RuntimeStreetStoryService(AgentEvidenceMixin, MvpLocationStreetStoryServic
         if providers is None:
             self.providers.vibepublish = ReplayCheckingVibePublishBoundary(settings)
 
+    @subject_reads()
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
         if research is None:
             research = json.loads(row["research_json"] or "{}")

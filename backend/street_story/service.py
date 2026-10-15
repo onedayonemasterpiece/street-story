@@ -300,7 +300,9 @@ class StreetStoryService:
             if poi_id and research.get('poi_id') != poi_id:
                 research['poi_id'] = poi_id
                 db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), row['id']))
-        added = hydrate_story_facts(db, identity, row['id'])
+        from .fact_ledger import subject_reads
+        with subject_reads():
+            added = hydrate_story_facts(db, identity, row['id'])
         if added:
             db.execute('UPDATE stories SET revision=revision+1,updated_at=? WHERE id=?', (self.store.now(), row['id']))
         return added

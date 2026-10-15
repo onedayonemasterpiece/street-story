@@ -1809,7 +1809,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 session.state['review_topic_binding'] = review_packets.topic_run_binding(model_context)
             return model_context if capability == 'place_map' or result['story'].get('identity_mode') == 'manual' else await self._next_visual_result(session, model_context)
         if name == "get_facts":
-            return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
+            # One POI hydration per tool call; shrinking pages only re-read the same facts.
+            with self.service.store.tx() as db:
+                self.service._hydrate_poi_memory(db, self.service._story_row(db, story_id))
+            return bounded_inventory(lambda page: self._get_facts(story_id, page, hydrate=False), name, args, "facts")
         if name == "get_review_packet":
             from .headless_review_quotes import remember_live_page
             packet = review_packets.read(self, session, {**args, '_live_quote_refs': True})
@@ -2502,7 +2505,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "identity_research_context": conditional_context,
         }
 
-    def _get_facts(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_facts(self, story_id: str, args: dict[str, Any], *, hydrate: bool = True) -> dict[str, Any]:
         try:
             cursor = max(0, int(args.get("cursor") or 0))
             limit = max(1, min(int(args.get("limit") or 30), 50))
@@ -2534,7 +2537,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "WHERE " + " AND ".join(where) + " ORDER BY f.rowid LIMIT ?"
         )
         with self.service.store.tx() as db:
-            self.service._hydrate_poi_memory(db, self.service._story_row(db, story_id))
+            if hydrate:
+                self.service._hydrate_poi_memory(db, self.service._story_row(db, story_id))
             rows = list(db.execute(sql, (*params, limit + 1)))
         page = rows[:limit]
         has_more = len(rows) > limit
