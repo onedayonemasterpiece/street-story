@@ -6,13 +6,35 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T05:35:01.558147+00:00",
+  "updated_at_utc": "2026-10-15T06:36:47.824472+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:01:59.366120+00:00",
   "stage": 2,
   "status": "working",
   "last_action": "Current Nativeprofile0f69 actual access/read/save qualification accepted; new102source yields1atomic usable/1compound Q. Generalized existing acceptance continuation to read original owner-place case metadata so104can continue in same DB, no clone/new identity.",
   "active_jobs_started_by_this_continuation": [],
-  "active_provider_request": null,
+  "active_provider_request": {
+    "at_utc": "2026-10-15T05:35:27.970657+00:00",
+    "mode": "existing_direct_native_provider_component_one_turn_no_service_run_once_no_host_continuation",
+    "output": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-single-turn-component-13e7c65",
+    "source_sha": "13e7c652cff2be6c170783eb1e85b71ee1045e50",
+    "profile_sha256": "2f74071b9eddd4bac6143f866478a4d92084a53d8b59b82e7a921ec5f8bb8334",
+    "original_store": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-baseline-6dda4f7/data/street-story.sqlite3",
+    "parent_thread": "01a131ed-8e0a-7bb1-b824-1f52768f8b76",
+    "direct_navigation_child": "/root/native_chunk_navigation_104_direct",
+    "all_previous_operations_closed": true,
+    "no_qualification_installed": true,
+    "full_product_run": false,
+    "no_new_coding_task": true,
+    "status": "UNKNOWN_ORIGINAL_OBSERVATION_ONLY",
+    "attempt_id": "rattempt_b9a92a62a115a65e2fc14622",
+    "job_id": "job_27aba60ae7ab48d48e676711",
+    "run_id": "research_9a759d57512946d9815bdced",
+    "thread_id": "01a13e0f-1331-75c3-a6d4-ef4eccaff41f",
+    "turn_id": "01a13e0f-14de-75b1-b01a-5173631583cf",
+    "owner_python_process_present": false,
+    "last_public_event_utc": "2026-10-15T05:36:23.903Z",
+    "new_send_authorized": false
+  },
   "task_inventory": {
     "limit": 100,
     "running_tasks_in_returned_sample": 0,
@@ -752,12 +774,12 @@
   },
   "watchdog_ack": {
     "run": "SS-MAP-20261012",
-    "revision": 46,
-    "blob": "215a4f4e66463082271bfaead2d4a2937e89cb08",
-    "commit": "d2ea982506c3b11c6c3053b9fa577762c430281a",
-    "nonce": "SS-MAP-REV46-20261015T0524",
-    "at_utc": "2026-10-15T05:28:04.730722+00:00",
-    "decision": "Preserve active104. Multiple search/read/save calls do run within fourth long turn; firstthree model terminals with available actions have no proven cause. Direct real prompt/tools component and autonomous repeat required before next full run; no new harness/ceiling/orchestrator."
+    "revision": 47,
+    "commit": "21fcfc510efc7f2a1afdec9bec0095eabb71404a",
+    "blob": "5dfecc8df7af777d0b6cf4f227cdc21819794b5f",
+    "nonce": "SS-MAP-REV47-20261015T0613",
+    "at_utc": "2026-10-15T06:36:47.824472+00:00",
+    "decision": "Edit caption and regenerate artifact through existing product flow; reader-facing facts only, source/process details remain evidence. Keep real attribution/conflicts/uncertainty. Do not edit/delete prior Telegram post. Preserve originalNativeUNKNOWN."
   },
   "active_local_checks": {
     "backend": 134,
@@ -808,8 +830,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "native_owned_chunk_navigation_and_autonomous_turn_component",
-  "current_blocker": "104 closed naturally after4turns/743.906s,40new ledgercards. Not semantic acceptance: own chunk/version mapping defects, compounds/duplicate lease core and chronology conflict. REV46 requires direct real prompt/tools autonomy component and autonomous repeat before another full run. Navigation-only direct Luna proposal completed; no product tool-equivalence claim.",
+  "current_stage": "rev47_editorial_artifact_correction_and_original_native_observation",
+  "current_blocker": "Original102 single-turn Native component lost Python owner after parent interruption. Original attempt remains submitted/possibly_sent, last save exec has no callback entry or response. Two earlier saves completed; no model final. No duplicate turn/save permitted. Independently correct caption and visual through existing no-research product server.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -1088,7 +1110,7 @@
       }
     }
   ],
-  "work_revision": 80,
+  "work_revision": 86,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1889,14 +1911,14 @@
     "trace": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/read-trace.jsonl",
     "observed": "Relevant900-offset own snippets delivered first.1908 caption does not explicitly claim construction year; direct child proposed source-attributed repair.1901 list date/status supported with own body+heading; compound tourism claim proposed split. No actual Mira or saved semantic receipt."
   },
-  "current_work_revision": 83,
+  "current_work_revision": 86,
   "candidate_runtime_sha256": {
     "backend/street_story/fact_agent_providers.py": "8981e6645278db610b71ca5efc8a8ef2ebf047946aa449e576eb56b270a34308",
     "backend/street_story/native_fact_research.py": "1d1511a72d504b60477e1ef944863a77412bd29d10864d7d601d955bb7232c2f",
     "backend/street_story/native_research_tools.py": "e3f1e7ad8eb4fca9dc4415d400a6224fdb4ca90ad0a0722891772fc49247589d",
     "backend/street_story/review_packets.py": "5a9522d91a32ef9800b3c9e4d04f607d896666d72180b0a802d34f191151e0c3"
   },
-  "source_snapshot_status": "35ce402 runtime unchanged; acceptance CLI extension and progress mirror pending commit",
+  "source_snapshot_status": "13e7c65 plus local REV47 caption/visual prompt correction; tests101pass, real artifact pending",
   "case131_relevant_component": {
     "at_utc": "2026-10-15T04:48:45.396146+00:00",
     "status": "CLOSED_PARTIAL_REVIEW_NOT_SEMANTIC_ACCEPTANCE",
@@ -2566,5 +2588,13 @@
     "direct_navigation_child": "/root/native_chunk_navigation_104_direct",
     "direct_proposals_only": true,
     "remaining": "REV46 real single-turn Native tool component, then autonomous repeat before full adapter run. Addressed canonical source/atomic/attribution repair remains open."
+  },
+  "editorial_revision47": {
+    "status": "LOCAL_TESTS_PASS_REAL_ARTIFACT_PENDING",
+    "local_tests": 101,
+    "test_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/editorial-rev47-final.log",
+    "visual_template_sha256": "ef0bd04ae30e86b04e608b00dc9559c735794557af39ca8c6acf91148f19b542",
+    "old_37808_editorial_acceptance": false,
+    "telegram_update_or_delete_authorized": false
   }
 }
