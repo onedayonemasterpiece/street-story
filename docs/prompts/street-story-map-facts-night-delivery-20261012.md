@@ -209,6 +209,21 @@ Street Story помогает читателю заметить красоту �
 
 
 - run: SS-MAP-20261012
+- revision: 57
+- state: isolated_recovery_task_stopped_no_patch
+- nonce: SS-MAP-REV57-20261015T1334
+- текущий native-тред: `01a131ed-8e0a-7bb1-b824-1f52768f8b76`
+
+Координационная поправка к revision56: отдельная orphan-recovery задача остановлена. Изолированная разработка заблокирована сервером; source changes и исправляющего commit нет. Новый continue отменён и не стартовал. Ошибочно созданные ветка и два worktree не означают выполненную правку. Их очистка или новые запуски этой записью не поручаются.
+
+Файлы `backend/street_story/native_fact_research.py`, `backend/street_story/native_research_tools.py`, `backend/street_story/fact_agents.py` больше не считать активно редактируемыми параллельным исполнителем. Аудит и постановка сохранены; основной исполнитель может планировать этот участок, но не объявлять готовый patch, устранение orphan recovery или интеграцию. Не обходить серверный запрет новой задачей или способом запуска. Android/editor/metadata/map links продолжаются в прежней разрешённой области; исходный UNKNOWN102 не повторять и не менять ради координации.
+
+Действующие продуктовые требования revision54–55 сохраняются. Ответь `WATCHDOG_ACK revision=57 nonce=SS-MAP-REV57-20261015T1334 blob=<фактический blob>` при следующем штатном чтении. Revision56 ниже теперь только история несостоявшейся параллельной разработки.
+
+### История: revision 56 — параллельная задача остановлена, резервирование файлов снято revision57
+
+
+- run: SS-MAP-20261012
 - revision: 56
 - state: isolated_research_recovery_coordination
 - nonce: SS-MAP-REV56-20261015T1329
