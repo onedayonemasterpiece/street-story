@@ -1,8 +1,8 @@
 # Documentation authority
 
-## Current night implementation entrypoint — 12 October 2026
+## Current implementation authority — updated 15 October 2026
 
-The [unified map → facts → saved material night task](prompts/street-story-map-facts-night-delivery-20261012.md) is the single execution entrypoint for the owner's next coding-agent run. It reconciles the map design, Claude delivery audit, actual model experiments and the existing GitHub guidance/ACK mechanism. It takes precedence over conflicting execution plans below, while retaining safety, evidence and unchanged product requirements. Its two explicitly pending owner decisions are not silently approved. The design and audits below remain evidence; the new task is not proof of implementation or deployment.
+The [unified map → facts → saved material night task](prompts/street-story-map-facts-night-delivery-20261012.md) is the single execution entrypoint for the owner's next coding-agent run. It reconciles the map design, Claude delivery audit, actual model experiments and the existing GitHub guidance/ACK mechanism. It takes precedence over conflicting execution plans below, while retaining safety, evidence and unchanged product requirements. The former two pending decisions were resolved by the owner on 13 October: automatic narrowing inside an approximate group and delivery through visual plus the approved external test publication. Latest direct owner instructions and the current §8 revision govern execution. The design and audits below remain evidence; the new task is not proof of implementation or deployment.
 
 [Test-photo registry](testing/photo-registry.md) is the persistent original-byte, EXIF/provenance and evaluator inventory. It links back to the [acceptance procedure](testing/street-story-product-acceptance-20261010.md); frozen inputs and historical results are unchanged.
 
@@ -27,13 +27,13 @@ It combines the necessary dependencies of the first two stages; it is not implem
 The [product acceptance procedure](testing/street-story-product-acceptance-20261010.md) defines the unchanged image corpus, execution protocol and per-input evidence.
 The [G/T method evidence audit](reports/street-story-identity-methods-audit-20261010.md) records historical requirements, current working paths, new limits and targeted changes; it does not rewrite the earlier measured day report.
 The owner-approved [G method vision](design/street-story-spatial-geometry-vision-20261010.md) preserves the complete spatial/EXIF/morphology intent and maps historical requirements to existing, partial and target behavior.
-The recovery brief remains the full-task entrypoint; completing this core slice is a checkpoint, not a substitute for final product verification.
+The 10 October recovery brief is historical context for the automatic path; the map/facts task above is the current execution entrypoint. A core slice remains a checkpoint, not a substitute for final product verification.
 Its [measured day audit](reports/street-story-measured-day-audit-20261010.md)
 records observations and limitations; it is not proof that proposed repairs shipped.
 
 The later owner-approved [map-selection MVP design (12 October)](design/street-story-owner-map-selection-mvp-20261012.md) defines the manual MVP path: photo → map → confirmed building or candidate group → sourced facts → saved material → publication. For an exact owner-confirmed building, it explicitly changes the CORE-PHOTO-IDENTITY boundary for this MVP: no additional identity check is required; approximate groups still require identification. It includes changing the confirmed selection within the story and isolating stale results. This is a proposed implementation contract, not evidence of shipped behavior; requirements.json and product code are unchanged.
 
-The self-contained [map and facts delivery audit (12 October)](reports/street-story-map-facts-delivery-audit-20261012.md) is the coding-agent task for that MVP: place selection and fixation contract, the verified facts chain with its breakpoints, staged gates and the status of earlier audit findings.
+The self-contained [map and facts delivery audit (12 October)](reports/street-story-map-facts-delivery-audit-20261012.md) is historical evidence for that MVP: place selection and fixation contract, the verified facts chain with its breakpoints, staged gates and the status of earlier audit findings.
 
 The [photo search methods](photo-search-methods.md), [backend contract](backend-contract.md),
 [runtime runbook](backend-runtime.md) and [POI contract](poi-knowledge-base.md)
@@ -43,6 +43,13 @@ product-unblock brief are historical requirements/evidence, superseded only wher
 the later recovery brief changes them; they no longer set the next execution step.
 Historical prompts do not override later requirements. Preserve Stop, UNKNOWN,
 source provenance, access controls and publication authorization.
+
+Current domain authority:
+- [POI/source contract](poi-knowledge-base.md): positive OSM organization evidence, related-object provenance, explicit website/Wikipedia/Wikidata handoff and proportionate present-use checks.
+- [Single-session strategy](reports/street-story-single-session-strategy-20261014.md), with its 15 October scope clarification: one autonomous Luna session, native reading and same-turn saves. The earlier [reconciled brief](prompts/street-story-facts-research-reconciled-20261014.md) preserves history; its host carousel/question ledger/numeric stopping proposals are superseded.
+- [Map-selection design](design/street-story-owner-map-selection-mvp-20261012.md): exact selection stays final; useful related POIs are still passed to research.
+- [Current task](prompts/street-story-map-facts-night-delivery-20261012.md): reader-facing narrative, past/present clarity, address/city hashtag, artistic recognizable photo/sketch and actual prompt-subagent debugging before code/E2E.
+- Reuse valid saved evidence; retest changed boundaries. Neither an earlier dated report nor an implementation proposal creates new publication permission or proves deployment.
 
 Earlier documents retain evidence and the history of decisions:
 

@@ -1,6 +1,6 @@
 # POI knowledge base
 
-Date: 2026-10-02.
+Updated: 2026-10-15. Current requirements below are a target contract; see runtime receipts for implementation/deployment status.
 
 Street Story accumulates a regional POI knowledge base as a by-product of editorial
 work. Existing persistent `poi_research_assertions`, `poi_research_observations` and
@@ -37,8 +37,19 @@ URL.
 Research first tries to find an official source when one exists: an owner,
 operator, museum, institution or municipality. Media, Wikipedia, aggregators and
 tourism catalogues are not classified as official. An official source is accepted
-only when it was actually returned by grounded research. Its supported facts have
-editorial priority.
+only when its relevant content was actually received through the owned native reader, retained map/source context or supported acquisition adapter. Discovery route alone does not determine source authority. Its supported facts have editorial priority; an official source is not a mandatory second source for every claim.
+
+## OSM organizations, linked sources and present use — owner clarification, 15 October 2026
+
+An organization point on the map is useful positive evidence of its mapped presence and a ready research lead, not worthless address metadata. It can support a present-use statement when the model finds its relationship to the selected building and temporal context sufficient. It is not an unconditional guarantee that the organization is still operating. There is no universal requirement for a second independent source for every OSM POI.
+
+Preserve the selected building separately from related organization nodes/ways/relations. Supply already available related POIs from the saved map context, or perform a bounded lookup around the selected building when useful; do not restart city-wide discovery or reidentify an exact owner selection. Keep each object's OSM ID and URL, original tags, coordinates/geometry, address, observed time and available source/version or edit metadata, plus the basis and uncertainty of its relationship to the house. Spatial containment, explicit membership and a matching address are evidence for the model, not permission to merge organization and building identities. Nearby unrelated organizations remain distinct.
+
+Carry names, use/amenity/shop tags and website/contact:website, Wikipedia and Wikidata links into the actual frozen research input or its accessible retained context. Resolve explicit Wikipedia/Wikidata links through the existing adapters and let the researcher read relevant article content with normal provenance. Do not assume every house has an article, synthesize a missing link, or treat absent building tags as absence of related POIs. Distinguish absent map data, omitted handoff, unresolved link, unread page and failed read.
+
+The model should check available lifecycle tags (for example closed/disused/abandoned), source freshness, conflicting records and a relevant official/current page when useful and accessible. A reasonable targeted cross-check is encouraged; an arbitrary age cutoff, compulsory second-source count or new semantic gate is not. OSM edit time is not proof of the date of opening or continued operation. When evidence is uncertain, preserve a qualified mapped observation or an unresolved lead rather than invent current use or discard useful material. An old opening event alone does not establish present operation.
+
+Own received map data can be evidence just like an actually read document when its immutable observation/provenance is retained and the model assesses the claim. Search snippets, title-only links and owner-reported hints remain distinct from admitted facts. Keep present use, historical use and dates semantically separate; retain corroborating sources without mandatory duplicate downloads or a second judge. This contract applies to every house, not a hardcoded case.
 
 ## Reuse across publications
 
@@ -51,6 +62,8 @@ set.
 remains per-topic, so one POI fact base can support different editorial angles.
 
 ## Story construction
+
+The reader should notice what is beautiful or unusual, understand why this specific house is interesting and be able to find it using its confirmed address and actual city hashtag. Use meaningful selected facts, not a fixed three-item list. Caption adds connections beyond short image callouts. Former tenants remain interesting: say “formerly” or use verified concise dates; do not assume simultaneous or pre-war occupancy. Present use follows the evidence policy above. No invented chronology, access promises or source-age/no-data filler; no mandatory paragraph count or editorial scoring gate. Preserve recognizable architecture and artistic sketch surroundings within the chosen Original or true 4:5 crop. The durable editorial details are in the [current task](prompts/street-story-map-facts-night-delivery-20261012.md).
 
 The POI knowledge base is evidence inventory, not a finished narrative. A probable
 story is built later from selected facts, the current publication concept and the
@@ -76,13 +89,7 @@ source/evidence references and referenced IDs, but does not infer facthood or
 semantic equivalence.
 
 Unsupported model claims may remain visible as `evidence_supported=false` candidates,
-but they are never silently selected or used for publication. If dedicated grounded
-search models are quota-unavailable, independent public-web snippets remain discovery
-material until the already-running Live Mira explicitly interprets them through
-`save_research_facts`. Discovery sources receive short opaque `source_ref` values; Mira
-copies those refs instead of reproducing canonical URLs, and the server maps each ref
-back to the exact stored HTTPS URL + snippet evidence. Mira can also persist actual disagreements through
-`record_fact_conflicts` before using the normal arbitration ledger. `fact_quality.py`
+but they are never silently selected or used for publication. Search snippets and title-only links remain discovery leads; model interpretation alone does not upgrade them to verified evidence. The autonomous researcher reads relevant content, retains the actual observation and saves its assessment through the existing fact ledger. Native Luna uses same-turn `save_facts`; Live Mira remains the conversational editor. Source refs resolve to the retained received evidence, not an invented URL or unread document. Actual disagreements use the existing arbitration ledger. `fact_quality.py`
 and the legacy normalization command remain available solely for explicit repair of
 pre-LLM-first inventories.
 

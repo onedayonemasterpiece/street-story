@@ -62,11 +62,13 @@ private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1
 ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
 Gemini; failure leaves the currently running Street Story release untouched.
 
-The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search stays inside that same Live session. Provider-native Google Search on `gemini-3.8-live` is preferred because it preserves one conversational context with no second research workflow. If native search is unavailable, Street Story falls back to its synchronous `search_web` application function using grounded `gemini-3.1-flash-lite`, then `gemini-3.5-flash-lite`, then search-only `gemini-3.8-flash`. If Google grounding is exhausted across all of those routes, `search_web` performs one bounded independent web-result lookup and returns source-linked search snippets to the same Live session as low-confidence discovery evidence; it never silently upgrades snippets into verified facts. Lite/search helpers return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+The product conversation remains in the existing Live Mira session. Selected-house fact research follows the current autonomous native Luna path: one session/turn, native search/read, retained evidence and incremental same-turn save_facts. Live is not a requirement that all research execute inside Gemini Live. The existing grounded/independent search functions remain acquisition or qualified fallback capabilities, not a mandatory second research workflow or judge. Search snippets are leads, never verified facts by themselves. Keep the shared quota authority, Stop/generation fences and exact UNKNOWN recovery. Native failure does not authorize a duplicate attempt; use qualified fallback only across a proven safe closed boundary. Preserve a truthful useful partial.
+
+See [current execution guidance](prompts/street-story-map-facts-night-delivery-20261012.md), [single-session strategy](reports/street-story-single-session-strategy-20261014.md), and [OSM/linked-source policy](poi-knowledge-base.md#osm-organizations-linked-sources-and-present-use--owner-clarification-15-october-2026). These are requirements, not a declaration that every route is deployed. Keep an identifying OSM User-Agent.
 
 ## LLM-first semantic boundary
 
-Semantic product decisions are model-owned. Mira/the configured Gemini route decides what
+Semantic product decisions are model-owned. Mira/the configured semantic model decides what
 is a fact, assigns the stable `claim_key`, declares semantic equivalence to an existing
 `fact_id`, selects contradictory claims, proposes/arbitrates conflict resolution, shapes
 the publication concept and composes publication prose. The normal runtime must not replace
@@ -79,8 +81,7 @@ telemetry. If the required semantic model step is unavailable or malformed, the 
 fails closed instead of synthesizing facts or prose with a deterministic fallback.
 
 Publication composition is a separate model step over the author note, concept and selected
-evidence-backed facts. The target is normal editorial Russian prose, usually 2–5 short
-connected paragraphs, not one paragraph per fact. A fact-selection or concept change marks
+evidence-backed facts. The target is meaningful connected editorial Russian prose: a specific reason to notice the house, selected interesting details and its confirmed address/actual city hashtag. No fixed paragraph count or fact-count target applies. Historical tenants must read as former uses, with dates only when supported; present use follows the OSM/source policy. Caption adds meaning beyond short visual callouts, without invented chronology or access promises. A fact-selection or concept change marks
 the current draft `draft_needs_refresh`; publication preparation is blocked until Mira
 produces a current text. The legacy `fact_quality.py` rule engine is migration/repair code
 only and is not imported by research, Live, POI intake or conflict orchestration.
@@ -160,7 +161,7 @@ microphone) and then follows the production realtime path:
 1. exact deployed source SHA and authenticated topic;
 2. one Gemini Live session under the shared resource lease;
 3. multiple Russian realtime turns through the bounded Android PCM queue;
-4. explicit `search_web` call inside the same Gemini 3.8 Live session with grounded source readback;
+4. the authorized research route with actual search/read and saved fact readback; for the current selected-house native path, autonomous Luna uses same-turn save_facts while Mira retains the owner conversation (an explicit Live search_web call is not a mandatory substitute);
 5. fact selection and iterative text editing;
 6. literal/verbatim dictation with protected-span preservation;
 7. a subsequent edit plus Undo;

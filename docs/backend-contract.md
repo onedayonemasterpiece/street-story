@@ -32,7 +32,7 @@ The backend uses `live-interaction` for provider transport/session lifecycle and
 Google Live lease. Street Story owns only topic context and domain tools (research, fact selection, text/literal editing,
 Undo, visual generation, publication preparation/confirmation/cancel).
 
-Before Android reports Live ready, the backend queues an orientation-normalized, bounded JPEG snapshot of the current source photo into the same Gemini Live session. This lets Mira answer direct visual questions about the selected photo. Object identity is still verified independently by `resolve_place`, which compares the original source photo with OSM/Wikipedia candidates; conversational vision never replaces that guard.
+Before Android reports Live ready, the backend queues an orientation-normalized, bounded JPEG snapshot of the current source photo into the same Gemini Live session. This lets Mira answer direct visual questions about the selected photo. For an exact owner-confirmed map building, that selection is final and no additional `resolve_place`/photo identity gate applies. Automatic/approximate paths retain their scoped identity checks; conversational vision does not silently replace them.
 
 On physical-phone Live capture Android uses the existing WebRTC VAD with `VOICE_COMMUNICATION` input and enables Acoustic Echo Canceler/Noise Suppressor when the device exposes them. This is intended to preserve barge-in while reducing the assistant speaker output being reclassified as new user speech.
 
@@ -139,23 +139,26 @@ own evidence; refresh and hydration cannot renew that authority. These source co
 require candidate acceptance evidence before being treated as deployed behavior.
 
 The worker claims durable SQLite jobs by lease and recovers expired `running`
-work after restart. The current target is the adaptive [photo-search contract](photo-search-methods.md):
+work after restart. Current map-selected fact research follows the [single-session strategy](reports/street-story-single-session-strategy-20261014.md) and the latest [execution guidance](prompts/street-story-map-facts-night-delivery-20261012.md). The adaptive [photo-search contract](photo-search-methods.md) remains relevant to automatic/approximate identity:
 
 1. Preserve the original photo and actual camera metadata; transcribe available
    owner M4A chunks by `chunk_index` without making voice a prerequisite for photo identity.
 2. Reuse compatible evidence and prepare bounded physical OSM context. Reverse
    geocoding and optional Wiki metadata do not block an already ready map.
-3. Accept a sufficiently supported physical object through geometry, acquired
+3. Accept exact owner selection directly. Only automatic/approximate identity requires a sufficiently supported physical object through geometry, acquired
    architectural text (including Prussia39 discovery), actual visual reference or
    compatible combined proof. Each method opens the same facts path; a REF is
    required only for the reference method.
-4. Fetch/freeze subject-scoped sources, extract small bounded facts through the
-   ordinary Live-first path and semantically review their own supporting passages.
-   Grounded search and qualified helper models are conditional acquisition/fallback
-   routes, not a mandatory Gemini chain before every accepted fact.
+4. Run one autonomous Luna session/turn per selected house with native search/read,
+   retained own evidence and incremental same-turn `save_facts`. No routine host
+   `next_action` carousel. Mira remains the conversational editor; configured qualified
+   alternatives remain available after a proven closed failure/resource boundary,
+   never over an UNKNOWN operation. Reuse prior facts and source memory.
 5. Persist reviewed eligible facts and provenance in shared POI memory and the
    story projection; retain owner selection for editorial drafts. Exhausted,
-   blocked and deadline states have finite truthful outcomes.
+   blocked, resource and owner-stop states have truthful outcomes; elapsed time alone is not evidence exhaustion.
+
+Map context handoff must include useful related organization observations and explicit website/Wikipedia/Wikidata leads with their own identity/provenance, under the [OSM and present-use policy](poi-knowledge-base.md#osm-organizations-linked-sources-and-present-use--owner-clarification-15-october-2026). Skipping repeated identity lookup does not authorize discarding useful source context. A positive OSM organization observation is evidence to assess, without a universal independent-second-source requirement.
 
 Facts have stable `fact_id`, `evidence_supported`, selection state and source objects. Unsupported facts are always unselected/disabled. Refinement preserves the owner toggle when the stable fact survives. Runtime readback exposes bounded research provenance and durable retry evidence; quota/rate retry is not converted into fabricated facts.
 
