@@ -68,7 +68,11 @@ The product conversation/orchestration path uses only `gemini-3.8-live`. Interne
 
 For an explicitly selected current agent proof, the existing DevCoveer installer
 accepts `--fact-agent-qualification /absolute/path/to/proof.json` alongside
-`--expected-sha`. The operator-controlled file must have mode0600 and use
+`--expected-sha`. An explicitly authorized prerelease can also specify
+`--source-branch`; both local HEAD and the published branch tip must equal the
+expected SHA. This keeps the release branch and its APK publication workflow
+untouched. The operator-controlled proof must be in the managed
+`/home/dev/artifacts` tree, have mode0600 and use
 `research-agent-verification-v1`, with immutable actual search/read receipts for
 every route. The release verifies those receipts and their hashes, the executed
 model, current prompt/tool/schema profile, and source ownership through the same

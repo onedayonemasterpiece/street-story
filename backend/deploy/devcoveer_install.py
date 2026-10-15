@@ -196,13 +196,14 @@ def _tracked_status() -> str:
     )
 
 
-def exact_source(expected_sha: str) -> tuple[str, str]:
+def exact_source(expected_sha: str, *, source_branch: str = BRANCH) -> tuple[str, str]:
     if SHA_RE.fullmatch(expected_sha) is None:
         raise DeployError("expected SHA must be 40 lowercase hex characters")
     status = _tracked_status()
     if status.strip():
         raise DeployError("canonical Street Story checkout is not clean")
-    remote_ref = f"refs/remotes/origin/{BRANCH}"
+    run(['git', 'check-ref-format', f'refs/heads/{source_branch}'], timeout=30)
+    remote_ref = f"refs/remotes/origin/{source_branch}"
     run(
         [
             "git",
@@ -211,7 +212,7 @@ def exact_source(expected_sha: str) -> tuple[str, str]:
             "fetch",
             "--no-tags",
             "origin",
-            f"+refs/heads/{BRANCH}:{remote_ref}",
+            f"+refs/heads/{source_branch}:{remote_ref}",
         ],
         timeout=180,
     )
@@ -1535,12 +1536,14 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument('--source-branch', default=BRANCH,
+        help='Explicit published source branch; local HEAD and remote tip must both match expected SHA')
     parser.add_argument('--fact-agent-qualification', type=Path,
         help='Current immutable actual agent-tool proof; verify and install these routes without legacy pool requalification')
     args = parser.parse_args()
     expected_sha = args.expected_sha.strip().lower()
 
-    sha, tree_sha = exact_source(expected_sha)
+    sha, tree_sha = exact_source(expected_sha, source_branch=args.source_branch)
     previous_sha = deployed_release_sha()
     release = materialize_release(sha, tree_sha)
     venv = ensure_venv(release)
@@ -1573,7 +1576,7 @@ def main() -> int:
     receipt = {
         "schema_version": 1,
         "repository": REPOSITORY,
-        "branch": BRANCH,
+        "branch": args.source_branch,
         "release_sha": sha,
         "tree_sha": tree_sha,
         "release_root": str(release),

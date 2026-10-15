@@ -64,6 +64,32 @@ def test_agent_service_environment_preserves_exact_verified_routes(tmp_path, mon
     assert 'STREET_STORY_FACT_AGENT_ROUTES' not in module.parse_dotenv(module.SERVICE_ENV)
 
 
+@pytest.mark.parametrize('head_matches', [True, False])
+def test_explicit_source_branch_preserves_remote_and_head_sha_gates(monkeypatch, head_matches):
+    module = _load_installer()
+    monkeypatch.setattr(module, '_tracked_status', lambda: '')
+    expected = 'a'*40
+    branch = 'chatgpt/street-story-map-facts-20261012'
+    calls = []
+    def git(argv, **_kwargs):
+        calls.append(argv)
+        if 'rev-parse' in argv:
+            if argv[-1] == 'HEAD':
+                return expected if head_matches else 'b'*40
+            return 'c'*40 if argv[-1].endswith('^{tree}') else expected
+        return ''
+    monkeypatch.setattr(module, 'run', git)
+    if head_matches:
+        assert module.exact_source(expected, source_branch=branch) == (expected, 'c'*40)
+    else:
+        with pytest.raises(module.DeployError, match='exact source gate failed'):
+            module.exact_source(expected, source_branch=branch)
+    assert ['git', 'check-ref-format', 'refs/heads/'+branch] in calls
+    fetch = next(argv for argv in calls if 'fetch' in argv)
+    assert fetch[-1] == f'+refs/heads/{branch}:refs/remotes/origin/{branch}'
+    assert not any('checkout' in argv or 'push' in argv or 'merge' in argv for argv in calls)
+
+
 def test_publisher_maintenance_does_not_stop_generated_backend_unit(tmp_path, monkeypatch):
     from configparser import ConfigParser
     module = _load_installer()
