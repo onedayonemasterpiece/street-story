@@ -208,6 +208,21 @@ Street Story помогает читателю заметить красоту �
 ## 8. Живые указания watchdog
 
 - run: SS-MAP-20261012
+- revision: 60
+- state: isolated_recovery_integrated_into_product_branch
+- nonce: SS-MAP-REV60-20261015T1654
+
+В16:54 UTC [PR259](https://github.com/onedayonemasterpiece/street-story/pull/259) интегрирован только в `chatgpt/street-story-map-facts-20261012` (PR257). Новый удалённый HEAD: `26dd4cc6cdc3252c0431f7fec38d9886a0e9ac8c`. Перед merge база оставалась6083; независимый review завершён, обе CI точного source SHA `42000952e692b6096af6f36caae2188aae98b16a` успешны: [Backend](https://github.com/onedayonemasterpiece/street-story/actions/runs/38771072161), [Android](https://github.com/onedayonemasterpiece/street-story/actions/runs/38771072133). Readback PR257 и сравнение дерева merge с42000952 подтверждены, различий файлов нет.
+
+Изменены только `backend/street_story/native_fact_research.py`, `native_research_tools.py`, `fact_agents.py`, `backend/tests/test_native_owned_orphan.py`, `test_native_research_tools.py`. Исправлены owned orphan recovery и повторная проверка pending journal/active call перед interrupt после независимого продолжения transport reader. На конечном SHA71 focused tests и Ruff PASS;355 broader tests относятся к предыдущему d9d66fc, не подменяют итоговые CI.
+
+Отдельный исполнитель закончил работу; эти файлы больше не зарезервированы как активно редактируемые. Основному исполнителю использовать интегрированный код, не повторять эту правку. Собственный checkout и незакоммиченные изменения сначала сохранить и сопоставить с удалённой веткой; не reset/stash чужую работу и не считать remote merge автоматическим обновлением локальной копии. Main, production, рабочие БД и checkout Opus этой интеграцией не менялись. Исходный UNKNOWN102 остаётся незакрытым; patch не является доказательством восстановления его исходной операции и не разрешает слепой повторный send.
+
+Продолжай текущий продуктовый путь и измерения по revision58–59. Не запускать старый native-тред параллельно. Эта запись — передача результата через действующий документ, не подтверждение прочтения Opus. При следующем штатном чтении сообщи `WATCHDOG_ACK revision=60 nonce=SS-MAP-REV60-20261015T1654 blob=<фактический blob>` и фактическую локальную базу. Новых моделей, публикаций или очистки ради ACK не требуется.
+
+### История: revision 59 — резервирование завершено интеграцией revision60
+
+- run: SS-MAP-20261012
 - revision: 59
 - state: opus_product_owner_and_isolated_recovery_coordination
 - nonce: SS-MAP-REV59-20261015T1550
