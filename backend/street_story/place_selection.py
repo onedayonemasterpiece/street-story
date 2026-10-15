@@ -319,7 +319,7 @@ def snapshot_related_objects(snapshot, chosen):
                 'owned immutable source/chunk refs before saving a semantic assessment.'}
 
 
-async def _owner_map(osm, client, latitude, longitude, radius):
+async def _owner_map(osm, client, latitude, longitude, radius, *, on_primary=None):
     """Reuse adapter routes, fetching complete geometry for map API omissions."""
     dlat = math.degrees(radius / 6_371_000) * 1.001
     dlon = dlat / max(.000001, abs(math.cos(math.radians(latitude))))
@@ -334,6 +334,8 @@ async def _owner_map(osm, client, latitude, longitude, radius):
         return raw
     missing = raw.get('incomplete_building_ids') or []
     raw['map_source'] = 'osm.map_api'
+    if on_primary is not None:
+        on_primary(raw)
     if missing and callable(getattr(osm, '_overpass_query', None)):
         parts = []
         for cid in missing[:16]:
@@ -417,14 +419,33 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
                     'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
     started = time.monotonic()
     MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=started', story_id, cache_key)
+    received_primary = None
+
+    def preserve_primary(raw):
+        nonlocal received_primary
+        received_primary = raw
+
     try:
         async with asyncio.timeout(OWNER_MAP_REQUEST_SECONDS):
             async with httpx.AsyncClient(timeout=25, headers={'User-Agent': service.settings.osm_user_agent}) as client:
-                raw = await _owner_map(service.providers.osm, client, center['latitude'], center['longitude'], radius_m)
+                raw = await _owner_map(service.providers.osm, client, center['latitude'], center['longitude'], radius_m,
+                                       on_primary=preserve_primary)
     except TimeoutError as exc:
-        MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=unavailable duration_ms=%s',
-                     story_id, cache_key, round((time.monotonic() - started) * 1000))
-        raise RetryableProviderError('owner_map_response_deadline') from exc
+        # The request deadline may preempt optional enrichment before its own
+        # timeout. Keep the actual primary response instead of losing contours
+        # already received. Empty/incomplete geometry still cannot be selected.
+        if received_primary and any(
+            (item.get('tags') or {}).get('building') not in {None, '', 'no'}
+            and item.get('identity_eligible') is not False and _geometry(_candidate(item))
+            for item in expand_disjoint_building_components(received_primary.get('elements') or [])
+        ):
+            raw = received_primary
+            MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=partial_geometry_deadline duration_ms=%s',
+                         story_id, cache_key, round((time.monotonic() - started) * 1000))
+        else:
+            MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=unavailable duration_ms=%s',
+                         story_id, cache_key, round((time.monotonic() - started) * 1000))
+            raise RetryableProviderError('owner_map_response_deadline') from exc
     except Exception as exc:
         MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=failed error_type=%s duration_ms=%s',
                      story_id, cache_key, type(exc).__name__, round((time.monotonic() - started) * 1000))

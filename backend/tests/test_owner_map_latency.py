@@ -41,6 +41,49 @@ async def test_slow_optional_geometry_does_not_withhold_complete_selectable_cont
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('complete_primary', [True, False])
+async def test_request_deadline_during_enrichment_preserves_only_actual_complete_primary(tmp_path, monkeypatch, complete_primary):
+    service, _ = make_service(tmp_path)
+    story = create(service)
+
+    class DeadlineDuringExtras(MapOSM):
+        cancelled = False
+
+        async def _map_nearby(self, *args):
+            raw = await super()._map_nearby(*args) if complete_primary else {'elements': []}
+            return {**raw, 'incomplete_building_ids': ['osm:relation:9']}
+
+        async def _overpass_query(self, *args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled = True
+
+    service.providers.osm = DeadlineDuringExtras()
+    monkeypatch.setattr('street_story.place_selection.OWNER_MAP_REQUEST_SECONDS', .02)
+    monkeypatch.setattr('street_story.place_selection.OWNER_MAP_ENRICHMENT_SECONDS', 10)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(service.settings, service)), base_url='http://test') as client:
+        response = await client.get(f"/v1/stories/{story['id']}/place-map",
+                                    headers={'Authorization': 'Bearer ' + reveal(service.settings.device_token)})
+    assert service.providers.osm.cancelled
+    assert not service._owner_map_requests
+    if complete_primary:
+        assert response.status_code == 200
+        result = response.json()
+        assert result['partial'] and result['incomplete_building_count'] == 1
+        assert {f['id'] for f in result['buildings']['features']} == {'osm:way:1', 'osm:way:2'}
+        assert all(f['geometry']['type'] == 'Polygon' for f in result['buildings']['features'])
+        assert result['map_source'] == 'osm.map_api'
+    else:
+        assert response.status_code == 503
+        assert response.json()['error']['code'] == 'place_map_unavailable'
+        assert service.story(story['id'])['place_map'] is None
+    assert service.story(story['id'])['place_selection'] is None
+    with service.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM jobs WHERE story_id=?', (story['id'],)).fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
 async def test_same_view_reads_join_and_disappearing_view_does_not_cancel_other_waiter(tmp_path):
     service, _ = make_service(tmp_path)
     story = create(service)
