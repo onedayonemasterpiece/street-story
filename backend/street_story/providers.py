@@ -3480,6 +3480,7 @@ class GeminiClient:
         concept: str,
         author_note: str,
         facts: list[dict[str, Any]],
+        photo_capture: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Compose editorial copy from already validated evidence-backed facts."""
         if not facts and not author_note.strip():
@@ -3493,6 +3494,9 @@ class GeminiClient:
             "сведения, даты, имена или причинно-следственные связи. Текст должен читаться как публикация, а не как "
             "список тезисов: обычно 2–5 коротких связных абзацев, естественный заход, развитие и завершение. "
             "Не делай каждый факт отдельным абзацем автоматически. Без Markdown-заголовка и служебных комментариев. "
+            "Отличай photo_capture (исходный EXIF снимка) от времени источника, описанного события и публикации. "
+            "Не подставляй дату или часовой пояс, если они неизвестны. Выбирай уместные детали для истории этого "
+            "дома: не обязательно пересказывать каждый выбранный факт или превращать сообщение о ремонте в сводку. "
             "Уложись в 1000 символов, чтобы оставался запас под Telegram photo caption.\n\n"
             + json.dumps(
                 {
@@ -3500,6 +3504,7 @@ class GeminiClient:
                     "publication_concept": concept,
                     "author_note": author_note,
                     "facts": facts,
+                    "photo_capture": photo_capture or {"status": "unknown", "reason": "capture_metadata_unavailable"},
                 },
                 ensure_ascii=False,
             )

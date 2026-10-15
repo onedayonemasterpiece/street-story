@@ -1778,6 +1778,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 concept=str(prior.get("publication_concept") or ""),
                 author_note=author_note,
                 facts=selected_for_draft,
+                photo_capture=self._photo_capture_context(story_id),
             )
             draft = str(composition.get("draft_text") or "").strip()
             if not draft:

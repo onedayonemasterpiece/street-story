@@ -823,6 +823,7 @@ Concept, editing and publication:
 - Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events.
 - Write captions for the reader: keep research-process comments, publication-age explanations and missing-date reports in evidence/source context, not in the finished text or visual instructions. An accurately supported former use may be stated without dates. Preserve attribution, genuine uncertainty and material conflicts when omitting them would mislead; never invent a period or use a source publication date as an event date. Apply this editorial distinction to both edit_text and generate_visual annotations.
 - Help a reader notice this particular building and understand why it is worth noticing. Develop a meaningful angle from a visible feature or selected supported detail; connect architecture, people or past uses rather than reciting cards or repeating the image labels. Finish with the confirmed building address and its actual city hashtag when available in confirmed_place. This is a reader goal, not a fixed paragraph template. Visible beauty may be an author's impression; do not invent scenes, motives, superlatives or access promises.
+- photo_capture describes original SOURCE EXIF capture time, not upload, publication or an event date. Keep its provenance and unknown timezone/status; never substitute current_date_utc or a source publication date. The photo supports only what is visible in its frame at capture. Use selected facts relevant to this photographed house and the owner's angle; a supported fact need not appear just to consume the selection. A past repair report can matter when it explains a visible feature, but a source-month repair bulletin is not automatically a useful story. Preserve the saved fact selection and evidence unless the owner asks to change it.
 - Make former uses unmistakably past in both prose and visual notes (for example, “Прежде: бакалея”). Include supported years briefly; otherwise use “раньше” or “здесь прежде”. Do not imply all tenants were simultaneous or pre-war. Current use needs current evidence; owner-reported current use remains a reported hint until verified. Reuse richer eligible inventory when helpful, but obtain the author's selection authorization before changing it and save the change normally. Caption should add meaning beyond the short visual notes, not duplicate their list.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
@@ -999,6 +1000,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'and actual city hashtag when available. Mark former uses explicitly as past in '
                 'caption and image notes; use supported years only. Current use needs current '
                 'evidence. Do not invent scenes, motives, spatial links or public access. '
+                'Use photo_capture as SOURCE capture context, distinct from source publication, '
+                'event and current dates; keep missing time/offset unknown. Choose relevant '
+                'details for the photographed scene rather than consuming every selected fact. '
+                'Omitting an irrelevant fact from prose does not deselect or delete it. '
                 'On live_text_revision_conflict read_topic and retry once with the current revision. '
                 'Protect verbatim spans; explicit dictation belongs to dictation. '
                 'Text-style changes preserve the image; visual-only changes preserve text. '
@@ -1104,7 +1109,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Crop/composition works on SOURCE and owner selection, not the
             # discovery/conflict inventory. All original evidence stays durable.
             result = {key: value for key, value in context.items() if key in {
-                'current_date_utc', 'story_id', 'photo_sha256', 'identity_generation',
+                'current_date_utc', 'story_id', 'photo_sha256', 'photo_capture', 'identity_generation',
                 'research_controls', 'revision', 'text_revision', 'place_name',
                 'physical_identity_accepted', 'selected_fact_ids', 'publication_concept',
                 'draft_text', 'visual_photo_format', 'visual', 'fact_count',
@@ -2679,6 +2684,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "current_date_utc": datetime.now(timezone.utc).date().isoformat(),
             "story_id": story.get("id"),
             "photo_sha256": story.get('photo_sha256'),
+            "photo_capture": story.get('photo_capture') or {'status': 'unknown', 'reason': 'capture_metadata_unavailable'},
             "identity_generation": story.get('identity_generation'),
             "research_controls": story.get('research_controls', {}),
             "state": story.get("state"),

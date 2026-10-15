@@ -229,6 +229,13 @@ class StreetStoryService:
     def _source_photo_available(self, story_id: str) -> bool:
         return self._temporary_photos.get(story_id) is not None or self._saved_source_photo(story_id) is not None
 
+    def _photo_capture_context(self, story_id: str) -> dict[str, Any]:
+        from .photo_metadata import inspect_capture_time
+        try:
+            return inspect_capture_time(self._source_photo_bytes(story_id))
+        except ConflictError:
+            return {'status': 'unknown', 'provenance': 'source_exif', 'reason': 'source_unavailable'}
+
     def _source_photo_for_job(self, story_id: str) -> bytes:
         try:
             return self._source_photo_bytes(story_id)
@@ -432,6 +439,7 @@ class StreetStoryService:
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
             "source_available": self._source_photo_available(row['id']),
+            "photo_capture": self._photo_capture_context(row['id']),
             "camera_point": camera_point(row, research),
             "identity_mode": research.get("identity_mode", "auto"),
             "place_selection": research.get("place_selection"),
