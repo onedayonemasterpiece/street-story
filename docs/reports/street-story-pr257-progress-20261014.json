@@ -6,14 +6,14 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T02:14:52.092443+00:00",
-  "last_useful_progress_at_utc": "2026-10-15T01:51:55.986053+00:00",
+  "updated_at_utc": "2026-10-15T02:18:39.765911+00:00",
+  "last_useful_progress_at_utc": "2026-10-15T02:18:39.765911+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "Two additional Live calls rejected before image dispatch: observe-only omitted observe_existing_visual; explicit artistic correction still emitted photo-composition fields. Narrowed only artistic stage declarations to visual_instruction/fact_ids/observe_existing_visual; full API and photo_format preserve composition. 15 targeted tests passed, Ruff passed. Real narrowed-contract component pending; observation-only authorization remains unqualified.",
+  "last_action": "Narrowed-contract real Mira artistic call succeeded with511-character visual_instruction carrying owner exclusions. One Native image generation completed; same operation cached-render recovery in progress. No repeated generation. Prior F3CI:3786passed/55skipped/1failed at100ms held-cleanup deadline; replaced wallclock sensitivity, retained event-order assertions;20module tests passed.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "status": "none; no new image was dispatched from rejected Live calls",
+    "status": "Native image completed; reconcile/import exact operation, no resubmit",
     "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
@@ -806,8 +806,8 @@
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
   "current_stage": "fixed_review_inventory_product_verification",
-  "current_blocker": "102 corrected text is saved; accepted corrected image/publication still missing. Live artistic routing failed before dispatch; narrowed stage schema awaits real component. Observation-only model error remains open.",
-  "updated_at": "2026-10-15T02:14:52.092443+00:00",
+  "current_blocker": "102 current addressed image awaits same-operation import and actual root review; corrected test publication not yet prepared. Observe-only authorization remains unqualified.",
+  "updated_at": "2026-10-15T02:18:39.765911+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38607689217,
@@ -1083,7 +1083,7 @@
       }
     }
   ],
-  "work_revision": 70,
+  "work_revision": 71,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1115,7 +1115,7 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
   },
-  "current_commit": "1b0c1c5c2e7e707dba038d81b673aeb337ff5f0e",
+  "current_commit": "7cd79f3f42f5acf5c028d705ff3cfa6d9ed26dfc",
   "native_baseline_independence": {
     "photo": 102,
     "separate_data_directory": true,
@@ -1458,10 +1458,30 @@
     "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/visual-mode-schema.log"
   },
   "last_ci": {
-    "runtime_source": "6fba12b7a95779abdac6e2deeaaf3136b1e2c9e1",
-    "android_run": 38667799032,
-    "android": "success",
-    "backend_run": 38667799071,
-    "backend": "3 failed /3784passed/55skipped; three tests expected exact routingphrase, restoredandtargeted13PASS; finalnewCIpending"
+    "source_sha": "f3ec801c70b999e9cb5a2b8a2085c38f3dff9bb2",
+    "backend": {
+      "run_id": 38669156395,
+      "status": "failure",
+      "passed": 3786,
+      "skipped": 55,
+      "failed": 1,
+      "failure": "held cleanup test100ms timeout",
+      "failure_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-f3ec801-ci-failed.log"
+    },
+    "android": {
+      "run_id": 38669156410,
+      "status": "success"
+    }
+  },
+  "corrected_visual102_v2": {
+    "operation_id": "op_ef1371decd1c467d93e7c8f6846f161b",
+    "visual_job_id": "visual_ac77a6c491df47acbb0a1c5dcd07630f",
+    "thread_id": "01a13d59-206e-7613-a426-27ab88f61928",
+    "turn_id": "01a13d59-21bf-7313-8e8f-8e00778f5e52",
+    "source_sha": "7cd79f3f42f5acf5c028d705ff3cfa6d9ed26dfc",
+    "state": "native succeeded; cached Original render/import pending",
+    "root_review": "not yet",
+    "actual_contract_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/narrowed-artistic-actual-contract.json",
+    "new_generation_count": 1
   }
 }
