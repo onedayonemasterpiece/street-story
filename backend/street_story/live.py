@@ -699,7 +699,7 @@ FUNCTIONS = [
         {
             "visual_instruction": {
                 "type": "string",
-                "description": "Owner visual-only change.",
+                "description": "Required for artistic creation/edit: owner constraints, exact lettering, exclusions and qualifiers; max600 chars. Omit for observation.",
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
             "observe_existing_visual": {"type": "boolean", "description": "Read existing operation and inspect its saved image; omit visual_instruction. Never resend unknown."},
@@ -964,16 +964,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'For ordinary selection, concept or text editing continue through editor in this same story.')
         else:
             overlay = (
-                "Use confirmed identity, selected eligible facts, concept and draft. "
-                "Visual-only requests preserve text; edit text through editor. "
+                "Use accepted identity, selected facts, concept and draft. Visual edits preserve text. "
                 "generate_visual is only for an explicit request, using the original photo and "
                 "a readable subset of owner-selected eligible facts; never use unselected facts. "
+                "Artistic creation/edits carry owner changes in visual_instruction; omit "
+                "preserve_source_frame, visual_copy and visual_layout. Original is framing, not that mode. "
                 "Preserve dates and essential qualifications in readable annotations. "
                 "Do not regenerate a reviewed image merely to publish it. "
                 "Prepare exact text/image/destinations/time with prepare_publication; confirm_publication "
                 "requires separate unambiguous author confirmation of that card. Copy the latest explicit owner "
-                "ISO time, not a previous request. Never publish on preparation alone. Read state after an unknown result "
-                "before taking another action."
+                "ISO time exactly. Preparation never publishes. Read state after unknown results."
             )
         # Only the tool menu is filtered. Semantic rules must survive even when
         # they refer to a different stage (for example, do not re-review eligible
@@ -983,8 +983,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
             + '\nAll listed stages are supported. When another stage is needed, call continue_story first; '
-              'a missing tool in this bundle does not make the action unavailable. Otherwise use the '
-              'available tool without switching to the current stage again. After switching execute '
+              'a missing tool in this bundle does not make the action unavailable. '
+              'If the required tool is already available, use it without switching stages. After switching execute '
               'the same request without asking the author to repeat it. Stages: identity (object), '
               'research (discovery), review (evidence), photo_format (original/crop), editor '
               '(eligible fact selection/concept/text), dictation (protected verbatim input), '
