@@ -82,6 +82,36 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
             assert error.value.public_result['saved'] is False
             assert 'source_date' not in invalid['facts'][0]
             assert service.story(job['story_id'])['facts'] == before_facts
+            # Actual104 retained its own source but dropped the final character
+            # of a chunk ID in both proof fields. Rejection must be actionable
+            # in this same turn without host repair or another fetch.
+            bad_packet = copy.deepcopy(packet)
+            bad_assessment = bad_packet['facts'][0]['sources'][0]['assessment']
+            exact_id = bad_assessment['chunk_ids'][0]
+            bad_id = exact_id[:-1]
+            bad_assessment['chunk_ids'] = [bad_id]
+            bad_assessment['checks']['relation_basis']['chunk_ids'] = [bad_id]
+            original_bad_packet = copy.deepcopy(bad_packet)
+            receipt['native_tool_calls']['save-bad-reference'] = {'phase': 'submitted', 'submitted_at': 2,
+                'input': {'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
+                    'arguments': bad_packet, 'execution_contexts': [
+                        {'model': 'gpt-6-luna', 'effort': 'medium', 'turn_id': 'original-turn'}]}}
+            checkpoint(binding, receipt)
+            rejected = await kwargs['callback']('save_facts', bad_packet, checkpoint_owner={
+                'call_id': 'save-bad-reference', 'thread_id': 'original-luna', 'turn_id': 'original-turn'})
+            assert rejected['saved_fact_ids'] == []
+            assert rejected['outcomes'][0]['status'] == 'unverified'
+            diagnostic = rejected['outcomes'][0]['reference_diagnostics']
+            assert diagnostic['source_version_id'] == fact['sources'][0]['source_version_id']
+            assert diagnostic['received_chunk_ids'] == sorted(chunk['chunk_id'] for chunk in read['documents'][0]['chunks'])
+            assert diagnostic['invalid_references'] == [
+                {'path': ['assessment', 'chunk_ids', 0], 'reference': bad_id},
+                {'path': ['assessment', 'checks', 'relation_basis', 'chunk_ids', 0], 'reference': bad_id}]
+            assert 'NEW save_facts' in rejected['instruction'] and 'same turn' in rejected['instruction']
+            assert bad_packet == original_bad_packet and service.story(job['story_id'])['facts'] == before_facts
+            receipt['native_tool_calls']['save-bad-reference'].update(phase='completed', result=rejected)
+            # The next distinct model-style call copies its existing exact read
+            # IDs; the server has never changed the rejected packet.
             receipt['native_tool_calls']['save-one'] = {'phase': 'submitted', 'submitted_at': 2, 'input': {
                 'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
                 'arguments': packet, 'execution_contexts': [
@@ -111,11 +141,15 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
         result = await run_tool_agent(adapter, route, {'id': job['story_id']},
             {'run_id': 'headless-run'}, binding=binding, guard=lambda: None)
         assert result['receipt']['raw_result']['facts'] == []
-        assert len(result['result']['facts']) == 1
-        assert result['result']['facts'][0]['native_checkpoint_call_id'] == 'save-one'
+        assert len(result['result']['facts']) == 2
+        assert [candidate['native_checkpoint_call_id'] for candidate in result['result']['facts']] == [
+            'save-bad-reference', 'save-one']
         with service.store.connection() as db:
             before = db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0]
-        outcome = await service.confirm_agent_fact(job, 'headless-run', result['result']['facts'][0],
+        original_rejected = await service.confirm_agent_fact(job, 'headless-run', result['result']['facts'][0],
+            {**agent, 'route_id': route.route_id})
+        assert original_rejected['status'] == 'unverified' and original_rejected.get('fact_id') is None
+        outcome = await service.confirm_agent_fact(job, 'headless-run', result['result']['facts'][1],
             {**agent, 'route_id': route.route_id})
         assert outcome['fact_id'] == saves[0]['saved_fact_ids'][0]
         with service.store.connection() as db:

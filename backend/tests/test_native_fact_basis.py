@@ -200,6 +200,87 @@ async def test_owned_native_url_equivalence_preserves_host_query_version_and_chu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('damage', [None, 'wrong_url', 'wrong_hash', 'late_read', 'changed_chunk',
+    'wrong_photo', 'foreign_read'])
+async def test_reference_feedback_requires_owned_intact_prior_read_and_excludes_other_source(tmp_path, damage):
+    from street_story.fact_agent_providers import native_tools
+    from street_story.native_fact_contract import owned_assessment, NativeFactSourceReferenceInvalid
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path, two_sources=True)
+    try:
+        fact = copy.deepcopy(receipt['raw_result']['facts'][0])
+        first, second = fact['sources']
+        exact = first['assessment']['chunk_ids'][0]
+        foreign = second['assessment']['chunk_ids'][0]
+        first['assessment']['chunk_ids'] = [exact[:-1], foreign]
+        first['assessment']['checks']['relation_basis']['chunk_ids'] = [exact[:-1]]
+        original_fact = copy.deepcopy(fact)
+        receipt.update(phase='submitted', provider_send_state='possibly_sent', native_terminal_status=None,
+            raw_result={}, provided_tools=native_tools(), frozen_prompt='Instructions\nINPUT={"run_id":"headless-run"}')
+        read = receipt['native_tool_calls']['original-read']
+        read['completed_at'] = 1
+        receipt['native_tool_calls']['save-bad-reference'] = {'phase': 'submitted', 'submitted_at': 2,
+            'input': {'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
+                'arguments': {'facts': [fact]}, 'execution_contexts': [
+                    {'model': 'gpt-6-luna', 'turn_id': 'original-turn'}]}}
+        if damage == 'wrong_url':
+            first['url'] = 'https://unread.example/other'
+        elif damage == 'wrong_hash':
+            first['content_sha256'] = '0' * 64
+        elif damage == 'late_read':
+            read['completed_at'] = 3
+        elif damage == 'changed_chunk':
+            read['result']['documents'][0]['normalized_text'] = 'Changed source bytes.'
+        elif damage == 'wrong_photo':
+            receipt['binding']['photo_sha256'] = 'foreign-photo'
+        elif damage == 'foreign_read':
+            read['input']['name'] = 'unrecognized-tool'
+        save()
+        candidate = source_candidates({'facts': [fact]})['facts'][0]
+        candidate['native_checkpoint_call_id'] = 'save-bad-reference'
+        story = HeadlessFacts(service)._snapshot(job, 'headless-run')[0]
+        with service.store.connection() as db:
+            with pytest.raises(ValueError) as error:
+                owned_assessment(db, candidate, agent, story=story, run_id='headless-run')
+        if damage:
+            assert not isinstance(error.value, NativeFactSourceReferenceInvalid)
+            outcome = await service.confirm_agent_fact(job, 'headless-run', candidate, agent)
+            assert outcome['status'] == 'unverified' and 'reference_diagnostics' not in outcome
+        else:
+            assert isinstance(error.value, NativeFactSourceReferenceInvalid)
+            diagnostic = error.value.reference_diagnostics
+            assert diagnostic['source_version_id'] == first['source_version_id']
+            assert diagnostic['content_sha256'] == first['content_sha256']
+            assert exact in diagnostic['received_chunk_ids'] and foreign not in diagnostic['received_chunk_ids']
+            assert diagnostic['invalid_references'] == [
+                {'path': ['assessment', 'chunk_ids', 0], 'reference': exact[:-1]},
+                {'path': ['assessment', 'chunk_ids', 1], 'reference': foreign},
+                {'path': ['assessment', 'checks', 'relation_basis', 'chunk_ids', 0], 'reference': exact[:-1]}]
+            assert fact == original_fact
+        assert not service.story(job['story_id'])['facts']
+    finally:
+        await reader.search_http.aclose()
+
+
+def test_reference_feedback_is_bounded_and_never_echoes_arbitrary_input():
+    from street_story.native_fact_contract import NativeFactSourceReferenceInvalid
+    assessment = {'chunk_ids': ['private arbitrary text', 'chunk_' + 'f' * 65]
+            + ['chunk_' + 'a' * index for index in range(1, 32)],
+        'checks': {'relation_basis': {'chunk_ids': ['chunk_123']}}}
+    received = {'chunk_' + str(index).zfill(24) for index in range(32)}
+    error = NativeFactSourceReferenceInvalid(assessment, version='srcv-controlled',
+        content_sha256='0' * 64, received=received)
+    diagnostic = error.reference_diagnostics
+    assert str(error) == 'native_fact_source_not_owned_read'
+    assert len(diagnostic['received_chunk_ids']) == 16 and diagnostic['received_chunk_ids_truncated'] is True
+    assert len(diagnostic['invalid_references']) == 16 and diagnostic['invalid_references_truncated'] is True
+    assert diagnostic['invalid_references'][:2] == [
+        {'path': ['assessment', 'chunk_ids', 0], 'reference_redacted': True},
+        {'path': ['assessment', 'chunk_ids', 1], 'reference_redacted': True}]
+    assert 'private arbitrary text' not in json.dumps(diagnostic)
+    assert diagnostic['invalid_references'][2]['reference'] == 'chunk_a'
+
+
+@pytest.mark.asyncio
 async def test_paged_assessment_requires_actual_received_chunks_across_owned_calls(tmp_path):
     from street_story.native_fact_contract import owned_assessment
     from street_story.native_source_reads import source_page

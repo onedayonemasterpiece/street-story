@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
-  "updated_at_utc": "2026-10-15T11:49:06.573192+00:00",
-  "last_useful_progress_at_utc": "2026-10-15T05:19:40.737387+00:00",
+  "updated_at_utc": "2026-10-15T12:28:49.741228+00:00",
+  "last_useful_progress_at_utc": "2026-10-15T12:28:49.741228+00:00",
   "stage": 2,
   "status": "working",
-  "last_action": "Related organization survives current captured OSM response through frozen-input projection; cached webfetch returns owned immutable chunks without new HTTP. Actual Mira selection mutation remains blocked by closed shared-budget failure.",
+  "last_action": "Mira saved six selected facts and reader concept/caption, generated and addressed one unproved image pointer, prepared exact test card and separately confirmed it. Telegram37820 exact text/photo independently read and viewed. Source-bound reference diagnostics added;87 scoped tests plus final bounded-output check and Ruff passed.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
     "at_utc": "2026-10-15T05:35:27.970657+00:00",
@@ -59,7 +59,7 @@
     "https://github.com/onedayonemasterpiece/street-story/issues/258",
     "2c48cbf175957a30aabccc617512243457149313:docs/prompts/street-story-measured-plan-watchdog-20261014.md"
   ],
-  "authorization": "Owner explicitly confirmed code implementation through product E2E; analysis-only sentence by another agent superseded. Existing test-only publication authority remains; no production deployment or merge.",
+  "authorization": "Owner explicitly authorizes implementation, commit/push/PR and compatible Street Story/Vibe delivery with rollback after checks under revision50; only dedicated test Telegram publication. No role/secret changes or non-test external publication.",
   "artifacts_root": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014",
   "baseline": {
     "full_comparable_old_run": null,
@@ -90,15 +90,15 @@
       "reason": "Original13e7 same-turn dynamic save callback lost with owner process. Preserve exact attempt UNKNOWN; no new research turn."
     },
     {
-      "scope": "product_acceptance",
-      "reason": "Compatible current release, public API and Android Live/touch verification remain required; revision50 authorizes checked delivery without per-SHA approval."
+      "scope": "android_platform_run8d",
+      "reason": "CurrentPR run1459 failed4 UI tests with black frames and no MapView input logs; named canonical1458 same app code passed42 incl map. Retained both; no platform failure called product PASS."
     },
     {
-      "scope": "publication_resume",
-      "reason": "Prior8366 operation closed command_expired/not_attempted but failed local job retained accepted receipt; normal prepare now refreshes exact outcome and admits new separate confirmation only with complete bound all-not-attempted proof.139 affected tests PASS; real addressed continuation pending."
+      "scope": "product_acceptance",
+      "reason": "Currentbackend8d andVibeEF live; publichealth PASS; signed1458 ready. Full real internalGPS/manual selection/Live Android E2E still pending."
     }
   ],
-  "next_step": "Freeze observed no-send publication recovery; ordinary same-story Mira prepare/confirm on fixed source. Preserve original Native102 UNKNOWN. Canonical Android dispatch op43cf outcome must reconcile before any repeat.",
+  "next_step": "Commit/push reviewed reference feedback and current report; observe CI on that exact commit. Prepare compatible source/dependencies with rollback, activate checked backend and run existing ownerGPS104 Android Live E2E.",
   "stages": [
     {
       "stage": 0,
@@ -765,7 +765,7 @@
       ]
     }
   ],
-  "checked_out_commit": "b39969c328833d85ecf77f05d6839c9ad904fd27",
+  "checked_out_commit": "f1de7594ff49c68a3c9aaa243dba49ba002fb586",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -773,10 +773,11 @@
     "completion_claimed": false
   },
   "watchdog_ack": {
-    "revision": 51,
-    "nonce": "SS-MAP-REV51-20261015T0745",
-    "blob": "5b862a5ec78a9f26661e68109921969cb0708178",
-    "acknowledged_at_utc": "2026-10-15T08:50:18.192332+00:00"
+    "revision": 52,
+    "nonce": "SS-MAP-REV52-20261015T1004",
+    "blob": "63bb77fd5a5965c640eb606e078b065d62286009",
+    "read_at_utc": "2026-10-15T10:19:15.423297+00:00",
+    "next_editorial_step": "Normal Mira explicitly changes selection from eligible inventory, persists angle and connected reader caption with confirmed address/city. No new research102 or external publication update."
   },
   "active_local_checks": {
     "backend": 134,
@@ -827,8 +828,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "shared_history_admission_fix_checked_actual_mira_control_next",
-  "current_blocker": "Actual owner-selection mutation and caption remain unqualified. Shared unsent-history/setup replay bug fixed and component-tested in version0.3.11-rc.4; next narrowly run actual Mira on the original store, no new research.",
+  "current_stage": "reviewed_reader_post_delivered_reference_feedback_checks_passed",
+  "current_blocker": "Full Android internal-GPS104/map-tap/Live E2E not run; compatible new backend release pending CI/delivery. Original102 UNKNOWN remains protected. Actual model recovery after reference diagnostic not yet qualified.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -869,7 +870,7 @@
     "lost_observed_atoms_N12": 0,
     "independent_support_and_dispute_returns": "not_fully_classified"
   },
-  "current_ci_status": "87ab08d backend+Android success; product native105 text repair and E2E incomplete.",
+  "current_ci_status": "daf9 backend38730056512 and Android38730056610 completed success. Pending reference-feedback commit CI not run yet.",
   "implementation_in_progress": {
     "changes": "Removed address-range gate; native received PDF page/line/find retention",
     "checks": "115tests PASS; Ruff PASS; diff check PASS",
@@ -1139,7 +1140,7 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
   },
-  "current_commit": "5bc1d2141f2578f6ea85036a1f6b07fd3341127c",
+  "current_commit": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
   "native_baseline_independence": {
     "photo": 102,
     "separate_data_directory": true,
@@ -1284,14 +1285,16 @@
     "product_acceptance": "partial; 1901/1908 conflict, native autonomy handoff still imperfect, no full current131E2E"
   },
   "current_ci": {
-    "source_sha": "5bc1d2141f2578f6ea85036a1f6b07fd3341127c",
+    "head": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
     "backend": {
-      "run": 38685891755,
-      "status": "success"
+      "run": 38730056512,
+      "status": "completed",
+      "conclusion": "success"
     },
     "android": {
-      "run": 38685891838,
-      "status": "success"
+      "run": 38730056610,
+      "status": "completed",
+      "conclusion": "success"
     }
   },
   "case104_current": {
@@ -1632,7 +1635,7 @@
       ]
     }
   ],
-  "current_source_sha": "f7cd3980bd485c4688b9ac2cdb36f6d96bb5f3c9",
+  "current_source_sha": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1907,7 +1910,7 @@
     "trace": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/read-trace.jsonl",
     "observed": "Relevant900-offset own snippets delivered first.1908 caption does not explicitly claim construction year; direct child proposed source-attributed repair.1901 list date/status supported with own body+heading; compound tourism claim proposed split. No actual Mira or saved semantic receipt."
   },
-  "current_work_revision": 88,
+  "current_work_revision": 94,
   "candidate_runtime_sha256": {
     "backend/street_story/fact_agent_providers.py": "8981e6645278db610b71ca5efc8a8ef2ebf047946aa449e576eb56b270a34308",
     "backend/street_story/native_fact_research.py": "1d1511a72d504b60477e1ef944863a77412bd29d10864d7d601d955bb7232c2f",
@@ -2629,17 +2632,12 @@
     "publication_readback_pending": true
   },
   "current_native_tool_qualification": {
-    "validation": "PASS",
-    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/current104-tool-qualification-validation.json",
-    "actual_control": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-source-date-control-0a4db16",
-    "duration_seconds": 120.74741816520691,
-    "native_total_tokens": 1137150,
-    "new_eligible_facts": 0,
-    "new_withheld_observations": 2,
-    "completeness_accepted": false,
-    "original102_unknown_unchanged": true
+    "status": "PASS_TOOL_ACCESS_SAFETY_ONLY_NOT_CONTENT_SUCCESS",
+    "validation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/current-native-giga-tool-access-daf9-validation.json",
+    "native104_product_pass": false,
+    "new_provider_calls_in_validation": 0
   },
-  "candidate_sha": "ed8bf3d0deaeed635c3119a30dda69b9acdf4377",
+  "candidate_sha": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
   "case104_latest_measurement": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-source-date-control-0a4db16/measured-result.json",
   "case102_latest_visual_operation": "op_3c6ac5d8d58643558eb1f94e544643a6",
   "editorial_5a_durable_jobs": {
@@ -2666,7 +2664,7 @@
     "incident_id": "inc_aa58e4b11278cbe2a6717a87",
     "original8366_closed": "blocked/command_expired/not_attempted"
   },
-  "current_free_bytes": 3254669312,
+  "current_free_bytes": 6780952576,
   "editorial_ed8_jobs": {
     "server": "job_fbe36edaae1eab435862bdc1",
     "prepare_confirm": "job_671d32a3f87c5940764c8527"
@@ -2679,6 +2677,156 @@
     "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-ed8bf3d-map-tap-pass"
   },
   "canonical_android_dispatch_reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/canonical-android-ed8bf3d-dispatch.json",
+  "publication_recovery_actual": {
+    "source_sha": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
+    "operation_id": "op_c3cd104e789f45b29414c2a762747dfb",
+    "publication_id": "pub_da6a71c150934cf49366dfdf449dfd2f",
+    "scheduled_for_utc": "2026-10-15T09:42:50+00:00",
+    "new_generation": false,
+    "new_research": false,
+    "original_failed_operation_observed_by_product_before_new_confirmation": true,
+    "external_readback_pending": false,
+    "independent_message_id": 37819,
+    "verification": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-publication-recovery-8d09a76/segmented-delivery-verification.json"
+  },
+  "canonical_signed_android_run": 38714196535,
+  "current_prepared_release": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/paired-deployment-current-8d09a76-preparation.json",
+  "signed_current_apk": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/signed-apk-1458-ed8bf3d/street-story.apk",
+  "backend_local_full_check_job": "job_3e49c4b9dc248f4fbe384cc9",
+  "android_owner_gps104_harness": {
+    "source_sha": "f1de7594ff49c68a3c9aaa243dba49ba002fb586",
+    "backend_sha": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
+    "original_sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+    "encrypted_repository_fixture": true,
+    "real_mediastore_uri": true,
+    "coordinate_fallback_removed": true,
+    "one_native_contour_tap": true,
+    "ordinary_outbox_ack_and_reopen": true,
+    "live_e2e_dispatched": false,
+    "validation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-gps104-fixture-validation.json"
+  },
+  "editorial_revision52": {
+    "phase": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-reader-facing-rev52-270e8e7",
+    "local_checks": {
+      "passed": 80,
+      "ruff": "PASS"
+    },
+    "previous_post37819_editorial_acceptance": "OWNER_REJECTED_DRY_LIST_PAST_PRESENT_AMBIGUITY",
+    "current_restaurant_independent_source": "https://visit-kaliningrad.ru/food/shtayndamm-99/",
+    "restaurant_canonical_current_claim_saved": false,
+    "server_job": "job_f872412cf9591ff58991ebfb",
+    "client_job": "job_86896b3fc13854c83154c527"
+  },
+  "direct_editor_continuation": {
+    "parent": "/root",
+    "child": "/root/editor_continuation_direct_rev52",
+    "before": {
+      "owner_chars": 521,
+      "continuation": "model-written broad summary only",
+      "full_owner_constraints_in_context": false
+    },
+    "after_controls": [
+      {
+        "owner_chars": 521,
+        "pending_chars": 521,
+        "context_json_chars": 9664,
+        "continuation_chars": 521
+      },
+      {
+        "owner_chars": 3900,
+        "pending_chars": 3900,
+        "context_json_chars": 13045,
+        "continuation_chars": 250
+      },
+      {
+        "owner_chars": 107,
+        "pending_chars": 107,
+        "context_json_chars": 9250,
+        "continuation_chars": 107,
+        "latest_serial": 3
+      }
+    ],
+    "unchanged_session_state": true,
+    "exact_scope_preserved_in_returned_spec": true,
+    "canonical_mutation_bindings": false,
+    "network_calls": 0,
+    "gemini_qualification": false,
+    "actual_session_causality": "Actual original continue_story args not retained; controlled source omission proved, not sole cause of historical model actions.",
+    "same_framework_no_new_bridge": true,
+    "local_checks": {
+      "passed": 38,
+      "ruff": "PASS"
+    }
+  },
+  "owner_selection_clarification": "UI fact checkboxes are normal; explicit voice asks may have Mira select audience-relevant facts. Text/image asks alone do not change selection.",
+  "current_jobs_owner_scope": {
+    "server": "job_afe5478ce2f38a924db691d5",
+    "client": "job_50e5c8237e187c9c77e214d3",
+    "server_source": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
+    "framework": "0.3.11rc4",
+    "isolated_dependency_target": true,
+    "caption_refinement": "job_61c64aa05177b920255c1b4a",
+    "prior_visual_client": "job_ed109c263c5bfe336a06d5a5",
+    "visual_client": "job_461e853db4f4dad62baee02c",
+    "visual_operation": "op_e62429461a86481789edb3424ecd6d03",
+    "visual_v1_outcome": "ready_to_publish_but_root_semantic_rejected",
+    "server_status": "CANCELLED_AFTER_SCHEDULE_KNOWN_NO_ACTIVE_PUBLISH_JOBS",
+    "publication_client": "job_a8b42267c906e8b4d4acbae4"
+  },
+  "actual_selection_scope_check": {
+    "source_sha": "40e31e7541428bc99f51548b72f1a8e6c5400f47",
+    "first_status": "CLOSED_PROVIDER1011_BEFORE_SELECTION",
+    "new_commands": 0,
+    "reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-scope-current/closed-provider1011-reconciliation.json",
+    "native102_unknown_unchanged": true,
+    "status": "CLOSED_SEMANTIC_FAIL_DEFERRED_TEXT_CHANGED",
+    "closed_recovery_client": "job_759d4b4ad76750897deb345b",
+    "actual_tools": [
+      "get_facts",
+      "select_facts",
+      "set_concept",
+      "edit_text"
+    ],
+    "selected_count": 5,
+    "whole_product_accepted": false
+  },
+  "watchdog_ack53": {
+    "revision": 53,
+    "nonce": "SS-MAP-REV53-20261015T1032",
+    "blob": "bc1d14b72c054fbcebab8aad3cf4af1dba03fcfd"
+  },
+  "checks_40e31e7": {
+    "backend_run": 38720947391,
+    "android_run": 38720947408,
+    "backend": "success",
+    "android": "success",
+    "semantic_acceptance": false
+  },
+  "editor_scope_fix": {
+    "sha": "d9fc88708d6182832eb98225781e26fe4df66c90",
+    "local_tests": 70,
+    "ruff": "PASS",
+    "actual_first_control": "CLOSED_NO_NEW_TOOLS_EXISTING_SELECTION_ACKNOWLEDGED",
+    "direct_child": "/root/mira_editor_scope_prompt",
+    "new_classifier_or_gate": false
+  },
+  "checks_d9fc887": {
+    "backend_run": 38722978325,
+    "backend": "success",
+    "android_run": 38722978324,
+    "android": "success",
+    "semantic_selection_mutation_qualification": false
+  },
+  "related_map_context_rev53": {
+    "direct_child": "/root/editor_continuation_direct_rev52",
+    "current_osm_response_sha256": "5f506d06ec349eddc1d66678be3cd4c509f7e252050ddcf35fcb5edae1ff7723",
+    "restaurant_osm_id": "osm:node:5844653105",
+    "inside_selected_polygon": true,
+    "old_raw_response_available": false,
+    "canonical_fact_saved": false,
+    "original102_unknown_restarted": false,
+    "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/map-related-context-rev53/bounded-osm-result.json"
+  },
   "whole_product_accepted": false,
   "map_context_revision53": {
     "status": "DIRECT_REPLAY_AND_ADAPTER_TESTS_PASS_NOT_PROVIDER_QUALIFICATION",
@@ -2701,18 +2849,6 @@
       "ruff": "PASS"
     },
     "remaining": "Actual model admission on an independent safely closed case; explicit linked-page resolver handoff beyond source links not separately qualified."
-  },
-  "watchdog_ack53": {
-    "revision": 53,
-    "nonce": "SS-MAP-REV53-20261015T1032",
-    "blob": "bc1d14b72c054fbcebab8aad3cf4af1dba03fcfd"
-  },
-  "checks_d9fc887": {
-    "backend_run": 38722978325,
-    "backend": "success",
-    "android_run": 38722978324,
-    "android": "success",
-    "semantic_selection_mutation_qualification": false
   },
   "framework_history_budget_fix": {
     "version": "0.3.11-rc.4",
@@ -2741,7 +2877,100 @@
       "editor": 70,
       "socket_and_integrity": 6,
       "status": "PASS"
-    }
+    },
+    "actual_google_client_job": "job_50e5c8237e187c9c77e214d3"
   },
-  "candidate_dependency_patch_at_capture": "0.3.11-rc.4 archive/lock/requirements checked; commit follows this capture"
+  "selection_only_current": {
+    "status": "PASS_ACTUAL_ORDINARY_MIRA_TEXT_TOOL_COMPONENT",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/selection-add-human-detail-rc4-daf9b4a-receipt.json",
+    "job_id": "job_50e5c8237e187c9c77e214d3",
+    "new_selected": 1,
+    "selected_total": 6,
+    "only_mutation": "select_facts",
+    "deferred_content_unchanged": true,
+    "research_receipts_unchanged": true,
+    "physical_microphone": false,
+    "android": false
+  },
+  "caption_current": {
+    "job_id": "job_9d89420915c00c21f27f1ba6",
+    "status": "CAPTION_ACCEPTED_FOR_NEXT_VISUAL_COMPONENT",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/reader-concept-caption-rc4-daf9b4a-receipt.json",
+    "new_research_attempts": 0,
+    "whole_product_accepted": false,
+    "review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/reader-refinement-semantic-review.json",
+    "caption_sha256": "847ad71e6b0e3adc67cc7a8ef103391825a9964af5100edca5873d196aa39f17"
+  },
+  "framework_history_budget_actual": {
+    "status": "PASS_NARROW_ACTUAL_BOUNDARY",
+    "setup_grants": 1,
+    "history_wait_denials": 22,
+    "history_restored": true,
+    "model_select_facts_succeeded": true,
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/actual-resource-recovery.json"
+  },
+  "vibe_import_path_correction": {
+    "actual_previous_import": "6e846556e8f5e4cbc01ce834d53d4b85568e51af",
+    "current_import": "ef3d8baf7a7a7351bb7df5bdfb2fbd9c15564ccd",
+    "original_visual_status_after_fix": "verified",
+    "source_only_dropins": true,
+    "readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/paired-deployment-current-8d09a76/vibe-import-path-fix-verification.json"
+  },
+  "actual_image_presend_failure": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/visual-presend-reconciliation.json",
+  "case104_current_profile_control": {
+    "job_id": "job_5b7b05fa67ae4cb754567900",
+    "source_sha": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
+    "phase": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-current-use-map-context-daf9b4a",
+    "purpose": "qualify changed native contract and actual narrow present-use result",
+    "prior104_jobs_active": 0,
+    "original102_untouched": true,
+    "status": "COMPLETED_0_NEW_ELIGIBLE_OWNED_READ_REJECTED",
+    "duration_seconds": 51.26565599441528,
+    "native_total_tokens": 471559,
+    "new_eligible_facts": 0,
+    "attempt_id": "rattempt_495e1c8a377a32c9469c7430",
+    "direct_child": "/root/native_104_owned_read_current"
+  },
+  "reader_material102_current": {
+    "selected_count": 6,
+    "caption_review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/reader-refinement-semantic-review.json",
+    "visual_review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/visual-review.json",
+    "visual_asset": "asset_c0640fff7d6b4a53b7b368b52faef151",
+    "visual_sha256": "0858af8478918c11eac047e189526ecf212514e605e2953a6a691f88c3ffa934",
+    "publication_job": "job_a8b42267c906e8b4d4acbae4",
+    "publication_operation": "op_5bc0dac767854544b83e2f2c58804ba8",
+    "publication_id": "pub_7be680b968b84ad0806738efe8f77dc1",
+    "scheduled_for": "2026-10-15T14:27:03+02:00",
+    "test_group_only": true,
+    "separate_confirmation": true,
+    "provider_state": "scheduled",
+    "independent_delivery_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-selection-rc4-current/telegram-independent-readback.json",
+    "android": false,
+    "physical_microphone": false,
+    "original102_research_unchanged": true,
+    "telegram_message_id": 37820,
+    "posted_at": "2026-10-15T14:27:04+02:00",
+    "provider_image_viewed_by_root": true,
+    "editorial_component_status": "PASS_SEGMENTED_SAVED_STORY_REAL_PROVIDERS_NOT_ANDROID"
+  },
+  "native104_reference_rejection": {
+    "reason": "native_fact_source_not_owned_read",
+    "root_cause": "model dropped final5 from a delivered chunk ID in two paths",
+    "host_auto_repair": false,
+    "newly_admitted_facts": 0,
+    "diagnostic": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-current-use-map-context-daf9b4a/owned-reference-diagnostic-readonly.json",
+    "child": "/root/native_104_owned_read_current",
+    "fix_status": "IMPLEMENTED_87_SCOPED_PASS_BOUNDS_PASS_RUFF_PASS_NO_REAL_MODEL_RECOVERY_YET",
+    "replay": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-current-use-map-context-daf9b4a/reference-feedback-fix-readonly-replay.json"
+  },
+  "watchdog_last_checked_utc": "2026-10-15T12:25:15.168637+00:00",
+  "watchdog_latest_blob_unchanged": "bc1d14b72c054fbcebab8aad3cf4af1dba03fcfd",
+  "candidate_changes_since_measured_sha": {
+    "base_sha": "daf9b4a44302f69f4a8a5ac300132e739e512bd8",
+    "change": "Source-bound bounded exact-reference diagnostics in existing save_facts callback; raw rejected packet never repaired. No Native prompt/profile change.",
+    "scoped_tests_passed": 87,
+    "final_bounds_check_passed": 1,
+    "ruff": "PASS",
+    "real_model_recovery_after_fix": "NOT_RUN"
+  }
 }

@@ -546,11 +546,19 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 candidate['native_checkpoint_call_id'] = checkpoint_owner['call_id']
                 outcome = await adapter.service.confirm_agent_fact(dict(job_row), context['run_id'], candidate, agent)
                 outcomes.append({key: outcome.get(key) for key in
-                    ('status', 'reason', 'fact_id', 'source_version_id', 'subject_scope')})
+                    ('status', 'reason', 'fact_id', 'source_version_id', 'subject_scope')}
+                    | ({'reference_diagnostics': outcome['reference_diagnostics']}
+                        if outcome.get('reference_diagnostics') else {}))
             value = {'outcomes': outcomes,
                 'saved_fact_ids': sorted({x['fact_id'] for x in outcomes
                     if x.get('status') == 'supported' and x.get('fact_id')}),
                 'meaning': 'Durable partial delivery; continue worthwhile research in this same turn. No sufficiency or overall completion implied.'}
+            if any(outcome.get('reference_diagnostics') for outcome in outcomes):
+                value['instruction'] = (
+                    'A rejected chunk reference was not saved. Check the named fields against your actual retained '
+                    'evidence and its exact received_chunk_ids, then submit corrected assessments in a NEW save_facts '
+                    'call in this same turn. Do not repeat unchanged arguments or fetch again solely to correct a '
+                    'reference. The host has not repaired the original packet or supplied a semantic assessment.')
         elif name == 'read_research_memory':
             value = memory_page(research_memory, args['section'], args.get('cursor'))
         elif name == 'websearch':

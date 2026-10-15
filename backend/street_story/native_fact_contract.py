@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 
 from jsonschema import Draft202012Validator
 
@@ -13,6 +14,33 @@ from .review_packets import ATOMIC_PROPOSITION_CHECKS
 
 PROJECTION_CONTRACT = 'native-complete-assessment-claims-v2'
 SOURCE_READ_CONTRACT = 'native-frozen-chunks-once-v1'
+
+
+class NativeFactSourceReferenceInvalid(ValueError):
+    """A rejected reference with feedback from this already verified own read."""
+
+    def __init__(self, assessment, *, version, content_sha256, received):
+        super().__init__('native_fact_source_not_owned_read')
+        invalid = []
+        for path, values in ((['assessment', 'chunk_ids'], assessment['chunk_ids']),
+                (['assessment', 'checks', 'relation_basis', 'chunk_ids'],
+                    assessment['checks']['relation_basis']['chunk_ids'])):
+            for index, value in enumerate(values):
+                if value not in received:
+                    # Public diagnostic identifiers only; arbitrary supplied
+                    # strings may contain private payloads and are not echoed.
+                    invalid.append({'path': [*path, index],
+                        **({'reference': value} if re.fullmatch(r'chunk_[0-9a-f]{1,64}', value)
+                            else {'reference_redacted': True})})
+        keys = sorted(received)
+        self.reference_diagnostics = {
+            'contract': 'native-owned-chunk-reference-feedback-v1',
+            'source_version_id': version, 'content_sha256': content_sha256,
+            'invalid_references': invalid[:16], 'invalid_references_truncated': len(invalid) > 16,
+            'received_chunk_ids': keys[:16],
+            'received_chunk_ids_truncated': len(keys) > 16,
+            'meaning': 'Reference correction only, from this source version and already received chunks. '
+                'No fact accepted or semantic verdict supplied.'}
 
 SOURCE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
     'url': {'type': 'string'}, 'source_version_id': {'type': 'string'},
@@ -377,14 +405,19 @@ def owned_assessment(db, candidate, agent, *, story, run_id):
     required = set(row['chunk_ids']) | set(row['checks']['relation_basis']['chunk_ids'])
     compact = (read or {}).get('read_contract') == SOURCE_READ_CONTRACT
     if (not read or not frozen or frozen['access_scope'] != 'public' or not chunks
-            or not required.issubset(chunks.keys() & received.keys())
-            or any(received[key] != chunks[key] for key in required)
+            or any(received[key] != chunks[key] for key in required & chunks.keys() & received.keys())
             or (compact and received != chunks)
             or (paged and any(chunks.get(key) != text for key, text in received.items()))
             or (not compact and not paged and read.get('normalized_text') != frozen['normalized_text'])
             or frozen['content_sha256'] != basis['content_sha256']
             or hashlib.sha256(frozen['normalized_text'].encode()).hexdigest() != basis['content_sha256']):
         raise ValueError('native_fact_source_not_owned_read')
+    if not required.issubset(chunks.keys() & received.keys()):
+        # Ownership and source integrity above must pass before exposing even
+        # public identifiers. Never repair the packet or suggest another source.
+        raise NativeFactSourceReferenceInvalid(row, version=version,
+            content_sha256=basis['content_sha256'],
+            received={key for key, text in received.items() if chunks.get(key) == text})
     digest = hashlib.sha256(json.dumps([agent['attempt_id'], basis, fact, run_id, story['_research_job_id']],
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
     assessment = {'attempt_id': 'rattempt_' + digest, 'phase': 'completed',

@@ -436,8 +436,11 @@ class AgentEvidenceMixin:
                         story=story, run_id=run_id)
                 except (ValueError, TypeError, KeyError) as exc:
                     code = str(exc)
+                    from .native_fact_contract import NativeFactSourceReferenceInvalid
                     return {'status': 'unverified', 'reason': code if code.startswith('native_fact_')
-                        and len(code) < 120 else 'native_research_basis_invalid'}
+                        and len(code) < 120 else 'native_research_basis_invalid',
+                        **({'reference_diagnostics': copy.deepcopy(exc.reference_diagnostics)}
+                            if isinstance(exc, NativeFactSourceReferenceInvalid) else {})}
             retained = None
             attempt = db.execute('SELECT role FROM research_provider_attempts WHERE attempt_id=? AND story_id=?',
                 (agent.get('attempt_id'), story['id'])).fetchone()
