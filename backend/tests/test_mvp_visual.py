@@ -22,7 +22,7 @@ PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = 'ef0bd04ae30e86b04e608b00dc9559c735794557af39ca8c6acf91148f19b542'
+PROMPT_SHA = '91c02584a942ec1cbafd014ed8bc3343c9761b6ce7c56c2e56d0e67e3b0ad6d2'
 
 
 class NoopOSM:
@@ -185,7 +185,7 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
     })
     assert all(fact in brief for fact in facts)
     assert "каждый выбранный факт" in brief
-    assert "Every selected fact must remain legible" in brief
+    assert "Express every selected claim's meaning" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
