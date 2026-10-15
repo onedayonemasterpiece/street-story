@@ -1613,7 +1613,13 @@ async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
+@pytest.mark.parametrize('owner_request', [
+    'Выбери самые интересные факты для аудитории. Пока только выбор, текст не меняй.',
+    'Выбери самые интересные факты и затем напиши по ним текст.',
+])
+async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path, owner_request):
+    from street_story.live_author_intent import begin_turn
+
     svc, adapter, session, _events = make_service(tmp_path)
     story_id = session.resource_id
     with svc.store.tx() as db:
@@ -1622,10 +1628,22 @@ async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
             (story_id, "f1", "Проверенный факт", 0.9, 1, 1, "[]"),
         )
         db.execute("UPDATE stories SET draft_text='Авторский текст' WHERE id=?", (story_id,))
+    begin_turn(session, owner_request, origin='text')
     result = await adapter.execute_tool(
         session, {"name": "select_facts", "id": "facts-1", "args": {"fact_ids": ["f1"]}}
     )
-    assert result["story"]["draft_text"] == "Авторский текст"
+    assert svc.story(story_id)['draft_text'] == 'Авторский текст'
+    assert result['selection_saved'] is True
+    assert result['draft_text_changed'] is False
+    assert 'draft_text' not in result['story']
+    assert result['current_owner_request'] == {'text': owner_request, 'origin': 'text', 'serial': 1}
+    # The canonical result stays complete; only the model receipt omits duplicate
+    # old prose. The same acknowledgement does not classify or block a subsequent
+    # explicitly requested edit.
+    with svc.store.connection() as db:
+        saved = json.loads(db.execute('SELECT result_json FROM live_commands WHERE command_id=?',
+                                     ('facts-1',)).fetchone()[0])
+    assert saved['story']['draft_text'] == 'Авторский текст'
 
 
 @pytest.mark.asyncio

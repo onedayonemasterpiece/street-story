@@ -633,9 +633,9 @@ FUNCTIONS = [
     _tool_schema(
         "select_facts",
         "Change selected evidence-backed facts only when the author explicitly asks to choose or change facts. "
-        "For a request to compose now, read get_facts with eligibility=eligible and choose reviewed facts. "
+        "Read get_facts for the eligible inventory before choosing. Saving selection does not compose a draft. "
         "Evidence attachment alone is not review. draft_blockers identifies selected facts still awaiting review; "
-        "do not announce a saved draft until edit_text succeeds. "
+        "do not fix those blockers or rewrite existing content unless the author requested that work. "
         "A concept, draft or visual request does not authorize changing the saved selection. "
         "When the author asks to preserve the selection, do not call this tool.",
         {
@@ -645,8 +645,8 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "set_concept",
-        "Store or replace the current publication concept/angle without silently rewriting the draft. "
-        "Use when the author says what the story should focus on. Preserve the saved fact selection; "
+        "Save a publication concept/angle only when the author asks to save or change it. "
+        "Audience or angle criteria for choosing facts alone do not request saving a concept. Preserve the saved fact selection; "
         "a new angle does not authorize choosing different facts. If other facts would help, "
         "ask the author before changing selection.",
         {"concept": {"type": "string"}},
@@ -976,12 +976,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'claim, date or source belongs to review: continue_story(stage=review) before '
                 'reading full source evidence. A selection or editing request does not require '
                 'that transition. Paginate get_facts for the full '
-                'eligible inventory and get_evidence for each chosen claim\'s own passages. '
+                'eligible inventory; use get_evidence for a claim\'s own passages when clarification is needed. '
                 'Choose facts semantically according to the owner\'s request; one checkbox '
                 'chooses one independent substantive claim. Use select_facts only on an explicit '
                 'request to choose or change selection. Save that choice with select_facts before '
                 'saying facts are selected; only its successful durable receipt confirms selection. '
-                'Persist an owner\'s angle with set_concept '
+                'If the request is only to choose facts, acknowledge the saved choice and wait. '
+                'Do not call set_concept, edit_text or generate_visual to finish that selection request, '
+                'even when an earlier draft or image needs refreshing. An opening goal such as a better '
+                'city story does not override a later explicit instruction to save only the choice first. '
+                'When the owner requests saving or changing an angle, use set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
                 'change selection. For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
@@ -989,7 +993,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Every factual attribute must follow from the exact selected claims. Extra '
                 'attributes in an own source passage, unselected inventory or an old draft '
                 'do not authorize stronger assertions in the new text. '
-                'Create a reader-facing city story: explain what makes this particular building '
+                'When writing the requested text, create a reader-facing city story: explain what makes this particular building '
                 'interesting through selected supported details or a visible feature, rather than '
                 'a tenant list or a repetition of visual labels. End with confirmed_place address '
                 'and actual city hashtag when available. Mark former uses explicitly as past in '
@@ -1971,6 +1975,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name == 'compare_place_images' and result.get('comparison_id'):
             return result
         projected = self._model_result(name, result)
+        if name == 'select_facts':
+            # Repeat the accepted request at the decision boundary, not a router
+            # paraphrase. The model interprets it; the host does not classify prose
+            # or infer permission to refresh stale editorial content.
+            turn = session.state.get('author_turn') or {}
+            if str(turn.get('text') or '').strip():
+                projected['current_owner_request'] = {
+                    'text': str(turn['text']).strip()[:4000],
+                    'origin': turn.get('origin'), 'serial': turn.get('serial'),
+                }
         if name in {'resolve_place', 'reject_place'} or (name == 'record_place_comparison' and not result.get('matched')):
             return await self._next_visual_result(session, projected)
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
@@ -2080,7 +2094,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             projected["story"] = {key: story[key] for key in keys if key in story}
             if name not in {"search_web", "save_research_facts"} and "draft_text" not in result:
                 projected["story"]["draft_text"] = str(story.get("draft_text") or "")[:5000]
-        if name == "search_web":
+        if name == 'select_facts':
+            # This receipt confirms selection. Old draft prose is not another
+            # pending instruction; its full bytes remain in ordinary read_topic.
+            if isinstance(projected.get('story'), dict):
+                projected['story'].pop('draft_text', None)
+            projected['selection_saved'] = True
+            projected['draft_text_changed'] = False
+            projected['instruction'] = (
+                'Выбор фактов сохранён. Это не изменение замысла, текста или изображения. '
+                'Пометка об их устаревании не поручает их обновлять. Сверь текущий запрос автора: '
+                'если он просил пока сохранить только выбор, кратко сообщи о выборе и жди. '
+                'Другие действия выполняй лишь когда они также запрошены в текущей команде; '
+                'явные отсрочки имеют приоритет над общей целью и прежним разговором.'
+            )
+        elif name == "search_web":
             discovery_only = bool(result.get("discovery_only"))
             compact_sources = []
             for source in result.get("sources") or []:
