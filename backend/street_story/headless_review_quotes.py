@@ -1,4 +1,4 @@
-"""Private literal addressing for frozen headless reviews; no semantic verdicts."""
+"""Literal addressing for frozen source-backed reviews; no semantic verdicts."""
 from copy import deepcopy
 import hashlib
 
@@ -16,6 +16,12 @@ def _entry(packet, item):
                    'offset': item['offset'], 'passage_sha256': digest}
 
 
+def with_quote_ref(packet, item):
+    """Address an unchanged slice before the existing response-size check."""
+    label, _ = _entry(packet, item)
+    return {**item, 'quote_ref': label}
+
+
 def with_quote_catalog(packet):
     """Label every already bounded literal slice without duplicating source text."""
     packet = deepcopy(packet)
@@ -28,6 +34,35 @@ def with_quote_catalog(packet):
         catalog[label] = entry
     packet['quote_catalog'] = catalog
     return packet
+
+
+def remember_live_page(session, packet):
+    """Reuse literal addressing for slices issued in this interactive session."""
+    addressed = with_quote_catalog(packet)
+    received = session.state.setdefault('review_quote_packets', {}).setdefault(packet['packet_ref'],
+        {'packet_ref': packet['packet_ref'], 'items': [], 'quote_catalog': {}})
+    for item in addressed['items']:
+        label = item['quote_ref']
+        if label not in received['quote_catalog']:
+            received['items'].append(item)
+            received['quote_catalog'][label] = addressed['quote_catalog'][label]
+    # The model needs the inline address, not a duplicate address catalog.
+    return {key: value for key, value in addressed.items() if key != 'quote_catalog'}
+
+
+def resolve_live_rows(session, args):
+    """Resolve only issued labels; leave semantic verdicts and raw args intact."""
+    decisions = args.get('decisions')
+    if not isinstance(decisions, list) or not any(
+            isinstance(row, dict) and isinstance(row.get('basis_quotes'), list)
+            and any(isinstance(q, str) and q.startswith(PREFIX) for q in row['basis_quotes'])
+            for row in decisions):
+        return decisions
+    received = session.state.get('review_quote_packets', {}).get(args.get('packet_ref'))
+    if not received:
+        raise ConflictError('live_fact_review_evidence_invalid',
+                            'Read this packet in the current session before choosing its quote_ref labels.')
+    return resolve_rows(received, args)['decisions']
 
 
 def response_schema(packet, public_schema):

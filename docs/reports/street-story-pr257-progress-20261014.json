@@ -6,14 +6,14 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T03:13:55.428580+00:00",
+  "updated_at_utc": "2026-10-15T03:26:16.592466+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
   "last_action": "109 affected Live/review tests and Ruff pass for session-bound omitted run reference. Earlier actual131 attempt closed with0packets, no semantic writes; next one scoped model review uses exact corrected code. Prepared142/EF release remains frozen and unactivated.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "status": "none; actual131review client closed after known rejection; existing packet preserved",
+    "status": "none; existing131Live closed by known review contract budget; source/packet/jobs retained",
     "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
@@ -79,7 +79,7 @@
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Resume existing131 packet p88ec9c98ac7d after known closed failed finalize; corrected observer allows ordinary model self-correction. No new discovery/model framework. Exact142/EF production activation still awaits owner answer.",
+  "next_step": "One scoped real-Mira continuation of original131packet after specifically changed source-address interface; no research job, source search, visual or publish. Record semantic outcome without promoting interface checks to fact validity. Production142/EF decision remains pending.",
   "stages": [
     {
       "stage": 0,
@@ -809,9 +809,9 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "131_review_smoke_recovery_fix",
+  "current_stage": "live_existing_quote_refs_verified_pending_real_model",
   "current_blocker": "Awaiting owner decision on exact reviewed paired production rollout; current public API still93a/Vibe6e. Full corpus/physical handset acceptance remain open.131 source-attributed date correction in progress.",
-  "updated_at": "2026-10-15T03:13:55.428580+00:00",
+  "updated_at": "2026-10-15T03:26:16.592466+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38672152384,
@@ -1089,7 +1089,7 @@
       }
     }
   ],
-  "work_revision": 74,
+  "work_revision": 75,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1552,13 +1552,14 @@
     "superseded_apk_bytes": 54718338,
     "own_new_install_wheel_cache_bytes": 74058738,
     "own_discarded_pr_debug_apk_bytes": 53154960,
-    "all_deletion_bytes_including_new_disposables": 560130779,
+    "all_deletion_bytes_including_new_disposables": 560917864,
     "not_a_net_free_space_claim": true,
     "free_bytes_now": 368676864,
     "prepared_inactive_ss_release": "288MiB retained for next authorized deployment; no active pointer/service changed",
     "remaining_own_worktrees": "two active; clean docs worktree removed previously",
     "managed_dry_run_and_apply": true,
-    "actual_provider_source_unknown_evidence_preserved": true
+    "actual_provider_source_unknown_evidence_preserved": true,
+    "extra_closed_review_fixtures_bytes": 787085
   },
   "case131_targeted_date_review": {
     "phase": "scoped-date-conflict-review-131-bound-api-142f478",
@@ -1621,7 +1622,7 @@
       ]
     }
   ],
-  "current_source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
+  "current_source_sha": "f09e8c04b865b005ae30634b8391a6df4f43ce60",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1640,5 +1641,60 @@
     "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-smoke-recovery.log",
     "behavior": "Observe same model correction after bounded own-evidence/decision/canonical validation errors. No tool/input replay. Unresolved spoken completion, terminal budget exhaustion or subsequent failure remain failures.",
     "runtime_changes": false
+  },
+  "case131_packet_continuation": {
+    "session_id": "live_d3b97883e60b432990a38fe94ef76abd",
+    "packet_ref": "p88ec9c98ac7d",
+    "status": "CLOSED_REVIEW_QUOTE_VALIDATION_BUDGET_FAILURE",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-packet-continuation-f09e8c0/continue-existing-packet-131-f09e8c0-receipt.json",
+    "runtime_same_as": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
+    "at_utc": "2026-10-15T03:22:32.072117+00:00",
+    "same_request_quote_rejections": 3,
+    "new_semantic_decisions": 0,
+    "new_research_jobs": 0,
+    "no_provider_research_sends": true,
+    "exact_quote_values_retained": false,
+    "routine_diagnostic_privacy": "Raw failed args are not retained by normal diagnostic; closed event stream409, no requests replayed. Literal mismatch code and addressed next_args retained. Do not invent a character-level cause.",
+    "observer_now_allowed_correction": true,
+    "same_packet_preserved": true
+  },
+  "live_quote_ref_interface": {
+    "status": "LOCAL_VERIFIED_PENDING_ACTUAL_MIRA",
+    "basis": "Reuses existing headless_review_quotes own literal addressing; no new semantic judge/framework",
+    "local_affected_tests": 121,
+    "followup_addressing_tests": 48,
+    "test_counts_overlap": true,
+    "logs": [
+      "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/live-review-quote-refs-final.log",
+      "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/live-review-quote-refs-addressing.log"
+    ],
+    "semantic_verdicts_overridden": false,
+    "raw_model_request_preserved": true,
+    "unissued_foreign_wrong_evidence_refs_rejected": true,
+    "unchanged_page_limit": 5500
+  },
+  "latest_full_checks": {
+    "source_sha": "f09e8c04b865b005ae30634b8391a6df4f43ce60",
+    "backend": {
+      "run_id": 38675233047,
+      "status": "success",
+      "passed": 3810,
+      "skipped": 55,
+      "warnings": 2,
+      "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-f09e8c0-ci.log"
+    },
+    "android": {
+      "run_id": 38675232998,
+      "status": "success",
+      "emulator_tests": 42,
+      "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/android-f09e8c0-ci.log"
+    },
+    "owner_signed_apk_source_remains": "142f47801fb60610d55ce70b87af15d93c9e3e4d"
+  },
+  "resource_release_observation": {
+    "session": "live_d3b97883e60b432990a38fe94ef76abd",
+    "status": "SDK_ASYNC_RELEASE_CLOSED_CLIENT_WARNING",
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-packet-continuation-f09e8c0/server-review.log",
+    "lease_accounting_outcome_not_inferred": "No accounting reset, quota bypass or model request replay. Original semantic calls ended with known validation failure."
   }
 }

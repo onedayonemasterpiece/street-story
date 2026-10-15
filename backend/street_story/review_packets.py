@@ -287,7 +287,7 @@ def load(adapter, session, db, ref):
 REVIEW_SLICE_CONTRACT = 'byte-bounded-own-passages-v2'
 
 
-def bounded_review_slices(page, slices):
+def bounded_review_slices(page, slices, *, quote_refs=False):
     """Fit each own passage beside the complete claim and selected identity.
 
     Split text at character boundaries, preserving every offset and final-tail
@@ -296,6 +296,9 @@ def bounded_review_slices(page, slices):
     result = []
 
     def append(item):
+        if quote_refs:
+            from .headless_review_quotes import with_quote_ref
+            item = with_quote_ref(page, item)
         cursor = len(result) + 1
         probe = {**page, 'items': [item], 'next_cursor': cursor, 'has_more': True,
             'next_tool': 'get_review_packet',
@@ -552,7 +555,7 @@ def read(adapter, session, args):
             'the new candidate pending later arbitration. Require explicit atomic, support_complete '
             'and qualifiers_preserved checks plus own literal basis_quotes. This is partial candidate '
             'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
-    slices = bounded_review_slices(page, slices)
+    slices = bounded_review_slices(page, slices, quote_refs=args.get('_live_quote_refs') is True)
     if page.get('nearby_existing_claims') and cursor < len(slices):
         while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
             page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
@@ -585,7 +588,9 @@ def validate_decision(decision, payload, ref):
     if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
         raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
     if decision.get('_row_error'):
-        raise ConflictError('live_fact_review_evidence_invalid', 'The original own-quote/check row failed validation.')
+        raise ConflictError('live_fact_review_evidence_invalid',
+            'The original own-quote/check row failed validation. Read get_review_packet with packet_ref=' + ref
+            + '; use only its received quote_ref for this fact and selected evidence.')
     verdict = decision.get('verdict')
     if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch', 'insufficient', 'repair_needed'}:
         raise ConflictError('live_review_decisions_invalid', 'Return supported/not_supported/contradicted/role_mismatch for EVERY fact, including the canonical one. Equivalence alone is not support; use optional equivalent_to only for duplicates.')
@@ -634,7 +639,7 @@ def validate_decision(decision, payload, ref):
             next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
             raise ConflictError('live_fact_review_evidence_invalid',
                 'next_tool=get_review_packet; next_args=' + canonical(next_args) +
-                f". Fact {decision['fact']}: reread own evidence and copy a short literal quote. "
+                f". Fact {decision['fact']}: reread own evidence and choose its received quote_ref or copy a short literal quote. "
                 'Do not repeat finalize with the invalid quote or borrow another fact.')
         if verdict == 'supported' and not quotes:
             raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
@@ -656,7 +661,8 @@ def prepare(adapter, session, args):
                 raise ConflictError('live_review_decision_replay_mismatch', 'Final packet decisions are immutable.')
             return json.loads(row['result_json']), None, None
         decisions = json.loads(row['decisions_json'])
-        incoming = args.get('decisions')
+        from .headless_review_quotes import resolve_live_rows
+        incoming = resolve_live_rows(session, args)
         if not isinstance(incoming, list) or len(incoming) > 240:
             raise ConflictError('live_review_decisions_invalid', 'Return at most 240 explicit decisions per operation.')
         from .fact_page_boundary import partition_rows

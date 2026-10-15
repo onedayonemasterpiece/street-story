@@ -598,7 +598,7 @@ FUNCTIONS = [
                 "reason": {"type": "string", "description": "Brief basis in THIS fact's attached spans; do not borrow unbound evidence from another candidate."},
                 "atomic": {"type": "boolean"}, "support_complete": {"type": "boolean"}, "qualifiers_preserved": {"type": "boolean"},
                 "claims": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}, "description": "Nonempty for EVERY verdict, including insufficient: enumerate assertions present in the candidate, not only supported assertions. Each depicted person is independently selectable. Multiple entries require repair/split before supported."},
-                "basis_quotes": {"type": "array", "items": {"type": "string"}, "description": "Literal short quotations from this fact's selected attached evidence. Every substantive attribute must follow; never quote another candidate's passage. Empty only for unsupported decisions."},
+                "basis_quotes": {"type": "array", "items": {"type": "string"}, "description": "Prefer exact quote_ref labels from this fact's received packet slices, choosing only its selected evidence numbers. Or copy short literal own-evidence quotations. A label addresses text, not semantic support: check every substantive attribute yourself. Empty only for unsupported decisions."},
                 "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
                 "equivalent_to_existing": {"type": "string", "description": "For extractor candidate packets only: ID from nearby_existing_claims for a supported semantic duplicate. Existing owner claims remain unchanged."},
                 "conflicts_with_existing": {"type": "array", "items": {"type": "string"}, "description": "IDs from nearby_existing_claims contradicted by this candidate; candidate stays withheld pending an explicit later arbitration."},
@@ -889,6 +889,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Follow its cursors and next_args; get_review_context reads retained source '
                 'versions, not a new search. Follow assess_review_packet advice when requested, '
                 'but decide support yourself from the own passages and exact physical subject. '
+                'Prefer received quote_ref labels in basis_quotes with their displayed evidence '
+                'numbers. A label resolves unchanged own text, not a support verdict; never '
+                'paraphrase a candidate into a source quotation. '
                 'For defective candidates group precise repair_research_fact replacements, '
                 'then read and finalize the new revisions. finalize_fact_review saves only '
                 'the current frozen decisions; its receipt is required before reporting a '
@@ -927,7 +930,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         elif capability == 'editor':
             overlay = (
                 'Reuse eligible facts without automatic independent re-review; pending unrelated '
-                'candidates do not block the requested edit. Paginate get_facts for the full '
+                'candidates do not block the requested edit. An explicit request to recheck a '
+                'claim, date or source belongs to review: continue_story(stage=review) before '
+                'reading full source evidence. A selection or editing request does not require '
+                'that transition. Paginate get_facts for the full '
                 'eligible inventory and get_evidence for each chosen claim\'s own passages. '
                 'Choose facts semantically according to the owner\'s request; one checkbox '
                 'chooses one independent substantive claim. Use select_facts only on an explicit '
@@ -1701,7 +1707,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name == "get_facts":
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
-            packet = review_packets.read(self, session, args)
+            from .headless_review_quotes import remember_live_page
+            packet = review_packets.read(self, session, {**args, '_live_quote_refs': True})
+            if packet.get('packet_ref') and 'items' in packet:
+                packet = remember_live_page(session, packet)
             session.state["research_run_id"] = packet["run_id"]
             session.state.setdefault("research_run_ids", []).append(packet["run_id"])
             self._emit_research_progress(session, stage="review" if packet.get("review_available", True) else "extracting", active=True, query="", source_count=0, fact_count=packet.get("total_facts", 0))
