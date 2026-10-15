@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from itertools import islice
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
@@ -510,7 +511,22 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
             raise ValueError('retained_source_tool_outside_scope')
         allowed_tools = receipt.get('provided_tools', TOOLS) if route.provider_id == 'codex_native' else TOOLS
         declaration = next((item for item in allowed_tools if item['name'] == name), None)
-        if not declaration or not Draft202012Validator(declaration['parameters']).is_valid(args):
+        if not declaration:
+            raise ValueError('agent_tool_outside_scope')
+        validator = Draft202012Validator(declaration['parameters'])
+        if route.provider_id == 'codex_native' and name == 'save_facts':
+            # Report only schema-owned names/rules, not offending values or
+            # jsonschema messages (which can contain private source payloads).
+            issues = []
+            for error in islice(validator.iter_errors(args), 8):
+                issue = {'path': list(error.absolute_path), 'rule': error.validator}
+                if error.validator == 'required':
+                    issue['missing_fields'] = [field for field in error.validator_value if field not in error.instance]
+                issues.append(issue)
+            if issues:
+                from .native_research_tools import ResearchToolArgumentsInvalid
+                raise ResearchToolArgumentsInvalid(issues)
+        elif not validator.is_valid(args):
             raise ValueError('agent_tool_outside_scope')
         client = adapter.service.providers.gemini
         if name == 'save_facts':

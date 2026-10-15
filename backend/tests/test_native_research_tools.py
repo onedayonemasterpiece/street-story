@@ -2,10 +2,11 @@ import asyncio
 import io
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
-from street_story.native_research_tools import ResearchToolStream, attach_research_tools
+from street_story.native_research_tools import ResearchToolStream, attach_research_tools, ResearchToolArgumentsInvalid
 
 
 def test_only_dynamic_requests_leave_original_platform_reader():
@@ -58,3 +59,56 @@ async def test_callback_wait_does_not_block_drain_and_keeps_original_process():
     assert replies[0][0] is original_process and replies[0][1]['id'] == 7
     result = replies[0][1]['result']
     assert result['success'] and json.loads(result['contentItems'][0]['text']) == {'source_version_id': 'frozen'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('typed', [False, True])
+async def test_tool_reply_reports_only_explicit_safe_schema_issues(typed):
+    replies, replied = [], asyncio.Event()
+    loop = asyncio.get_running_loop()
+    process = type('Process', (), {})()
+    request = {'id': 7, 'method': 'item/tool/call', 'params': {
+        'threadId': 'owner', 'turnId': 'turn', 'callId': 'save', 'tool': 'save_facts',
+        'arguments': {'private_source': 'DO_NOT_LEAK'}}}
+    process.stdout = io.StringIO(json.dumps(request) + '\n')
+    class Client:
+        def _reader_loop(self, process, generation):
+            list(process.stdout)
+        def _write_for_process(self, original, response):
+            assert original is process
+            replies.append(response)
+            loop.call_soon_threadsafe(replied.set)
+    issues = [{'path': ['facts', 0], 'rule': 'required', 'missing_fields': ['source_date']}]
+    async def callback(params):
+        if typed:
+            raise ResearchToolArgumentsInvalid(issues)
+        raise ValueError('private exception message DO_NOT_LEAK')
+    client = attach_research_tools(Client(), callback)
+    await asyncio.to_thread(client._reader_loop, process, 1)
+    await asyncio.wait_for(replied.wait(), 2)
+    result = replies[0]['result']
+    assert result['success'] is False and 'DO_NOT_LEAK' not in json.dumps(result)
+    body = json.loads(result['contentItems'][0]['text'])
+    if typed:
+        assert body['validation_issues'] == issues and body['saved'] is False
+    else:
+        assert body == {'error_code': 'native_research_tool_failed', 'error_type': 'ValueError'}
+
+
+def test_rejected_malformed_call_is_not_an_assessment_delivery():
+    from street_story.native_fact_contract import delivered_candidates
+    receipt = {'thread_id': 'own', 'turn_id': 'turn', 'raw_result': {'facts': []},
+        'native_tool_calls': {'bad': {'phase': 'rejected', 'input': {'name': 'save_facts',
+            'thread_id': 'own', 'turn_id': 'turn', 'arguments': {'facts': [{'missing': 'required fields'}]}}}}}
+    assert delivered_candidates(receipt) == {'facts': []}
+    assert receipt['native_tool_calls']['bad']['phase'] == 'rejected'
+
+
+def test_model_visible_validation_contract_changes_native_profile(tmp_path, monkeypatch):
+    from street_story.native_fact_research import NativeFactResearch
+    from street_story import native_research_tools
+    provider = NativeFactResearch(SimpleNamespace(store=None, settings=SimpleNamespace(data_dir=tmp_path)),
+                                 admission=None, checkpoint=None)
+    current = provider.profile_fingerprint
+    monkeypatch.setattr(native_research_tools, 'TOOL_VALIDATION_CONTRACT', 'different-schema-feedback')
+    assert provider.profile_fingerprint != current

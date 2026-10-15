@@ -104,6 +104,7 @@ class NativeFactResearch:
         from .native_source_reads import SOURCE_PAGE_CONTRACT, CURSOR_CONTRACT
         from .fact_agent_providers import native_tools
         from .native_received_sources import CONTRACT as RECEIVED_CONTENT_CONTRACT
+        from .native_research_tools import TOOL_VALIDATION_CONTRACT
         return hashlib.sha256(json.dumps({'contract': CONTRACT, 'instructions': INSTRUCTIONS,
             'final_instructions': FINAL_INSTRUCTIONS, 'schema': RESULT_SCHEMA, 'tools': native_tools(),
             'source_read_contract': SOURCE_READ_CONTRACT,
@@ -113,6 +114,7 @@ class NativeFactResearch:
             'resource_reporting_contract': 'native-provider-quota-stop-v2',
             'search_delivery_contract': 'native-discovery-locations-only-v1',
             'projection_contract': PROJECTION_CONTRACT,
+            'tool_validation_contract': TOOL_VALIDATION_CONTRACT,
             'transport': TRANSPORT, 'observation_slice_seconds': self.timeout,
             'hosted_discovery_mode': 'live'}, sort_keys=True).encode()).hexdigest()
 
@@ -198,6 +200,9 @@ class NativeFactResearch:
                     raise ValueError('native_research_tool_call_changed')
                 if prior.get('phase') == 'completed':
                     return prior['result']
+                if prior.get('phase') == 'rejected':
+                    from .native_research_tools import ResearchToolArgumentsInvalid
+                    raise ResearchToolArgumentsInvalid(prior['result']['validation_issues'])
                 if not saving:
                     raise ValueError('native_research_tool_original_pending')
                 # Only the exact local ledger save is recoverable here. Its
@@ -227,9 +232,18 @@ class NativeFactResearch:
                     LOG.info('street_story_native_source thread_id=%s turn_id=%s call_id=%s source_call_id=%s source_ref=%s chars=%s status=retained',
                         tid, turn, cid, proof['call_id'], proof['source_ref'], len(proof['content']))
             else:
-                result = (await callback(frozen['name'], frozen['arguments'],
-                checkpoint_owner={'call_id': cid, 'thread_id': tid, 'turn_id': turn})
-                if saving else await callback(frozen['name'], frozen['arguments']))
+                from .native_research_tools import ResearchToolArgumentsInvalid
+                try:
+                    result = (await callback(frozen['name'], frozen['arguments'],
+                        checkpoint_owner={'call_id': cid, 'thread_id': tid, 'turn_id': turn})
+                        if saving else await callback(frozen['name'], frozen['arguments']))
+                except ResearchToolArgumentsInvalid as exc:
+                    call.update(phase='rejected', result=exc.public_result,
+                                completed_at=self.service.store.now())
+                    await save()
+                    LOG.info('street_story_native_tool_rejected thread_id=%s turn_id=%s call_id=%s tool=%s code=%s',
+                             tid, turn, cid, frozen['name'], 'agent_tool_arguments_invalid')
+                    raise
             guard()
             result = {**result, 'research_resources': {
                 'contract': 'native-provider-quota-stop-v2',

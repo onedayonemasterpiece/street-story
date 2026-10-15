@@ -68,6 +68,20 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
             receipt['native_tool_calls']['read-one'] = {'phase': 'completed',
                 'input': {'name': kind}, 'result': read, 'completed_at': 1}
             packet = {'facts': [fact]}
+            # Actual102 failure: the nested assessment had a date while the
+            # fact omitted its own required source_date. No server fill-in.
+            from street_story.native_research_tools import ResearchToolArgumentsInvalid
+            invalid = copy.deepcopy(packet)
+            del invalid['facts'][0]['source_date']
+            before_facts = copy.deepcopy(service.story(job['story_id'])['facts'])
+            with pytest.raises(ResearchToolArgumentsInvalid) as error:
+                await kwargs['callback']('save_facts', invalid, checkpoint_owner={
+                    'call_id': 'invalid-save', 'thread_id': 'original-luna', 'turn_id': 'original-turn'})
+            assert error.value.public_result['validation_issues'] == [
+                {'path': ['facts', 0], 'rule': 'required', 'missing_fields': ['source_date']}]
+            assert error.value.public_result['saved'] is False
+            assert 'source_date' not in invalid['facts'][0]
+            assert service.story(job['story_id'])['facts'] == before_facts
             receipt['native_tool_calls']['save-one'] = {'phase': 'submitted', 'submitted_at': 2, 'input': {
                 'thread_id': 'original-luna', 'turn_id': 'original-turn', 'name': 'save_facts',
                 'arguments': packet, 'execution_contexts': [

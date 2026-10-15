@@ -202,9 +202,14 @@ async def test_owned_save_callback_recovers_same_call_without_inference_or_quota
     def attach(client, callback):
         callbacks.append(callback)
         return client
-    local = {}
+    local, rejections = {}, []
     async def persist(name, args, *, checkpoint_owner):
         assert name == 'save_facts' and args == {'facts': []}
+        if checkpoint_owner['call_id'] == 'invalid-original':
+            from street_story.native_research_tools import ResearchToolArgumentsInvalid
+            rejections.append(True)
+            raise ResearchToolArgumentsInvalid([
+                {'path': ['facts', 0], 'rule': 'required', 'missing_fields': ['source_date']}])
         assert checkpoint_owner == {'call_id': 'save-current', 'thread_id': THREAD, 'turn_id': TURN}
         if not local:
             effects.append('existing atomic ledger outcome')
@@ -213,6 +218,18 @@ async def test_owned_save_callback_recovers_same_call_without_inference_or_quota
                 raise RuntimeError('controlled loss after local commit')
         return copy.deepcopy(local)
     async def readback(client, tid, turn, input_parts):
+        from street_story.native_research_tools import ResearchToolArgumentsInvalid
+        rejected = {'threadId': THREAD, 'turnId': TURN, 'callId': 'invalid-original',
+                    'tool': 'save_facts', 'arguments': {'facts': []}}
+        for _ in range(2):
+            with pytest.raises(ResearchToolArgumentsInvalid) as error:
+                await callbacks[0](rejected)
+            assert error.value.public_result['saved'] is False
+        assert rejections == [True]  # Same call ID observes its closed rejection.
+        assert receipt['native_tool_calls']['invalid-original']['phase'] == 'rejected'
+        assert not effects and not local
+        with pytest.raises(ValueError, match='call_changed'):
+            await callbacks[0]({**rejected, 'arguments': {'facts': ['cannot rewrite rejected raw input']}})
         request = {'threadId': THREAD, 'turnId': TURN, 'callId': 'save-current',
             'tool': 'save_facts', 'arguments': {'facts': []}}
         if lost_local_reply:

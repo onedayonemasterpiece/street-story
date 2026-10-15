@@ -439,8 +439,8 @@ def read(adapter, session, args):
                         shown.append(child)
                     raise ConflictError('live_review_decisions_invalid',
                         ('Current own replacement IDs: ' + ', '.join(shown) + '. ' if shown else '') +
-                        'This mixed request was not opened. Replaced originals are retired, not necessarily quarantined. '
-                        'Read remaining current own IDs via get_facts and request a separate scope. Quarantine requires arbitration.')
+                        'This mixed request was not opened. Review current own assertions via get_facts in a separate scope. '
+                        'Replaced originals are retired, not necessarily quarantined; quarantine requires arbitration.')
                 # An explicit reconsideration must produce new semantic evidence,
                 # rather than reuse the old decision the owner is questioning.
                 affected.update(requested_scope)

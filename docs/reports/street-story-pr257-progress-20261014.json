@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T04:44:10.490723+00:00",
+  "updated_at_utc": "2026-10-15T04:58:43.826811+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
-  "stage": 4,
+  "stage": 2,
   "status": "working",
-  "last_action": "REV45 relevant navigation and used-ref provenance verified102tests; additional retired-parent scope20testsPASS. Direct paginated child completed with source-attributed1908 repair proposal and1901 list support;0real writes. Preparing one actual Mira adapter component.",
+  "last_action": "Closed ordinary102 continuation:1newsource,0newfacts,45.279s; reproduced2missing outer source_date failures. Safe schema feedback/rejected-call fix passes121tests+Ruff. NewNativeprofile0f69e255 requires fresh actual qualification; old receipts unchanged.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -69,14 +69,14 @@
     },
     {
       "scope": "case131",
-      "reason": "Actual normal Mira component closed semantic failure with false completion. REV45 relevant own-fragment pagination diagnostic pending; universal read-all removed, used own-reference delivery preserved. Not a102 gate."
+      "reason": "Mira staged only former-use decision and ended provider turn; did not follow exact continuation for date/status cards.1908 attribution repair not executed. Earlier erroneous eligible basis remains unchanged until canonical review. Not a102 release gate."
     },
     {
       "scope": "production_activation",
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Commit/push addressed REV45 changes, then one actual Mira same-store component with normal existing Gemini advice capability. All prior actual operations closed; no new research job/unknown replay.",
+  "next_step": "Commit/freeze Native schema-feedback fix; one addressed actual current-profile qualification on same selected102 story after all original operations closed. Then admit only qualified route and continue ordinary research/E2E.",
   "stages": [
     {
       "stage": 0,
@@ -1621,7 +1621,7 @@
       ]
     }
   ],
-  "current_source_sha": "4b607eb09787d3cd88cf8d1483c701fbc6330e32",
+  "current_source_sha": "d32346ad669da577fbf851d216eac2f181d5b3eb",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1717,14 +1717,16 @@
     "next_change": "Truthful pre-aggregation duplicate validation; Live-only descriptions require quote refs while API still accepts exact literal legacy quotes. Restricted exact review-call capture before resolution in next component."
   },
   "current_ci_followup": {
-    "source_sha": "4b607eb09787d3cd88cf8d1483c701fbc6330e32",
+    "source_sha": "d32346ad669da577fbf851d216eac2f181d5b3eb",
     "backend": {
-      "id": 38681402909,
+      "id": 38683030905,
       "status": "completed",
-      "conclusion": "success"
+      "conclusion": "failure",
+      "reason": "One test requires current own assertions wording in foreign-scope rejection; semantic/source guard unchanged. Wording restored and affected test nowpasses.",
+      "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-d32346a-failure.log"
     },
     "android": {
-      "id": 38681403117,
+      "id": 38683030901,
       "status": "completed",
       "conclusion": "success"
     }
@@ -1869,7 +1871,7 @@
     "governing_commit": "f911fb0c5dc4a19687ec0c2f0479db170bcef8c7",
     "acknowledged": true,
     "universal_read_all": "REMOVED",
-    "status": "PAGINATED_DIAGNOSTIC_COMPLETE_ACTUAL_MIRA_PENDING",
+    "status": "ADDRESSED_REAL_MIRA_CLOSED_PARTIAL_NOT_ACCEPTED",
     "semantic_qualification": false,
     "tests_passed": 102,
     "additional_retired_scope_tests_passed": 20,
@@ -1895,12 +1897,288 @@
     "trace": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/read-trace.jsonl",
     "observed": "Relevant900-offset own snippets delivered first.1908 caption does not explicitly claim construction year; direct child proposed source-attributed repair.1901 list date/status supported with own body+heading; compound tourism claim proposed split. No actual Mira or saved semantic receipt."
   },
-  "current_work_revision": 81,
+  "current_work_revision": 83,
   "candidate_runtime_sha256": {
-    "backend/street_story/headless_review_quotes.py": "914a6d495af739277c5179a8bcd055a3ca8c958749daa55b98968e3eb06ffafd",
-    "backend/street_story/live.py": "6f7dadd1078c669b0a36493a52b3b0b5920728d45b9ad461bde683ab6ada6a2d",
-    "backend/street_story/research_repairs.py": "11e61475a24daec56b98c642a467eac8c5e94f54904115d898083d3a381a43c0",
-    "backend/street_story/review_packets.py": "1f1b7155e84f5493d5d979133cc7a83bba66e89fc9edfa64ebf36cdad36f0ff9"
+    "backend/street_story/fact_agent_providers.py": "8981e6645278db610b71ca5efc8a8ef2ebf047946aa449e576eb56b270a34308",
+    "backend/street_story/native_fact_research.py": "1d1511a72d504b60477e1ef944863a77412bd29d10864d7d601d955bb7232c2f",
+    "backend/street_story/native_research_tools.py": "e3f1e7ad8eb4fca9dc4415d400a6224fdb4ca90ad0a0722891772fc49247589d",
+    "backend/street_story/review_packets.py": "5a9522d91a32ef9800b3c9e4d04f607d896666d72180b0a802d34f191151e0c3"
   },
-  "source_snapshot_status": "REV45 candidate fingerprint; manifest committed with candidate, exact resulting commit recorded in live artifact after commit."
+  "source_snapshot_status": "Native schema-feedback candidate fingerprint; manifest committed with candidate, resulting commit recorded in live artifact.",
+  "case131_relevant_component": {
+    "at_utc": "2026-10-15T04:48:45.396146+00:00",
+    "status": "CLOSED_PARTIAL_REVIEW_NOT_SEMANTIC_ACCEPTANCE",
+    "source_sha": "d32346ad669da577fbf851d216eac2f181d5b3eb",
+    "same_actual_store": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-131-ordinary-79a77cc/data",
+    "previous_actual_session": "live_a8177f2b38454d609f00459ad7753f13",
+    "previous_outcome": "CLOSED_GUARD_PREVENTED_WRITES_BUT_MIRA_FALSE_COMPLETION",
+    "direct_paginated_diagnostic": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/diagnostic-manifest.json",
+    "new_research_job": false,
+    "ordinary_existing_Gemini_advice_enabled": true,
+    "automatic_resends": 0,
+    "external_publication": false,
+    "scope": "One addressed actual Mira component; no all-read gate, relevant own excerpt first, actual used refs prior-issued; committed-output boundary. Not whole product/Android qualification.",
+    "artifact": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-relevant-review-d32346a",
+    "session_id": "live_fb590f94ac864acd801f549ca0503182",
+    "server_pid": 182058,
+    "new_research_jobs": 0,
+    "new_native_attempts": 0,
+    "actual_helper_calls": 0,
+    "new_packets": 1,
+    "staged_decisions": 1,
+    "new_canonical_review_receipts": 0,
+    "actual_source_selection": "Own unchanged Lori caption delivered first atoffset900 and used, instead of navigation. No semantic verdict supplied by controller.",
+    "remaining_failure": "Mira staged only former-use decision and ended provider turn; did not follow exact continuation for date/status cards.1908 attribution repair not executed. Earlier erroneous eligible basis remains unchanged until canonical review.",
+    "output_boundary": "Uncommitted speech suppressed; no delivered false completion. Silence/unfinished work is not successful UX.",
+    "all_prior_review_receipts_unchanged": true,
+    "new_research_jobs_and_provider_attempts_unchanged": true,
+    "closed_by_operator_after_known_provider_turn": "No in-flight callbacks; observed >180s without further tools. Not natural success or owner Stop.",
+    "diagnostics": [
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039500.7233067
+      },
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039501.6075118
+      },
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039502.5964859
+      },
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039503.774997
+      },
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039505.3251097
+      },
+      {
+        "event_type": "research_output_suppressed",
+        "payload_json": "{\"reason\":\"uncommitted_evidence\",\"run_id\":\"research_9d336f96f6a445df6ebe9d07\"}",
+        "created_at": 1792039506.9387035
+      },
+      {
+        "event_type": "turn_complete",
+        "payload_json": "{\"type\":\"turn_complete\"}",
+        "created_at": 1792039514.3594298
+      }
+    ],
+    "all_source_bytes_unchanged": true,
+    "live_owner_draft_and_choice_unchanged": "No editing/selection tools called",
+    "full_delivery_complete": false,
+    "semantic_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-relevant-review-d32346a/semantic-readback.json"
+  },
+  "ordinary_completeness102": {
+    "at_utc": "2026-10-15T04:50:35.604055+00:00",
+    "source_sha": "d32346ad669da577fbf851d216eac2f181d5b3eb",
+    "mode": "ordinary_qualified_same_story_more_after_known_closed_results",
+    "story_id": "story_f72fbb3cea13b47f8f64a4ea",
+    "same_original_database": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-baseline-6dda4f7/data/street-story.sqlite3",
+    "prior_jobs": [
+      {
+        "id": "job_30953b4888af46ca9a788b91",
+        "kind": "research",
+        "state": "done",
+        "last_error": "research_agent_content_gaps"
+      },
+      {
+        "id": "job_8655b1e21ce0476aaa888d6e",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_f36607edab384a6b8638bfe8",
+        "kind": "research",
+        "state": "done",
+        "last_error": "native_fact_only_completed"
+      },
+      {
+        "id": "job_4595643d70a44356b5eaa0de",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_1e82df1b8f7445a7a1fa298b",
+        "kind": "publish",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_05111426d7c643cf9f366fd8",
+        "kind": "research",
+        "state": "done",
+        "last_error": "native_fact_only_content_gaps"
+      },
+      {
+        "id": "job_a5a80d76a25c47cdae729473",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_80896a205f994373afb8b555",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_cd9067c51b8e459e8657322b",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_c227fd41c4d3403a92ab4ba4",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_10a721b268ec483089946162",
+        "kind": "publish",
+        "state": "done",
+        "last_error": null
+      },
+      {
+        "id": "job_9295adb8ac304d8b8808776d",
+        "kind": "visual",
+        "state": "done",
+        "last_error": null
+      }
+    ],
+    "prior_provider_receipts_completed": 14,
+    "unresolved_original_operations": 0,
+    "new_competing_coding_job": false,
+    "product_command": "existing research more, one linked ordinary product request",
+    "source_input": "same unchanged selected building, current known inventory/source memory; no reference facts/URLs supplied",
+    "qualification": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/delivery-agent-qualification-native-giga-9f4daf2.json",
+    "qualification_sha256": "fcc6afdbd1727120216fad948df4f05f311bd15b713c8f415ea50962732009c5",
+    "automatic_command_resends": 0,
+    "external_publication": false,
+    "output": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-completeness-d32346a",
+    "status": "CLOSED_NEW_SOURCE_BUT_ZERO_NEW_FACTS_VALIDATION_BLOCKED",
+    "artifact": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-completeness-qualified-d32346a",
+    "job_id": "job_8681623e73f94f2fb0369de8",
+    "run_id": "research_d483694891290505d970cbe7",
+    "profile_sha256": "14fd3a6cb793ccab79a9771bf9fc241a94f61d091f4c57bd40f8f5c4343e7865",
+    "execution_path": "ordinary_service.run_once",
+    "preflight_not_sent_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-completeness-preflight.json",
+    "attempt_id": "rattempt_cd416975686868d01336ddba",
+    "native_thread": "01a13de6-a022-7290-9234-94c7541eabca",
+    "native_turn": "01a13de6-a1ff-7b31-a734-f959807a6ad5",
+    "native_completion": {
+      "next_action": {
+        "kind": "search",
+        "reason": "Это может добавить отдельные датированные сведения о ходе ремонта или новые архитектурные характеристики; таких сведений нет среди успешно сохранённых фактов.",
+        "request": "Исследовать публикации о Житомирской, 22–24 после декабря 2024 года и независимые архитектурные описания дома."
+      },
+      "reason": "Исследование дало новое датированное состояние ремонта: в декабре 2024 года леса сняли, хотя работы оставались незавершёнными; также ФКР сообщал о дополнительном обследовании и планируемом возобновлении работ. Источник прочитан, но обе попытки сохранить подтверждённое утверждение завершились ошибкой ValueError, поэтому не включаю его как сохранённый факт. Предыдущие источники уже охватывали довоенные использования, выживание дома, отдельные архитектурные особенности и завершение фасадных работ в 2025 году. Остаётся потенциал для уточнения этапов ремонта и деталей архитектуры; обозримой блокировки исследования нет.",
+      "remaining_gaps": [
+        "Уточнить последующие этапы ремонта после описанного в декабре 2024 года обследования.",
+        "Найти дополнительное содержательное описание архитектуры дома, не сводящееся к уже известным особенностям."
+      ],
+      "research_sufficient": false,
+      "stop_basis": "unresolved_gap"
+    },
+    "first_new_useful_seconds": null,
+    "terminal_seconds": 45.27906680107117,
+    "new_facts": 0,
+    "new_owned_sources": 1,
+    "prior_fact_ids_preserved": true,
+    "failed_save_calls": [
+      {
+        "call_id": "exec-730a6197-f19f-4e6c-abb9-dd0b7ed4312a",
+        "original_phase": "submitted",
+        "original_arguments_sha256": "d89ff3d372918777c4685dc41278dc8d49a2dbc2870cb7f312c0b1adf06b662e",
+        "schema_errors": [
+          {
+            "path": [
+              "facts",
+              0
+            ],
+            "rule": "required",
+            "missing_fields": [
+              "source_date"
+            ]
+          }
+        ],
+        "nested_assessment_date_present": true
+      },
+      {
+        "call_id": "exec-e2bafc6a-eb3d-40d7-a455-fc81275526e3",
+        "original_phase": "submitted",
+        "original_arguments_sha256": "91f81f9bcf68b331400b210bec17dc0008326b88f4257ff7bfbe1561de706347",
+        "schema_errors": [
+          {
+            "path": [
+              "facts",
+              0
+            ],
+            "rule": "required",
+            "missing_fields": [
+              "source_date"
+            ]
+          }
+        ],
+        "nested_assessment_date_present": true
+      }
+    ],
+    "usage": {
+      "by_thread": {
+        "01a13de6-a022-7290-9234-94c7541eabca": [
+          {
+            "cachedInputTokens": 313600,
+            "inputTokens": 379915,
+            "outputTokens": 1947,
+            "reasoningOutputTokens": 269,
+            "totalTokens": 381862
+          }
+        ]
+      },
+      "cost": "unknown",
+      "measurement": "owned_journal_cumulative_turn_delta",
+      "reported_last_inference_usage": {
+        "01a13de6-a022-7290-9234-94c7541eabca": [
+          {
+            "cachedInputTokens": 59136,
+            "inputTokens": 60352,
+            "outputTokens": 397,
+            "reasoningOutputTokens": 88,
+            "totalTokens": 60749
+          }
+        ]
+      },
+      "total_tokens": 381862,
+      "usage_known": true
+    },
+    "cost": "unknown",
+    "ordinary_execution": true,
+    "reference_facts_or_urls_supplied": false,
+    "complete_delivery": false
+  },
+  "native_schema_feedback_fix": {
+    "status": "LOCAL_CHECKS_PASSED",
+    "existing_schema_unchanged": true,
+    "semantic_auto_fill": false,
+    "model_visible_feedback": "Schema field paths/rules/required names only; no private values or exception message",
+    "rejected_calls": "terminal rejected, not delivered assessment; unchanged CID returns original failure; corrected args need newCID",
+    "new_profile_qualification_required": true,
+    "tests_initial_passed": 98,
+    "final_tests_pending": false,
+    "final_tests_passed": 121,
+    "ruff": "passed",
+    "profile_sha256": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
+    "previous_profile_sha256": "14fd3a6cb793ccab79a9771bf9fc241a94f61d091f4c57bd40f8f5c4343e7865",
+    "actual_changed_profile_verification": false,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-feedback-and-review-final.log"
+  }
 }

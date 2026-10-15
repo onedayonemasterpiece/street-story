@@ -12,6 +12,18 @@ import logging
 
 LOG = logging.getLogger(__name__)
 TOOL_METHOD = 'item/tool/call'
+TOOL_VALIDATION_CONTRACT = 'native-tool-schema-feedback-v1'
+
+
+class ResearchToolArgumentsInvalid(ValueError):
+    """Public schema addresses only; never exception text or supplied values."""
+    def __init__(self, issues):
+        super().__init__('agent_tool_arguments_invalid')
+        self.public_result = {'error_code': 'agent_tool_arguments_invalid', 'saved': False,
+            'validation_issues': issues,
+            'instruction': 'No facts from this call were saved. Correct the named schema fields '
+                'from your evidence and retry in this same turn. Do not repeat unchanged arguments. '
+                'The server does not fill dates, evidence or semantic decisions.'}
 
 
 class ResearchToolStream:
@@ -64,9 +76,10 @@ def attach_research_tools(client, callback, *, loop=None):
             LOG.info('native_research_tool_failed thread_id=%s turn_id=%s call_id=%s error_type=%s',
                 safe_params.get('threadId'), safe_params.get('turnId'),
                 safe_params.get('callId'), type(exc).__name__)
+            public = (exc.public_result if isinstance(exc, ResearchToolArgumentsInvalid) else
+                      {'error_code': 'native_research_tool_failed', 'error_type': type(exc).__name__})
             response = {'success': False, 'contentItems': [{'type': 'inputText',
-                'text': json.dumps({'error_code': 'native_research_tool_failed',
-                    'error_type': type(exc).__name__})}]}
+                'text': json.dumps(public)}]}
         try:
             # The exact original process is mandatory. A late callback cannot
             # write into a replacement app-server after a disconnect/restart.
