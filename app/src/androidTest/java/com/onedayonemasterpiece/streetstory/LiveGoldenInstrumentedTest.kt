@@ -401,7 +401,8 @@ class LiveGoldenInstrumentedTest {
             val savedFactsReady = story.sourceCount > 0 && story.facts.count { it.eligibleForSelection } >= selectedCount
             evidence["initial_fact_inventory_reused"] = savedFactsReady
             evidence["initial_eligible_fact_count"] = story.facts.count { it.eligibleForSelection }
-            if (!savedFactsReady) {
+            if (!savedFactsReady && story.researchPending["facts"] != true) {
+                check(story.researchOutcome?.outcome != "outcome_unknown") { "Observe the original unknown research operation; do not request another" }
                 speak(live, pcmFiles[2])
                 awaitAnswer(live, "research request")
             }
@@ -535,7 +536,9 @@ class LiveGoldenInstrumentedTest {
                 awaitAnswer(live, "visual-only edit")
             }
             val visualStarted = api.getStory(storyId)
-            if (visualStarted.state != StoryStage.VISUAL_PROCESSING && visualStarted.processedImageUrl.isNullOrBlank()) {
+            val observedVisual = rawStory(baseUrl, token, storyId).getAsJsonObject("visual")
+            val observedVisualOperation = observedVisual?.get("operation_id")?.takeIf { !it.isJsonNull }?.asString
+            if (observedVisualOperation.isNullOrBlank() && visualStarted.state != StoryStage.VISUAL_PROCESSING && visualStarted.processedImageUrl.isNullOrBlank()) {
                 evidence["visual_text_clarification"] = true
                 ownerText(live, "Создай инфографичную картинку по исходной фотографии, сохранённой концепции и $selectedCount выбранным фактам. Сделай её чуть теплее. Текущий текст поста оставь без изменений.", "visual clarification")
             }
@@ -999,6 +1002,16 @@ class LiveGoldenInstrumentedTest {
             return pollStory(api, storyId, 60_000, allowedNeedsReviewCodes, predicate)
         } catch (failure: IllegalStateException) {
             if (!failure.message.orEmpty().startsWith("Timed out waiting for story")) throw failure
+        }
+        if (label in setOf("fact research", "more facts")) {
+            val observed = readStory(api, storyId)
+            check(observed.researchOutcome?.outcome != "outcome_unknown") {
+                "Research outcome is unknown; retain the original operation instead of another request"
+            }
+            if (observed.researchPending["facts"] == true) {
+                evidence["$label observed_existing_job"] = true
+                return pollStory(api, storyId, allowedNeedsReviewCodes = allowedNeedsReviewCodes, predicate = predicate)
+            }
         }
         // Real owner clarification through the same native WSS conversation.
         // Backend/tool errors remain failures; this does not fabricate a result.

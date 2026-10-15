@@ -37,25 +37,34 @@ internal object EmulatorWindowGuard {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val power = context.getSystemService(PowerManager::class.java)
         val deadline = SystemClock.elapsedRealtime() + 3000
-        var focused = false
+        var resumedVisible = false
+        var inputFocused = false
         // Accessibility can retain a populated hierarchy while the emulator
         // shows a black frame and has no focused input window. Observe the
         // resumed Activity's actual window before injecting the one product tap.
         do {
             instrumentation.runOnMainSync {
-                focused = ActivityLifecycleMonitorRegistry.getInstance()
+                resumedVisible = ActivityLifecycleMonitorRegistry.getInstance()
                     .getActivitiesInStage(Stage.RESUMED).any { activity ->
                         activity.packageName == context.packageName &&
-                            activity.hasWindowFocus() && activity.window.decorView.isShown
+                            activity.window.decorView.isShown
                     }
             }
-            if (focused && power.isInteractive && device.currentPackageName == context.packageName) return
+            // A product dialog legitimately owns focus above its resumed
+            // Activity. Check InputDispatcher's actual window, which also
+            // rejects a stale accessibility hierarchy above a black display.
+            val report = device.executeShellCommand("dumpsys input")
+            val focusedWindows = report.substringAfter("FocusedWindows:", "").substringBefore("FocusRequests:")
+            inputFocused = focusedWindows.lineSequence().any {
+                it.contains("name=") && it.contains(" ${context.packageName}/")
+            }
+            if (resumedVisible && inputFocused && power.isInteractive && device.currentPackageName == context.packageName) return
             SystemClock.sleep(50)
         } while (SystemClock.elapsedRealtime() < deadline)
-        if (!focused || !power.isInteractive || device.currentPackageName != context.packageName) {
+        if (!resumedVisible || !inputFocused || !power.isInteractive || device.currentPackageName != context.packageName) {
             capture(context, device, "$evidencePrefix-window-blocked")
             error("Street Story needs a focused resumed window and interactive display before interaction; " +
-                "actual=${device.currentPackageName} focused=$focused interactive=${power.isInteractive}")
+                "actual=${device.currentPackageName} resumedVisible=$resumedVisible inputFocused=$inputFocused interactive=${power.isInteractive}")
         }
     }
 
