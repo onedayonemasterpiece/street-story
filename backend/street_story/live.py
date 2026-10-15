@@ -5831,6 +5831,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if len(set(destinations)) != len(destinations):
             raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
 
+        await self.service.refresh_failed_publication(story_id)
         capabilities = await self.service.capabilities()
         available = {
             str(item.get("alias") or "").strip()

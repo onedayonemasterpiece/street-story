@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T09:19:12.259689+00:00",
+  "updated_at_utc": "2026-10-15T09:36:56.768428+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:19:40.737387+00:00",
   "stage": 2,
   "status": "working",
@@ -94,11 +94,11 @@
       "reason": "Compatible current release, public API and Android Live/touch verification remain required; revision50 authorizes checked delivery without per-SHA approval."
     },
     {
-      "scope": "android_map_single_tap",
-      "reason": "5a CI observed rendered contour under physical tap but no selection. Minimal native dispatch/interception candidate plus input/click logs awaits same42checks."
+      "scope": "publication_resume",
+      "reason": "Prior8366 operation closed command_expired/not_attempted but failed local job retained accepted receipt; normal prepare now refreshes exact outcome and admits new separate confirmation only with complete bound all-not-attempted proof.139 affected tests PASS; real addressed continuation pending."
     }
   ],
-  "next_step": "Observe exact test publication8366; independent Telegram readback. Verify native map dispatch-touch correction using unchanged one-tap/pan/pinch/reopen instrumentation. Current paired release prepared; activation after checks.",
+  "next_step": "Freeze observed no-send publication recovery; ordinary same-story Mira prepare/confirm on fixed source. Preserve original Native102 UNKNOWN. Canonical Android dispatch op43cf outcome must reconcile before any repeat.",
   "stages": [
     {
       "stage": 0,
@@ -827,7 +827,7 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "102_editorial_pass_test_publication_scheduled_android_map_input_diagnosis",
+  "current_stage": "publication_closed_outcome_recovery_frozen_next",
   "current_blocker": "Original102 single-turn Native component lost Python owner after parent interruption. Original attempt remains submitted/possibly_sent, last save exec has no callback entry or response. Two earlier saves completed; no model final. No duplicate turn/save permitted. Independently correct caption and visual through existing no-research product server.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
@@ -2639,7 +2639,7 @@
     "completeness_accepted": false,
     "original102_unknown_unchanged": true
   },
-  "candidate_sha": "5a08d50cdca0d0c37502042b6f9e28423311b146",
+  "candidate_sha": "ed8bf3d0deaeed635c3119a30dda69b9acdf4377",
   "case104_latest_measurement": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-source-date-control-0a4db16/measured-result.json",
   "case102_latest_visual_operation": "op_3c6ac5d8d58643558eb1f94e544643a6",
   "editorial_5a_durable_jobs": {
@@ -2654,5 +2654,29 @@
     "android_run": 38710313187,
     "android": "41/42 emulator tests passed; one real map tap did not select contour",
     "diagnosis": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-5a08d50-map-tap-failure/diagnosis.json"
-  }
+  },
+  "vibepublish_activation": {
+    "source_sha": "ef3d8baf7a7a7351bb7df5bdfb2fbd9c15564ccd",
+    "observed_at_utc": "2026-10-15T09:22:46Z",
+    "server_pid": 104200,
+    "worker_pid": 104226,
+    "source_only_dropins": true,
+    "previous_source": "6e846556e8f5e4cbc01ce834d53d4b85568e51af",
+    "database_rewind": false,
+    "incident_id": "inc_aa58e4b11278cbe2a6717a87",
+    "original8366_closed": "blocked/command_expired/not_attempted"
+  },
+  "current_free_bytes": 3254669312,
+  "editorial_ed8_jobs": {
+    "server": "job_fbe36edaae1eab435862bdc1",
+    "prepare_confirm": "job_671d32a3f87c5940764c8527"
+  },
+  "checks_ed8bf3d": {
+    "backend": "3846 passed/55 skipped/2 warnings",
+    "backend_run": 38712075084,
+    "android_run": 38712075059,
+    "android": "42/42 instrumentation PASS; single native map tap DOWN/UP+SDK hit log retained, pan/pinch/reopen unchanged",
+    "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-ed8bf3d-map-tap-pass"
+  },
+  "canonical_android_dispatch_reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/canonical-android-ed8bf3d-dispatch.json"
 }

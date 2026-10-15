@@ -749,6 +749,46 @@ class StreetStoryService:
             self._enqueue_job(db, story_id, "visual", f"visual:{key}", {"selected_fact_ids": selected})
             return self._story_repr(db, self._story_row(db, story_id))
 
+    async def refresh_failed_publication(self, story_id: str) -> None:
+        """Observe the exact failed command before preparing another card; never POST."""
+        with self.store.connection() as db:
+            job = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish' "
+                             "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story_id,)).fetchone()
+            if not job or job['state'] != 'failed':
+                return
+            job_id = job['id']
+            intent_id = json.loads(job['payload_json']).get('intent_id')
+            row = db.execute('SELECT * FROM publish_intents WHERE id=? AND story_id=?',
+                             (intent_id, story_id)).fetchone()
+            if not row or not row['vibepublish_operation_id'] or row['state'] == 'blocked':
+                return
+            operation_id, publication_id = row['vibepublish_operation_id'], row['vibepublish_publication_id']
+        payload = await self.providers.vibepublish.status(operation_id)
+        receipts = payload.get('receipts')
+        current = next((item for item in receipts if isinstance(item, dict)
+                        and item.get('operation_id') == operation_id), {}) if isinstance(receipts, list) else payload
+        if (current.get('operation_id') != operation_id or current.get('resource_id') != publication_id
+                or not publication_id or current.get('action') != 'publish'
+                or current.get('operation_complete') is not True or current.get('state') != 'blocked'):
+            raise ConflictError('publication_outcome_unresolved',
+                                'The original publication has no closed bound rejection; no new send is allowed.')
+        with self.store.tx() as db:
+            latest = db.execute("SELECT id,state FROM jobs WHERE story_id=? AND kind='publish' "
+                                "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story_id,)).fetchone()
+            intent = db.execute('SELECT * FROM publish_intents WHERE id=? AND story_id=?',
+                                (intent_id, story_id)).fetchone()
+            if (not latest or latest['id'] != job_id or latest['state'] != 'failed' or not intent
+                    or intent['vibepublish_operation_id'] != operation_id
+                    or intent['vibepublish_publication_id'] != publication_id):
+                raise ConflictError('publication_observation_stale', 'The original publication owner changed.')
+            prior = json.loads(intent['receipt_json'] or '{}')
+            dispatch = prior.get('_publish_dispatch')
+            receipt = {**current, **({'_publish_dispatch': dispatch} if dispatch else {})}
+            db.execute("UPDATE publish_intents SET state='blocked',receipt_json=?,updated_at=? WHERE id=?",
+                       (canonical(receipt), self.store.now(), intent_id))
+        logging.getLogger(__name__).info('street_story_publication_observation story_id=%s operation_id=%s state=blocked new_dispatch=false',
+                                         story_id, operation_id)
+
     def _rejected_publication_can_be_reconfirmed(self, db, story) -> bool:
         """Only definite pre-dispatch rejection permits a new intent after review.
 
@@ -757,7 +797,7 @@ class StreetStoryService:
         not_attempted can permit a distinct owner-confirmed corrected intent.
         Never replay the original operation here.
         """
-        if story["state"] != "needs_review" or story["error_code"] != "provider_permanent_error":
+        if story["state"] != "needs_review":
             return False
         job = db.execute(
             "SELECT * FROM jobs WHERE story_id=? AND kind='publish' ORDER BY created_at DESC LIMIT 1",
@@ -783,19 +823,21 @@ class StreetStoryService:
             return False
         if not isinstance(receipt, dict) or not isinstance(request, dict) or not isinstance(receipt.get('error'), dict):
             return False
+        error_code = (receipt.get('error') or {}).get('code')
         if (intent['state'] != 'blocked'
                 or receipt.get('operation_id') != intent['vibepublish_operation_id']
                 or receipt.get('resource_id') != intent['vibepublish_publication_id']
                 or not intent['vibepublish_publication_id']
                 or receipt.get('action') != 'publish' or receipt.get('operation_complete') is not True
                 or receipt.get('state') != 'blocked'
-                or (receipt.get('error') or {}).get('code') != 'native_time_precision'):
+                or error_code not in {'native_time_precision', 'command_expired'}):
             return False
         try:
             prior_time = datetime.fromisoformat(str(request.get('scheduled_for') or '').replace('Z', '+00:00'))
         except ValueError:
             return False
-        if prior_time.tzinfo is None or not prior_time.astimezone(timezone.utc).microsecond:
+        if prior_time.tzinfo is None or (error_code == 'native_time_precision'
+                                        and not prior_time.astimezone(timezone.utc).microsecond):
             return False
         destinations = request.get('destinations')
         deliveries = receipt.get('deliveries')
@@ -809,15 +851,15 @@ class StreetStoryService:
                     or delivery['destination'] in seen or delivery.get('provider') != 'telegram'
                     or delivery.get('state') != 'blocked' or delivery.get('stage') != 'blocked'
                     or delivery.get('observed') != 'not_attempted'
-                    or delivery.get('missing_checks') != ['native_time_precision']
+                    or delivery.get('missing_checks') != [error_code]
                     or 'applied_revision' not in delivery or delivery['applied_revision'] is not None
                     or not isinstance(delivery.get('attempt_id'), str) or not delivery['attempt_id']
                     or delivery['attempt_id'] in attempts):
                 return False
             seen.add(delivery['destination'])
             attempts.add(delivery['attempt_id'])
-        logging.getLogger(__name__).info('street_story_publication_reconfirmation story_id=%s operation_id=%s basis=closed_native_time_precision_not_attempted',
-                 story['id'], intent['vibepublish_operation_id'])
+        logging.getLogger(__name__).info('street_story_publication_reconfirmation story_id=%s operation_id=%s basis=closed_not_attempted reason=%s',
+                 story['id'], intent['vibepublish_operation_id'], error_code)
         return True
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
