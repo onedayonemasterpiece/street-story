@@ -25,7 +25,7 @@ from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
-from .map_links import with_map_links
+from .map_links import with_place_footer
 from .publication_content import visible_text
 from .fact_conflicts import (
     conflict_rows,
@@ -5648,7 +5648,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     )
             research = json.loads(story["research_json"] or "{}")
             # The confirmed building's map links are server-owned; Mira never types them.
-            new_text = with_map_links(new_text, research)
+            new_text = with_place_footer(new_text, research)
             if research.get("content_identity_changed"):
                 research["content_identity_changed"] = False
             research["draft_needs_refresh"] = False
@@ -5761,7 +5761,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 new_text = text if not current_text else text + "\n\n" + current_text
             else:
                 new_text = text if not current_text else current_text + "\n\n" + text
-            new_text = with_map_links(new_text, json.loads(story["research_json"] or "{}"))
+            new_text = with_place_footer(new_text, json.loads(story["research_json"] or "{}"))
             literal_id = "literal_" + uuid.uuid4().hex[:16]
             literals = [*literals, {"literal_id": literal_id, "text": text, "position": position}]
             next_revision = current_revision + 1
@@ -6001,7 +6001,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 )
             asset_ref = str(story["vibepublish_asset_ref"] or "")
             visual_revision = str(visual.get("content_revision") or "")
-            text_value = with_map_links(str(story["draft_text"] or ""), research)
+            text_value = with_place_footer(str(story["draft_text"] or ""), research)
             if not text_value:
                 raise InvalidStateError("publish_text_missing", "Publication text is empty")
             if len(visible_text(text_value)) > 1024:
@@ -6066,7 +6066,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if (
                 not editor
                 or int(editor["text_revision"]) != int(confirmation["text_revision"])
-                or with_map_links(str(story["draft_text"] or ""), json.loads(story["research_json"] or "{}"))
+                or with_place_footer(str(story["draft_text"] or ""), json.loads(story["research_json"] or "{}"))
                 != str(confirmation["text_value"])
                 or str(story["vibepublish_asset_ref"] or "") != str(confirmation["asset_ref"])
                 or str(visual.get("content_revision") or "") != str(confirmation["visual_revision"])

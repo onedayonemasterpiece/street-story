@@ -1,4 +1,4 @@
-"""Clickable map links for the owner-confirmed building, appended as the post's last line.
+"""Post ending for the owner-confirmed building: city hashtag and clickable map links.
 
 The targets come only from the exactly selected contour (or the owner's explicit
 point), never from the camera point or a neighbouring object. The model never
@@ -94,8 +94,20 @@ def building_links(research: dict[str, Any]) -> dict[str, str] | None:
             '2ГИС': f'https://2gis.ru/geo/{target}'}
 
 
-def with_map_links(text: str, research: dict[str, Any]) -> str:
-    """Replace any typed map-link line with the verified one for the current building."""
+def city_hashtag(research: dict[str, Any]) -> str | None:
+    selection = research.get('place_selection') or {}
+    if selection.get('mode') != 'exact':
+        return None
+    city = ((selection.get('candidate') or {}).get('search_anchor') or {}).get('city')
+    tag = re.sub(r'[^\w]', '', str(city or ''))
+    return '#' + tag if tag else None
+
+
+def with_place_footer(text: str, research: dict[str, Any]) -> str:
+    """End with the confirmed city hashtag and the verified map-link line.
+
+    Typed or invented map-link lines are replaced; an existing hashtag is kept.
+    """
     if not text:
         return text
     body, linked = _LINKED_LINE.subn('', text)
@@ -103,7 +115,12 @@ def with_map_links(text: str, research: dict[str, Any]) -> str:
     if linked or plain:
         body = re.sub(r'\n{3,}', '\n\n', body)
     body = body.rstrip()
+    if not body:
+        return body
+    hashtag = city_hashtag(research)
+    if hashtag and hashtag.casefold() not in body.casefold():
+        body += '\n\n' + hashtag
     links = building_links(research)
-    if not links or not body:
+    if not links:
         return body if body != text.rstrip() else text
     return body + '\n\n' + ' · '.join(f'[{label}]({links[label]})' for label in LABELS)

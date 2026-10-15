@@ -122,10 +122,42 @@ def owner_context_missing(chosen):
                 or anchor.get('street') and anchor.get('house_number'))
 
 
+def _spelling_distance(left, right):
+    previous = list(range(len(right) + 1))
+    for i, a in enumerate(left, 1):
+        current = [i]
+        for j, b in enumerate(right, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a != b)))
+        previous = current
+    return previous[-1]
+
+
+def _neighbourhood_city_spelling(snapshot, chosen, city):
+    """A selected addr:city one or two letters off an overwhelming local majority is a typo."""
+    counts = {}
+    for item in snapshot.get('city_objects') or []:
+        value = (item.get('search_anchor') or {}).get('city')
+        if value and item.get('candidate_id') != chosen.get('candidate_id'):
+            counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return None
+    majority, votes = max(counts.items(), key=lambda item: item[1])
+    if (majority != city and votes >= 3 and votes >= 3 * counts.get(city, 0)
+            and 0 < _spelling_distance(city.casefold(), majority.casefold()) <= 2):
+        return majority
+    return None
+
+
 def snapshot_city(snapshot, chosen):
     anchor = chosen.setdefault('search_anchor', {})
     if anchor.get('city'):
         anchor.setdefault('city_provenance', 'osm.selected.addr_city')
+        if anchor['city_provenance'] == 'osm.selected.addr_city':
+            corrected = _neighbourhood_city_spelling(snapshot, chosen, anchor['city'])
+            if corrected:
+                # Keep the observed tag; the reader-facing city uses the local spelling.
+                anchor.update(city=corrected, city_provenance='osm.snapshot_majority_spelling',
+                              city_selected_tag=anchor['city'])
         return True
     center = object_center(chosen)
     neighbors = [(offset_m(center, p) if center and (p := object_center(c)) else 0, c)
