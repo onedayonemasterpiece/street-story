@@ -1105,6 +1105,8 @@ class StreetStoryService:
         if researcher is None or not researcher.vision_available:
             return
         scheduled = 0
+        inspected = 0
+        started = time.monotonic()
         with self.store.tx() as db:
             # Bound new work, not the stories inspected before eligibility checks.
             # Skipped and already queued stories must not hide later hypotheses.
@@ -1115,10 +1117,15 @@ class StreetStoryService:
                 "AND json_extract(origin.payload_json,'$.queue_priority')='interactive') AS interactive_identity "
                 "FROM stories WHERE state IN ('needs_review','identifying','photo_ready') "
                 "AND json_extract(stories.research_json,'$.automatic_research_outcome') IS NULL "
+                # Match the partial index: large map/source histories without a
+                # pending visual candidate never need a full Python JSON decode.
+                "AND coalesce(json_extract(stories.research_json,'$.visual_identity.status'),'') NOT IN ('match','owner_confirmed') "
+                "AND json_array_length(stories.research_json,'$.visual_identity.candidates')>0 "
                 "AND NOT EXISTS(SELECT 1 FROM jobs queued WHERE queued.semantic_key="
                 "'identity-visual:'||stories.id||':'||coalesce(json_extract(stories.research_json,'$.identity_generation'),0)"
                 "||':'||stories.photo_sha256) "
                 "ORDER BY interactive_identity DESC,created_at,id"):
+                inspected += 1
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
@@ -1134,6 +1141,11 @@ class StreetStoryService:
                 scheduled += 1
                 if scheduled >= 20:
                     break
+        duration_ms = round((time.monotonic() - started) * 1000)
+        if duration_ms >= 250:
+            logging.getLogger('uvicorn.error').warning(
+                'street_story_worker_scan stage=identity_visual outcome=slow duration_ms=%s inspected=%s scheduled=%s',
+                duration_ms, inspected, scheduled)
         if scheduled:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'identity_visual', 'scheduled': scheduled}))

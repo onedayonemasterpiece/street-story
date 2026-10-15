@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS jobs(
   updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(state, available_at, lease_until, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_story_kind ON jobs(story_id,kind);
+CREATE INDEX IF NOT EXISTS idx_stories_pending_identity_visual
+ ON stories(created_at,id)
+ WHERE state IN ('needs_review','identifying','photo_ready')
+ AND json_extract(research_json,'$.automatic_research_outcome') IS NULL
+ AND coalesce(json_extract(research_json,'$.visual_identity.status'),'') NOT IN ('match','owner_confirmed')
+ AND json_array_length(research_json,'$.visual_identity.candidates')>0;
 CREATE TABLE IF NOT EXISTS cache(
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
