@@ -25,7 +25,8 @@ def orphan_pointer(receipt):
             or receipt.get('phase') != 'failed' or receipt.get('provider_send_state') != 'response_closed'
             or receipt.get('native_terminal_status') != 'interrupted'
             or recovery.get('thread_id') != receipt.get('thread_id')
-            or recovery.get('turn_id') != receipt.get('turn_id') or not recovery.get('lost_owner')):
+            or recovery.get('turn_id') != receipt.get('turn_id')
+            or not (recovery.get('lost_owner') or recovery.get('terminal_readback') == 'interrupted')):
         return None
     from .native_fact_contract import native_parent_digest
     return {'original_attempt_id': receipt['binding']['attempt_id'], 'thread_id': receipt['thread_id'],
@@ -232,6 +233,7 @@ class NativeFactResearch:
         def guard():
             return self.owner_callbacks[key]['guard']()
         tool_lock = self.tool_locks.setdefault(key, asyncio.Lock())
+        interrupts = set()  # At most one exact cancellation per observer run.
 
         async def save():
             await self.checkpoint(binding, copy.deepcopy(receipt))
@@ -450,6 +452,7 @@ class NativeFactResearch:
                         contexts = self._execution_contexts(observed, model=MODEL, turn_id=family['parent_turn_id'])
                         if contexts[-1]['turn_id'] != family['parent_turn_id']:
                             raise ValueError('native_research_family_advanced_elsewhere')
+                        await self._closed_owned_children(client, receipt)
                         receipt['quota_permission'] = await self.permission.ensure(client)
                         # Installed platform transport starts a new drained
                         # client per attempt. Load the same existing thread;
@@ -489,7 +492,7 @@ class NativeFactResearch:
                 deadline = time.monotonic() + self.timeout if self.timeout is not None else None
                 while deadline is None or time.monotonic() < deadline:
                     guard()
-                    await self._recover_orphan(client, receipt, binding, tool, guard, save)
+                    await self._recover_orphan(client, receipt, binding, tool, guard, save, interrupts=interrupts)
                     result = await native_turn_readback(client, receipt['thread_id'], receipt['turn_id'], input_parts)
                     if result.get('thread', {}).get('id') != receipt['thread_id']:
                         raise ValueError('native_research_readback_owner_invalid')
@@ -505,8 +508,9 @@ class NativeFactResearch:
                                 users = [row for row in turn.get('items') or [] if row.get('type') == 'userMessage']
                                 if len(users) != 1 or not self._input_matches(users[0].get('content'), input_parts):
                                     raise ValueError('native_research_input_unverified')
-                                recovery.update(phase='terminal', terminal_status=turn['status'])
+                                recovery['phase'] = 'validating_terminal'
                                 await self._execution_readback(client, receipt)
+                                recovery.update(phase='terminal', terminal_status=turn['status'])
                                 await save()
                                 LOG.info('street_story_native_orphan attempt_id=%s thread_id=%s turn_id=%s phase=terminal',
                                     key, receipt['thread_id'], receipt['turn_id'])
@@ -559,19 +563,22 @@ class NativeFactResearch:
                 await save()
                 raise
 
-    async def _recover_orphan(self, client, receipt, binding, tool, guard, save):
+    async def _recover_orphan(self, client, receipt, binding, tool, guard, save, *, interrupts=None):
         """Reconcile local effects before closing a *proved* abandoned callback.
 
         Neither elapsed time nor an empty process-local cache proves an orphan.
-        A missing/reused process incarnation plus the exact unmatched journal
-        request is required. No search/fetch or callback RPC is replayed here.
+        Interrupt needs a missing/reused process incarnation and the exact
+        unmatched request. Legacy terminal readback needs no interrupt or
+        invented process owner. No search/fetch or callback RPC is replayed.
         """
         lost = lost_execution_owner(receipt.get('native_execution_owner'))
-        if not lost:
+        legacy = not receipt.get('native_execution_owner')
+        if not lost and not legacy:
             return
         recovery = receipt.get('orphan_recovery') or {}
-        if recovery.get('phase') in {'interrupt_intent', 'terminal'}:
-            return  # A lost interrupt reply is observed, never blindly retried.
+        if recovery.get('phase') == 'terminal':
+            return
+        interrupts = interrupts if interrupts is not None else set()
         root, turn_id = receipt['thread_id'], receipt['turn_id']
         thread = (await client.request('thread/read', {'threadId': root, 'includeTurns': False}))['thread']
         if thread.get('id') != root:
@@ -581,17 +588,26 @@ class NativeFactResearch:
         pending = [call for call in calls if not call['answered']]
         if not pending:
             return
-        if len(receipt['native_threads']) != 1:
-            receipt['orphan_recovery_blocker'] = 'native_orphan_child_outcome_unresolved'
-            await save()
-            raise RetryableProviderError('native_orphan_child_outcome_unresolved')
+        status = await self._recovery_turn_status(client, receipt)
+        terminal = status in {'completed', 'failed', 'interrupted'}
+        if not lost and not terminal:
+            if receipt.get('orphan_recovery_blocker') != 'native_orphan_owner_process_unverified':
+                receipt['orphan_recovery_blocker'] = 'native_orphan_owner_process_unverified'
+                await save()
+            return  # A legacy unmatched call alone cannot authorize interrupt.
         has_active = getattr(client, '_street_story_has_active_call', lambda address: False)
         if any(has_active((root, turn_id, call['call_id'])) for call in pending):
             return  # A local writer can still complete; do not race its commit.
         guard()
-        receipt['orphan_recovery'] = recovery = {'contract': ORPHAN_CONTRACT,
-            'thread_id': root, 'turn_id': turn_id, 'lost_owner': lost, 'phase': 'reconciling',
-            'call_ids': [call['call_id'] for call in pending]}
+        if recovery and (recovery.get('contract') != ORPHAN_CONTRACT
+                or recovery.get('thread_id') != root or recovery.get('turn_id') != turn_id):
+            raise ValueError('native_orphan_recovery_owner_changed')
+        recovery.update(contract=ORPHAN_CONTRACT, thread_id=root, turn_id=turn_id,
+            lost_owner=lost, call_ids=[call['call_id'] for call in pending])
+        recovery.setdefault('phase', 'reconciling')
+        if terminal:
+            recovery['terminal_readback'] = status
+        receipt['orphan_recovery'] = recovery
         await save()
         for call in calls:
             prior = receipt['native_tool_calls'].get(call['call_id'])
@@ -612,10 +628,19 @@ class NativeFactResearch:
             except ResearchToolArgumentsInvalid:
                 pass  # A malformed candidate cannot discard other saved facts.
         guard()
+        try:
+            recovery['closed_children'] = await self._closed_owned_children(client, receipt)
+        except RetryableProviderError:
+            receipt['orphan_recovery_blocker'] = 'native_orphan_child_outcome_unresolved'
+            await save()
+            raise
+        receipt.pop('orphan_recovery_blocker', None)
         if terminal:
             recovery.update(phase='awaiting_terminal_readback')
             await save()
             return
+        if (root, turn_id) in interrupts:
+            return  # Observe ACK/unknown outcome; never flood polling with RPCs.
         # A replacement app-server can read metadata without loading the
         # original thread. Load it with the frozen controls before addressing
         # its interrupted turn; resume itself sends no inference. Some native
@@ -630,20 +655,84 @@ class NativeFactResearch:
         if (loaded['thread']['id'] != root or loaded.get('model') != MODEL
                 or loaded.get('approvalPolicy') != 'never' or loaded.get('sandbox', {}).get('type') != 'readOnly'):
             raise ValueError('native_orphan_profile_unverified')
-        _, terminal = await asyncio.to_thread(self._callback_journal, thread, turn_id,
+        await asyncio.to_thread(self._callback_journal, thread, turn_id,
             receipt['frozen_prompt'], receipt.get('provided_tools') or [])
+        status = await self._recovery_turn_status(client, receipt)
         guard()
-        if terminal:
-            recovery.update(phase='awaiting_terminal_readback')
+        if status in {'completed', 'failed', 'interrupted'}:
+            recovery.update(phase='awaiting_terminal_readback', terminal_readback=status)
             await save()
             return
         # Freeze intent BEFORE the interrupt. An ACK says nothing about the
         # original turn's terminal state; only exact readback permits a child.
-        recovery.update(phase='interrupt_intent')
+        # Cancellation of this exact still-current turn is idempotent: it
+        # starts no inference. After a crash before send OR an unknown RPC
+        # outcome, a fresh observer revalidates ownership/status before one
+        # addressed retry. Terminal readback always suppresses that retry.
+        interrupts.add((root, turn_id))
+        recovery.update(phase='interrupt_intent', interrupt_requests=recovery.get('interrupt_requests', 0) + 1,
+            interrupt_rpc_status='possibly_sent')
         await save()
         LOG.info('street_story_native_orphan attempt_id=%s thread_id=%s turn_id=%s phase=interrupt_intent',
             binding['attempt_id'], root, turn_id)
-        await client.request('turn/interrupt', {'threadId': root, 'turnId': turn_id}, timeout=10)
+        try:
+            await client.request('turn/interrupt', {'threadId': root, 'turnId': turn_id}, timeout=10)
+        except Exception:
+            recovery['interrupt_rpc_status'] = 'outcome_unknown'
+            await save()
+            raise
+        recovery['interrupt_rpc_status'] = 'acknowledged'  # Not terminal evidence.
+        await save()
+
+    async def _recovery_turn_status(self, client, receipt):
+        result = await native_turn_readback(client, receipt['thread_id'], receipt['turn_id'],
+            [{'type': 'text', 'text': receipt['frozen_prompt']}])
+        if result.get('thread', {}).get('id') != receipt['thread_id']:
+            raise ValueError('native_orphan_thread_unverified')
+        turns = result['thread'].get('turns') or []
+        if any(row.get('id') != receipt['turn_id'] and row.get('status') == 'inProgress' for row in turns):
+            raise ValueError('native_orphan_turn_advanced')
+        turn = next((row for row in turns if row.get('id') == receipt['turn_id']), None)
+        if turn and turn.get('status') in {'completed', 'failed', 'interrupted'}:
+            users = [row for row in turn.get('items') or [] if row.get('type') == 'userMessage']
+            if len(users) != 1 or not self._input_matches(users[0].get('content'),
+                    [{'type': 'text', 'text': receipt['frozen_prompt']}]):
+                raise ValueError('native_orphan_input_unverified')
+        return turn.get('status') if turn else None
+
+    async def _closed_owned_children(self, client, receipt):
+        """Terminal child readback; no child control RPC or inference."""
+        from pathlib import Path
+        closed = {}
+        for tid, observed in receipt['native_threads'].items():
+            if tid == receipt['thread_id']:
+                continue
+            thread = (await client.request('thread/read', {'threadId': tid, 'includeTurns': False}))['thread']
+            if thread.get('id') != tid:
+                raise ValueError('native_orphan_child_owner_unverified')
+            self._verify_thread(thread, receipt['thread_id'])
+            contexts = self._execution_contexts(thread, model='gpt-6.1-sol')
+            turn_id = observed.get('turn_id')
+            terminal, active = None, False
+            for line in Path(thread['path']).open():
+                row = json.loads(line)
+                event = row.get('payload') or {}
+                if row.get('type') != 'event_msg':
+                    continue
+                if event.get('type') == 'task_started':
+                    if active:
+                        terminal = None
+                        break
+                    active = event.get('turn_id') == turn_id
+                if active and event.get('turn_id') == turn_id and event.get('type') in {'task_complete', 'turn_aborted'}:
+                    terminal = event['type']
+            if not turn_id or contexts[-1]['turn_id'] != turn_id or not terminal:
+                raise RetryableProviderError('native_orphan_child_outcome_unresolved')
+            closed[tid] = {'turn_id': turn_id, 'terminal_event': terminal}
+        # Also detect root spawns absent from native_threads after a lost
+        # notification. An incomplete child registry is not proof of no child.
+        await self._execution_readback(client, receipt)
+        return closed
 
     @classmethod
     def _callback_journal(cls, thread, turn_id, prompt, tools):

@@ -188,7 +188,9 @@ async def test_no_continuation_from_ack_or_unproved_or_changed_owner(tmp_path, m
         assert receipt['orphan_recovery']['phase'] == 'interrupt_intent' and len(effects) == 1
         with pytest.raises(RetryableProviderError):
             await provider.run(**kwargs)
-        assert sum(method == 'turn/interrupt' for method, _ in calls) == 1
+        assert sum(method == 'turn/interrupt' for method, _ in calls) == 2
+        assert all(params == {'threadId': THREAD, 'turnId': TURN}
+            for method, params in calls if method == 'turn/interrupt')
     else:
         assert not effects
         if blocker != 'changed_owner':
@@ -447,3 +449,203 @@ async def test_orphan_retention_recovers_same_received_version_without_http_or_q
     assert len(retained) == 1 and receipt['phase'] == 'completed'
     assert receipt['native_tool_calls']['retain-one']['result']['documents'][0]['source_version_id'] == 'same-immutable-version'
     assert all(method == 'thread/read' for method, _ in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('crash', ['before_interrupt_send', 'interrupt_response_lost', 'interrupt_response_lost_pending'])
+async def test_interrupt_crash_window_reconciles_same_turn_on_repeated_recovery(tmp_path, monkeypatch, crash):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(binding={'attempt_id': 'original-owned'}, provided_tools=TOOLS, native_execution_owner=OWNER)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    path = add_call(thread)
+    checkpoint = provider.checkpoint
+    failed = False
+    async def durable(binding, value):
+        nonlocal failed
+        await checkpoint(binding, value)
+        if crash == 'before_interrupt_send' and not failed and (value.get('orphan_recovery') or {}).get('phase') == 'interrupt_intent':
+            failed = True  # Intent was saved, but no RPC was sent.
+            raise RuntimeError('synthetic crash after durable interrupt intent')
+    provider.checkpoint = durable
+    base = provider.client_factory
+    class Client(base):
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/resume':
+                calls.append((method, params))
+                return {'thread': {'id': THREAD}, 'model': native.MODEL,
+                    'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
+            if method == 'turn/interrupt':
+                calls.append((method, params))
+                assert params == {'threadId': THREAD, 'turnId': TURN}
+                sent = sum(method == 'turn/interrupt' for method, _ in calls)
+                if crash != 'interrupt_response_lost_pending' or sent > 1:
+                    with path.open('a') as stream:
+                        stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'turn_aborted', 'turn_id': TURN}}) + '\n')
+                if crash in {'interrupt_response_lost', 'interrupt_response_lost_pending'} and sent == 1:
+                    raise TimeoutError('synthetic lost interrupt response')
+                return {}
+            return await super().request(method, params, timeout)
+    provider.client_factory = Client
+    monkeypatch.setattr(native, 'lost_execution_owner', lambda owner: LOST)
+    effects = []
+    async def save(*args, **kwargs):
+        effects.append(True)
+        return {'saved_fact_ids': ['one']}
+    kwargs = dict(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=TOOLS, callback=save, guard=lambda: None)
+    with pytest.raises((RuntimeError, TimeoutError)):
+        await provider.run(**kwargs)
+    assert receipt['orphan_recovery']['phase'] == 'interrupt_intent'
+    assert native.orphan_pointer(receipt) is None
+    assert receipt['orphan_recovery']['interrupt_rpc_status'] == (
+        'possibly_sent' if crash == 'before_interrupt_send' else 'outcome_unknown')
+    provider.timeout = 0.01
+    pointers = []
+    for _ in range(2):
+        with pytest.raises(RetryableProviderError, match='owned_orphan_terminal'):
+            await provider.run(**kwargs)
+        pointers.append(native.orphan_pointer(receipt))
+    assert pointers[0] is not None and pointers[0] == pointers[1]
+    assert len(effects) == 1
+    assert sum(method == 'turn/interrupt' for method, _ in calls) == (2 if crash == 'interrupt_response_lost_pending' else 1)
+    assert not any(method in {'turn/start', 'thread/start'} for method, _ in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['closed', 'pending', 'advanced', 'foreign_parent', 'wrong_model', 'unrecorded', 'nested_delegation'])
+async def test_completed_owned_sol_child_allows_recovery_but_unresolved_or_foreign_child_does_not(tmp_path, monkeypatch, outcome):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(binding={'attempt_id': 'original-owned'}, provided_tools=TOOLS, native_execution_owner=OWNER,
+        native_threads={THREAD: {'model_id': native.MODEL, 'turn_id': TURN},
+            'owned-child': {'model_id': 'gpt-6.1-sol', 'turn_id': 'child-turn'}},
+        native_events=[{'type': 'subAgentActivity', 'kind': 'started', 'id': 'spawn-child', 'agentThreadId': 'owned-child'}])
+    if outcome == 'unrecorded':
+        receipt['native_threads'].pop('owned-child')
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    path = add_call(thread)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows.insert(-1, {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'spawn_agent',
+        'call_id': 'spawn-child', 'arguments': json.dumps({'model': 'gpt-6.1-sol', 'fork_turns': 'none',
+            'task_name': 'bounded-help', 'message': 'Synthetic owned child evidence task'})}})
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    child_path = tmp_path / 'rollout-owned-child.jsonl'
+    child_rows = [{'type': 'session_meta', 'payload': {'id': 'owned-child'}},
+        {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'child-turn'}},
+        {'type': 'turn_context', 'payload': {'turn_id': 'child-turn',
+            'model': 'foreign-model' if outcome == 'wrong_model' else 'gpt-6.1-sol'}}]
+    if outcome != 'pending':
+        child_rows.append({'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'child-turn'}})
+    if outcome == 'nested_delegation':
+        child_rows.append({'type': 'response_item', 'payload': {'type': 'function_call',
+            'name': 'spawn_agent', 'call_id': 'forbidden-grandchild', 'arguments': json.dumps({})}})
+    if outcome == 'advanced':
+        child_rows.append({'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'other-child-turn'}})
+    child_path.write_text(''.join(json.dumps(row) + '\n' for row in child_rows))
+    base = provider.client_factory
+    class Client(base):
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/read' and params['threadId'] == 'owned-child':
+                return {'thread': {'id': 'owned-child', 'path': str(child_path), 'source': {'subAgent': {
+                    'thread_spawn': {'parent_thread_id': 'foreign-root' if outcome == 'foreign_parent' else THREAD, 'depth': 1}}}}}
+            if method == 'thread/resume':
+                calls.append((method, params))
+                return {'thread': {'id': THREAD}, 'model': native.MODEL,
+                    'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
+            if method == 'turn/interrupt':
+                with path.open('a') as stream:
+                    stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'turn_aborted', 'turn_id': TURN}}) + '\n')
+            return await super().request(method, params, timeout)
+    provider.client_factory = Client
+    monkeypatch.setattr(native, 'lost_execution_owner', lambda owner: LOST)
+    effects = []
+    async def save(*args, **kwargs):
+        effects.append(True)
+        return {'saved_fact_ids': ['partial-fact']}
+    kwargs = dict(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=TOOLS, callback=save, guard=lambda: None)
+    expected = RetryableProviderError if outcome in {'closed', 'pending', 'advanced'} else ValueError
+    with pytest.raises(expected):
+        await provider.run(**kwargs)
+    assert effects == [True]  # A child uncertainty does not discard local partial value.
+    assert sum(method == 'turn/interrupt' for method, _ in calls) == int(outcome == 'closed')
+    assert (native.orphan_pointer(receipt) is not None) == (outcome == 'closed')
+    if outcome == 'closed':
+        assert receipt['orphan_recovery']['closed_children'] == {
+            'owned-child': {'turn_id': 'child-turn', 'terminal_event': 'task_complete'}}
+    else:
+        assert receipt['phase'] == 'unknown'
+    assert not any(method in {'turn/start', 'thread/start'} for method, _ in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('terminal', [False, True])
+async def test_legacy_missing_process_proof_uses_only_exact_terminal_readback(tmp_path, monkeypatch, terminal):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(binding={'attempt_id': 'original-owned'}, provided_tools=TOOLS)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    add_call(thread, terminal=terminal)
+    provider.timeout = 0.01
+    effects = []
+    async def save(*args, **kwargs):
+        effects.append(True)
+        return {'saved_fact_ids': ['legacy-partial']}
+    kwargs = dict(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+        schema={'type': 'object'}, tools=TOOLS, callback=save, guard=lambda: None)
+    for _ in range(2):
+        with pytest.raises(RetryableProviderError, match='owned_orphan_terminal' if terminal else 'original_pending'):
+            await provider.run(**kwargs)
+    assert not receipt.get('native_execution_owner')  # No invented historical process.
+    assert not any(method != 'thread/read' for method, _ in calls)
+    if terminal:
+        assert effects == [True]
+        assert receipt['orphan_recovery']['lost_owner'] is None
+        assert receipt['orphan_recovery']['terminal_readback'] == 'interrupted'
+        assert native.orphan_pointer(receipt) is not None
+    else:
+        assert not effects and native.orphan_pointer(receipt) is None
+        assert receipt['orphan_recovery_blocker'] == 'native_orphan_owner_process_unverified'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wrong', ['thread', 'input'])
+async def test_legacy_terminal_proof_cannot_be_borrowed_from_another_owner(tmp_path, monkeypatch, wrong):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(provided_tools=TOOLS)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    add_call(thread, terminal=True)
+    async def foreign_readback(*args):
+        return {'thread': {'id': 'foreign-thread' if wrong == 'thread' else THREAD,
+            'turns': [{'id': TURN, 'status': 'interrupted', 'items': [
+                {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'foreign input'}]}]}]}}
+    monkeypatch.setattr(native, 'native_turn_readback', foreign_readback)
+    async def no_effects(*args, **kwargs):
+        raise AssertionError('Unverified terminal proof cannot authorize local writes')
+    with pytest.raises(ValueError, match='native_orphan_'):
+        await provider.run(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+            schema={'type': 'object'}, tools=TOOLS, callback=no_effects, guard=lambda: None)
+    assert native.orphan_pointer(receipt) is None
+    assert not any(method != 'thread/read' for method, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_terminal_marker_waits_for_successful_execution_graph_validation(tmp_path, monkeypatch):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(binding={'attempt_id': 'original-owned'}, provided_tools=TOOLS, native_execution_owner=OWNER)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    add_call(thread, terminal=True)
+    execution_readback = provider._execution_readback
+    async def invalid_graph(client, value):
+        if value.get('native_terminal_status') == 'interrupted':
+            raise ValueError('native_research_explicit_delegation_unverified')
+        await execution_readback(client, value)
+    provider._execution_readback = invalid_graph
+    monkeypatch.setattr(native, 'lost_execution_owner', lambda owner: LOST)
+    async def save(*args, **kwargs):
+        return {'saved_fact_ids': ['retained-partial']}
+    with pytest.raises(ValueError, match='delegation_unverified'):
+        await provider.run(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+            schema={'type': 'object'}, tools=TOOLS, callback=save, guard=lambda: None)
+    assert receipt['native_tool_calls']['save-1']['phase'] == 'completed'
+    assert native.orphan_pointer(receipt) is None
+    assert receipt['orphan_recovery']['phase'] != 'terminal'
+    assert not any(method != 'thread/read' for method, _ in calls)
