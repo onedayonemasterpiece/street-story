@@ -9,6 +9,7 @@ from jsonschema import Draft202012Validator
 
 from .agent_evidence import NETWORK_SCHEMA, SEMANTIC_ASSESSMENT_INSTRUCTIONS
 from .native_fact_research import CONTRACT
+from .review_packets import ATOMIC_PROPOSITION_CHECKS
 
 PROJECTION_CONTRACT = 'native-complete-assessment-claims-v2'
 SOURCE_READ_CONTRACT = 'native-frozen-chunks-once-v1'
@@ -58,6 +59,12 @@ _strict(COMPLETION_V1_SCHEMA)
 
 FINAL_INSTRUCTIONS = (
     'Return facts as distinct semantic claims, with a stable claim_key and Russian text. '
+    + ATOMIC_PROPOSITION_CHECKS + ' '
+    'Check temporal support for each proposition and list item separately. '
+    'A date or period attached to one occupant/event does not date the others. '
+    'An undated list of former uses does not establish a shared historical period. '
+    'Read the available chronology or preserve the undated scope rather than '
+    'extending a qualifier across independently selectable claims. '
     'Each fact has all its actually read supporting source versions, including different '
     'versions/fragments at the same URL; do not choose one best URL or split a fact by source. '
     'For each source return its exact source_version_id, content_sha256 and observed URL, '

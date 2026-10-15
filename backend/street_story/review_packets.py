@@ -28,7 +28,7 @@ def literal_basis_quote(quote, passages):
                      lambda match: {'n': '\n', 'r': '\r', 't': '\t'}[match[1]], quote)
     return decoded if decoded != quote and contained(decoded) else quote
 
-ATOMIC_CLAIM_CHECKS = (
+ATOMIC_PROPOSITION_CHECKS = (
     'Atomic means one independently selectable proposition, not one sentence. '
     'Enumerate what the reader could independently include or omit BEFORE choosing a verdict; '
     'copying an entire compound sentence as one claims entry is not decomposition. '
@@ -41,7 +41,11 @@ ATOMIC_CLAIM_CHECKS = (
     'approximation, affected part or essential condition qualifies that SAME proposition '
     'and must stay with it; do not split a qualifier into an unsupported standalone fact. '
     'A known subject name identifies the subject, but additional descriptive assertions '
-    'must not be hidden in that name. For a compound ORIGINAL candidate enumerate all '
+    'must not be hidden in that name.'
+)
+
+ATOMIC_CLAIM_CHECKS = (ATOMIC_PROPOSITION_CHECKS + ' '
+    'For a compound ORIGINAL candidate enumerate all '
     'its propositions, set atomic=false and use repair_needed before accepting any '
     'narrowed replacement. The model decides this from meaning, never punctuation.'
 )
