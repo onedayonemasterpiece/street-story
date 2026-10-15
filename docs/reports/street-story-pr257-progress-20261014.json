@@ -6,16 +6,13 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T03:37:35.514565+00:00",
+  "updated_at_utc": "2026-10-15T03:55:47.233383+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
-  "last_action": "109 affected Live/review tests and Ruff pass for session-bound omitted run reference. Earlier actual131 attempt closed with0packets, no semantic writes; next one scoped model review uses exact corrected code. Prepared142/EF release remains frozen and unactivated.",
+  "last_action": "Removed141807616 allocated bytes of closed reproducible fixtures/cache; applied Live-only original-claim semantic prompt correction,22 existing tests and Ruff passed; direct autonomous child still running. No new research job or production activation.",
   "active_jobs_started_by_this_continuation": [],
-  "active_provider_request": {
-    "status": "none;68component closed known validation failure, no semantic decision; originals retained",
-    "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
-  },
+  "active_provider_request": null,
   "task_inventory": {
     "limit": 100,
     "running_tasks_in_returned_sample": 0,
@@ -72,14 +69,14 @@
     },
     {
       "scope": "case131",
-      "reason": "Omitted run_id after read_topic; no packet constructed; guessed packet refs exhausted invalid-reference budget; not a semantic verdict or source-coverage result. Session-bound reference fix in local regression verification; no new research job."
+      "reason": "131 scoped Live review returned supported for navigation quote and silently narrowed compound assertions; production142/EF activation answer remains pending."
     },
     {
       "scope": "production_activation",
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Commit duplicate validation/guidance repair, then one captured scoped131 component on same store. No new research job. Do not convert formal reference success into semantic acceptance. Prepared142/EF production switch remains pending owner answer.",
+  "next_step": "Debug existing Live review prompt directly before one autonomous component. Reuse current repair writer; do not add a mandatory Native judge or new framework.",
   "stages": [
     {
       "stage": 0,
@@ -809,10 +806,10 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "truthful_duplicate_review_validation_and_captured_component_preparation",
-  "current_blocker": "Awaiting owner decision on exact reviewed paired production rollout; current public API still93a/Vibe6e. Full corpus/physical handset acceptance remain open.131 source-attributed date correction in progress.",
-  "updated_at": "2026-10-15T03:37:35.514565+00:00",
-  "free_bytes": 467410944,
+  "current_stage": "direct_review_prompt_diagnostic_after_semantic_fail131",
+  "current_blocker": "131 scoped Live review returned supported for navigation quote and silently narrowed compound assertions; production142/EF activation answer remains pending.",
+  "updated_at": "2026-10-15T03:51:50.138458+00:00",
+  "free_bytes": 476979200,
   "signed_apk": {
     "run_id": 38672152384,
     "artifact_id": 11943883581,
@@ -1089,7 +1086,7 @@
       }
     }
   ],
-  "work_revision": 76,
+  "work_revision": 78,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1622,7 +1619,7 @@
       ]
     }
   ],
-  "current_source_sha": "68eccf2380d483d5f5c3b66c1b0c08285c6dcb84",
+  "current_source_sha": "7328306cac00bb5ef500efaab38566e50ff7ef0e",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1718,10 +1715,17 @@
     "next_change": "Truthful pre-aggregation duplicate validation; Live-only descriptions require quote refs while API still accepts exact literal legacy quotes. Restricted exact review-call capture before resolution in next component."
   },
   "current_ci_followup": {
-    "source_sha": "68eccf2380d483d5f5c3b66c1b0c08285c6dcb84",
-    "backend": 38676381941,
-    "android": 38676381860,
-    "status": "in_progress"
+    "source_sha": "7328306cac00bb5ef500efaab38566e50ff7ef0e",
+    "backend": {
+      "id": 38677245088,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "android": {
+      "id": 38677245040,
+      "status": "completed",
+      "conclusion": "success"
+    }
   },
   "duplicate_review_validation": {
     "tests_passed": 110,
@@ -1731,5 +1735,42 @@
     "real_persisted_replay_protection_preserved": true,
     "identical_normalized_duplicates": "one unchanged decision; raw request preserved",
     "model_guidance": "Live-only exact issued refs and one decision per fact; API literal compatibility unchanged"
+  },
+  "case131_captured_review": {
+    "session_id": "live_025b43bffe7049ab9d1645ece9f5f9a1",
+    "status": "CLOSED_SEMANTIC_FAIL",
+    "source_sha": "7328306cac00bb5ef500efaab38566e50ff7ef0e",
+    "exact_argument_capture": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-captured-review-7328306/review-calls.jsonl",
+    "capture_provenance": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-captured-review-7328306/capture-provenance.json",
+    "capture_scope": "Exact story/session allowlisted review calls, before normal validation; private artifact0700/0600; no routine payload logs/environment/transcripts",
+    "semantic_verdicts_injected": false,
+    "request_or_tool_replays": 0,
+    "new_research_job": false,
+    "packet_ref": "p7d6df951a675",
+    "mechanical_receipt_saved": true,
+    "semantic_review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-captured-review-7328306/semantic-review.json",
+    "new_research_jobs": 0,
+    "new_research_provider_sends": 0,
+    "local_server_closed": true
+  },
+  "cleanup_current_continuation": {
+    "allocated_bytes_removed": 141807616,
+    "cli_logical_size": "156.0MiB",
+    "plan": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-closed-synthetic-additional-plan.json",
+    "applied_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-closed-synthetic-additional-applied.txt",
+    "remaining_own_worktrees": 2,
+    "all_current_worktrees_required": true,
+    "no_runtime_or_provider_evidence_removed": true,
+    "free_bytes_after": 476979200
+  },
+  "direct_review_prompt_correction": {
+    "status": "AUTONOMOUS_CHILD_RUNNING",
+    "child_id": "/root/review_original_claim_autonomous_131",
+    "requested_model": "gpt-6-luna",
+    "requested_effort": "medium",
+    "input": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-live-review-correction-131",
+    "prompt_sha256": "7bc4353402225b9c4e15aa55dd385d3d685a9671fa61f74127ba874555f91a7e",
+    "local_tests_passed": 22,
+    "scope": "Live prompt only, existing writer unchanged; direct child has no bound callbacks; not actual Mira qualification"
   }
 }

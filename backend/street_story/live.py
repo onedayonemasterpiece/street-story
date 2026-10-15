@@ -867,6 +867,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Copy ONLY exact quote_ref labels from this fact\'s received packet slices, with their '
                 'displayed evidence numbers. Do not retype/paraphrase source text or invent labels. '
                 'Labels address unchanged text; you still decide semantic support. Empty only for unsupported decisions.')
+            fields['claims']['description'] = (
+                'Enumerate EVERY independently selectable proposition in the ORIGINAL candidate, '
+                'including unsupported ones. supported requires the unchanged original single claim. '
+                'A narrower paraphrase here does not edit the saved candidate: use repair_research_fact '
+                'for narrowing, attribution changes or splitting, then review the new revisions.')
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
@@ -899,7 +904,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'versions, not a new search. Follow assess_review_packet advice when requested, '
                 'but decide support yourself from the own passages and exact physical subject. '
                 'Use ONLY received quote_ref labels in basis_quotes with their displayed evidence '
-                'numbers. A label resolves unchanged own text, not a support verdict. Do not '
+                'numbers. Read every own slice and compare the ORIGINAL candidate with the actual '
+                'words before choosing labels. Candidate text, stored eligibility and quote labels '
+                'are not evidence. Navigation, menus and browser challenges do not support a claim. '
+                'Missing support requires get_review_context or an insufficient verdict. '
+                'supported accepts the unchanged original single claim, never a narrower claims[] '
+                'paraphrase. Any narrowing, attribution change or decomposition requires '
+                'repair_research_fact and review of the new revisions. '
+                'A label resolves unchanged own text, not a support verdict. Do not '
                 'retype quotations or paraphrase a candidate into a source quotation. Return one '
                 'decision per fact number, combining its own source slices in evidence/basis arrays. '
                 'For defective candidates group precise repair_research_fact replacements, '
