@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T05:06:19.724489+00:00",
+  "updated_at_utc": "2026-10-15T05:16:10.185782+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:01:59.366120+00:00",
   "stage": 2,
   "status": "working",
@@ -806,8 +806,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "existing_review_output_boundary_fix",
-  "current_blocker": "131 read guard prevented writes but Mira falsely announced completion with0saved decisions and never used available Gemini advice. Existing output boundary extended locally;84tests/RuffPASS. Full131 semantic correction remains open. Paired142/EF public rollout answer pending.",
+  "current_stage": "native_same_job_model_action_continuation_verification",
+  "current_blocker": "104 ended with an explicit extract action over its retained Klops source; host stopped on save_facts capability. Minimal guard correction locally passes107 tests; real addressed continuation remains to be verified. Broader completeness and public/phone E2E remain open.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -2288,5 +2288,156 @@
     "Giga_profile_unchanged": "374f05c9d879020ab2603eb6a4c12b49939b250ae849cdbf814ab03f48ba2920",
     "installed_in_production": false,
     "semantic_whole_acceptance": false
+  },
+  "native_continuation_fix": {
+    "status": "LOCAL_TESTS_PASS_REAL_VERIFICATION_PENDING",
+    "before_reproduction_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-before.log",
+    "before_failures": 4,
+    "before_passes": 3,
+    "change": "Remove save_facts-capability blanket return. Completed model next_action uses existing same-job/run/thread family continuation; resource_unavailable returns to qualified pool.",
+    "no_new_framework_job_thread_or_turn_cap": true,
+    "old_closed_records_preserved": true,
+    "after_passes": 107,
+    "after_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-after.log",
+    "after_junit": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-after.xml",
+    "ruff": "passed",
+    "diff_check": "passed"
+  },
+  "ordinary_completeness104": {
+    "at_utc": "2026-10-15T05:07:01.765654+00:00",
+    "status": "CLOSED_PARTIAL_WITH_READ_SOURCE_LEFT_UNSAVED",
+    "source_sha": "7462d59374f9f5c09ec7c0eabb303a6c15b8ab8a",
+    "runtime_same_as": "35ce4021fa7a66895a71fba3bedb191014ddd284",
+    "same_original_store": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-104-native-08e6d19/data/street-story.sqlite3",
+    "story_id": "story_6ebd74f82ddf8dc2cd2a6f52",
+    "selected_candidate_id": "osm:relation:3665416",
+    "original_photo_sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+    "prior_completed_receipts": 4,
+    "prior_pending_jobs": 0,
+    "mode": "ordinary_qualified_product_more_after_known_closed_results",
+    "qualification_file": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-schema-feedback-qualification-35ce402.json",
+    "new_competing_coding_job": false,
+    "new_identity": false,
+    "reference_facts_or_urls_supplied": false,
+    "external_publication": false,
+    "automatic_command_resends": 0,
+    "output": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-ordinary-completeness-7462d59",
+    "job_id": "job_4905883c52c94f0caef69870",
+    "run_id": "research_5d01704f8d374bc97a985fe6",
+    "attempt_id": "rattempt_c80e75dbc785535c34dcf8df",
+    "thread_id": "01a13df5-05bc-7fe2-aaa2-fb5408a9ad28",
+    "turn_id": "01a13df5-07f3-7072-90ef-d09ec6e20863",
+    "terminal_seconds": 50.377577781677246,
+    "new_saved_cards": 4,
+    "clearly_atomic_event_cards": 2,
+    "compound_cards_requiring_review": 2,
+    "new_owned_sources": 2,
+    "new_facts": [
+      {
+        "fact_id": "claim_ce9b747c86c0d2f17161",
+        "text": "В 1913 году в башне Врангеля была создана художественная галерея под руководством архитектора Фридриха Ларса.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "root_atomic_review": "OWN_SOURCE_SUPPORTED_SINGLE_EVENT",
+        "basis_source_version": "srcv_f6e0620ae21115ed587c6afd",
+        "basis_lines": "145–146",
+        "independent_historical_confirmation": false
+      },
+      {
+        "fact_id": "claim_8a50640fd371e7511b90",
+        "text": "В 1924 году на наружной стене башни Врангеля установили скульптуру «Немецкий Михель» работы Фридриха Ройша; скульптура была двухметровой.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "root_atomic_review": "OWN_SOURCE_SUPPORTED_COMPOUND_NEEDS_ATOMIZATION_REVIEW",
+        "basis_source_version": "srcv_f6e0620ae21115ed587c6afd",
+        "basis_lines": "145–146",
+        "independent_historical_confirmation": false
+      },
+      {
+        "fact_id": "claim_96513889c2fde255df38",
+        "text": "В 1944 году внутри башни Врангеля разместили склады стрелкового оружия, боевого снаряжения и имущества связи.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "root_atomic_review": "OWN_SOURCE_SUPPORTED_COMPOUND_NEEDS_ATOMIZATION_REVIEW",
+        "basis_source_version": "srcv_f6e0620ae21115ed587c6afd",
+        "basis_lines": "145–146",
+        "independent_historical_confirmation": false
+      },
+      {
+        "fact_id": "claim_eb3e7ac3804f21264a14",
+        "text": "10 апреля 1945 года после штурма Кёнигсберга башня Врангеля перешла под контроль Красной армии.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "root_atomic_review": "OWN_SOURCE_SUPPORTED_SINGLE_EVENT",
+        "basis_source_version": "srcv_f6e0620ae21115ed587c6afd",
+        "basis_lines": "145–146",
+        "independent_historical_confirmation": false
+      }
+    ],
+    "native_completion": {
+      "next_action": {
+        "kind": "extract",
+        "reason": "Статья уже прочитана и удержана; её содержание добавит самостоятельные исторические факты, отличные от сохранённых сведений о галерее, скульптуре и военных событиях.",
+        "request": "Сохранить атомарные утверждения из прочитанного материала Klops о функциях башни, аренде и использовании, с сохранением дат и оговорок."
+      },
+      "reason": "Прочитаны статья о судьбе башни и справочная статья о ней; первая даёт полезные сведения о послевоенных функциях и периоде аренды, вторая — об отдельных событиях 1913, 1924 и 1944–1945 годов. Новые сведения из Википедии сохранены в ledger. Статья Klops прочитана и источник удержан, но её содержательные утверждения ещё не сохранены; поэтому не выдаю их как доставленные факты. Есть перспективные независимые источники и направления, в частности официальная история Музея янтаря и публикация о внутреннем состоянии башни. Официальная страница музея не открылась из-за тайм-аута native reader; это техническая ошибка, а не свидетельство отсутствия сведений.",
+      "remaining_gaps": [
+        "Не сохранены прочитанные сведения Klops о лазарете Первой мировой войны, молодёжно-туристической базе, овощебазе, аренде и культурном использовании.",
+        "Не изучены альтернативные источники о строительстве, архитектуре, послевоенном использовании и современных событиях."
+      ],
+      "research_sufficient": false,
+      "stop_basis": "unresolved_gap"
+    },
+    "usage": {
+      "by_thread": {
+        "01a13df5-05bc-7fe2-aaa2-fb5408a9ad28": [
+          {
+            "cachedInputTokens": 288512,
+            "inputTokens": 351878,
+            "outputTokens": 2668,
+            "reasoningOutputTokens": 100,
+            "totalTokens": 354546
+          }
+        ]
+      },
+      "cost": "unknown",
+      "measurement": "owned_journal_cumulative_turn_delta",
+      "reported_last_inference_usage": {
+        "01a13df5-05bc-7fe2-aaa2-fb5408a9ad28": [
+          {
+            "cachedInputTokens": 48896,
+            "inputTokens": 56039,
+            "outputTokens": 361,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 56400
+          }
+        ]
+      },
+      "total_tokens": 354546,
+      "usage_known": true
+    },
+    "cost": "unknown",
+    "preserved_prior_fact_ids": true,
+    "whole_research_acceptance": false,
+    "actual_known_blocker": "Host continuation incorrectly returns solely on autonomous_native_turn derived from save_facts availability, despite known closed explicit extract action over retained Klops.",
+    "candidate_fix": "Use existing same-job/run/thread continuation after known closed model action; UNKNOWN/Stop/digest/no-progress guards remain. No new tasks or cumulative caps."
+  },
+  "current_102_atomic_evaluation": {
+    "path": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/atomic-evaluation-current102-35ce402/evaluation.json",
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/atomic-evaluation-current102-35ce402/report.md",
+    "scope": "Frozen current same-story eligible union12of16cards; not one cold run",
+    "N": 45,
+    "H": 11,
+    "partial": 8,
+    "missing": 25,
+    "uncertain": 1,
+    "strict_recall": 0.24444444444444444,
+    "baseline": "N/A",
+    "new_run_full": 0,
+    "selected_full": 0,
+    "selected_partial": 3,
+    "semantic_output_atoms": 23,
+    "independent_saturation_claim": false,
+    "not_an_admission_gate": true
   }
 }

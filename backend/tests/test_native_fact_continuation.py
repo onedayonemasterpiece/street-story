@@ -8,6 +8,7 @@ import pytest
 from street_story.db import Store
 from street_story.errors import RetryableProviderError
 from street_story.fact_agent_providers import AgentRoute
+from street_story.fact_agent_providers import native_tools
 from street_story.fact_agents import run_fact_agents
 from street_story.native_fact_research import CONTRACT
 from street_story.research_adapter import ProductResearchAdapter
@@ -27,6 +28,7 @@ def receipt(binding, context, raw, number):
         'provider_id': 'codex_native', 'model_id': 'gpt-6-luna',
         'thread_id': 'same-owned-luna', 'turn_id': f'closed-{number}',
         'frozen_prompt': 'Frozen instructions\nINPUT=' + json.dumps(context, ensure_ascii=False),
+        'provided_tools': native_tools(),
         'native_tool_calls': {}, 'native_threads': {'same-owned-luna': {'turn_id':f'closed-{number}'}},
         'raw_result': raw, 'result': {'facts': []}}
 
@@ -112,7 +114,7 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('native_phase', ['completed_resource', 'failed', 'unknown'])
+@pytest.mark.parametrize('native_phase', ['completed_resource', 'completed_resource_with_action', 'failed', 'unknown'])
 async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts_alternative(tmp_path, monkeypatch, native_phase):
     service, job, _, reader, _ = await fixture(tmp_path)
     adapter=ProductResearchAdapter(service,admission=SimpleNamespace())
@@ -123,8 +125,10 @@ async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts
     async def invoke(adapter, route, story, context, *, binding, guard):
         guard()
         calls.append(route.provider_id)
-        value=receipt(binding,context,packet(basis='resource_unavailable'),1)
-        if route.provider_id=='codex_native' and native_phase!='completed_resource':
+        action = ({'kind': 'search', 'request': 'Blocked owned action', 'reason': 'Provider resource unavailable'}
+                  if native_phase == 'completed_resource_with_action' else None)
+        value=receipt(binding,context,packet(action, basis='resource_unavailable'),1)
+        if route.provider_id=='codex_native' and not native_phase.startswith('completed_resource'):
             value.update(phase=native_phase,provider_send_state='possibly_sent' if native_phase=='unknown' else 'response_closed')
             adapter._checkpoint_receipt(binding,value)
             raise RetryableProviderError('controlled_native_failure')

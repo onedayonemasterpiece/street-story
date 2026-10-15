@@ -749,10 +749,13 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 row.get('reason') == 'native_fact_source_not_owned_read' and not row.get('receipt')
                 and not row.get('confirmation') for row in unresolved)
             if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
-                    or result.get('autonomous_native_turn')
                     or completion.get('research_sufficient') or not action or action.get('kind') == 'ask_owner'
+                    or completion.get('stop_basis') == 'resource_unavailable'
                     or unresolved and not closed_reference_errors):
                 return result
+            # Incremental save capability is not a semantic stopping decision.
+            # A model-owned next action from a known closed turn advances this
+            # same guarded job/run/thread through the existing family path.
             guard()
             with adapter.service.store.connection() as db:
                 row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
