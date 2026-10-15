@@ -982,21 +982,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if capability == 'research':
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
-            + '\nAll these stages are your supported product capabilities. If the request needs another '
-              'stage, call continue_story first. If the required tool is already available, use it '
-              'without switching stages. Preparation, confirmation and cancellation of a post '
-              'use the publication stage. Do not claim another supported product stage is unavailable '
-              'merely because its tools are absent from this bundle. Use available image tools directly; if they are absent, '
-              'switch to publication for images. Do not say you cannot '
-              'create/edit images just because those tools are absent from the current stage. '
-              'After switching, execute the same author request with the new tools; do not ask the '
-              'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
-              'photo_format (original/crop choice), editor (selection/concept/text), dictation (protected verbatim input), publication (image/post). '
-              'Never switch to the current stage again: use its available tools to complete the request. '
-              'Changing the owner selection among eligible facts belongs to editor; it does '
-              'not itself request new source discovery or a new canonical fact verdict. '
-              'For an explicit verbatim-dictation request switch to dictation, then use its literal tools. '
-              'Changing stage is not consent for new mutations or confirmation of a publication.')
+            + '\nAll listed stages are supported. When another stage is needed, call continue_story first; '
+              'a missing tool in this bundle does not make the action unavailable. Otherwise use the '
+              'available tool without switching to the current stage again. After switching execute '
+              'the same request without asking the author to repeat it. Stages: identity (object), '
+              'research (discovery), review (evidence), photo_format (original/crop), editor '
+              '(eligible fact selection/concept/text), dictation (protected verbatim input), '
+              'publication (image/post preparation, confirmation, cancellation). Use available image '
+              'tools directly; otherwise switch to publication. Selecting eligible facts is editor '
+              'work, not new discovery or a new canonical verdict. Explicit verbatim dictation '
+              'uses dictation. Changing stage grants no new mutation or publication consent.')
         if capability == 'review':
             configuration['context_instruction'] = (
                 'The declared review functions read retained local source snapshots and remain available '
@@ -1013,7 +1008,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                   'Report a saved correction only after its durable receipt.'
             )
         configuration['system_instruction'] += (
-            '\nFor an explicitly requested correction or independent reconsideration of a fact, '
+            '\nSelecting already corrected eligible facts or composing a corrected post is editor work: '
+            'call continue_story(stage=editor), even from publication. Mentioning a previous '
+            'error or a withheld variant does not by itself request another evidence review. '
+            'For an explicitly requested correction or independent reconsideration of a fact\'s meaning or verdict, '
             'save the new semantic decision, not only a spoken explanation. '
             'If this is not the review stage, use continue_story(stage=review) with the author\'s '
             'intent and carry out that same request there. An explanation alone does not change '

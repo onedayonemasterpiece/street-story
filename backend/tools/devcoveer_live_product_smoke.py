@@ -204,6 +204,9 @@ def poll_events(
     confirmation: dict[str, Any] | None = None
     event_types: set[str] = set()
     capability_unavailable: set[str] = set()
+    any_tool_seen = False
+    spoken_output = False
+    transition_seen = False
 
     while time.monotonic() < deadline:
         payload = _json(
@@ -220,6 +223,12 @@ def poll_events(
             kind = str(event.get("type") or "")
             if kind:
                 event_types.add(kind)
+            if kind in {'tool_call', 'tool_result'}:
+                any_tool_seen = True
+            if kind.startswith('capability_transition_'):
+                transition_seen = True
+            if kind == 'output_transcript' and str(event.get('text') or '').strip():
+                spoken_output = True
             fatal = event_error(event)
             if fatal:
                 raise ProductSmokeError(fatal)
@@ -262,6 +271,8 @@ def poll_events(
 
         if tool_error:
             raise ProductSmokeError(f"{expected_tool}_failed_{tool_error}")
+        if turn_complete_seen and spoken_output and not any_tool_seen and not transition_seen:
+            raise ProductSmokeError(f"{expected_tool}_turn_completed_without_tool")
         if turn_complete_seen and recoverable_tool_errors and not tool_ok:
             raise ProductSmokeError(f"{expected_tool}_recoverable_conflict_unresolved")
         if tool_ok and post_tool_turn_complete and (confirmation is not None or not require_confirmation):

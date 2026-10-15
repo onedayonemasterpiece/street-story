@@ -202,6 +202,36 @@ def test_poll_events_accepts_tool_result_and_same_turn_continuation() -> None:
     assert result["turn_complete"] is True
 
 
+def test_poll_events_reports_completed_refusal_without_waiting_for_timeout() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='select_facts_turn_completed_without_tool'):
+        module.poll_events(
+            EventClient([
+                {'type': 'output_transcript', 'text': 'На текущем этапе я не могу выбрать факты.'},
+                {'type': 'turn_complete'},
+            ]), 'story', 'session', 0, expected_tool='select_facts', timeout_seconds=1,
+        )
+
+
+def test_poll_events_keeps_waiting_across_capability_transition(monkeypatch) -> None:
+    module = load_module()
+    batches = [
+        [{'type': 'capability_transition_started'},
+         {'type': 'output_transcript', 'text': 'Перехожу к редактору.'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'select_facts', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+    ]
+    class TransitionClient:
+        def get(self, path, params=None):
+            return EventClient(batches.pop(0)).get(path, params)
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(
+        TransitionClient(), 'story', 'session', 0, expected_tool='select_facts', timeout_seconds=1,
+    )
+    assert result['tool_ok'] and not batches
+
+
 def test_poll_events_recovers_revision_conflict_inside_same_turn() -> None:
     module = load_module()
     cursor, result = module.poll_events(
