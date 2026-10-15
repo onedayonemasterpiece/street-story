@@ -21,6 +21,17 @@ POLL_SECONDS = 20
 MAX_READS = 3
 PENDING = {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}
 MAX_RESPONSE_CHARS = 200000
+# A superset of _unknown, matched by idx_research_provider_terminal_pending in
+# db.py: settled attempts (for example acknowledged aborts) never fill the
+# bounded candidate window or cost a JSON scan. _claim stays authoritative.
+CANDIDATE_SQL = (
+    "json_extract(receipt_json,'$.phase') NOT IN ('created','completed','response_completed','failed') "
+    "AND coalesce(json_extract(receipt_json,'$.terminal_reconciliation.status'),'') "
+    "NOT IN ('completed','failed','unaddressable','expired','exhausted') "
+    "AND (json_extract(receipt_json,'$.phase') IN "
+    "('prompt_intent','submitted','unknown','abort_intent','abort_outcome_unknown') "
+    "OR json_extract(receipt_json,'$.phase')='aborted' AND json_extract(receipt_json,'$.abort_acknowledged') IS NOT 1 "
+    "OR json_extract(receipt_json,'$.provider_send_state')='possibly_sent')")
 
 
 def _unknown(receipt):
@@ -30,9 +41,21 @@ def _unknown(receipt):
         and receipt.get('phase') not in {'completed', 'response_completed'})
 
 
-def _scope(service, db, story_id, receipt):
-    row = service._story_row(db, story_id)
-    research = json.loads(row['research_json'] or '{}')
+def _scope(service, db, story_id, receipt, *, stories=None):
+    cached = stories.get(story_id) if stories is not None else None
+    if cached is None:
+        # Three fields decide the scope; never decode the whole map/source history.
+        row = db.execute("SELECT photo_sha256,research_json->'$.automatic_research_outcome' AS automatic_research_outcome,"
+            "research_json->'$.identity_generation' AS identity_generation,"
+            "research_json->'$.research_controls' AS research_controls FROM stories WHERE id=?", (story_id,)).fetchone()
+        if not row:
+            from .service import NotFoundError
+            raise NotFoundError("story not found")
+        cached = row, {key: json.loads(row[key]) for key in
+                       ('automatic_research_outcome', 'identity_generation', 'research_controls') if row[key] is not None}
+        if stories is not None:
+            stories[story_id] = cached
+    row, research = cached
     outcome = research.get('automatic_research_outcome') or {}
     binding = receipt.get('binding') or {}
     generation = int(research.get('identity_generation') or 0)
@@ -247,6 +270,16 @@ def _commit(service, row, token, observation):
     return True
 
 
+def _candidate_query(now, story_id=None):
+    return ('SELECT a.attempt_id,a.story_id,a.receipt_json FROM research_provider_attempts a '
+            'JOIN stories s ON s.id=a.story_id WHERE ' + CANDIDATE_SQL + ' '
+            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.next_read_at\'),0)<=? '
+            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.lease_until\'),0)<=? '
+            'AND json_extract(s.research_json,\'$.automatic_research_outcome\') IS NOT NULL '
+            + ('AND a.story_id=? ' if story_id else '') + 'ORDER BY a.updated_at LIMIT 60',
+            (now, now, story_id) if story_id else (now, now))
+
+
 async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3, timeout_seconds=6):
     """Observe at most three saved IDs within six seconds; product stays ended."""
     adapter = getattr(service.providers, 'research', None)
@@ -254,17 +287,20 @@ async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3,
         return {'observed': 0, 'closed': 0}
     limit = max(0, min(3, int(max_attempts)))
     deadline = time.monotonic() + max(0, min(6, float(timeout_seconds)))
+    started = time.monotonic()
     with service.store.connection() as db:
-        rows = list(db.execute('SELECT a.attempt_id FROM research_provider_attempts a JOIN stories s ON s.id=a.story_id '
-            'WHERE json_extract(a.receipt_json,\'$.phase\') NOT IN (\'created\',\'completed\',\'response_completed\',\'failed\') '
-            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.status\'),\'\') '
-            'NOT IN (\'completed\',\'failed\',\'unaddressable\',\'expired\',\'exhausted\') '
-            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.next_read_at\'),0)<=? '
-            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.lease_until\'),0)<=? '
-            'AND json_extract(s.research_json,\'$.automatic_research_outcome\') IS NOT NULL '
-            + ('AND a.story_id=? ' if story_id else '') + 'ORDER BY a.updated_at LIMIT 60',
-            (service.store.now(),service.store.now(),story_id) if story_id else
-            (service.store.now(),service.store.now())))
+        rows = list(db.execute(*_candidate_query(service.store.now(), story_id)))
+        inspected = len(rows)
+        # Out-of-scope originals cost one narrow story read per pass and never
+        # open a write transaction; _claim rechecks the survivors atomically.
+        stories = {}
+        rows = [row for row in rows if _unknown(receipt := json.loads(row['receipt_json'] or '{}'))
+                and _scope(service, db, row['story_id'], receipt, stories=stories)]
+    duration_ms = round((time.monotonic() - started) * 1000)
+    if duration_ms >= 250:
+        logging.getLogger('uvicorn.error').warning(
+            'street_story_worker_scan stage=terminal_readback outcome=slow duration_ms=%s inspected=%s due=%s',
+            duration_ms, inspected, len(rows))
     observed, closed = 0, 0
     for candidate in rows:
         if observed >= limit or time.monotonic() >= deadline:

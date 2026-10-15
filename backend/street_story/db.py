@@ -361,6 +361,16 @@ CREATE INDEX IF NOT EXISTS idx_research_provider_story_role ON research_provider
 CREATE INDEX IF NOT EXISTS idx_research_provider_fact_binding ON research_provider_attempts(
  story_id,role,json_extract(receipt_json,'$.binding.fact_unit_id'),
  json_extract(receipt_json,'$.binding.photo_sha256'),json_extract(receipt_json,'$.binding.generation'));
+CREATE INDEX IF NOT EXISTS idx_research_provider_terminal_pending ON research_provider_attempts(updated_at)
+ WHERE json_extract(receipt_json,'$.phase') NOT IN ('created','completed','response_completed','failed')
+ AND coalesce(json_extract(receipt_json,'$.terminal_reconciliation.status'),'')
+ NOT IN ('completed','failed','unaddressable','expired','exhausted')
+ AND (json_extract(receipt_json,'$.phase') IN
+ ('prompt_intent','submitted','unknown','abort_intent','abort_outcome_unknown')
+ OR json_extract(receipt_json,'$.phase')='aborted' AND json_extract(receipt_json,'$.abort_acknowledged') IS NOT 1
+ OR json_extract(receipt_json,'$.provider_send_state')='possibly_sent');
+CREATE INDEX IF NOT EXISTS idx_research_provider_accounting_pending ON research_provider_attempts(updated_at,attempt_id)
+ WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending';
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,

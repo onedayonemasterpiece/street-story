@@ -26,6 +26,14 @@ LOG = logging.getLogger(__name__)
 # A local SOURCE/REF acquisition failure describes this unit, not model health.
 LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
 MAX_RETAINED_ADMISSION_ATTEMPTS = 3
+# Matched by idx_research_provider_accounting_pending: the per-tick recovery
+# reads only pending finalizations instead of every historical receipt.
+PENDING_ACCOUNTING_SQL = (
+    "SELECT attempt_id,receipt_json FROM research_provider_attempts "
+    "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
+    "AND COALESCE(json_extract(receipt_json,'$.accounting_finalization.retry_at'),0)<=? "
+    "AND json_extract(receipt_json,'$.accounting_finalization.authority_sha256')=? "
+    "ORDER BY updated_at,attempt_id LIMIT ?")
 
 
 def retained_admission_count(db, receipt):
@@ -357,11 +365,7 @@ class ProductResearchAdapter:
         authority = self._accounting_authority(self.control)
         now = self.service.store.now()
         with self.service.store.connection() as db:
-            rows = list(db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
-                "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
-                "AND COALESCE(json_extract(receipt_json,'$.accounting_finalization.retry_at'),0)<=? "
-                "AND json_extract(receipt_json,'$.accounting_finalization.authority_sha256')=? "
-                "ORDER BY updated_at,attempt_id LIMIT ?", (now, authority, limit)))
+            rows = list(db.execute(PENDING_ACCOUNTING_SQL, (now, authority, limit)))
         for row in rows:
             record = json.loads(row['receipt_json'])['accounting_finalization']
             if record.get('retry_at', 0) > self.service.store.now():
