@@ -1,0 +1,39 @@
+{
+  "contract": "research-agent-verification-v1",
+  "routes": [
+    {
+      "contract": "research-agent-verification-v1",
+      "route_id": "642b477b5a8db8e859cf1167",
+      "provider_id": "codex_native",
+      "model_id": "gpt-6-luna",
+      "endpoint": "native_codex_app_server",
+      "directory": null,
+      "profile_sha256": "220bef4b0d176d7d3d86d842a0215f8f3bf7d5609bd24340b82e2777c3827414",
+      "tool_access_verified": true,
+      "tool_safety_verified": true,
+      "qualification_receipts": [
+        {
+          "path": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-current-use-map-context-daf9b4a/receipt-0.json",
+          "sha256": "f5c09900563aeb04e0745cbf60995d41946d08d584362aff00668c8b45aa447b"
+        }
+      ]
+    },
+    {
+      "contract": "research-agent-verification-v1",
+      "directory": null,
+      "endpoint": "https://api.giga.chat/v1/chat/completions",
+      "model_id": "GigaChat-2",
+      "profile_sha256": "374f05c9d879020ab2603eb6a4c12b49939b250ae849cdbf814ab03f48ba2920",
+      "provider_id": "gigachat",
+      "qualification_receipts": [
+        {
+          "path": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/noncodex-giga-current-08e6d19/actual-receipt.json",
+          "sha256": "fdc3829986c9f8238ef4e47303d2cda31ff38fcaa419c6cd9c371fdba188caf5"
+        }
+      ],
+      "route_id": "2aa7cab31eeb508e4a315e7a",
+      "tool_access_verified": true,
+      "tool_safety_verified": true
+    }
+  ]
+}

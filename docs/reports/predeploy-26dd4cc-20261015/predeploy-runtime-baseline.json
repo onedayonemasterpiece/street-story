@@ -1,0 +1,35 @@
+{
+ "at_utc": "2026-10-15T17:28:57+00:00",
+ "deployed_cmdline_release": "9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0",
+ "main_pid": 349480,
+ "idle_cpu_pct_one_core": 96.7,
+ "window_s": 30.0,
+ "active_jobs_before": 0,
+ "active_jobs_after": 0,
+ "rollback_9613": {
+  "release_manifest_ok": true,
+  "venv_target": "/home/dev/.local/share/street-story/releases/91869b4f7314851698ed2be14ddb15a4d0c5b44f/venv",
+  "venv_python_present": true,
+  "config_backups": [
+   {
+    "source": "/home/dev/.local/state/street-story/service.env",
+    "backup_exists": true,
+    "backup_sha256_ok": true,
+    "live_matches_backup": true
+   },
+   {
+    "source": "/home/dev/.local/state/street-story/providers.env",
+    "backup_exists": true,
+    "backup_sha256_ok": true,
+    "live_matches_backup": true
+   },
+   {
+    "source": "/home/dev/.config/systemd/user/street-story.service",
+    "backup_exists": true,
+    "backup_sha256_ok": true,
+    "live_matches_backup": true
+   }
+  ],
+  "qualification_cache_backup_ok": true
+ }
+}
