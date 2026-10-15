@@ -703,10 +703,10 @@ FUNCTIONS = [
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
             "observe_existing_visual": {"type": "boolean", "description": "Read existing operation and inspect its saved image; omit visual_instruction. Never resend unknown."},
-            "preserve_source_frame": {"type": "boolean", "description": "Only for an explicit request to compose copy over an unaltered photo without image generation. Original/crop_4_5 select framing and never imply this mode. For artistic photo/ink generation omit or use false; omit copy/layout."},
+            "preserve_source_frame": {"type": "boolean", "description": "Only explicit unaltered-photo composition. Original/crop_4_5 are framing, not this mode. Artistic generation: omit/false; omit copy/layout."},
             "visual_copy": {"type": "object", "properties": {key: {"type": "string"} for key in
                 ('title', 'subtitle', 'body', 'date_line', 'location_line', 'source_line')},
-                "description": "Only in explicitly requested preserve_source_frame mode. For artistic generation put qualified handwritten annotation instructions in visual_instruction and omit this field. Never edit the draft."},
+                "description": "Only with preserve_source_frame=true. For artistic generation omit; put qualified annotations in visual_instruction. Never edit draft."},
             "visual_layout": {"type": "object", "properties": {
                 "text_box": {"type": "array", "items": {"type": "number"}},
                 "title_size": {"type": "number"}, "body_size": {"type": "number"},
@@ -960,15 +960,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'For ordinary selection, concept or text editing continue through editor in this same story.')
         else:
             overlay = (
-                "Use the saved confirmed identity, selected eligible facts, concept and draft. "
-                "Visual-only changes preserve the text; text changes need the editor stage. "
+                "Use confirmed identity, selected eligible facts, concept and draft. "
+                "Visual-only requests preserve text; edit text through editor. "
                 "generate_visual is only for an explicit request, using the original photo and "
                 "a readable subset of owner-selected eligible facts; never use unselected facts. "
                 "Preserve dates and essential qualifications in readable annotations. "
                 "Do not regenerate a reviewed image merely to publish it. "
-                "Publication is two-step: prepare_publication shows the exact text, image, destinations "
-                "and time; confirm_publication needs a separate unambiguous author confirmation "
-                "of that card. Never publish on preparation alone. Read state after an unknown result "
+                "Prepare exact text/image/destinations/time with prepare_publication; confirm_publication "
+                "requires separate unambiguous author confirmation of that card. Copy the latest explicit owner "
+                "ISO time, not a previous request. Never publish on preparation alone. Read state after an unknown result "
                 "before taking another action."
             )
         # Only the tool menu is filtered. Semantic rules must survive even when
@@ -1043,6 +1043,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'known_fact_inventory', 'known_fact_inventory_fields',
                 'known_fact_inventory_truncated', 'facts_instruction',
                 'research_run', 'jobs', 'identity_research_context',
+                'owner_map_candidates',
             }}
         if capability != 'review':
             return context
@@ -5769,6 +5770,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if parsed.astimezone(timezone.utc).microsecond:
             raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
         if parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            logging.getLogger('uvicorn.error').info('street_story_publication_schedule_rejected %s', canonical({
+                'story_id': story_id, 'scheduled_for': scheduled_for, 'timezone': tz_name,
+                'server_now_utc': datetime.now(timezone.utc).isoformat(), 'reason': 'publish_time_past'}))
             raise ConflictError("publish_time_past", "scheduled_for must be in the future")
 
         with self.service.store.tx() as db:

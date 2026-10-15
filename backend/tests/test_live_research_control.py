@@ -193,6 +193,10 @@ def test_editorial_setup_preserves_selected_content_without_discovery_inventory(
         'known_fact_inventory_truncated': False, 'facts_instruction': 'Research policy',
         'research_run': {'run_id': 'old-run'}, 'jobs': [{'state': 'completed'}],
         'identity_research_context': {'candidates': ['old-candidate']},
+        # A real selected-house session retained 12.6 KiB of nearby map rows
+        # in editor setup, delaying even exact-text revalidation admission.
+        'owner_map_candidates': [{'candidate_id': str(index), 'address': 'Nearby street ' * 20}
+                                 for index in range(64)],
     }
     original = copy.deepcopy(context)
     result = StreetStoryLiveAdapter._capability_context(context, capability)
