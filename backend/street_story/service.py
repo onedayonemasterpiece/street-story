@@ -18,6 +18,7 @@ from typing import Any
 from .config import Settings, reveal
 from .db import Store
 from .errors import research_retry_at
+from .publication_content import publication_content
 from .providers import (
     GeminiClient,
     GroundedResearch,
@@ -1557,7 +1558,7 @@ class StreetStoryService:
                 raise PermanentProviderError("Requested destination is not in current VibePublish bootstrap projection")
             payload = {
                 "to": request["destinations"],
-                "content": {"text": request.get("text") or "", "format": "plain"},
+                "content": publication_content(request.get("text") or ""),
                 "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
                 "surface": "post",
                 "delivery": {"kind": "at", "at": request["scheduled_for"]},

@@ -1007,6 +1007,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'event and current dates; keep missing time/offset unknown. Choose relevant '
                 'details for the photographed scene rather than consuming every selected fact. '
                 'Omitting an irrelevant fact from prose does not deselect or delete it. '
+                'For requested clickable map links use [label](verified HTTPS URL) in the saved text, '
+                'with the owner-requested labels and supplied or verified building targets. Never invent a map URL. '
                 'On live_text_revision_conflict read_topic and retry once with the current revision. '
                 'Protect verbatim spans; explicit dictation belongs to dictation. '
                 'Text-style changes preserve the image; visual-only changes preserve text. '

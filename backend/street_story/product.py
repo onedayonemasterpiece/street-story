@@ -11,6 +11,7 @@ import httpx
 
 from .config import Settings, reveal
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
+from .publication_content import publication_content
 from .service import (
     ConflictError,
     InvalidStateError,
@@ -869,7 +870,7 @@ class ProductStreetStoryService(StreetStoryService):
                                    (canonical(request), self.store.now(), intent_id))
                 payload = {
                     "to": requested_aliases,
-                    "content": {"text": request.get("text") or "", "format": "plain"},
+                    "content": publication_content(request.get("text") or ""),
                     "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
                     "surface": "post",
                     "delivery": {"kind": "at", "at": request["scheduled_for"]},
