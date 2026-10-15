@@ -132,3 +132,50 @@ def test_long_live_quote_slices_fit_the_unchanged_page_limit_without_losing_byte
         probe = {**page, 'items': [item], 'next_cursor': cursor, 'has_more': True,
             'next_tool': 'get_review_packet', 'next_args': {'packet_ref': page['packet_ref'], 'cursor': cursor}}
         assert response_units('get_review_packet', probe) <= PAGE_UNITS
+
+
+@pytest.mark.asyncio
+async def test_conflicting_same_request_fact_rows_are_not_misreported_as_saved_decisions(review):
+    svc, adapter, session, run_id, fact_id = review
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet',
+        'args': {'run_id': run_id, 'fact_ids': [fact_id]}})
+    args = decision(packet)
+    args['decisions'].append({**args['decisions'][0], 'verdict': 'insufficient', 'support_complete': False})
+    before = unchanged_state(svc)
+    with pytest.raises(ConflictError) as exc:
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'same-request-conflict', 'args': args})
+    assert exc.value.code == 'live_review_decisions_invalid'
+    assert 'fact 0' in str(exc.value) and 'rows 0 and 1' in str(exc.value)
+    assert unchanged_state(svc) == before
+
+
+@pytest.mark.asyncio
+async def test_identical_duplicate_rows_save_one_unchanged_semantic_decision(review):
+    svc, adapter, session, run_id, fact_id = review
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet',
+        'args': {'run_id': run_id, 'fact_ids': [fact_id]}})
+    args = decision(packet)
+    args['decisions'].append(dict(args['decisions'][0]))
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'identical-incoming', 'args': args})
+    assert result['reviewed_assertion_count'] == 1 and result['eligible_count'] == 1
+    with svc.store.connection() as db:
+        row = db.execute('SELECT decisions_json,request_json FROM live_review_packets WHERE packet_ref=?',
+                         (packet['packet_ref'],)).fetchone()
+        assert len(json.loads(row['decisions_json'])) == 1
+        assert json.loads(row['request_json']) == args
+
+
+@pytest.mark.asyncio
+async def test_actual_persisted_decision_cannot_be_changed_by_later_request(review):
+    svc, adapter, session, run_id, _ = review
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = decision(packet)
+    args['relations_complete'] = False
+    staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'staged-durable', 'args': args})
+    assert staged['review_saved'] and staged['remaining_facts'] > 0
+    before = unchanged_state(svc)
+    args['decisions'][0]['reason'] = 'A different later decision must not overwrite durable history.'
+    with pytest.raises(ConflictError) as exc:
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'different-later', 'args': args})
+    assert exc.value.code == 'live_review_decision_replay_mismatch'
+    assert unchanged_state(svc) == before

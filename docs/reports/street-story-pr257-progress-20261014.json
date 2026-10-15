@@ -6,14 +6,14 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T03:26:16.592466+00:00",
+  "updated_at_utc": "2026-10-15T03:37:35.514565+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
   "last_action": "109 affected Live/review tests and Ruff pass for session-bound omitted run reference. Earlier actual131 attempt closed with0packets, no semantic writes; next one scoped model review uses exact corrected code. Prepared142/EF release remains frozen and unactivated.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "status": "none; existing131Live closed by known review contract budget; source/packet/jobs retained",
+    "status": "none;68component closed known validation failure, no semantic decision; originals retained",
     "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
@@ -79,7 +79,7 @@
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "One scoped real-Mira continuation of original131packet after specifically changed source-address interface; no research job, source search, visual or publish. Record semantic outcome without promoting interface checks to fact validity. Production142/EF decision remains pending.",
+  "next_step": "Commit duplicate validation/guidance repair, then one captured scoped131 component on same store. No new research job. Do not convert formal reference success into semantic acceptance. Prepared142/EF production switch remains pending owner answer.",
   "stages": [
     {
       "stage": 0,
@@ -809,9 +809,9 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "live_existing_quote_refs_verified_pending_real_model",
+  "current_stage": "truthful_duplicate_review_validation_and_captured_component_preparation",
   "current_blocker": "Awaiting owner decision on exact reviewed paired production rollout; current public API still93a/Vibe6e. Full corpus/physical handset acceptance remain open.131 source-attributed date correction in progress.",
-  "updated_at": "2026-10-15T03:26:16.592466+00:00",
+  "updated_at": "2026-10-15T03:37:35.514565+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38672152384,
@@ -1089,7 +1089,7 @@
       }
     }
   ],
-  "work_revision": 75,
+  "work_revision": 76,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1554,7 +1554,7 @@
     "own_discarded_pr_debug_apk_bytes": 53154960,
     "all_deletion_bytes_including_new_disposables": 560917864,
     "not_a_net_free_space_claim": true,
-    "free_bytes_now": 368676864,
+    "free_bytes_now": 344018944,
     "prepared_inactive_ss_release": "288MiB retained for next authorized deployment; no active pointer/service changed",
     "remaining_own_worktrees": "two active; clean docs worktree removed previously",
     "managed_dry_run_and_apply": true,
@@ -1622,7 +1622,7 @@
       ]
     }
   ],
-  "current_source_sha": "f09e8c04b865b005ae30634b8391a6df4f43ce60",
+  "current_source_sha": "68eccf2380d483d5f5c3b66c1b0c08285c6dcb84",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1696,5 +1696,40 @@
     "status": "SDK_ASYNC_RELEASE_CLOSED_CLIENT_WARNING",
     "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-packet-continuation-f09e8c0/server-review.log",
     "lease_accounting_outcome_not_inferred": "No accounting reset, quota bypass or model request replay. Original semantic calls ended with known validation failure."
+  },
+  "case131_quote_ref_component": {
+    "source_sha": "68eccf2380d483d5f5c3b66c1b0c08285c6dcb84",
+    "session_id": "live_568b90f77ece498c991fd1c7d28b44d8",
+    "status": "CLOSED_LITERAL_QUOTE_AND_SAME_REQUEST_DUPLICATE_FACT_FAILURE",
+    "ordinary_owner_wording": true,
+    "hidden_truth_ids_in_request": false,
+    "same_source_and_final_house": true,
+    "new_research_jobs": 0,
+    "automatic_resends": 0,
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-own-quotes-68eccf2/natural-date-review-131-own-quotes-68eccf2-receipt.json",
+    "at_utc": "2026-10-15T03:37:35.514565+00:00",
+    "packet_ref": "p0e96c4f97639",
+    "semantic_decisions_saved": 0,
+    "new_provider_research_attempts": 0,
+    "quote_ref_path_not_qualified_by_this_run": true,
+    "diagnostic_agent": "/root/live_current_turn_diagnostic",
+    "second_error": "Conflicting accepted incoming rows with same fact number hit replay comparison before any DB update. No previously saved decisions in either packet.",
+    "specific_duplicate_values_not_retained": true,
+    "next_change": "Truthful pre-aggregation duplicate validation; Live-only descriptions require quote refs while API still accepts exact literal legacy quotes. Restricted exact review-call capture before resolution in next component."
+  },
+  "current_ci_followup": {
+    "source_sha": "68eccf2380d483d5f5c3b66c1b0c08285c6dcb84",
+    "backend": 38676381941,
+    "android": 38676381860,
+    "status": "in_progress"
+  },
+  "duplicate_review_validation": {
+    "tests_passed": 110,
+    "ruff_passed": true,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-decision-rows.log",
+    "same_request_conflict": "live_review_decisions_invalid; no rows selected, no writes",
+    "real_persisted_replay_protection_preserved": true,
+    "identical_normalized_duplicates": "one unchanged decision; raw request preserved",
+    "model_guidance": "Live-only exact issued refs and one decision per fact; API literal compatibility unchanged"
   }
 }

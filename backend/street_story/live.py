@@ -858,6 +858,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             properties = visual['parameters']['properties']
             visual['parameters']['properties'] = {key: properties[key] for key in
                 ('visual_instruction', 'fact_ids', 'observe_existing_visual')}
+        if capability == 'review':
+            finalize = next(f for f in configuration['functions'] if f['name'] == 'finalize_fact_review')
+            finalize['description'] = finalize['description'].replace(
+                'Copy short literal own-evidence quotes', 'Choose exact received own quote_ref labels')
+            fields = finalize['parameters']['properties']['decisions']['items']['properties']
+            fields['basis_quotes']['description'] = (
+                'Copy ONLY exact quote_ref labels from this fact\'s received packet slices, with their '
+                'displayed evidence numbers. Do not retype/paraphrase source text or invent labels. '
+                'Labels address unchanged text; you still decide semantic support. Empty only for unsupported decisions.')
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
@@ -889,9 +898,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Follow its cursors and next_args; get_review_context reads retained source '
                 'versions, not a new search. Follow assess_review_packet advice when requested, '
                 'but decide support yourself from the own passages and exact physical subject. '
-                'Prefer received quote_ref labels in basis_quotes with their displayed evidence '
-                'numbers. A label resolves unchanged own text, not a support verdict; never '
-                'paraphrase a candidate into a source quotation. '
+                'Use ONLY received quote_ref labels in basis_quotes with their displayed evidence '
+                'numbers. A label resolves unchanged own text, not a support verdict. Do not '
+                'retype quotations or paraphrase a candidate into a source quotation. Return one '
+                'decision per fact number, combining its own source slices in evidence/basis arrays. '
                 'For defective candidates group precise repair_research_fact replacements, '
                 'then read and finalize the new revisions. finalize_fact_review saves only '
                 'the current frozen decisions; its receipt is required before reporting a '

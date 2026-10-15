@@ -584,7 +584,7 @@ def fact_cursor(payload, number):
 
 
 
-def validate_decision(decision, payload, ref):
+def validate_decision(decision, payload, ref, *, quote_refs=False):
     if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
         raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
     if decision.get('_row_error'):
@@ -637,9 +637,10 @@ def validate_decision(decision, payload, ref):
         # Presentation whitespace may vary; original snapshots/spans remain literal.
         if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
             next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
+            instruction = 'choose its received quote_ref' if quote_refs else 'copy a short literal quote'
             raise ConflictError('live_fact_review_evidence_invalid',
                 'next_tool=get_review_packet; next_args=' + canonical(next_args) +
-                f". Fact {decision['fact']}: reread own evidence and choose its received quote_ref or copy a short literal quote. "
+                f". Fact {decision['fact']}: reread own evidence and {instruction}. "
                 'Do not repeat finalize with the invalid quote or borrow another fact.')
         if verdict == 'supported' and not quotes:
             raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
@@ -695,8 +696,19 @@ def prepare(adapter, session, args):
                     return None
                 links.add(('existing', duplicate))
             return links
+        quote_refs = bool(session.state.get('review_quote_packets', {}).get(ref))
         accepted, isolation = partition_rows(incoming,
-            lambda decision: validate_decision(decision, payload, ref), dependencies)
+            lambda decision: validate_decision(decision, payload, ref, quote_refs=quote_refs), dependencies)
+        incoming_by_fact = {}
+        for index, decision in zip(isolation['accepted_indices'], accepted):
+            number = decision['fact']
+            if number in incoming_by_fact and incoming_by_fact[number][1] != decision:
+                previous = incoming_by_fact[number][0]
+                raise ConflictError('live_review_decisions_invalid',
+                    f'Conflicting decisions for fact {number} in incoming rows {previous} and {index}. '
+                    'No decision from this request was saved. Return one decision per fact number; '
+                    'multiple source slices belong in its evidence/basis arrays, not separate decisions.')
+            incoming_by_fact[number] = (index, decision)
         for decision in accepted:
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
