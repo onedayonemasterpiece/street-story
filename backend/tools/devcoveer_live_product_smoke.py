@@ -193,6 +193,7 @@ def poll_events(
     expected_tool: str,
     timeout_seconds: float = TURN_TIMEOUT_SECONDS,
     require_confirmation: bool = False,
+    require_post_tool_output: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     deadline = time.monotonic() + timeout_seconds
     tool_ok = False
@@ -207,6 +208,7 @@ def poll_events(
     any_tool_seen = False
     spoken_output = False
     transition_seen = False
+    interrupted_completion = False
 
     while time.monotonic() < deadline:
         payload = _json(
@@ -221,6 +223,12 @@ def poll_events(
             if not isinstance(event, dict):
                 continue
             kind = str(event.get("type") or "")
+            if kind == 'input_timing' and event.get('text_sent_at') is not None:
+                spoken_output = False
+                turn_complete_seen = False
+            if kind == 'interrupted':
+                interrupted_completion = True
+                spoken_output = False
             if kind:
                 event_types.add(kind)
             if kind in {'tool_call', 'tool_result'}:
@@ -264,8 +272,13 @@ def poll_events(
             if tool_ok and kind == "output_transcript" and str(event.get("text") or "").strip():
                 post_tool_output = True
             if kind == "turn_complete":
+                if interrupted_completion:
+                    interrupted_completion = False
+                    turn_complete_seen = False
+                    spoken_output = False
+                    continue
                 turn_complete_seen = True
-                if tool_ok:
+                if tool_ok and (not require_post_tool_output or post_tool_output):
                     post_tool_turn_complete = True
         cursor = int(payload.get("cursor") or cursor)
 
@@ -288,6 +301,8 @@ def poll_events(
             }
         time.sleep(POLL_SECONDS)
 
+    if tool_ok:
+        raise ProductSmokeError(f"{expected_tool}_saved_acknowledgement_pending")
     raise ProductSmokeError(f"{expected_tool}_turn_timeout")
 
 
@@ -301,6 +316,7 @@ def send_tool_turn(
     text: str,
     timeout_seconds: float = TURN_TIMEOUT_SECONDS,
     require_confirmation: bool = False,
+    require_post_tool_output: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     _json(
         client.post(
@@ -317,6 +333,7 @@ def send_tool_turn(
         expected_tool=expected_tool,
         timeout_seconds=timeout_seconds,
         require_confirmation=require_confirmation,
+        require_post_tool_output=require_post_tool_output,
     )
 
 
