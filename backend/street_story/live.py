@@ -1672,6 +1672,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 )
             elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
                 session.state["research_output_pending"] = False
+            elif name == 'get_review_packet' and result.get('items'):
+                session.state['research_output_pending'] = True
+            elif name in {'repair_research_fact', 'finalize_fact_review'}:
+                if result.get('read_required') or result.get('review_required'):
+                    session.state['research_output_pending'] = True
+                elif result.get('reviewed_assertion_count', 0) > 0:
+                    # Staged rows and a successful tool acknowledgement are not
+                    # a committed semantic review. Reuse the output boundary.
+                    session.state['research_output_pending'] = False
             if session.state.get("research_run_id") and name in {"select_facts", "set_concept", "edit_text", "generate_visual", "prepare_publication"}:
                 # A successful owner editing action ends research input focus.
                 # Durable jobs continue while the owner edits.

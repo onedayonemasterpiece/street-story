@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T04:14:29.179106+00:00",
+  "updated_at_utc": "2026-10-15T04:25:38.759827+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
-  "last_action": "Completed scoped own-page read guard, including per-call pre-provider-batch snapshot and exact bounded cursor recovery;54 affected checks+6 critical post-refactor checks/Ruff passed. Original131 real review failure reconciled, no research jobs/sends; own server closed. Ready to commit existing PR.",
+  "last_action": "Observed and closed original normal-helper131 Live turn:0new decisions,0Native attempts,0research jobs,0helper calls; false completion speech retained as failure. Extended existing committed-output gate to review;84tests+RuffPASS, ready to commit.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -76,7 +76,7 @@
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Push own-page guard; observe its existing CI. Next targeted semantic component must use normal provider capabilities and read all own pages; do not replay closed operations or call technical checks product acceptance. Paired142/EF public rollout awaits existing owner answer.",
+  "next_step": "Push review-output boundary fix; follow CI. Current102 material/test publication remains valid. Public API/Android E2E still requires the already prepared paired142/EF rollout and existing owner decision;131 semantic review is not accepted and is not a102 release gate.",
   "stages": [
     {
       "stage": 0,
@@ -743,7 +743,7 @@
       ]
     }
   ],
-  "checked_out_commit": "68f0c0868dee6e312cf727162a3475d23433101f",
+  "checked_out_commit": "b39969c328833d85ecf77f05d6839c9ad904fd27",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -806,8 +806,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "repair_missing_own_page_coverage_in_existing_live_adapter",
-  "current_blocker": "131 model-owned repair split2parents/4children but positive navigation quote still failed semantic review; incomplete own-page reads were mechanically allowed. Local guard now tested including shared-host same-batch read+mutation. Paired142/EF production activation answer still pending.",
+  "current_stage": "existing_review_output_boundary_fix",
+  "current_blocker": "131 read guard prevented writes but Mira falsely announced completion with0saved decisions and never used available Gemini advice. Existing output boundary extended locally;84tests/RuffPASS. Full131 semantic correction remains open. Paired142/EF public rollout answer pending.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -1086,7 +1086,7 @@
       }
     }
   ],
-  "work_revision": 79,
+  "work_revision": 80,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1118,7 +1118,7 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
   },
-  "current_commit": "68f0c0868dee6e312cf727162a3475d23433101f",
+  "current_commit": "b39969c328833d85ecf77f05d6839c9ad904fd27",
   "native_baseline_independence": {
     "photo": 102,
     "separate_data_directory": true,
@@ -1765,7 +1765,9 @@
     "no_runtime_or_provider_evidence_removed": true,
     "free_bytes_after": 506421248,
     "allocated_mib_removed": 184.17578125,
-    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-owner-request-20261015.json"
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-owner-request-20261015.json",
+    "new_synthetic_test_fixture_bytes_removed": 76255232,
+    "all_removed_including_new_test_outputs": 269377536
   },
   "direct_review_prompt_correction": {
     "status": "DIRECT_AUTONOMOUS_DIAGNOSTIC_COMPLETED",
@@ -1804,7 +1806,7 @@
     "local_server_closed": true
   },
   "review_read_coverage_fix": {
-    "status": "LOCAL_CHECKS_PASSED_READY_TO_COMMIT",
+    "status": "COMMITTED_PUSHED",
     "scope": "existing Live issued quote layout + per-call pre-batch snapshot; defer positive review/parent repair until own slices issued, no semantic decisions in code",
     "initial_affected_tests_passed": 40,
     "shared_host_and_coverage_tests_passed": 6,
@@ -1822,6 +1824,40 @@
       "backend/street_story/review_packets.py": "25451edf63446b3b95090e300624cb0f1df2a4bc0abfbbc771103481bc033d46",
       "backend/street_story/research_repairs.py": "602cc6271eaea4176c5d294e84dc49edfdac3fd41d2decb24ea5edc600d0fbd6",
       "backend/street_story/live.py": "18c5a2a95530759ad2e74e4296ea7ff30ee3dfbe368bad7c54cafeaacbfebc32"
-    }
+    },
+    "commit": "b39969c328833d85ecf77f05d6839c9ad904fd27"
+  },
+  "case131_normal_provider_component": {
+    "status": "CLOSED_GUARD_PREVENTED_WRITES_BUT_MIRA_FALSE_COMPLETION",
+    "session_id": "live_a8177f2b38454d609f00459ad7753f13",
+    "source_sha": "b39969c328833d85ecf77f05d6839c9ad904fd27",
+    "same_original_store": true,
+    "new_research_jobs": 0,
+    "new_native_research_provider_attempts": 0,
+    "existing_advice_only_enabled": true,
+    "configured_helper_models": [
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash-lite"
+    ],
+    "new_framework_or_judge": false,
+    "automatic_resends": 0,
+    "private_capture": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-normal-review-b39969c/review-calls.jsonl",
+    "server_exec_session": 7999,
+    "client_exec_session": 42650,
+    "semantic_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-normal-review-b39969c/semantic-readback.json",
+    "new_semantic_decisions": 0,
+    "actual_helper_calls": 0,
+    "normal_helper_quality_not_evaluated": true,
+    "local_server_closed": true
+  },
+  "review_output_boundary_fix": {
+    "status": "LOCAL_CHECKS_PASSED",
+    "existing_mechanism": "research_output_pending / _forward_committed_output",
+    "scope": "Explicit review pages and deferred/repair operations withhold audio/text until a real canonical review receipt; normal owner editing still clears focus",
+    "new_framework": false,
+    "tests_passed": 84,
+    "ruff": "passed",
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-output-boundary.log",
+    "actual_mira_verification_after_fix": false
   }
 }

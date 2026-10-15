@@ -43,6 +43,13 @@ async def test_partial_own_read_defers_without_writes_then_reuses_same_operation
     assert deferred['next_args']['cursor'] == page['next_cursor']
     assert unchanged_state(svc) == before
     assert not session.state.get('invalid_review_attempts')
+    from street_story.live import _forward_committed_output
+    delivered = []
+    for event in [{'type': 'output_transcript', 'text': 'All findings are checked and saved.'},
+                  {'type': 'audio', 'data': 'uncommitted speech'}, {'type': 'turn_complete'}]:
+        _forward_committed_output(svc, session, event, delivered.append)
+    assert delivered == [{'type': 'turn_complete'}]
+    assert session.state['research_output_pending'] is True
     # Receiving the tail is insufficient when a middle page was skipped.
     layout = session.state['review_quote_layouts'][ref]
     await adapter.execute_tool(session, {'name': 'get_review_packet',
@@ -60,6 +67,11 @@ async def test_partial_own_read_defers_without_writes_then_reuses_same_operation
                               (fact_id,)).fetchone()[0] == 'withheld'
         else:
             assert deferred['reviewed_assertion_count'] == 1
+    assert session.state['research_output_pending'] is (operation == 'repair_research_fact')
+    if operation == 'finalize_fact_review':
+        committed = {'type': 'output_transcript', 'text': 'Review saved.'}
+        _forward_committed_output(svc, session, committed, delivered.append)
+        assert delivered[-1] == committed
     assert svc.story(session.resource_id)['source_available']
 
 
