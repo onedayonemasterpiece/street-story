@@ -875,6 +875,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # irrelevant to this bundle and consume its next setup grant.
             overlay = (
                 'Read get_review_packet for the author-requested fact_ids and current run_id. '
+                'Copy run_id from read_topic.research_run.run_id; include the exact requested fact_ids. '
+                'Existing eligible status is not a new review. If a packet read fails, correct '
+                'its references from read_topic before continuing; never report the old claim '
+                'as newly checked or corrected without a successful frozen review receipt. '
                 'Follow its cursors and next_args; get_review_context reads retained source '
                 'versions, not a new search. Follow assess_review_packet advice when requested, '
                 'but decide support yourself from the own passages and exact physical subject. '
