@@ -409,6 +409,13 @@ def native_agent_context(service, story, identity, goal, run_id):
     from .agent_evidence import selected_object_context
     context = agent_context(identity, goal, run_id, service.store.now())
     context['selected_object'].update(selected_object_context(identity))
+    selected = next((c for c in identity.get('candidates') or []
+        if c.get('candidate_id') == identity.get('candidate_id')), {})
+    context['related_map_context_status'] = ('observed' if 'related_map_observations' in selected
+        else 'not_recorded_in_selected_snapshot')
+    context['related_map_observations'] = selected.get('related_map_observations') or []
+    source = selected.get('retained_map_source') or {}
+    context['retained_map_sources'] = [source] if source else []
     with service.store.connection() as db:
         context['known'] = [{**dict(row), 'sources': json.loads(row['sources_json'] or '[]')}
             for row in db.execute('SELECT a.assertion_id AS fact_id,a.display_text AS text,'

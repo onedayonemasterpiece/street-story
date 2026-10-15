@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup, UnicodeDammit
 
 from .config import Settings, reveal
 from .db import Store
+from .identity_map_context import has_organization_tags
 from .fact_conflicts import conflict_scan_items, normalize_model_conflict_records
 from .research_runs import (
     chunk_checkpoint,
@@ -64,6 +65,10 @@ class OSMClient:
                 data = response.json()
                 if not isinstance(data, dict) or not isinstance(data.get("elements"), list) or data.get("remark"):
                     raise ValueError("Incomplete Overpass response")
+                data['map_observation'] = {'source_url': str(response.url), 'observed_at': time.time(),
+                    'response_sha256': hashlib.sha256(response.content).hexdigest(),
+                    'http_status': response.status_code, 'transport': 'overpass',
+                    'request_query': query}
                 receipt.update(outcome="success", element_count=len(data["elements"]))
                 return data, endpoint
             except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
@@ -108,10 +113,10 @@ class OSMClient:
                 if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
                     continue
                 tags = item['tags']
-                if not any(tags.get(k) for k in ('building', 'building:part', 'highway', 'name',
-                                                'addr:housenumber', 'entrance', 'amenity', 'shop', 'office')):
+                if not (has_organization_tags(tags) or any(tags.get(k) for k in
+                        ('building', 'building:part', 'highway', 'name', 'addr:housenumber', 'entrance'))):
                     continue
-                entry = {k: item[k] for k in ('type', 'id', 'tags') if k in item}
+                entry = {k: item[k] for k in ('type', 'id', 'tags', 'version', 'timestamp', 'changeset') if k in item}
                 if item.get('type') == 'node':
                     if item.get('id') not in nodes:
                         continue
@@ -144,7 +149,10 @@ class OSMClient:
                             if (nodes[node_id].get('tags') or {}).get('entrance') not in {None, '', 'no'}]
                 elements.append(entry)
             receipt.update(outcome='success', element_count=len(elements))
-            return {'elements': elements, 'incomplete_building_ids': incomplete_building_ids}
+            return {'elements': elements, 'incomplete_building_ids': incomplete_building_ids,
+                'map_observation': {'source_url': str(response.url), 'observed_at': time.time(),
+                    'response_sha256': hashlib.sha256(response.content).hexdigest(),
+                    'http_status': response.status_code, 'transport': 'osm.map_api'}}
         except (httpx.TransportError, httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
             receipt.update(outcome='failed', error_type=type(exc).__name__)
             raise RetryableProviderError('OSM map routes unavailable') from exc

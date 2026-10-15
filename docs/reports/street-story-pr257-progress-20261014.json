@@ -5,12 +5,12 @@
   "work_id": "work_09deb0599b780c8a8b51c6c4",
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
-  "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T09:36:56.768428+00:00",
+  "production_commit": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
+  "updated_at_utc": "2026-10-15T11:33:57.668599+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:19:40.737387+00:00",
   "stage": 2,
   "status": "working",
-  "last_action": "104ordinarymore closed50.378s:4newcards, root2clearatomic events/2compoundQ; retained Klops notextracted. Real-shape provided_tools regression reproduces4failures; fixing existing same-job/thread continuation blanket bypass, not new jobs.",
+  "last_action": "Related organization survives current captured OSM response through frozen-input projection; cached webfetch returns owned immutable chunks without new HTTP. Actual Mira selection mutation remains blocked by closed shared-budget failure.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
     "at_utc": "2026-10-15T05:35:27.970657+00:00",
@@ -827,8 +827,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "publication_closed_outcome_recovery_frozen_next",
-  "current_blocker": "Original102 single-turn Native component lost Python owner after parent interruption. Original attempt remains submitted/possibly_sent, last save exec has no callback entry or response. Two earlier saves completed; no model final. No duplicate turn/save permitted. Independently correct caption and visual through existing no-research product server.",
+  "current_stage": "related_map_context_checked_shared_live_history_budget_diagnostic",
+  "current_blocker": "Mira selection mutation not qualified: exact closed RESOURCE_TOKEN_BUDGET while restoring history after an admitted setup. Shared payload-local retry diagnosis in progress, no duplicate requests.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -1107,7 +1107,7 @@
       }
     }
   ],
-  "work_revision": 88,
+  "work_revision": 92,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1632,7 +1632,7 @@
       ]
     }
   ],
-  "current_source_sha": "0a4db16cbd9f93ed3eb67aa8bab37a4ffda4a5b8",
+  "current_source_sha": "d9fc88708d6182832eb98225781e26fe4df66c90",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -2678,5 +2678,41 @@
     "android": "42/42 instrumentation PASS; single native map tap DOWN/UP+SDK hit log retained, pan/pinch/reopen unchanged",
     "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-ed8bf3d-map-tap-pass"
   },
-  "canonical_android_dispatch_reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/canonical-android-ed8bf3d-dispatch.json"
+  "canonical_android_dispatch_reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/canonical-android-ed8bf3d-dispatch.json",
+  "current_source_has_related_map_patch_uncommitted": true,
+  "whole_product_accepted": false,
+  "map_context_revision53": {
+    "status": "DIRECT_REPLAY_AND_ADAPTER_TESTS_PASS_NOT_PROVIDER_QUALIFICATION",
+    "current_raw_map_bytes": 18183,
+    "current_raw_map_sha256": "5f506d06ec349eddc1d66678be3cd4c509f7e252050ddcf35fcb5edae1ff7723",
+    "observed_organization_count": 4,
+    "related_organization_ids": [
+      "osm:node:5844653105"
+    ],
+    "selected_building_id": "osm:way:133035113",
+    "old_raw_response_available": false,
+    "original_unknown_input_changed": false,
+    "new_canonical_facts": 0,
+    "duplicate_http_reads_in_cached_webfetch_test": 0,
+    "direct_child": "/root/editor_continuation_direct_rev52",
+    "replay_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/map-related-context-rev53/direct-current-pipeline-replay.json",
+    "tests": {
+      "initial_batch": "99 passed; one new assertion corrected for existing [core] envelope, then both new tests passed",
+      "provider_regressions": "101 passed; two Cache-only fixtures exposed an unnecessary Store.now dependency, fixed to wall-clock receipt time; those two passed",
+      "ruff": "PASS"
+    },
+    "remaining": "Actual model admission on an independent safely closed case; explicit linked-page resolver handoff beyond source links not separately qualified."
+  },
+  "watchdog_ack53": {
+    "revision": 53,
+    "nonce": "SS-MAP-REV53-20261015T1032",
+    "blob": "bc1d14b72c054fbcebab8aad3cf4af1dba03fcfd"
+  },
+  "checks_d9fc887": {
+    "backend_run": 38722978325,
+    "backend": "success",
+    "android_run": 38722978324,
+    "android": "success",
+    "semantic_selection_mutation_qualification": false
+  }
 }

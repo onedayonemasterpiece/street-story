@@ -8,7 +8,7 @@ import uuid
 
 import httpx
 
-from .identity_map_context import expand_disjoint_building_components, map_entry_context
+from .identity_map_context import expand_disjoint_building_components, geometry_camera_context, has_organization_tags, map_entry_context
 from .service import ConflictError, canonical, digest
 from .providers import RetryableProviderError
 
@@ -264,10 +264,53 @@ def _candidate(item):
         'names': [str(tags[k])[:180] for k in ('name', 'old_name', 'alt_name') if tags.get(k)],
         'source': 'osm.observed_tags', 'provenance': 'osm.observed_tags', 'candidate_id': candidate.get('candidate_id'),
         'coordinates': candidate.get('map_coordinates') or {}}
+    candidate['osm_observation'] = {key: item[key] for key in (
+        'type', 'id', 'tags', 'lat', 'lon', 'center', 'geometry', 'members',
+        'version', 'timestamp', 'changeset') if key in item}
     if 'map_coordinates' not in candidate and (center := object_center(candidate)):
         candidate['map_coordinates'] = {**center, 'provenance': 'osm.geometry_center', 'source_url': candidate.get('url')}
         candidate['search_anchor']['coordinates'] = candidate['map_coordinates']
     return candidate
+
+
+def snapshot_related_objects(snapshot, chosen):
+    """Carry spatial/address observations separately; infer no business status."""
+    related = []
+    addresses = [chosen.get('map_address') or {},
+        *((entry.get('address') or {}) for entry in
+          (chosen.get('search_anchor') or {}).get('address_entries') or [])]
+    for candidate in snapshot.get('organization_objects') or []:
+        if candidate.get('candidate_id') == chosen.get('candidate_id'):
+            continue
+        center = object_center(candidate)
+        spatial = geometry_camera_context(chosen.get('osm_observation') or {},
+            center['latitude'], center['longitude']) if center else {}
+        address = candidate.get('map_address') or {}
+        same_address = bool(address.get('street') and address.get('house_number') and any(
+            all(str(address.get(k) or '').casefold() == str(a.get(k) or '').casefold()
+                for k in ('street', 'house_number')) for a in addresses))
+        inside = spatial.get('camera_inside_footprint') is True
+        if not inside and not same_address:
+            continue
+        related.append({**candidate, 'relationship': {
+            'selected_candidate_id': chosen['candidate_id'], 'snapshot_id': snapshot['snapshot_id'],
+            'basis': [*(['observed_point_inside_building_polygon'] if inside else []),
+                      *(['matching_observed_address'] if same_address else [])],
+            'point_kind': 'osm_node' if (candidate.get('osm_observation') or {}).get('type') == 'node'
+                else 'representative_point',
+            'boundary_distance_m': spatial.get('boundary_distance_m'),
+            'meaning': 'Spatial/address evidence only; organization and building remain distinct. '
+                'The model assesses present use, lifecycle tags and temporal uncertainty.'}})
+    chosen['related_map_observations'] = related
+    observation = snapshot.get('map_observation') or {}
+    if observation.get('source_url') and observation.get('response_sha256') and chosen.get('osm_observation'):
+        chosen['retained_map_source'] = {**observation,
+            'snapshot_id': snapshot['snapshot_id'], 'selected_candidate_id': chosen['candidate_id'],
+            'normalized_text': canonical({'map_response_observation': observation,
+                'selected_building': chosen['osm_observation'],
+                'related_objects': [c['osm_observation'] for c in related]}),
+            'meaning': 'Projection of actually received map objects. Read through webfetch for '
+                'owned immutable source/chunk refs before saving a semantic assessment.'}
 
 
 async def _owner_map(osm, client, latitude, longitude, radius):
@@ -278,7 +321,8 @@ async def _owner_map(osm, client, latitude, longitude, radius):
     try:
         raw = await osm._map_nearby(client, latitude, longitude, radius)
     except RetryableProviderError:
-        query = f'[out:json][timeout:20];(way["building"]({bbox});relation["building"]({bbox});way["highway"]({bbox}););out geom center;'
+        query = (f'[out:json][timeout:20];(way["building"]({bbox});relation["building"]({bbox});'
+            f'way["highway"]({bbox});nwr[~"^((disused|abandoned|closed|was):)?(amenity|shop|office|tourism|craft)$"~"."]({bbox}););out meta geom center;')
         raw, _ = await osm._overpass_query(client, query, 'owner_map', None, set())
         raw['map_source'] = 'overpass.bounded_geometry'
         return raw
@@ -326,7 +370,7 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
         if not center:
             raise ConflictError('photo_gps_required', 'В фото нет координат GPS — выберите снимок с геолокацией.')
         effective_zoom = zoom or focus.get('zoom') or saved_map.get('zoom') or 17
-        cache_key = digest([scope, center['latitude'], center['longitude'], radius_m, effective_zoom])
+        cache_key = digest(['related-map-observations-v1', scope, center['latitude'], center['longitude'], radius_m, effective_zoom])
         cached = next((s for s in reversed(research.get('place_map_snapshots') or [])
                        if s.get('cache_key') == cache_key), None)
         if cached:
@@ -364,6 +408,8 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
     city_objects = [_candidate(item) for item in raw.get('elements') or [] if (item.get('tags') or {}).get('addr:city')]
     address_objects = [_candidate(item) for item in raw.get('elements') or [] if (item.get('tags') or {}).get('entrance')
         and (item.get('tags') or {}).get('addr:street') and (item.get('tags') or {}).get('addr:housenumber')]
+    organization_objects = [{**_candidate(item), 'type': 'mapped_organization'} for item in raw.get('elements') or []
+        if has_organization_tags(item.get('tags') or {})]
     for candidate in candidates:
         snapshot_member_address({'address_objects': address_objects}, candidate)
         snapshot_city({'city_objects': city_objects}, candidate)
@@ -374,6 +420,7 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
     snapshot = {'snapshot_id': 'map_' + uuid.uuid4().hex, 'photo_sha256': scope[0],
         'identity_generation': scope[1], 'center': {k: center[k] for k in ('latitude', 'longitude')},
         'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key, 'city_objects': city_objects, 'address_objects': address_objects,
+        'organization_objects': organization_objects, 'map_observation': raw.get('map_observation'),
         'partial': building_count > len(buildings) or bool(raw.get('incomplete_building_ids')),
         'incomplete_building_count': len(raw.get('incomplete_building_ids') or []),
         'map_source': raw.get('map_source'), 'available_building_count': building_count, 'buildings': {'type': 'FeatureCollection', 'features': buildings},
@@ -441,6 +488,7 @@ def confirm_place(service, story_id, key, body):
                 raise ConflictError('place_candidate_unknown', 'Выберите один показанный контур здания.')
             snapshot_member_address(snapshot, chosen)
             snapshot_city(snapshot, chosen)
+            snapshot_related_objects(snapshot, chosen)
         owner_context = body.get('owner_context')
         if owner_context is not None:
             if not isinstance(owner_context, dict) or any(k not in {'city', 'address', 'name'}

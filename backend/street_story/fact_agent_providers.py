@@ -602,8 +602,25 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 with adapter.service.store.connection() as db:
                     docs = [source_page(db, run_id=context['run_id'], url=args['url'], cursor=args['cursor'])]
             else:
-                docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
-                docs = list(docs.values())
+                retained_map = next((source for source in context.get('retained_map_sources') or []
+                    if source.get('source_url') == args['url']
+                    and source.get('selected_candidate_id') == context['selected_object'].get('candidate_id')), None)
+                if retained_map:
+                    from .research_runs import persist_source_version
+                    with adapter.service.store.tx() as db:
+                        guard()
+                        document = persist_source_version(db, run_id=context['run_id'],
+                            requested_url=args['url'], final_url=args['url'], title='Observed OpenStreetMap objects',
+                            content_type='application/json', http_status=retained_map['http_status'],
+                            redirect_chain=[], normalized_text=retained_map['normalized_text'],
+                            read_status='complete', source_bytes_sha256=retained_map['response_sha256'],
+                            access_scope='public', now=adapter.service.store.now())
+                        guard()
+                    docs = [{**document, 'requested_url': args['url'], 'final_url': args['url'],
+                        'normalized_text': retained_map['normalized_text']}]
+                else:
+                    docs = await client._fetch_page_documents([args['url']], {'research_run_id': context['run_id']})
+                    docs = list(docs.values())
             value = {'documents': [{key: doc.get(key) for key in ('requested_url', 'final_url', 'title',
                 'source_version_id', 'content_sha256', 'read_status', 'normalized_text')} for doc in docs]}
             for document, source in zip(value['documents'], docs):
