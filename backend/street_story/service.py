@@ -100,6 +100,7 @@ class StreetStoryService:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.data_dir / "street-story.sqlite3")
         self._maintenance_lock = asyncio.Lock()
+        self._owner_map_requests: dict[str, asyncio.Task] = {}
         from .temporary_photos import TemporaryPhotos
         self._temporary_photos = TemporaryPhotos()
         self.providers = providers or ProviderBundle(

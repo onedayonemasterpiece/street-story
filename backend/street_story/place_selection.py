@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import asyncio
+import time
 import uuid
 
 import httpx
@@ -13,6 +15,10 @@ from .service import ConflictError, canonical, digest
 from .providers import RetryableProviderError
 
 LOG = logging.getLogger(__name__)
+MAP_LOG = logging.getLogger('uvicorn.error')
+# These bound this read-only HTTP response, not the durable research lifecycle.
+OWNER_MAP_REQUEST_SECONDS = 28.0
+OWNER_MAP_ENRICHMENT_SECONDS = 8.0
 
 
 def point(latitude, longitude):
@@ -336,8 +342,11 @@ async def _owner_map(osm, client, latitude, longitude, radius):
                 parts.append(f'{kind}({identifier});')
         if parts:
             try:
-                extra, _ = await osm._overpass_query(client, '[out:json][timeout:20];(' + ''.join(parts) + ');out geom center;',
-                                                    'owner_map_incomplete', None, set())
+                # Other incomplete objects must not withhold already complete
+                # selectable buildings beyond the Android response deadline.
+                async with asyncio.timeout(OWNER_MAP_ENRICHMENT_SECONDS):
+                    extra, _ = await osm._overpass_query(client, '[out:json][timeout:20];(' + ''.join(parts) + ');out geom center;',
+                                                        'owner_map_incomplete', None, set())
                 original = {(x['type'], x['id']): x for x in raw['elements']}
                 recovered = set()
                 for item in extra['elements']:
@@ -347,13 +356,43 @@ async def _owner_map(osm, client, latitude, longitude, radius):
                         recovered.add(candidate.get('candidate_id'))
                 raw['elements'] = list(original.values())
                 missing = [cid for cid in missing if cid not in recovered]
-            except RetryableProviderError:
+            except (RetryableProviderError, TimeoutError) as exc:
+                MAP_LOG.info('street_story_owner_map_enrichment outcome=partial reason=%s incomplete_count=%s',
+                             type(exc).__name__, len(missing))
                 pass  # The remaining complete ways remain available to select.
     raw['incomplete_building_ids'] = missing
     return raw
 
 
 async def place_map(service, story_id, *, latitude=None, longitude=None, radius_m=350, zoom=None):
+    """Join identical active reads; each completed snapshot remains in the existing store."""
+    with service.store.connection() as db:
+        row = service._story_row(db, story_id)
+        research = json.loads(row['research_json'] or '{}')
+        scope = (row['photo_sha256'], int(research.get('identity_generation') or 0))
+    key = digest([story_id, scope, latitude, longitude, radius_m, zoom,
+                  research.get('place_map_focus'), (research.get('place_map') or {}).get('center')])
+    requests = service._owner_map_requests
+    task = requests.get(key)
+    if task is None:
+        task = asyncio.create_task(_place_map(service, story_id, latitude=latitude, longitude=longitude,
+                                             radius_m=radius_m, zoom=zoom))
+        requests[key] = task
+
+        def release(done):
+            if requests.get(key) is done:
+                requests.pop(key)
+            if not done.cancelled():
+                done.exception()  # Consume a closed read failure if all waiters disconnected.
+
+        task.add_done_callback(release)
+    else:
+        MAP_LOG.info('street_story_owner_map_read story_id=%s request_key=%s outcome=joined', story_id, key)
+    # A disappearing view cancels its waiter, never another client's same read.
+    return await asyncio.shield(task)
+
+
+async def _place_map(service, story_id, *, latitude=None, longitude=None, radius_m=350, zoom=None):
     if zoom is not None and (not isinstance(zoom, (int, float)) or not math.isfinite(zoom) or not 1 <= zoom <= 20):
         raise ConflictError('place_zoom_invalid', 'Недопустимый масштаб карты.')
     if not isinstance(radius_m, (int, float)) or not math.isfinite(radius_m) or not 50 <= radius_m <= 750:
@@ -376,8 +415,20 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
         if cached:
             return {**{k: v for k, v in cached.items() if k != 'candidates'},
                     'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
-    async with httpx.AsyncClient(timeout=25, headers={'User-Agent': service.settings.osm_user_agent}) as client:
-        raw = await _owner_map(service.providers.osm, client, center['latitude'], center['longitude'], radius_m)
+    started = time.monotonic()
+    MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=started', story_id, cache_key)
+    try:
+        async with asyncio.timeout(OWNER_MAP_REQUEST_SECONDS):
+            async with httpx.AsyncClient(timeout=25, headers={'User-Agent': service.settings.osm_user_agent}) as client:
+                raw = await _owner_map(service.providers.osm, client, center['latitude'], center['longitude'], radius_m)
+    except TimeoutError as exc:
+        MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=unavailable duration_ms=%s',
+                     story_id, cache_key, round((time.monotonic() - started) * 1000))
+        raise RetryableProviderError('owner_map_response_deadline') from exc
+    except Exception as exc:
+        MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=failed error_type=%s duration_ms=%s',
+                     story_id, cache_key, type(exc).__name__, round((time.monotonic() - started) * 1000))
+        raise
     candidates, buildings, streets = [], [], []
     building_count = 0
     for item in expand_disjoint_building_components(raw.get('elements') or []):
@@ -436,6 +487,8 @@ async def place_map(service, story_id, *, latitude=None, longitude=None, radius_
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
         snapshot = {**snapshot, 'revision': current['revision'], 'selected': research.get('place_selection')}
     LOG.info('street_story_map stage=snapshot story_id=%s generation=%s buildings=%s', story_id, scope[1], len(buildings))
+    MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=ready duration_ms=%s buildings=%s incomplete=%s',
+                 story_id, cache_key, round((time.monotonic() - started) * 1000), len(buildings), snapshot['incomplete_building_count'])
     return snapshot
 
 
