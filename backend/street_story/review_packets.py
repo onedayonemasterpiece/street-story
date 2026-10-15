@@ -360,6 +360,31 @@ def bound_topic_run(adapter, session, db):
     return bound['run_id']
 
 
+def prior_excerpt_navigation(db, story_id, fact_id, evidence):
+    """Locate an unchanged prior model excerpt; this is never a support verdict."""
+    rows = db.execute('WITH RECURSIVE lineage(fact_id) AS (SELECT ? UNION '
+        'SELECT r.parent_id FROM live_fact_repairs r JOIN lineage l ON r.child_id=l.fact_id '
+        'WHERE r.story_id=?) SELECT f.fact_id,f.sources_json FROM facts f JOIN lineage l '
+        'ON f.fact_id=l.fact_id WHERE f.story_id=? '
+        'ORDER BY CASE WHEN f.fact_id=? THEN 0 ELSE 1 END,f.fact_id',
+        (fact_id, story_id, story_id, fact_id))
+    for row in rows:
+        sources = json.loads(row['sources_json'] or '[]')
+        for source in sources if isinstance(sources, list) else []:
+            if not isinstance(source, dict) or source.get('source_version_id') != evidence['source_version_id']:
+                continue
+            fragment = source.get('confirmed_fragment')
+            if (not isinstance(fragment, str) or not fragment or source.get('confirmed_fragment_truncated')
+                    or source.get('confirmed_fragment_original_sha256') != hashlib.sha256(fragment.encode()).hexdigest()):
+                continue
+            offset = evidence['text'].find(fragment)
+            if offset >= 0:
+                return {'offset': offset, 'length': len(fragment), 'origin_fact_id': row['fact_id'],
+                        'fragment_sha256': hashlib.sha256(fragment.encode()).hexdigest(),
+                        'navigation_only': True}
+    return None
+
+
 def read(adapter, session, args):
     with adapter.service.store.tx() as db:
         ref = str(args.get('packet_ref') or '')
@@ -401,7 +426,21 @@ def read(adapter, session, args):
                 if any(fid not in available or db.execute('SELECT review_status FROM fact_assertions '
                         'WHERE story_id=? AND assertion_id=?', (session.resource_id, fid)).fetchone()[0] == 'quarantined'
                        for fid in requested_scope):
-                    raise ConflictError('live_review_decisions_invalid', 'Review only current own assertions with attached evidence; quarantine requires arbitration.')
+                    replacements = {fid: [r[0] for r in db.execute(
+                        'SELECT DISTINCT r.child_id FROM live_fact_repairs r JOIN fact_assertions a '
+                        'ON a.story_id=r.story_id AND a.assertion_id=r.child_id '
+                        "WHERE r.story_id=? AND r.parent_id=? AND r.child_id<>r.parent_id "
+                        "AND a.review_status<>'quarantined' ORDER BY r.child_id", (session.resource_id, fid))
+                        if r[0] in available] for fid in requested_scope if fid not in available}
+                    shown = []
+                    for child in sorted({child for children in replacements.values() for child in children}):
+                        if len(', '.join([*shown, child])) > 220:
+                            break  # Keep complete IDs within the existing provider error envelope.
+                        shown.append(child)
+                    raise ConflictError('live_review_decisions_invalid',
+                        ('Current own replacement IDs: ' + ', '.join(shown) + '. ' if shown else '') +
+                        'This mixed request was not opened. Replaced originals are retired, not necessarily quarantined. '
+                        'Read remaining current own IDs via get_facts and request a separate scope. Quarantine requires arbitration.')
                 # An explicit reconsideration must produce new semantic evidence,
                 # rather than reuse the old decision the owner is questioning.
                 affected.update(requested_scope)
@@ -475,6 +514,10 @@ def read(adapter, session, args):
                 evidence = list(spans.values())
                 if not evidence:
                     raise ConflictError('live_fact_review_evidence_required', 'Accepted evidence is required for every assertion.')
+                for ev in evidence:
+                    navigation = prior_excerpt_navigation(db, session.resource_id, fact_id, ev)
+                    if navigation is not None:
+                        ev['prior_excerpt_navigation'] = navigation
                 items.append({'id': fact_id, 'text': text, 'evidence': evidence})
             reused = {}
             indexes = {item['id']: f for f, item in enumerate(items)}
@@ -557,8 +600,14 @@ def read(adapter, session, args):
             'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
     slices = bounded_review_slices(page, slices, quote_refs=args.get('_live_quote_refs') is True)
     if args.get('_live_quote_refs') is True:
-        from .headless_review_quotes import remember_live_layout
-        remember_live_layout(session, page, slices)
+        # Present an exact prior excerpt match before menu/footer slices. Keep
+        # every original byte/address available; the model still owns meaning.
+        def navigation_order(part):
+            hint = payload['items'][part['fact']]['evidence'][part['evidence']].get('prior_excerpt_navigation')
+            matches = bool(hint and part['offset'] < hint['offset'] + hint['length']
+                           and hint['offset'] < part['offset'] + len(part['passage']))
+            return part['fact'], not matches, part['evidence'], part['offset']
+        slices.sort(key=navigation_order)
     if page.get('nearby_existing_claims') and cursor < len(slices):
         while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
             page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
@@ -712,13 +761,6 @@ def prepare(adapter, session, args):
                     'No decision from this request was saved. Return one decision per fact number; '
                     'multiple source slices belong in its evidence/basis arrays, not separate decisions.')
             incoming_by_fact[number] = (index, decision)
-        from .headless_review_quotes import required_live_read
-        pending_read = required_live_read(session, payload, ref,
-            [decision['fact'] for decision in accepted if decision['verdict'] == 'supported'])
-        if pending_read is not None:
-            LOG.info('street_story_fact_review event=own_read_required story=%s packet=%s',
-                     session.resource_id, ref)
-            return pending_read, None, None
         for decision in accepted:
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:

@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T04:25:38.759827+00:00",
+  "updated_at_utc": "2026-10-15T04:44:10.490723+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
-  "last_action": "Observed and closed original normal-helper131 Live turn:0new decisions,0Native attempts,0research jobs,0helper calls; false completion speech retained as failure. Extended existing committed-output gate to review;84tests+RuffPASS, ready to commit.",
+  "last_action": "REV45 relevant navigation and used-ref provenance verified102tests; additional retired-parent scope20testsPASS. Direct paginated child completed with source-attributed1908 repair proposal and1901 list support;0real writes. Preparing one actual Mira adapter component.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -69,14 +69,14 @@
     },
     {
       "scope": "case131",
-      "reason": "Closed isolated68f0c08 Mira review split compounds but still used navigation proof and skipped own page continuations. Local page-delivery guard passes; actual normal-provider semantic verification remains open. Not a102 gate."
+      "reason": "Actual normal Mira component closed semantic failure with false completion. REV45 relevant own-fragment pagination diagnostic pending; universal read-all removed, used own-reference delivery preserved. Not a102 gate."
     },
     {
       "scope": "production_activation",
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Push review-output boundary fix; follow CI. Current102 material/test publication remains valid. Public API/Android E2E still requires the already prepared paired142/EF rollout and existing owner decision;131 semantic review is not accepted and is not a102 release gate.",
+  "next_step": "Commit/push addressed REV45 changes, then one actual Mira same-store component with normal existing Gemini advice capability. All prior actual operations closed; no new research job/unknown replay.",
   "stages": [
     {
       "stage": 0,
@@ -1621,7 +1621,7 @@
       ]
     }
   ],
-  "current_source_sha": "7328306cac00bb5ef500efaab38566e50ff7ef0e",
+  "current_source_sha": "4b607eb09787d3cd88cf8d1483c701fbc6330e32",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1717,14 +1717,14 @@
     "next_change": "Truthful pre-aggregation duplicate validation; Live-only descriptions require quote refs while API still accepts exact literal legacy quotes. Restricted exact review-call capture before resolution in next component."
   },
   "current_ci_followup": {
-    "source_sha": "68f0c0868dee6e312cf727162a3475d23433101f",
+    "source_sha": "4b607eb09787d3cd88cf8d1483c701fbc6330e32",
     "backend": {
-      "id": 38678810228,
+      "id": 38681402909,
       "status": "completed",
       "conclusion": "success"
     },
     "android": {
-      "id": 38678810342,
+      "id": 38681403117,
       "status": "completed",
       "conclusion": "success"
     }
@@ -1763,11 +1763,11 @@
     "remaining_own_worktrees": 2,
     "all_current_worktrees_required": true,
     "no_runtime_or_provider_evidence_removed": true,
-    "free_bytes_after": 506421248,
+    "free_bytes_after": 489426944,
     "allocated_mib_removed": 184.17578125,
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-owner-request-20261015.json",
     "new_synthetic_test_fixture_bytes_removed": 76255232,
-    "all_removed_including_new_test_outputs": 269377536
+    "all_removed_including_new_test_outputs": 330227712
   },
   "direct_review_prompt_correction": {
     "status": "DIRECT_AUTONOMOUS_DIAGNOSTIC_COMPLETED",
@@ -1825,7 +1825,8 @@
       "backend/street_story/research_repairs.py": "602cc6271eaea4176c5d294e84dc49edfdac3fd41d2decb24ea5edc600d0fbd6",
       "backend/street_story/live.py": "18c5a2a95530759ad2e74e4296ea7ff30ee3dfbe368bad7c54cafeaacbfebc32"
     },
-    "commit": "b39969c328833d85ecf77f05d6839c9ad904fd27"
+    "commit": "b39969c328833d85ecf77f05d6839c9ad904fd27",
+    "superseded_by_revision45": true
   },
   "case131_normal_provider_component": {
     "status": "CLOSED_GUARD_PREVENTED_WRITES_BUT_MIRA_FALSE_COMPLETION",
@@ -1851,13 +1852,55 @@
     "local_server_closed": true
   },
   "review_output_boundary_fix": {
-    "status": "LOCAL_CHECKS_PASSED",
+    "status": "COMMITTED_PUSHED",
     "existing_mechanism": "research_output_pending / _forward_committed_output",
     "scope": "Explicit review pages and deferred/repair operations withhold audio/text until a real canonical review receipt; normal owner editing still clears focus",
     "new_framework": false,
     "tests_passed": 84,
     "ruff": "passed",
     "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-output-boundary.log",
-    "actual_mira_verification_after_fix": false
-  }
+    "actual_mira_verification_after_fix": false,
+    "commit": "4b607eb09787d3cd88cf8d1483c701fbc6330e32"
+  },
+  "watchdog_revision45": {
+    "revision": 45,
+    "nonce": "SS-MAP-REV45-20261015T0410",
+    "blob": "73669cc76409cefa6b62033a6d1b3960a482941f",
+    "governing_commit": "f911fb0c5dc4a19687ec0c2f0479db170bcef8c7",
+    "acknowledged": true,
+    "universal_read_all": "REMOVED",
+    "status": "PAGINATED_DIAGNOSTIC_COMPLETE_ACTUAL_MIRA_PENDING",
+    "semantic_qualification": false,
+    "tests_passed": 102,
+    "additional_retired_scope_tests_passed": 20,
+    "counts_overlap": true,
+    "final_scope_tests_passed": 5,
+    "retired_hint": "Current same-story children only, quarantine excluded, complete IDs bounded within existing500-character error message; no state writes."
+  },
+  "direct_paginated_review_rev45": {
+    "status": "CLOSED_PAGINATED_PROMPT_DIAGNOSTIC_NOT_MIRA_QUALIFICATION",
+    "child_id": "/root/paginated_review_131_rev45",
+    "requested_model": "gpt-6-luna",
+    "requested_effort": "medium",
+    "reads": 11,
+    "all_sources_upfront": false,
+    "actual_read_callbacks": true,
+    "only_in_memory_product_state": true,
+    "actual_mutation_callbacks": false,
+    "provider_callbacks_bound": false,
+    "new_research_jobs": 0,
+    "new_provider_attempts": 0,
+    "controller_correction": "Aggregate invalid scope does not imply every item quarantined; retry current assertions independently. No expected semantic truth supplied.",
+    "response": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/response.json",
+    "trace": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/read-trace.jsonl",
+    "observed": "Relevant900-offset own snippets delivered first.1908 caption does not explicitly claim construction year; direct child proposed source-attributed repair.1901 list date/status supported with own body+heading; compound tourism claim proposed split. No actual Mira or saved semantic receipt."
+  },
+  "current_work_revision": 81,
+  "candidate_runtime_sha256": {
+    "backend/street_story/headless_review_quotes.py": "914a6d495af739277c5179a8bcd055a3ca8c958749daa55b98968e3eb06ffafd",
+    "backend/street_story/live.py": "6f7dadd1078c669b0a36493a52b3b0b5920728d45b9ad461bde683ab6ada6a2d",
+    "backend/street_story/research_repairs.py": "11e61475a24daec56b98c642a467eac8c5e94f54904115d898083d3a381a43c0",
+    "backend/street_story/review_packets.py": "1f1b7155e84f5493d5d979133cc7a83bba66e89fc9edfa64ebf36cdad36f0ff9"
+  },
+  "source_snapshot_status": "REV45 candidate fingerprint; manifest committed with candidate, exact resulting commit recorded in live artifact after commit."
 }

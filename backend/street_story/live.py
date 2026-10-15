@@ -859,9 +859,25 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             visual['parameters']['properties'] = {key: properties[key] for key in
                 ('visual_instruction', 'fact_ids', 'observe_existing_visual')}
         if capability == 'review':
+            packet_reader = next(f for f in configuration['functions'] if f['name'] == 'get_review_packet')
+            packet_reader['description'] = (
+                'Read own source slices for the requested original assertions. An exact prior '
+                'researcher excerpt may be presented first for navigation; it is not a new verdict. '
+                'Read additional own context with next_args or get_review_context when needed for '
+                'subject, dates, qualifiers and material relations. Unrelated menu/footer pages are '
+                'not an acceptance prerequisite. Keep exact packet/fact/evidence references; '
+                'supersedes_packet_ref starts a versioned reconsideration without overwriting old receipts.')
             finalize = next(f for f in configuration['functions'] if f['name'] == 'finalize_fact_review')
-            finalize['description'] = finalize['description'].replace(
-                'Copy short literal own-evidence quotes', 'Choose exact received own quote_ref labels')
+            finalize['description'] = (
+                'Save model-owned decisions for the requested original assertions after reading '
+                'their relevant own source slices and enough context. Use exact received own '
+                'quote_ref labels and zero-based fact/evidence numbers. Read further context for '
+                'unresolved subject/date/qualification or relation questions. Do not require '
+                'unrelated menu/footer pages. Acknowledgement alone is not a saved review receipt. '
+                'Narrowed/split assertions require repair and fresh revision review. Does not publish.')
+            finalize['parameters']['properties']['relations_complete']['description'] = (
+                'True after checking material equivalence/conflict relations for the requested '
+                'assertions. Unread unrelated source navigation does not itself prevent completion.')
             fields = finalize['parameters']['properties']['decisions']['items']['properties']
             fields['basis_quotes']['description'] = (
                 'Copy ONLY exact quote_ref labels from this fact\'s received packet slices, with their '
@@ -904,7 +920,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'versions, not a new search. Follow assess_review_packet advice when requested, '
                 'but decide support yourself from the own passages and exact physical subject. '
                 'Use ONLY received quote_ref labels in basis_quotes with their displayed evidence '
-                'numbers. Read every own slice and compare the ORIGINAL candidate with the actual '
+                'numbers. Read relevant own slices and sufficient context, comparing the ORIGINAL candidate with the actual '
                 'words before choosing labels. Candidate text, stored eligibility and quote labels '
                 'are not evidence. Navigation, menus and browser challenges do not support a claim. '
                 'Missing support requires get_review_context or an insufficient verdict. '
@@ -1797,10 +1813,6 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         if name == "repair_research_fact":
             result = research_repairs.repair(self, session, command_id, args)
-            if result.get('read_required'):
-                logger.info('street_story_research_repair event=own_read_required story=%s packet=%s',
-                            story_id, args.get('packet_ref'))
-                return result
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
             repairs = result.get('repairs', [result])
             logger.info("street_story_research_repair story=%s run=%s parents=%s children=%s policy=%s", story_id, session.state.get("research_run_id"), len(repairs), sum(len(r['fact_ids']) for r in repairs), review_packets.POLICY_VERSION)

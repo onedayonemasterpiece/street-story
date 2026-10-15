@@ -50,61 +50,37 @@ def remember_live_page(session, packet):
     return {key: value for key, value in addressed.items() if key != 'quote_catalog'}
 
 
-def remember_live_layout(session, packet, slices):
-    """Keep the real bounded cursor order, without another copy of source text."""
-    session.state.setdefault('review_quote_layouts', {})[packet['packet_ref']] = [
-        {'fact': item['fact'], 'evidence': item['evidence'], 'offset': item['offset'],
-         'length': len(item['passage']), 'quote_ref': item['quote_ref']}
-        for item in slices]
-
-
-def required_live_read(session, payload, ref, numbers):
-    """Require issued own slices; provider batches may only use prior reads."""
-    def continuation(cursor):
-        return {'packet_ref': ref, 'read_required': True, 'review_saved': False,
-                'complete': False, 'next_tool': 'get_review_packet',
-                'next_args': {'packet_ref': ref, 'cursor': cursor},
-                'instruction': 'Read the remaining own evidence pages for this fact before '
-                               'repairing or accepting it. No decisions or repairs were saved. '
-                               'After reading, retry your semantic operation; reading is not support.'}
-    layout = session.state.get('review_quote_layouts', {}).get(ref)
-    visible = session.state.get('review_active_read_snapshot')
-    wanted = {n for n in numbers if type(n) is int and 0 <= n < len(payload['items'])}
-    if layout is None:
-        # Closed/API reviewers keep their existing contract; real Live calls
-        # must first read the packet even when they use legacy literal quotes.
-        return continuation(0) if visible is not None and wanted else None
-    received = session.state.get('review_quote_packets', {}).get(ref, {})
-    issued = {item['quote_ref']: item for item in received.get('items', [])}
-    for cursor, part in enumerate(layout):
-        if part['fact'] not in wanted:
-            continue
-        item = (issued.get(part['quote_ref']) if visible is None
-                or part['quote_ref'] in visible.get(ref, ()) else None)
-        if item is None:
-            return continuation(cursor)
-        own = payload['items'][part['fact']]['evidence'][part['evidence']]['text']
-        start, end = part['offset'], part['offset'] + part['length']
-        if (item['fact'] != part['fact'] or item['evidence'] != part['evidence']
-                or item['offset'] != start or item['passage'] != own[start:end]
-                or _entry({'packet_ref': ref}, item)[0] != part['quote_ref']):
-            raise ConflictError('live_fact_review_evidence_invalid', 'Issued own evidence changed; read the unchanged packet.')
-    return None
-
-
 def resolve_live_rows(session, args):
-    """Resolve only issued labels; leave semantic verdicts and raw args intact."""
+    """Resolve only the used own labels, without requiring unrelated pages."""
     decisions = args.get('decisions')
-    if not isinstance(decisions, list) or not any(
-            isinstance(row, dict) and isinstance(row.get('basis_quotes'), list)
-            and any(isinstance(q, str) and q.startswith(PREFIX) for q in row['basis_quotes'])
-            for row in decisions):
+    visible = session.state.get('review_active_read_snapshot')
+    if not isinstance(decisions, list):
         return decisions
-    received = session.state.get('review_quote_packets', {}).get(args.get('packet_ref'))
-    if not received:
+    uses_labels = any(isinstance(row, dict) and isinstance(row.get('basis_quotes'), list)
+        and any(isinstance(q, str) and q.startswith(PREFIX) for q in row['basis_quotes'])
+        for row in decisions)
+    if not uses_labels and visible is None:
+        return decisions  # Existing literal API/headless contract.
+    ref = args.get('packet_ref')
+    received = session.state.get('review_quote_packets', {}).get(ref)
+    if not received and visible is None:
         raise ConflictError('live_fact_review_evidence_invalid',
                             'Read this packet in the current session before choosing its quote_ref labels.')
-    return resolve_rows(received, args)['decisions']
+    received = received or {'packet_ref': ref, 'items': [], 'quote_catalog': {}}
+    request = args
+    if visible is not None:
+        # The shared host sends responses after all calls in one batch. A
+        # positive basis must have been issued before this provider batch.
+        labels = visible.get(ref, ())
+        received = {**received,
+            'items': [item for item in received['items'] if item['quote_ref'] in labels],
+            'quote_catalog': {q: entry for q, entry in received['quote_catalog'].items() if q in labels}}
+        request = deepcopy(args)
+        for row in request['decisions']:
+            if isinstance(row, dict) and isinstance(row.get('basis_quotes'), list) and any(
+                    not isinstance(q, str) or not q.startswith(PREFIX) for q in row['basis_quotes']):
+                row['_row_error'] = 'live_fact_review_evidence_invalid'
+    return resolve_rows(received, request)['decisions']
 
 
 def response_schema(packet, public_schema):
