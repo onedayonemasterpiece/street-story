@@ -11,7 +11,6 @@ import android.widget.TextView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.Toast
-import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 import org.maplibre.android.MapLibre
@@ -74,7 +73,6 @@ class PlaceMapPanel(
     private val onPlaceUnknown: () -> Unit = {},
     private val onClarifyPlace: () -> Unit = {},
 ) : LinearLayout(activity) {
-    private val gson = Gson()
     private val handler = Handler(Looper.getMainLooper())
     val mapView: MapView
     private var nativeMap: MapLibreMap? = null
@@ -436,7 +434,7 @@ class PlaceMapPanel(
             payload.remove("candidate_id")
             payload["candidate_ids"] = selectedGroup.keys.toList()
         }
-        store.enqueueOperation(storyId, "place", commandId, gson.toJson(payload))
+        store.enqueueOperation(storyId, "place", commandId, PlaceCommandJson.encode(payload))
         selectionDirty = false
         updateSelection()
         confirm.isEnabled = false

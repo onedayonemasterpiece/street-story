@@ -2018,7 +2018,7 @@ class MainActivity : Activity() {
 
     private fun navigationPayload(storyId: String, commandId: String): String {
         val state = research.get(storyId)
-        return gson.toJson(mapOf("command_id" to commandId,
+        return PlaceCommandJson.encode(mapOf("command_id" to commandId,
             "expected_photo_sha256" to store.story(storyId)?.photoSha256,
             "expected_identity_generation" to (state?.identityGeneration ?: 0),
             "expected_candidate_id" to state?.candidateId))
