@@ -673,6 +673,17 @@ class NativeFactResearch:
         recovery.update(phase='interrupt_intent', interrupt_requests=recovery.get('interrupt_requests', 0) + 1,
             interrupt_rpc_status='possibly_sent')
         await save()
+        # Resume and even checkpoint I/O may redeliver/answer the callback.
+        # Revalidate after those awaits, immediately before the addressed send.
+        fresh_calls, fresh_terminal = await asyncio.to_thread(self._callback_journal, thread, turn_id,
+            receipt['frozen_prompt'], receipt.get('provided_tools') or [])
+        fresh_pending = [call for call in fresh_calls if not call['answered']]
+        guard()
+        if (fresh_terminal or not fresh_pending or fresh_pending != pending
+                or any(has_active((root, turn_id, call['call_id'])) for call in fresh_calls)):
+            recovery.update(phase='awaiting_callback_readback', interrupt_rpc_status='not_sent')
+            await save()
+            return
         LOG.info('street_story_native_orphan attempt_id=%s thread_id=%s turn_id=%s phase=interrupt_intent',
             binding['attempt_id'], root, turn_id)
         try:

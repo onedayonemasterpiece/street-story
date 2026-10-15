@@ -649,3 +649,59 @@ async def test_terminal_marker_waits_for_successful_execution_graph_validation(t
     assert native.orphan_pointer(receipt) is None
     assert receipt['orphan_recovery']['phase'] != 'terminal'
     assert not any(method != 'thread/read' for method, _ in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('callback_state', ['active', 'replied'])
+@pytest.mark.parametrize('delivered_at', ['resume', 'intent_saved'])
+async def test_callback_redelivered_after_resume_invalidates_orphan_before_interrupt(
+        tmp_path, monkeypatch, callback_state, delivered_at):
+    provider, receipt, calls, saved = setup(tmp_path, monkeypatch)
+    receipt.update(binding={'attempt_id': 'original-owned'}, provided_tools=TOOLS, native_execution_owner=OWNER)
+    thread = (await provider.client_factory().request('thread/read', {'threadId': THREAD, 'includeTurns': False}))['thread']
+    path = add_call(thread)
+    delivered = False
+    def redeliver(client):
+        nonlocal delivered
+        if delivered:
+            return
+        delivered = True
+        if callback_state == 'active':
+            client._street_story_active_calls[(THREAD, TURN, 'save-1')] = 1
+        else:
+            with path.open('a') as stream:
+                stream.write(json.dumps({'type': 'response_item', 'payload': {
+                    'type': 'function_call_output', 'call_id': 'save-1', 'output': 'original callback replied'}}) + '\n')
+    base = provider.client_factory
+    class Client(base):
+        async def request(self, method, params, timeout=30):
+            if method == 'thread/resume':
+                calls.append((method, params))
+                if delivered_at == 'resume':
+                    redeliver(self)
+                return {'thread': {'id': THREAD}, 'model': native.MODEL,
+                    'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
+            if method == 'turn/interrupt':
+                raise AssertionError('Resume revived the callback; the old orphan proof is stale')
+            return await super().request(method, params, timeout)
+    provider.client_factory = Client
+    checkpoint = provider.checkpoint
+    async def save_intent(binding, value):
+        await checkpoint(binding, value)
+        if delivered_at == 'intent_saved' and (value.get('orphan_recovery') or {}).get('phase') == 'interrupt_intent':
+            redeliver(provider.clients['original-owned'])
+    provider.checkpoint = save_intent
+    monkeypatch.setattr(native, 'lost_execution_owner', lambda owner: LOST)
+    provider.timeout = 0.01
+    effects = []
+    async def save(*args, **kwargs):
+        effects.append(True)
+        return {'saved_fact_ids': ['same-partial-fact']}
+    with pytest.raises(RetryableProviderError, match='original_pending'):
+        await provider.run(binding={'attempt_id': 'original-owned'}, receipt=receipt, prompt=INPUT[0]['text'],
+            schema={'type': 'object'}, tools=TOOLS, callback=save, guard=lambda: None)
+    assert delivered and effects == [True]
+    assert receipt['native_tool_calls']['save-1']['phase'] == 'completed'
+    assert receipt['orphan_recovery']['interrupt_rpc_status'] == 'not_sent'
+    assert native.orphan_pointer(receipt) is None
+    assert not any(method in {'turn/start', 'thread/start', 'turn/interrupt'} for method, _ in calls)
