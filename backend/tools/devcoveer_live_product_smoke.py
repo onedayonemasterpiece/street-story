@@ -251,6 +251,17 @@ def poll_events(
                     code = str(event.get("code") or "tool_error")
                     if expected_tool == "edit_text" and code == "live_text_revision_conflict":
                         recoverable_tool_errors.append(code)
+                    elif expected_tool == 'finalize_fact_review' and code in {
+                        'live_fact_review_evidence_invalid', 'live_review_decisions_invalid',
+                        'live_review_canonical_invalid',
+                    }:
+                        # The product returns addressed correction instructions
+                        # to the SAME model. Do not stop it before it can reread
+                        # its packet and correct its own decision. No tool or
+                        # owner input is replayed by this observer.
+                        recoverable_tool_errors.append(code)
+                        tool_ok = post_tool_output = post_tool_turn_complete = False
+                        spoken_output = turn_complete_seen = False
                     else:
                         tool_error = code
             if kind == "publication_confirmation" and isinstance(event.get("confirmation_id"), str):
@@ -286,7 +297,8 @@ def poll_events(
             raise ProductSmokeError(f"{expected_tool}_failed_{tool_error}")
         if turn_complete_seen and spoken_output and not any_tool_seen and not transition_seen:
             raise ProductSmokeError(f"{expected_tool}_turn_completed_without_tool")
-        if turn_complete_seen and recoverable_tool_errors and not tool_ok:
+        if (turn_complete_seen and recoverable_tool_errors and not tool_ok
+                and (expected_tool != 'finalize_fact_review' or spoken_output)):
             raise ProductSmokeError(f"{expected_tool}_recoverable_conflict_unresolved")
         if tool_ok and post_tool_turn_complete and (confirmation is not None or not require_confirmation):
             return cursor, {

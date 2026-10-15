@@ -332,6 +332,61 @@ def test_poll_events_fails_when_revision_conflict_is_not_recovered() -> None:
         )
 
 
+@pytest.mark.parametrize('code', ['live_fact_review_evidence_invalid', 'live_review_decisions_invalid',
+                                  'live_review_canonical_invalid'])
+def test_review_waits_for_model_correction_after_rejected_function_turn(monkeypatch, code):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error', 'code': code},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'get_review_packet', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'ok'},
+         {'type': 'output_transcript', 'text': 'Решения сохранены после повторного чтения.'},
+         {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='finalize_fact_review', timeout_seconds=1)
+    assert result['tool_ok'] and result['recoverable_tool_errors'] == [code] and not client.batches
+
+
+def test_review_rejection_without_saved_correction_is_failure():
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_recoverable_conflict_unresolved'):
+        module.poll_events(EventClient([
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+             'code': 'live_fact_review_evidence_invalid'},
+            {'type': 'output_transcript', 'text': 'Не удалось исправить проверку.'},
+            {'type': 'turn_complete'},
+        ]), 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
+def test_review_contract_budget_exhaustion_remains_terminal(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+          'code': 'live_fact_review_evidence_invalid'}],
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+          'code': 'live_research_partial'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_failed_live_research_partial'):
+        module.poll_events(client, 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
+def test_review_later_rejection_does_not_reuse_prior_success():
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_recoverable_conflict_unresolved'):
+        module.poll_events(EventClient([
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'ok'},
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+             'code': 'live_fact_review_evidence_invalid'},
+            {'type': 'output_transcript', 'text': 'Последние решения не сохранены.'},
+            {'type': 'turn_complete'},
+        ]), 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
 def test_poll_events_requires_publication_confirmation() -> None:
     module = load_module()
     cursor, result = module.poll_events(

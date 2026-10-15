@@ -6,14 +6,14 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T03:08:29.888182+00:00",
+  "updated_at_utc": "2026-10-15T03:13:55.428580+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
   "last_action": "109 affected Live/review tests and Ruff pass for session-bound omitted run reference. Earlier actual131 attempt closed with0packets, no semantic writes; next one scoped model review uses exact corrected code. Prepared142/EF release remains frozen and unactivated.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "status": "none;131 failed Live session closed,0packets/0newdiscovery. Next request depends on committed reference fix.",
+    "status": "none; actual131review client closed after known rejection; existing packet preserved",
     "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
@@ -79,7 +79,7 @@
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Commit reference fix; one scoped real Mira review on same131 store, no new discovery. Keep exact142/EF production activation pending owner answer; never resend unknown operations.",
+  "next_step": "Resume existing131 packet p88ec9c98ac7d after known closed failed finalize; corrected observer allows ordinary model self-correction. No new discovery/model framework. Exact142/EF production activation still awaits owner answer.",
   "stages": [
     {
       "stage": 0,
@@ -809,9 +809,9 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "131_review_reference_fix_verified_locally",
+  "current_stage": "131_review_smoke_recovery_fix",
   "current_blocker": "Awaiting owner decision on exact reviewed paired production rollout; current public API still93a/Vibe6e. Full corpus/physical handset acceptance remain open.131 source-attributed date correction in progress.",
-  "updated_at": "2026-10-15T03:08:29.888182+00:00",
+  "updated_at": "2026-10-15T03:13:55.428580+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
     "run_id": 38672152384,
@@ -1620,5 +1620,25 @@
         "public API and Android Live/touch E2E unverified"
       ]
     }
-  ]
+  ],
+  "current_source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
+  "case131_reference_fix_review": {
+    "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
+    "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
+    "status": "PACKET_CREATED_FINALIZE_REJECTED_HARNESS_CLOSED_EARLY",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-scoped-review-8864dd9/scoped-date-conflict-review-131-bound-api-8864dd9-receipt.json",
+    "prior_closed_failure": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-scoped-review-142f478/closed-reference-failure.json",
+    "new_research_jobs": 0,
+    "packet_ref": "p88ec9c98ac7d",
+    "semantic_decisions_saved": 0,
+    "quota_wait": "Same unsent response grant succeeded after20retries; no duplicate product tool invocation",
+    "actual_first_packet": "Explicit current run_id supplied; omission fallback is unit-tested, not exercised by this real call.",
+    "failure": "Fact0 basis quote invalid; returned exact next_args. Smoke harness stopped on first recoverable error before model correction."
+  },
+  "review_smoke_recovery_fix": {
+    "status": "28_TESTS_AND_RUFF_PASS",
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-smoke-recovery.log",
+    "behavior": "Observe same model correction after bounded own-evidence/decision/canonical validation errors. No tool/input replay. Unresolved spoken completion, terminal budget exhaustion or subsequent failure remain failures.",
+    "runtime_changes": false
+  }
 }
