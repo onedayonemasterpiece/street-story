@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
@@ -71,6 +72,7 @@ class OwnerRoughPlaceInstrumentedTest {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 var map: MapLibreMap? = null
                 var mapView: MapView? = null
+                var lastTapAt = 0L
                 fun bindMap() = scenario.onActivity { activity ->
                     mapView = views(activity.findViewById(android.R.id.content)).filterIsInstance<MapView>().single()
                     mapView!!.getMapAsync { map = it }
@@ -101,6 +103,9 @@ class OwnerRoughPlaceInstrumentedTest {
                     EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-group")
                 }
                 fun tapMember(name: String, longitude: Double, expectedCount: Int) {
+                    // A deliberate re-toggle of the same contour must not land inside the
+                    // native double-tap window, where MapLibre zooms instead of clicking.
+                    SystemClock.sleep(maxOf(0L, lastTapAt + ViewConfiguration.getDoubleTapTimeout() + 150 - SystemClock.uptimeMillis()))
                     EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-group")
                     var x = 0; var y = 0
                     scenario.onActivity {
@@ -112,6 +117,7 @@ class OwnerRoughPlaceInstrumentedTest {
                         val bounds = Rect(); assertTrue(view.getGlobalVisibleRect(bounds)); assertTrue(bounds.contains(x, y))
                     }
                     assertTrue("inject one intentional member-toggle tap", device.click(x, y))
+                    lastTapAt = SystemClock.uptimeMillis()
                     instrumentation.waitForIdleSync(); device.waitForIdle()
                     // Android idleness does not fence the native map-click callback.
                     // Observe its product effect after this single tap; never inject a retry.
