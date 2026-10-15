@@ -318,12 +318,56 @@ def bounded_review_slices(page, slices):
     return result
 
 
+def topic_run_binding(context):
+    """Remember only the exact run and owner fences exposed by read_topic."""
+    run = context.get('research_run') or {}
+    if (not run.get('run_id') or not context.get('photo_sha256')
+            or context.get('identity_generation') is None):
+        return None
+    controls = context.get('research_controls') or {}
+    return {'story_id': context.get('story_id'), 'run_id': run['run_id'],
+            'photo_sha256': context.get('photo_sha256'),
+            'identity_generation': context.get('identity_generation'),
+            'run_generation': run.get('identity_generation'),
+            'subject': (context.get('visual_identity') or {}).get('candidate_id'),
+            'facts_revision': int((controls.get('facts') or {}).get('revision') or 0),
+            'identity_revision': int((controls.get('identity') or {}).get('revision') or 0)}
+
+
+def bound_topic_run(adapter, session, db):
+    bound = session.state.get('review_topic_binding')
+    if not bound:
+        raise ConflictError('live_review_run_required',
+                            'Call read_topic in this review session before omitting run_id.')
+    story, research = adapter._fact_research_control_guard(db, session)
+    current_run = db.execute('SELECT run_id,identity_generation FROM research_runs WHERE story_id=? '
+                             'ORDER BY created_at DESC LIMIT 1', (session.resource_id,)).fetchone()
+    current = topic_run_binding({'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+        'identity_generation': int(research.get('identity_generation') or 0),
+        'visual_identity': research.get('visual_identity'), 'research_controls': research.get('research_controls'),
+        'research_run': dict(current_run) if current_run else None})
+    scope = session.state.get('research_control_scope') or {}
+    if (bound != current or bound['identity_generation'] != bound['run_generation']
+            or scope.get('expected_photo_sha256', bound['photo_sha256']) != bound['photo_sha256']
+            or scope.get('expected_identity_generation', bound['identity_generation']) != bound['identity_generation']):
+        raise ConflictError('live_review_run_stale',
+                            'The run or owner scope shown by read_topic changed. Read the topic again; do not guess a run.')
+    LOG.info('street_story_review_topic_run_bound story_id=%s session_id=%s run_id=%s generation=%s',
+             session.resource_id, getattr(session, 'id', ''), bound['run_id'], bound['identity_generation'])
+    return bound['run_id']
+
+
 def read(adapter, session, args):
     with adapter.service.store.tx() as db:
         ref = str(args.get('packet_ref') or '')
         if not ref:
             run_id = str(args.get('run_id') or '')
             supersedes = str(args.get('supersedes_packet_ref') or '')
+            if 'run_id' not in args and 'packet_ref' not in args and not supersedes:
+                # Reference convenience only: no new run, semantic decision or
+                # fallback from an explicit bad reference. Resolve in this tx,
+                # before any packet/reopen writes; all existing guards follow.
+                run_id = bound_topic_run(adapter, session, db)
             affected = set()
             if supersedes:
                 prior, old = load(adapter, session, db, supersedes)

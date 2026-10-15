@@ -6,14 +6,14 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T02:18:39.765911+00:00",
-  "last_useful_progress_at_utc": "2026-10-15T02:18:39.765911+00:00",
-  "stage": 3,
+  "updated_at_utc": "2026-10-15T03:08:29.888182+00:00",
+  "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
+  "stage": 4,
   "status": "working",
-  "last_action": "Narrowed-contract real Mira artistic call succeeded with511-character visual_instruction carrying owner exclusions. One Native image generation completed; same operation cached-render recovery in progress. No repeated generation. Prior F3CI:3786passed/55skipped/1failed at100ms held-cleanup deadline; replaced wallclock sensitivity, retained event-order assertions;20module tests passed.",
+  "last_action": "109 affected Live/review tests and Ruff pass for session-bound omitted run reference. Earlier actual131 attempt closed with0packets, no semantic writes; next one scoped model review uses exact corrected code. Prepared142/EF release remains frozen and unactivated.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "status": "Native image completed; reconcile/import exact operation, no resubmit",
+    "status": "none;131 failed Live session closed,0packets/0newdiscovery. Next request depends on committed reference fix.",
     "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
@@ -56,7 +56,7 @@
   "blockers": [
     {
       "scope": "case102_corrected_delivery",
-      "reason": "102 corrected text is saved; accepted corrected image/publication still missing. Live artistic routing failed before dispatch; narrowed stage schema awaits real component. Observation-only model error remains open."
+      "reason": "Corrected material and image delivered to test group and independently verified as37808. Broader phone/public API delivery remains open."
     },
     {
       "scope": "observer_controls",
@@ -64,7 +64,7 @@
     },
     {
       "scope": "product_acceptance",
-      "reason": "Current ordinary-worker baseline and subsequent complete E2E remain unverified."
+      "reason": "102 ordinary Native incremental save and corrected segmented publication verified; installed public backend + exact Android Live/touch E2E still required."
     },
     {
       "scope": "case105_addressed_review",
@@ -72,10 +72,14 @@
     },
     {
       "scope": "case131",
-      "reason": "4 eligible cards but date discrepancy remains; actual ordinary model again emitted next_action.search. Further work must use concrete diagnosis, not blind repeat."
+      "reason": "Omitted run_id after read_topic; no packet constructed; guessed packet refs exhausted invalid-reference budget; not a semantic verdict or source-coverage result. Session-bound reference fix in local regression verification; no new research job."
+    },
+    {
+      "scope": "production_activation",
+      "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Commit stage schema isolation, then one addressed artistic correction using the current known-closed image. Inspect actual frozen instruction and generated image before test-only prepare/confirm. No unknown operation resend.",
+  "next_step": "Commit reference fix; one scoped real Mira review on same131 store, no new discovery. Keep exact142/EF production activation pending owner answer; never resend unknown operations.",
   "stages": [
     {
       "stage": 0,
@@ -805,25 +809,27 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "fixed_review_inventory_product_verification",
-  "current_blocker": "102 current addressed image awaits same-operation import and actual root review; corrected test publication not yet prepared. Observe-only authorization remains unqualified.",
-  "updated_at": "2026-10-15T02:18:39.765911+00:00",
+  "current_stage": "131_review_reference_fix_verified_locally",
+  "current_blocker": "Awaiting owner decision on exact reviewed paired production rollout; current public API still93a/Vibe6e. Full corpus/physical handset acceptance remain open.131 source-attributed date correction in progress.",
+  "updated_at": "2026-10-15T03:08:29.888182+00:00",
   "free_bytes": 467410944,
   "signed_apk": {
-    "run_id": 38607689217,
-    "source_sha": "2723b51144f4c5952d41dd91d692562d537a58ed",
-    "apk_sha256": "e4b951e68ba411fccd81dd2ae0180d09de434b01fad14dcd735843a51c9812a8",
-    "apk_bytes": 53154956,
-    "apk": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/signed-apk-2723b51/street-story.apk",
-    "version_code": 1416,
-    "version_name": "0.1.1416",
+    "run_id": 38672152384,
+    "artifact_id": 11943883581,
+    "source_sha": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
+    "artifact_zip_sha256": "53ac5594d391ee7ff5c5c83f7c2fe14ec5e27b45224760b282fe79b0d3d7a056",
+    "apk_sha256": "6968f6f90cc2f3ebc6cfab4e1fc119334ef311633112c19b900e132dcd3e95c3",
+    "apk_bytes": 53154960,
+    "apk": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/signed-apk-142f478/street-story.apk",
+    "version_code": 1442,
+    "version_name": "0.1.1442",
     "certificate_sha256": "fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94",
     "sha256sums_match": true,
     "certificate_match": true,
-    "cryptographic_signature_verification": "canonical GitHub workflow apksigner step; local check extracts embedded v2 certificate only",
+    "cryptographic_signature_verification": "Passing canonical GitHub workflow apksigner step; local embedded V2 certificate only",
     "release_published": false,
-    "backend_compatibility": "candidate backend required; production93a unchanged",
-    "android_source_equal_to_cb24068": true
+    "backend_compatibility": "Current candidate backend required; public93a remains unchanged",
+    "workflow_result": "checks+42emulator tests success;Release skipped"
   },
   "fresh_quota_check": {
     "status": "implemented",
@@ -1083,7 +1089,7 @@
       }
     }
   ],
-  "work_revision": 71,
+  "work_revision": 74,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1115,7 +1121,7 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
   },
-  "current_commit": "7cd79f3f42f5acf5c028d705ff3cfa6d9ed26dfc",
+  "current_commit": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
   "native_baseline_independence": {
     "photo": 102,
     "separate_data_directory": true,
@@ -1260,16 +1266,25 @@
     "product_acceptance": "partial; 1901/1908 conflict, native autonomy handoff still imperfect, no full current131E2E"
   },
   "current_ci": {
-    "source_sha": "08e6d19f08d2fe435f519892b54d1f37b7797c03",
+    "source_sha": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
     "backend": {
-      "run_id": 38661695594,
-      "state": "success"
+      "run_id": 38670314689,
+      "result": "success",
+      "passed": 3789,
+      "skipped": 55,
+      "warnings": 2,
+      "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-142f478-ci.log"
     },
-    "android": {
-      "run_id": 38661695614,
-      "state": "success"
+    "android_pr": {
+      "run_id": 38670314693,
+      "result": "checks+42emulator tests success",
+      "signer": "debug; discarded for owner update"
     },
-    "physical_phone": "not_verified"
+    "android_canonical": {
+      "run_id": 38672152384,
+      "result": "checks+42emulator tests success;Release skipped",
+      "owner_certificate_match": true
+    }
   },
   "case104_current": {
     "source_sha": "08e6d19f08d2fe435f519892b54d1f37b7797c03",
@@ -1479,9 +1494,131 @@
     "thread_id": "01a13d59-206e-7613-a426-27ab88f61928",
     "turn_id": "01a13d59-21bf-7313-8e8f-8e00778f5e52",
     "source_sha": "7cd79f3f42f5acf5c028d705ff3cfa6d9ed26dfc",
-    "state": "native succeeded; cached Original render/import pending",
-    "root_review": "not yet",
+    "state": "ready_to_publish",
+    "root_review": "ACCEPTED_FOR_TEST_PUBLICATION",
     "actual_contract_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/narrowed-artistic-actual-contract.json",
-    "new_generation_count": 1
-  }
+    "new_generation_count": 1,
+    "asset_ref": "asset_38164c47bd904e5c87d84691021e3b1b",
+    "sha256": "1eb03d430958db7db17afa7cb45d453b7a5540e420ba21af68265ef5a0c358a4",
+    "root_review_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/visual-review.json",
+    "recovery_generation_submits": 0
+  },
+  "corrected_publication102": {
+    "operation_id": "op_3a44f662aa4d4a61a3741f79d5fd64f5",
+    "publication_id": "pub_da6c55e0c4a143439f66771f9288d3dc",
+    "mira_live_session": "live_5111b3b9e8f24136b0f463543eb3d2aa",
+    "target_alias": "street_story_e2e_20260928_tg",
+    "scheduled_for": "2026-10-15T02:25:10Z",
+    "state": "DELIVERED_EXACT_TEXT_AND_PHOTO",
+    "independent_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/telegram-independent-readback.json",
+    "separate_prepare_and_confirm": true,
+    "old_semantic_failure_post_preserved": 37807,
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/publication-original-vibe-receipt.json",
+    "message_id": 37808,
+    "posted_at": "2026-10-15T02:25:11+00:00",
+    "root_delivered_image_review": true,
+    "delivery_verification": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/corrected-delivery-verification.json"
+  },
+  "deployment_review": {
+    "plan": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/paired-deployment-review-142f478/deployment-plan.json",
+    "inactive_ss_prepared": true,
+    "inactive_vibe_prepared": true,
+    "active_services_changed": false,
+    "owner_question_pending": true,
+    "request": "StreetStory142f478 +VibeEF services; no merge/Release/non-test publishing"
+  },
+  "live_observation_component": {
+    "status": "REAL_MODEL_OBSERVE_ONLY_COMPONENT_PASS",
+    "session_id": "live_e55ebc90d92e4ccea1379d3d96264820",
+    "normal_observation_callback": true,
+    "protective_component_fence": true,
+    "new_generation_operations": 0,
+    "draft_and_asset_unchanged": true,
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/observe-only-fixed-contract-142f478-receipt.json",
+    "limitation": "One guarded real-model call proves its emitted mode, not universal authorization or completed verbal lettering assessment."
+  },
+  "canonical_build_dispatch": {
+    "native_operation": "op_6d7793b72b89860ade5405d9",
+    "native_classification": "NOT_SENT_CLOSED_PREFLIGHT_FAILURE",
+    "proof": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/signed-apk-dispatch-142f478-native.json",
+    "local_once_intent": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/signed-apk-142f478-once.json",
+    "run_id": 38672152384,
+    "automatic_resends": 0,
+    "state": "success"
+  },
+  "cleanup_final_20261015": {
+    "prior_deletions_bytes": 323454744,
+    "extra_closed_pytest_fixtures_bytes": 54743999,
+    "superseded_apk_bytes": 54718338,
+    "own_new_install_wheel_cache_bytes": 74058738,
+    "own_discarded_pr_debug_apk_bytes": 53154960,
+    "all_deletion_bytes_including_new_disposables": 560130779,
+    "not_a_net_free_space_claim": true,
+    "free_bytes_now": 368676864,
+    "prepared_inactive_ss_release": "288MiB retained for next authorized deployment; no active pointer/service changed",
+    "remaining_own_worktrees": "two active; clean docs worktree removed previously",
+    "managed_dry_run_and_apply": true,
+    "actual_provider_source_unknown_evidence_preserved": true
+  },
+  "case131_targeted_date_review": {
+    "phase": "scoped-date-conflict-review-131-bound-api-142f478",
+    "session_id": "live_aa0a548e20c24a2bb897ffe0cd17f183",
+    "status": "CLOSED_REFERENCE_CONTRACT_FAILURE_NO_SEMANTIC_REVIEW",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-scoped-review-142f478/scoped-date-conflict-review-131-bound-api-142f478-receipt.json",
+    "new_discovery_jobs": 0,
+    "direct_diagnostic_reused": "/home/dev/artifacts/street-story/20261014T224414Z-direct-autonomous-131-rev44/research-report.md",
+    "review_packet_count": 0,
+    "diagnostic": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-scoped-review-142f478/closed-reference-failure.json"
+  },
+  "review_reference_fix": {
+    "base": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
+    "status": "LOCAL_VERIFIED_PENDING_REAL_MODEL",
+    "tests_passed": 109,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-topic-binding-final.log",
+    "guard_scope": [
+      "same review session read_topic receipt",
+      "same latest run",
+      "photo",
+      "identity generation",
+      "owner subject",
+      "facts and identity control revision"
+    ],
+    "explicit_bad_references_replaced": false,
+    "creates_research_jobs": false
+  },
+  "stages_records_policy": "Historical stage records are retained as observations at their source SHA. Current top-level results and latest stage checkpoint supersede old open blockers; historical wording is not current acceptance.",
+  "stage_checkpoints": [
+    {
+      "at_utc": "2026-10-15T03:08:29.888182+00:00",
+      "stage": 4,
+      "candidate": "142f478 prepared;131 reference fix pending commit",
+      "photo_metrics": [
+        {
+          "photo": 102,
+          "status": "SEGMENTED_CORRECTED_TEST_DELIVERY_PASS",
+          "telegram_message_id": 37808,
+          "new_atomic_tenant_claims": 3,
+          "first_new_usable_seconds": 37.66496920585632,
+          "whole_delivery_complete": false
+        },
+        {
+          "photo": 131,
+          "status": "CLOSED_REFERENCE_FAILURE",
+          "review_packets_created": 0,
+          "new_research_jobs": 0,
+          "semantic_review_saved": false
+        }
+      ],
+      "logs": [
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/corrected-delivery-verification.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-scoped-review-142f478/closed-reference-failure.json",
+        "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/review-topic-binding-final.log"
+      ],
+      "blockers": [
+        "production switch awaits owner authority",
+        "131 semantic review not yet saved after reference fix",
+        "public API and Android Live/touch E2E unverified"
+      ]
+    }
+  ]
 }
