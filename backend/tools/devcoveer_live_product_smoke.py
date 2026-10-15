@@ -251,6 +251,8 @@ def poll_events(
                     code = str(event.get("code") or "tool_error")
                     if expected_tool == "edit_text" and code == "live_text_revision_conflict":
                         recoverable_tool_errors.append(code)
+                        tool_ok = post_tool_output = post_tool_turn_complete = False
+                        spoken_output = turn_complete_seen = False
                     elif expected_tool == 'finalize_fact_review' and code in {
                         'live_fact_review_evidence_invalid', 'live_review_decisions_invalid',
                         'live_review_canonical_invalid',
@@ -297,8 +299,10 @@ def poll_events(
             raise ProductSmokeError(f"{expected_tool}_failed_{tool_error}")
         if turn_complete_seen and spoken_output and not any_tool_seen and not transition_seen:
             raise ProductSmokeError(f"{expected_tool}_turn_completed_without_tool")
-        if (turn_complete_seen and recoverable_tool_errors and not tool_ok
-                and (expected_tool != 'finalize_fact_review' or spoken_output)):
+        # A function-calling turn completes before the model receives its tool
+        # reply and can reread/retry. Wait for that same model, without replaying
+        # owner input or supplying a replacement tool argument.
+        if turn_complete_seen and recoverable_tool_errors and not tool_ok and spoken_output:
             raise ProductSmokeError(f"{expected_tool}_recoverable_conflict_unresolved")
         if tool_ok and post_tool_turn_complete and (confirmation is not None or not require_confirmation):
             return cursor, {

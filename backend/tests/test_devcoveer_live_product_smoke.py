@@ -322,6 +322,7 @@ def test_poll_events_fails_when_revision_conflict_is_not_recovered() -> None:
                     "status": "error",
                     "code": "live_text_revision_conflict",
                 },
+                {"type": "output_transcript", "text": "Не удалось обновить текст."},
                 {"type": "turn_complete"},
             ]),
             "story",
@@ -330,6 +331,27 @@ def test_poll_events_fails_when_revision_conflict_is_not_recovered() -> None:
             expected_tool="edit_text",
             timeout_seconds=1,
         )
+
+
+def test_text_revision_recovery_waits_across_function_turns_without_new_owner_input(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'set_concept', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'edit_text', 'status': 'error',
+          'code': 'live_text_revision_conflict', 'message': 'Expected text revision96, current is13'},
+         {'type': 'generation_complete'}, {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'read_topic', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'edit_text', 'status': 'ok'},
+         {'type': 'output_transcript', 'text': 'Текст сохранён.'}, {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='edit_text', timeout_seconds=1, require_post_tool_output=True)
+    assert result['tool_ok'] and result['post_tool_output']
+    assert result['recoverable_tool_errors'] == ['live_text_revision_conflict']
+    assert client.batches == []
 
 
 @pytest.mark.parametrize('code', ['live_fact_review_evidence_invalid', 'live_review_decisions_invalid',

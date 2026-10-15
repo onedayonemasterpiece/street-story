@@ -666,7 +666,10 @@ FUNCTIONS = [
         "edit_text",
         "Replace the current publication text after an author editing request. Preserve literal spans unless the author explicitly allowed changing them.",
         {
-            "expected_text_revision": {"type": "integer"},
+            "expected_text_revision": {"type": "integer", "description":
+                "Copy text_revision from read_topic or the last editor tool receipt. "
+                "This is not the story revision: set_concept changes story revision without changing text_revision. "
+                "On conflict read_topic and retry once with its current text_revision."},
             "new_text": {"type": "string"},
             "change_summary": {"type": "string"},
             "allow_literal_changes": {"type": "boolean"},
@@ -5596,6 +5599,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
             result = {
                 "publication_concept": concept,
+                "text_revision": int(_editor['text_revision']),
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "set_concept", args, result)
