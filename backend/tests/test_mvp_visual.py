@@ -22,7 +22,7 @@ PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = '91c02584a942ec1cbafd014ed8bc3343c9761b6ce7c56c2e56d0e67e3b0ad6d2'
+PROMPT_SHA = '14941a26788cd2db8ff41f5702298d102ced0f2f515dc706ddcb2300a95c48bf'
 
 
 class NoopOSM:

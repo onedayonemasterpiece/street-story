@@ -821,6 +821,8 @@ Concept, editing and publication:
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events.
 - Write captions for the reader: keep research-process comments, publication-age explanations and missing-date reports in evidence/source context, not in the finished text or visual instructions. An accurately supported former use may be stated without dates. Preserve attribution, genuine uncertainty and material conflicts when omitting them would mislead; never invent a period or use a source publication date as an event date. Apply this editorial distinction to both edit_text and generate_visual annotations.
+- Help a reader notice this particular building and understand why it is worth noticing. Develop a meaningful angle from a visible feature or selected supported detail; connect architecture, people or past uses rather than reciting cards or repeating the image labels. Finish with the confirmed building address and its actual city hashtag when available in confirmed_place. This is a reader goal, not a fixed paragraph template. Visible beauty may be an author's impression; do not invent scenes, motives, superlatives or access promises.
+- Make former uses unmistakably past in both prose and visual notes (for example, “Прежде: бакалея”). Include supported years briefly; otherwise use “раньше” or “здесь прежде”. Do not imply all tenants were simultaneous or pre-war. Current use needs current evidence; owner-reported current use remains a reported hint until verified. Reuse richer eligible inventory when helpful, but obtain the author's selection authorization before changing it and save the change normally. Caption should add meaning beyond the short visual notes, not duplicate their list.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
 - Choose facts semantically from the full eligible inventory according to the owner's intent, not a fixed count or fixed angle. For another post use previous_editorial_context and the current selection/concept as compact history; vary the angle and selection when useful, without forcing novelty or selecting unapproved facts for an existing post.
@@ -986,6 +988,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Every factual attribute must follow from the exact selected claims. Extra '
                 'attributes in an own source passage, unselected inventory or an old draft '
                 'do not authorize stronger assertions in the new text. '
+                'Create a reader-facing city story: explain what makes this particular building '
+                'interesting through selected supported details or a visible feature, rather than '
+                'a tenant list or a repetition of visual labels. End with confirmed_place address '
+                'and actual city hashtag when available. Mark former uses explicitly as past in '
+                'caption and image notes; use supported years only. Current use needs current '
+                'evidence. Do not invent scenes, motives, spatial links or public access. '
                 'On live_text_revision_conflict read_topic and retry once with the current revision. '
                 'Protect verbatim spans; explicit dictation belongs to dictation. '
                 'Text-style changes preserve the image; visual-only changes preserve text. '
@@ -2597,6 +2605,26 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         visual = story.get("visual") if isinstance(story.get("visual"), dict) else {}
         identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
         compact_identity = StreetStoryLiveAdapter._compact_identity(identity)
+        identity_accepted = accepted_identity(identity, photo_sha256=story.get('photo_sha256'),
+            generation=story.get('identity_generation'),
+            control_revision=int(((story.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
+        confirmed_anchor = {}
+        selection = story.get('place_selection') or {}
+        if identity_accepted:
+            if selection:
+                if (selection.get('candidate_id') == identity.get('candidate_id')
+                        and selection.get('photo_sha256') == story.get('photo_sha256')
+                        and selection.get('generation') == story.get('identity_generation')):
+                    confirmed_anchor = (selection.get('candidate') or {}).get('search_anchor') or {}
+            else:
+                selected_candidate = next((item for item in identity.get('candidates', [])
+                    if item.get('candidate_id') == identity.get('candidate_id')), {})
+                confirmed_anchor = identity.get('search_anchor') or selected_candidate.get('search_anchor') or {}
+        confirmed_place = {
+            'candidate_id': identity.get('candidate_id'),
+            **{key: confirmed_anchor[key] for key in ('city', 'city_provenance', 'address',
+                'address_provenance', 'street', 'house_number', 'source') if confirmed_anchor.get(key)},
+        } if confirmed_anchor and confirmed_anchor.get('candidate_id', identity.get('candidate_id')) == identity.get('candidate_id') else None
         return {
             "current_date_utc": datetime.now(timezone.utc).date().isoformat(),
             "story_id": story.get("id"),
@@ -2606,6 +2634,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "state": story.get("state"),
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
+            "confirmed_place": confirmed_place,
             "poi_location": {"latitude": story.get("latitude", story.get("lat")), "longitude": story.get("longitude", story.get("lon"))},
             'camera_point': story.get('camera_point'),
             'identity_mode': story.get('identity_mode'),
@@ -2619,9 +2648,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
-            "physical_identity_accepted": accepted_identity(identity, photo_sha256=story.get('photo_sha256'),
-                generation=story.get('identity_generation'),
-                control_revision=int(((story.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
+            "physical_identity_accepted": identity_accepted,
             "identity_research_context": state.get("identity_research_context"),
             "identity_progress": {key: value for key, value in (story.get('identity_progress') or {}).items()
                 if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
