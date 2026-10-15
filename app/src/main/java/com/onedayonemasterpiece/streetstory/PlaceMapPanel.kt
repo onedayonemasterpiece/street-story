@@ -126,15 +126,22 @@ class PlaceMapPanel(
             }
         }
         addView(modes)
-        mapView = MapView(activity, org.maplibre.android.maps.MapLibreMapOptions.createFromAttributes(activity).textureMode(true)).apply { contentDescription = "owner-place-map"; onCreate(Bundle()) }
+        mapView = object : MapView(activity, org.maplibre.android.maps.MapLibreMapOptions.createFromAttributes(activity).textureMode(true)) {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                val finished = event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL
+                // Own the sequence before native render children dispatch it.
+                // Release the scroll parent only after the SDK consumes its end.
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val handled = super.dispatchTouchEvent(event)
+                if (finished) parent?.requestDisallowInterceptTouchEvent(false)
+                if (event.actionMasked == MotionEvent.ACTION_DOWN || finished) {
+                    android.util.Log.i("StreetStoryMap", "event=touch action=${event.actionMasked} handled=$handled attached=$isAttachedToWindow focused=${hasWindowFocus()}")
+                }
+                return handled
+            }
+        }.apply { contentDescription = "owner-place-map"; onCreate(Bundle()) }
         val available = activity.resources.displayMetrics.heightPixels / activity.resources.displayMetrics.density
         addView(mapView, LayoutParams(-1, dp((available * .25f).coerceIn(112f, 240f))))
-        // A native gesture owns this touch sequence; scrolling resumes after UP/CANCEL.
-        mapView.setOnTouchListener { view, event ->
-            parent?.requestDisallowInterceptTouchEvent(event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL)
-            if (event.actionMasked == MotionEvent.ACTION_UP) view.performClick()
-            false
-        }
         addView(status.apply { text = "Загружаем фото и карту…"; textSize = 13f; contentDescription = "owner-place-status" })
         addView(groupStatus.apply { textSize = 13f; contentDescription = "owner-place-group-status"; visibility = GONE })
         val buttons = LinearLayout(activity)
@@ -196,6 +203,7 @@ class PlaceMapPanel(
                 style.addLayer(CircleLayer("owner-camera-dot", "owner-camera").withProperties(circleColor("#3569ae"), circleRadius(6f), circleStrokeColor("#ffffff"), circleStrokeWidth(2f)))
                 map.addOnMapClickListener { point ->
                     val hit = map.queryRenderedFeatures(map.projection.toScreenLocation(point), "owner-buildings-fill").firstOrNull()
+                    android.util.Log.i("StreetStoryMap", "event=map_click hit=${hit != null} mode=$selectionMode disposed=$disposed")
                     if (hit != null) {
                         selectionDirty = true
                         if (selectionMode == "rough") {

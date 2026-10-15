@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T09:04:41.770738+00:00",
+  "updated_at_utc": "2026-10-15T09:19:12.259689+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:19:40.737387+00:00",
   "stage": 2,
   "status": "working",
@@ -94,11 +94,11 @@
       "reason": "Compatible current release, public API and Android Live/touch verification remain required; revision50 authorizes checked delivery without per-SHA approval."
     },
     {
-      "scope": "case102_editorial_rev47",
-      "reason": "Actual0a image failed despite clean caption/concept: raw facts-as-caption block overrode editorial rule. Corrected existing visual prompt/basis label; new image only after checks."
+      "scope": "android_map_single_tap",
+      "reason": "5a CI observed rendered contour under physical tap but no selection. Minimal native dispatch/interception candidate plus input/click logs awaits same42checks."
     }
   ],
-  "next_step": "101 affected checks then commit current visual correction; one addressed image after source freeze; compatible current paired release and API/Android verification under rev50 authority.",
+  "next_step": "Observe exact test publication8366; independent Telegram readback. Verify native map dispatch-touch correction using unchanged one-tap/pan/pinch/reopen instrumentation. Current paired release prepared; activation after checks.",
   "stages": [
     {
       "stage": 0,
@@ -827,7 +827,7 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "rev47_visual_prompt_conflict_corrected_current_native_profile_verified",
+  "current_stage": "102_editorial_pass_test_publication_scheduled_android_map_input_diagnosis",
   "current_blocker": "Original102 single-turn Native component lost Python owner after parent interruption. Original attempt remains submitted/possibly_sent, last save exec has no callback entry or response. Two earlier saves completed; no model final. No duplicate turn/save permitted. Independently correct caption and visual through existing no-research product server.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
@@ -1107,7 +1107,7 @@
       }
     }
   ],
-  "work_revision": 87,
+  "work_revision": 88,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1907,7 +1907,7 @@
     "trace": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-paginated-review-131-rev45/read-trace.jsonl",
     "observed": "Relevant900-offset own snippets delivered first.1908 caption does not explicitly claim construction year; direct child proposed source-attributed repair.1901 list date/status supported with own body+heading; compound tourism claim proposed split. No actual Mira or saved semantic receipt."
   },
-  "current_work_revision": 87,
+  "current_work_revision": 88,
   "candidate_runtime_sha256": {
     "backend/street_story/fact_agent_providers.py": "8981e6645278db610b71ca5efc8a8ef2ebf047946aa449e576eb56b270a34308",
     "backend/street_story/native_fact_research.py": "1d1511a72d504b60477e1ef944863a77412bd29d10864d7d601d955bb7232c2f",
@@ -2621,7 +2621,12 @@
     "visual_job_id": "visual_9f7752e222b64ac7ab9c05c19a335288",
     "image_review_pending": false,
     "image_review_status": "FAIL: source-year/no-date commentary and old address repeated",
-    "image_review_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-editorial-rev47-0a4db16/visual-review.json"
+    "image_review_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-editorial-rev47-0a4db16/visual-review.json",
+    "corrected_image_review_status": "EDITORIAL_REV47_PASS",
+    "corrected_image_review_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-editorial-basis-5a08d50/visual-review.json",
+    "corrected_visual_operation_id": "op_3c6ac5d8d58643558eb1f94e544643a6",
+    "corrected_publication_operation_id": "op_8366ef301c4c452d93bde5c097b3f0c9",
+    "publication_readback_pending": true
   },
   "current_native_tool_qualification": {
     "validation": "PASS",
@@ -2633,5 +2638,21 @@
     "new_withheld_observations": 2,
     "completeness_accepted": false,
     "original102_unknown_unchanged": true
+  },
+  "candidate_sha": "5a08d50cdca0d0c37502042b6f9e28423311b146",
+  "case104_latest_measurement": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-104-source-date-control-0a4db16/measured-result.json",
+  "case102_latest_visual_operation": "op_3c6ac5d8d58643558eb1f94e544643a6",
+  "editorial_5a_durable_jobs": {
+    "server": "job_ab1a462665474daf9033d11b",
+    "vibe": "job_393f8395e629ecaed15b15db",
+    "client": "job_c92ccfefe739cc0e6debb9d0",
+    "exact_visual_worker": "job_767ca253407d330660177c4b"
+  },
+  "checks_5a08d50": {
+    "backend": "3846 passed/55 skipped/2 warnings",
+    "backend_run": 38710313041,
+    "android_run": 38710313187,
+    "android": "41/42 emulator tests passed; one real map tap did not select contour",
+    "diagnosis": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-5a08d50-map-tap-failure/diagnosis.json"
   }
 }
