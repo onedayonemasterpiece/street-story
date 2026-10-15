@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T04:58:43.826811+00:00",
-  "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
+  "updated_at_utc": "2026-10-15T05:06:19.724489+00:00",
+  "last_useful_progress_at_utc": "2026-10-15T05:01:59.366120+00:00",
   "stage": 2,
   "status": "working",
-  "last_action": "Closed ordinary102 continuation:1newsource,0newfacts,45.279s; reproduced2missing outer source_date failures. Safe schema feedback/rejected-call fix passes121tests+Ruff. NewNativeprofile0f69e255 requires fresh actual qualification; old receipts unchanged.",
+  "last_action": "Current Nativeprofile0f69 actual access/read/save qualification accepted; new102source yields1atomic usable/1compound Q. Generalized existing acceptance continuation to read original owner-place case metadata so104can continue in same DB, no clone/new identity.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -76,7 +76,7 @@
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Commit/freeze Native schema-feedback fix; one addressed actual current-profile qualification on same selected102 story after all original operations closed. Then admit only qualified route and continue ordinary research/E2E.",
+  "next_step": "Freeze small acceptance-only continuation change, then ordinary qualified104 more on original completed store; offline102V4 comparison continues.",
   "stages": [
     {
       "stage": 0,
@@ -1621,7 +1621,7 @@
       ]
     }
   ],
-  "current_source_sha": "d32346ad669da577fbf851d216eac2f181d5b3eb",
+  "current_source_sha": "35ce4021fa7a66895a71fba3bedb191014ddd284",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -1904,7 +1904,7 @@
     "backend/street_story/native_research_tools.py": "e3f1e7ad8eb4fca9dc4415d400a6224fdb4ca90ad0a0722891772fc49247589d",
     "backend/street_story/review_packets.py": "5a9522d91a32ef9800b3c9e4d04f607d896666d72180b0a802d34f191151e0c3"
   },
-  "source_snapshot_status": "Native schema-feedback candidate fingerprint; manifest committed with candidate, resulting commit recorded in live artifact.",
+  "source_snapshot_status": "35ce402 runtime unchanged; acceptance CLI extension and progress mirror pending commit",
   "case131_relevant_component": {
     "at_utc": "2026-10-15T04:48:45.396146+00:00",
     "status": "CLOSED_PARTIAL_REVIEW_NOT_SEMANTIC_ACCEPTANCE",
@@ -2166,7 +2166,7 @@
     "complete_delivery": false
   },
   "native_schema_feedback_fix": {
-    "status": "LOCAL_CHECKS_PASSED",
+    "status": "COMMITTED_ACTUAL_PROFILE_READ_SAVE_OBSERVED",
     "existing_schema_unchanged": true,
     "semantic_auto_fill": false,
     "model_visible_feedback": "Schema field paths/rules/required names only; no private values or exception message",
@@ -2178,7 +2178,115 @@
     "ruff": "passed",
     "profile_sha256": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
     "previous_profile_sha256": "14fd3a6cb793ccab79a9771bf9fc241a94f61d091f4c57bd40f8f5c4343e7865",
-    "actual_changed_profile_verification": false,
-    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-feedback-and-review-final.log"
+    "actual_changed_profile_verification": true,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-feedback-and-review-final.log",
+    "source_sha": "35ce4021fa7a66895a71fba3bedb191014ddd284",
+    "actual_schema_error_correction_observed": false
+  },
+  "native_schema_feedback_qualification": {
+    "at_utc": "2026-10-15T04:59:29.707622+00:00",
+    "status": "ACTUAL_CURRENT_PROFILE_ACCESS_QUALIFICATION_ACCEPTED_PARTIAL_SEMANTIC_RESULT",
+    "source_sha": "35ce4021fa7a66895a71fba3bedb191014ddd284",
+    "mode": "addressed_actual_unqualified_profile_control",
+    "current_profile_sha256": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
+    "old_qualification_reused": false,
+    "original_failed_operation": "rattempt_cd416975686868d01336ddba",
+    "original_failed_operation_known_closed": true,
+    "same_actual_story": "story_f72fbb3cea13b47f8f64a4ea",
+    "new_competing_coding_job": false,
+    "new_inference_authorized_for_changed_feedback_control": true,
+    "external_publication": false,
+    "reference_facts_or_urls_supplied": false,
+    "output": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-schema-feedback-qualification-35ce402",
+    "job_id": "job_1d443f4e894b4e109db9e470",
+    "run_id": "research_07b0092fb768466f992f9f4f",
+    "profile_sha256": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
+    "attempt_id": "rattempt_989e74e344fd95366ad6b342",
+    "thread_id": "01a13dee-210d-7742-8b6a-3243d5c3cb1a",
+    "turn_id": "01a13dee-22d8-72f0-b502-a322c4299025",
+    "new_saved_cards": 2,
+    "new_independently_usable_atomic_cards": 1,
+    "compound_cards_needing_repair": 1,
+    "first_independently_useful_seconds": 44.71135449409485,
+    "terminal_seconds": 56.066691637039185,
+    "saved_before_turn_completed": true,
+    "raw_original_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-schema-feedback-qualification-35ce402/receipt-0.json",
+    "new_rejected_schema_calls": 0,
+    "actual_failure_then_correction_observed": false,
+    "feedback_failure_path_evidence": "121addressed tests; actual new-profile control used valid args on first save. Do not claim observed model correction from schema failure.",
+    "native_completion": {
+      "research_sufficient": true,
+      "reason": "Продолжил с сохранённого исследования и прочитал новые материалы о доме и капремонте. В ledger сохранены два самостоятельных сведения из статьи от 25.11.2024: состояние несущих стен и уже приведённые в порядок стены со стороны двора. Публикация от 17.12.2025 повторяет уже известные сведения о фасадных работах и возобновлении ремонта, поэтому эквиваленты не сохранял повторно. Проверенная справочная страница OSSDoc противоречит сама себе: в одном месте указывает 1910 год, в паспорте — 1945-й; год постройки из неё не добавлял. Охвачены исторические использования и довоенный контекст, архитектурные особенности и последовательность ремонтных работ. Новые запросы по тем же адресам и материалам о ремонте дали преимущественно повторы; новых независимо подтверждённых сведений о жильцах, иных организациях или событиях в прочитанных источниках не обнаружено.",
+      "remaining_gaps": [
+        "Не установлены точный год постройки и независимая документальная история жителей дома.",
+        "Не найдено новых подтверждённых сведений о других событиях или использованиях дома, помимо уже известных."
+      ],
+      "stop_basis": "material_exhausted",
+      "next_action": null
+    },
+    "sufficiency_claim_independently_accepted": false,
+    "new_facts": [
+      {
+        "fact_id": "claim_3d3e86feee388b6b278d",
+        "text": "В ноябре 2024 года Фонд капремонта сообщал, что кирпич дома Житомирская, 22–24 был рыхлым, а несущие стены требовали усиления.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "independent_atomic_review": "Q_COMPOUND_NEEDS_SPLIT",
+        "basis": "Own version srcv_421c490f588c4d102a0b52c6: article25.11.2024 lines34–40 identifies selected house, describes loose brick/need for strengthening and completed courtyard-wall work.",
+        "limitation": "Loose brick condition and need for wall strengthening are independently selectable; source supports them, but original saved sentence combines them. Do not count as two atomic successes or publish unchanged."
+      },
+      {
+        "fact_id": "claim_01eea2045ab10b11bfdf",
+        "text": "К ноябрю 2024 года специалисты привели в порядок стены дома Житомирская, 22–24 со стороны внутреннего двора.",
+        "ledger_eligibility": "eligible",
+        "owner_selected": false,
+        "independent_atomic_review": "V_ATOMIC_SOURCE_SUPPORTED",
+        "basis": "Own version srcv_421c490f588c4d102a0b52c6: article25.11.2024 lines34–40 identifies selected house, describes loose brick/need for strengthening and completed courtyard-wall work.",
+        "limitation": null
+      }
+    ],
+    "usage": {
+      "by_thread": {
+        "01a13dee-210d-7742-8b6a-3243d5c3cb1a": [
+          {
+            "inputTokens": 524931,
+            "cachedInputTokens": 454144,
+            "outputTokens": 2127,
+            "reasoningOutputTokens": 337,
+            "totalTokens": 527058
+          }
+        ]
+      },
+      "total_tokens": 527058,
+      "usage_known": true,
+      "measurement": "owned_journal_cumulative_turn_delta",
+      "reported_last_inference_usage": {
+        "01a13dee-210d-7742-8b6a-3243d5c3cb1a": [
+          {
+            "inputTokens": 64292,
+            "cachedInputTokens": 62208,
+            "outputTokens": 432,
+            "reasoningOutputTokens": 128,
+            "totalTokens": 64724
+          }
+        ]
+      },
+      "cost": "unknown"
+    },
+    "cost": "unknown",
+    "research_completeness": "No V4 recall or fullsource saturation acceptance; earlier unsaved December2024 event not recovered here. Model sufficiency is not independent corpus proof.",
+    "new_facts_selected": false,
+    "product_full_e2e": false,
+    "qualification_file": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-schema-feedback-qualification-35ce402.json",
+    "qualification_sha256": "82285ea21af5e7d28ff85b7e9fec6f24815313c11e32f261c8bc0ba331113018",
+    "paired_qualification": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/delivery-agent-qualification-native-giga-35ce402.json"
+  },
+  "qualification_current": {
+    "file": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/delivery-agent-qualification-native-giga-35ce402.json",
+    "native_profile": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
+    "native_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-schema-feedback-qualification-35ce402/receipt-0.json",
+    "Giga_profile_unchanged": "374f05c9d879020ab2603eb6a4c12b49939b250ae849cdbf814ab03f48ba2920",
+    "installed_in_production": false,
+    "semantic_whole_acceptance": false
   }
 }

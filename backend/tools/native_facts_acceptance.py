@@ -186,7 +186,15 @@ async def run(args):
         raise ValueError('Existing original operation must be reconciled; never replay this campaign')
     if not (recovering or resuming_product):
         output.mkdir(mode=0o700)
-    continuation = json.loads((managed(args.continue_from)/'campaign.json').read_text()) if args.continue_from else None
+    continuation = None
+    if args.continue_from:
+        previous = managed(args.continue_from)
+        pointer = previous/'campaign.json'
+        if not pointer.is_file():
+            pointer = previous/'case.json'  # Existing ordinary owner-place acceptance store.
+        prior = json.loads(pointer.read_text())
+        continuation = {key: prior[key] for key in
+            ('story_id', 'selected_candidate_id', 'message_id', 'source_sha')}
     if args.coverage_goal and not continuation:
         raise ValueError('A focused new question requires the existing selected story continuation')
     if continuation and (recovering or continuation.get('message_id') != args.message):
@@ -445,7 +453,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--registry', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--message', type=int, choices=[102, 105, 131], required=True)
+    parser.add_argument('--message', type=int, required=True,
+        help='Exact registered photo ID; original-byte, EXIF GPS and selected-story guards still apply.')
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--additions', type=int, choices=[0, 1, 2], default=0)
     parser.add_argument('--agent-qualification', type=Path,
