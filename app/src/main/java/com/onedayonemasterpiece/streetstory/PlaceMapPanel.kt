@@ -221,7 +221,7 @@ class PlaceMapPanel(
                 }
                 map.addOnCameraIdleListener {
                     val center = map.cameraPosition.target
-                    if (restored && center != null && (requestedCenter == null || requestedCenter!!.distanceTo(center) > 120 || kotlin.math.abs(map.cameraPosition.zoom - (requestedZoom ?: map.cameraPosition.zoom)) > .4)) {
+                    if (restored && center != null && PlaceMapRefresh.needed(requestedCenter?.distanceTo(center), map.cameraPosition.zoom, requestedZoom)) {
                         handler.removeCallbacks(fetchMoved); handler.postDelayed(fetchMoved, 600)
                     }
                 }
