@@ -87,8 +87,15 @@ else
   adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
 fi
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
+adb shell pm grant "$PKG" android.permission.READ_MEDIA_IMAGES || true
+adb shell pm grant "$PKG" android.permission.ACCESS_MEDIA_LOCATION || true
+adb shell svc power stayon true
+adb shell settings put system screen_off_timeout 1800000
+adb shell input keyevent KEYCODE_WAKEUP
+adb shell wm dismiss-keyguard
 adb shell "run-as $PKG mkdir -p files/live-golden"
 fixture_names=(config.json token.txt)
+if [[ -f "$FIXTURE_DIR/source.original" ]]; then fixture_names+=(source.original); fi
 if [[ "$IDENTITY_ONLY" != true ]]; then fixture_names+=(voice-{1..6}.pcm); fi
 for name in "${fixture_names[@]}"; do
   test -s "$FIXTURE_DIR/$name"

@@ -1,7 +1,9 @@
 package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
+import android.content.ContentValues
 import android.net.Uri
+import android.provider.MediaStore
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
@@ -122,6 +124,8 @@ class LiveGoldenInstrumentedTest {
         val configFile = File(root, "config.json")
         assumeTrue("Live golden fixture is not provisioned", configFile.isFile)
         val config = JsonParser.parseString(configFile.readText()).asJsonObject
+        val ownerMapSelection = config.get("owner_map_selection")?.asBoolean == true
+        val selectedCount = if (ownerMapSelection) 3 else 2
         val baseUrl = config.requireString("backend_url")
         val safeAlias = config.requireString("safe_alias")
         val token = File(root, "token.txt").readText().trim()
@@ -137,9 +141,13 @@ class LiveGoldenInstrumentedTest {
         require(!moreOnly || (!identityOnly && !keepPublication))
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
+        require(!ownerMapSelection || (!identityOnly && !moreOnly && resumeStoryId.isEmpty())) {
+            "The owner-map fixture exercises a fresh full-social path only"
+        }
 
         beginStage("photo", 120_000)
-        val photoUri = config.get("photo_uri")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        val seededOwnerUri = if (ownerMapSelection) seedOwnerOriginal(config) else null
+        val photoUri = seededOwnerUri?.toString() ?: config.get("photo_uri")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
         val photoUrl = config.get("photo_url")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
         require(photoUri.startsWith("content://") || photoUrl.startsWith("https://")) { "An approved gallery URI or public SOURCE URL is required" }
         val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
@@ -157,11 +165,9 @@ class LiveGoldenInstrumentedTest {
             connection.inputStream.use { PhotoImporter.importStream(context, it,
                 connection.contentType?.substringBefore(';') ?: "image/jpeg") }
         }
-        // Raw repository owner fixtures lack the former artificially inserted GPS.
-        // Their already approved location is metadata, never a pixel transformation.
-        val fixtureCoordinates = rawImported.latitude == null || rawImported.longitude == null
-        val imported = if (fixtureCoordinates) rawImported.copy(latitude = config.get("latitude").asDouble,
-            longitude = config.get("longitude").asDouble) else rawImported
+        // Only the selected provider's original EXIF supplies camera GPS.
+        // A fixture without GPS is excluded instead of changing the input flow.
+        val imported = rawImported
         assertNotNull(imported.latitude)
         assertNotNull(imported.longitude)
         assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - config.get("latitude").asDouble) < 0.0025)
@@ -209,11 +215,13 @@ class LiveGoldenInstrumentedTest {
             "client_story_id" to local.clientStoryId,
             "fixture_photo_sha256" to photoSha,
             "photo_identity_kind" to "opaque_upload_id",
+            "source_original_sha256" to config.get("source_sha256")?.asString,
             "source_rehydrated_same_upload" to (resumed?.sourceAvailable == false),
             "destination_alias" to safeAlias,
             "physical_mic" to false,
             "prepared_owner_photo" to true,
-            "photo_coordinates_source" to if (fixtureCoordinates) "owner_fixture_metadata" else "embedded_exif",
+            "photo_coordinates_source" to "embedded_exif",
+            "owner_map_selection" to ownerMapSelection,
             "source_input_uri_or_url" to photoUri.ifBlank { photoUrl },
             "discovery_seeded" to false,
             "owner_name_hint" to false,
@@ -237,6 +245,26 @@ class LiveGoldenInstrumentedTest {
 
         try {
             beginStage("identity", 5L * 60 * 1000)
+            var story: StoryWire
+            if (ownerMapSelection) {
+                require(resumed == null && !resumeIdentityResearch) { "Owner-map canary is a fresh upload, not an unknown-operation retry" }
+                assertEquals("manual", created.identityMode)
+                capture("01-photo-before-research", created)
+                selectOwnerContour(api, created, local.clientStoryId, config.requireString("owner_selected_candidate_id"))
+                story = pollStory(api, storyId) {
+                    it.visualIdentity?.status == "owner_confirmed"
+                }
+                assertEquals(config.requireString("owner_selected_candidate_id"), story.visualIdentity?.candidateId)
+                val selection = rawStory(baseUrl, token, storyId).requireObject("place_selection")
+                assertEquals("exact", selection.requireString("mode"))
+                assertEquals(photoSha, selection.requireString("photo_sha256"))
+                assertEquals(story.identityGeneration, selection.get("generation").asInt)
+                evidence["automatic_identity"] = false
+                evidence["owner_selection"] = selection
+                evidence["identity_scope"] = mapOf("photo_sha256" to photoSha, "identity_generation" to story.identityGeneration)
+                evidence["one_physical_contour_tap"] = true
+                evidence["owner_selection_reopened"] = true
+            } else {
             if (resumeIdentityResearch) {
                 val before = rawStory(baseUrl, token, storyId)
                 assertEquals(photoSha, before.requireString("photo_sha256"))
@@ -270,7 +298,7 @@ class LiveGoldenInstrumentedTest {
             }
             assertHeadlessIdentity()
             capture("01-photo-before-research", api.getStory(storyId))
-            var story = pollStory(api, storyId, stageDeadline - System.currentTimeMillis(),
+            story = pollStory(api, storyId, stageDeadline - System.currentTimeMillis(),
                 allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale")) {
                 it.visualIdentity?.status == "match"
             }
@@ -331,6 +359,7 @@ class LiveGoldenInstrumentedTest {
                 "backend_live_message_count" to story.liveMessages.size,
                 "backend_voice_message_count" to story.voiceMessages.size,
             ))
+            }
             if (resumed == null) {
                 assertTrue("Identity used owner voice or Live messages", story.liveMessages.isEmpty() && story.voiceMessages.isEmpty())
             } else {
@@ -369,7 +398,7 @@ class LiveGoldenInstrumentedTest {
             // The headless path has already confirmed this photo. POI memory
             // and its eligible facts are ordinary product results: a first post
             // must not require another identification or discovery turn.
-            val savedFactsReady = story.sourceCount > 0 && story.facts.count { it.eligibleForSelection } >= 2
+            val savedFactsReady = story.sourceCount > 0 && story.facts.count { it.eligibleForSelection } >= selectedCount
             evidence["initial_fact_inventory_reused"] = savedFactsReady
             evidence["initial_eligible_fact_count"] = story.facts.count { it.eligibleForSelection }
             if (!savedFactsReady) {
@@ -381,22 +410,22 @@ class LiveGoldenInstrumentedTest {
                 "Продолжи поиск фактов о подтверждённом объекте на фотографии. Прочитай текущее состояние темы, используй именно его подтверждённый POI ID и сохрани проверенные факты с источниками. Не выбирай факты и не готовь текст публикации.",
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) {
-                it.sourceCount > 0 && it.facts.count { fact -> fact.eligibleForSelection } >= 2
+                it.sourceCount > 0 && it.facts.count { fact -> fact.eligibleForSelection } >= selectedCount
             }
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
-            require(story.facts.count { it.evidenceSupported } >= 2)
+            require(story.facts.count { it.evidenceSupported } >= selectedCount)
             capture("03-facts-after-research", story)
 
             beginStage("selection", 4L * 60 * 1000)
-            val savedSelectionReady = resumed != null && story.facts.count { it.selected && it.eligibleForSelection } == 2
+            val savedSelectionReady = resumed != null && story.facts.count { it.selected && it.eligibleForSelection } == selectedCount
             evidence["selection_history_reused"] = savedSelectionReady
             if (!savedSelectionReady) {
                 speak(live, pcmFiles[3])
                 awaitAnswer(live, "fact selection")
                 story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
-                    "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
-                    it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
+                    "Выбери для поста ровно $selectedCount самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
+                    it.facts.count { fact -> fact.selected && fact.evidenceSupported } == selectedCount
                 }
             }
             capture("04-facts-selected", story)
@@ -406,7 +435,7 @@ class LiveGoldenInstrumentedTest {
             val savedConceptReady = resumed != null && !story.publicationConcept.isNullOrBlank()
             evidence["concept_history_reused"] = savedConceptReady
             if (!savedConceptReady) {
-                ownerText(live, "Концепция поста: исторический вход в город, история которого видна в кирпичных башнях на фотографии. Сохрани эту концепцию; выбор двух фактов оставь без изменений.", "publication concept")
+                ownerText(live, "Концепция поста: история здания на фотографии через $selectedCount выбранных подтверждённых факта. Сохрани эту концепцию и текущий выбор.", "publication concept")
                 story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
                     !it.publicationConcept.isNullOrBlank()
                 }
@@ -433,7 +462,7 @@ class LiveGoldenInstrumentedTest {
                 speak(live, pcmFiles[4])
                 awaitAnswer(live, "text edit")
                 story = pollWithOwnerClarification(api, storyId, live, evidence, "text edit",
-                    "Уточняю правку: сделай текущий текст короче и живее, без канцелярита. Используй только два уже выбранных факта; выбор и изображение не меняй.") {
+                    "Уточняю правку: сделай текущий текст короче и живее, без канцелярита. Используй только $selectedCount уже выбранных факта; выбор и изображение не меняй.") {
                     !it.draftText.isNullOrBlank() && it.draftText != beforeEdit
                 }
             }
@@ -508,7 +537,7 @@ class LiveGoldenInstrumentedTest {
             val visualStarted = api.getStory(storyId)
             if (visualStarted.state != StoryStage.VISUAL_PROCESSING && visualStarted.processedImageUrl.isNullOrBlank()) {
                 evidence["visual_text_clarification"] = true
-                ownerText(live, "Создай инфографичную картинку по исходной фотографии, сохранённой концепции и двум выбранным фактам. Сделай её чуть теплее. Текущий текст поста оставь без изменений.", "visual clarification")
+                ownerText(live, "Создай инфографичную картинку по исходной фотографии, сохранённой концепции и $selectedCount выбранным фактам. Сделай её чуть теплее. Текущий текст поста оставь без изменений.", "visual clarification")
             }
             story = pollStory(
                 api,
@@ -698,12 +727,124 @@ class LiveGoldenInstrumentedTest {
             }
             live.removeListener(headlessObserver)
             File(root, "evidence.json").writeText(gson.toJson(evidence))
+            seededOwnerUri?.let { context.contentResolver.delete(it, null, null) }
             store.close()
             if (identityOnly) check(evidence["no_live_or_recording_started"] == true) {
                 "Headless identity started Live or recording; retained evidence contains the failure"
             }
         }
         assertTrue(if (keepPublication) publicationScheduled else cancelConfirmed)
+    }
+
+    private fun seedOwnerOriginal(config: JsonObject): Uri {
+        val bytes = File(root, "source.original").readBytes()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        assertEquals("CI must use the unchanged owner original", config.requireString("source_sha256"), digest)
+        val resolver = context.contentResolver
+        val uri = requireNotNull(resolver.insert(
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "street-story-owner104-live.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            },
+        ))
+        try {
+            requireNotNull(resolver.openOutputStream(uri)).use { it.write(bytes) }
+            resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+            return uri
+        } catch (failure: Throwable) {
+            resolver.delete(uri, null, null)
+            throw failure
+        }
+    }
+
+    /** Evaluator chooses a visible contour; only normal native touch and outbox commit it. */
+    private fun selectOwnerContour(api: ApiClient, initial: StoryWire, localId: String, candidateId: String) {
+        val data = api.placeMap(initial.id)
+        initial.placeMap = data
+        ResearchProjectionStore(context).replace(localId, initial)
+        val feature = requireNotNull(org.maplibre.geojson.FeatureCollection.fromJson(requireNotNull(data.buildings).toString())
+            .features()?.firstOrNull { it.id() == candidateId || (it.hasProperty("candidate_id") && it.getStringProperty("candidate_id") == candidateId) }) {
+            "Owner's intended contour is absent from the actual server map"
+        }
+        fun positions(value: com.google.gson.JsonElement): List<Pair<Double, Double>> {
+            if (!value.isJsonArray) return emptyList()
+            val array = value.asJsonArray
+            return if (array.size() >= 2 && array[0].isJsonPrimitive && array[1].isJsonPrimitive)
+                listOf(array[0].asDouble to array[1].asDouble)
+            else array.flatMap(::positions)
+        }
+        val coords = positions(JsonParser.parseString(requireNotNull(feature.geometry()).toJson())
+            .asJsonObject.get("coordinates"))
+        require(coords.isNotEmpty())
+        val west = coords.minOf { it.first }; val east = coords.maxOf { it.first }
+        val south = coords.minOf { it.second }; val north = coords.maxOf { it.second }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            var nativeMap: org.maplibre.android.maps.MapLibreMap? = null
+            var view: org.maplibre.android.maps.MapView? = null
+            var centered = false
+            var target: android.graphics.Point? = null
+            fun descendants(node: View): Sequence<View> = sequence {
+                yield(node)
+                if (node is ViewGroup) for (index in 0 until node.childCount) yieldAll(descendants(node.getChildAt(index)))
+            }
+            waitUntil(60_000, "Actual owner contour did not become touchable") {
+                scenario.onActivity { activity ->
+                    view = descendants(activity.findViewById(android.R.id.content))
+                        .filterIsInstance<org.maplibre.android.maps.MapView>().singleOrNull()
+                    view?.getMapAsync { nativeMap = it }
+                    val map = nativeMap
+                    val visible = view
+                    if (map?.style != null && visible != null) {
+                        visible.requestRectangleOnScreen(Rect(0, 0, visible.width, visible.height), true)
+                        if (!centered) {
+                            map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                                org.maplibre.android.geometry.LatLng((south + north) / 2, (west + east) / 2), 18.0))
+                            centered = true
+                        } else if (visible.isAttachedToWindow && visible.hasWindowFocus() && !visible.isLayoutRequested) {
+                            val origin = IntArray(2); visible.getLocationOnScreen(origin)
+                            val bounds = Rect(); visible.getGlobalVisibleRect(bounds)
+                            // Locate an interior rendered point even for a ring/courtyard.
+                            // This is read-only hit testing, never a click callback or selection mutation.
+                            for (row in 1..9) for (column in 1..9) if (target == null) {
+                                val point = map.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(
+                                    south + (north - south) * row / 10, west + (east - west) * column / 10))
+                                val x = origin[0] + point.x.toInt(); val y = origin[1] + point.y.toInt()
+                                if (bounds.contains(x, y) && map.queryRenderedFeatures(point, "owner-buildings-fill")
+                                    .any { it.id() == candidateId || (it.hasProperty("candidate_id") && it.getStringProperty("candidate_id") == candidateId) }) {
+                                    target = android.graphics.Point(x, y)
+                                }
+                            }
+                        }
+                    }
+                }
+                target != null
+            }
+            EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
+            val point = requireNotNull(target)
+            assertTrue("Inject exactly one physical contour tap", device.click(point.x, point.y))
+            waitUntil(5000, "Physical contour tap did not enable confirmation") {
+                device.findObject(By.desc("owner-place-confirm"))?.isEnabled == true
+            }
+            scenario.onActivity { activity ->
+                descendants(activity.findViewById(android.R.id.content))
+                    .single { it.contentDescription?.toString() == "owner-place-confirm" }
+                    .let { it.requestRectangleOnScreen(Rect(0, 0, it.width, it.height), true) }
+            }
+            requireNotNull(device.findObject(By.desc("owner-place-confirm"))).click()
+            pollStory(api, initial.id) { it.visualIdentity?.candidateId == candidateId && it.visualIdentity?.status == "owner_confirmed" }
+            waitUntil(5000, "Normal outbox acknowledgement did not reach local projection") {
+                ResearchProjectionStore(context).get(localId)?.candidateId == candidateId
+            }
+            scenario.recreate()
+            EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
+            assertEquals("Reopen lost the acknowledged owner selection", candidateId,
+                ResearchProjectionStore(context).get(localId)?.candidateId)
+        }
     }
 
     private fun captureStage(
@@ -945,7 +1086,7 @@ class LiveGoldenInstrumentedTest {
     }
 
     companion object {
-        private const val OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
+        private const val OWNER_PROMPT_SHA256 = "91c02584a942ec1cbafd014ed8bc3343c9761b6ce7c56c2e56d0e67e3b0ad6d2"
         private const val PCM_CHUNK_SAMPLES = EfficientVad.FRAME_SAMPLES
         private const val PCM_CHUNK_SLEEP_MS = EfficientVad.FRAME_MS
         private const val RESEARCH_TIMEOUT_MS = 90_000L
