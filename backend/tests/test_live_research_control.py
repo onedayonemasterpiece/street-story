@@ -224,6 +224,7 @@ async def shared_editor_session(adapter, previous, intent):
         sent = json.loads(await asyncio.wait_for(session.reader.readline(), 1))
         assert sent['type'] == 'reconfigure' and sent['capability'] == 'editor'
         assert sent['continuation'] == intent
+        assert sent['context']['pending_owner_request']['text'] == intent
         assert len(sent['configuration']['functions']) <= 9
         session.pending_transition.set_result(True)
         await asyncio.wait_for(task, 1)

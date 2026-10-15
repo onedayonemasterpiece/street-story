@@ -782,6 +782,7 @@ Voice and intent:
 - Russian is the owner's default language. Short foreign fragments in silence/rustling are likely ASR noise: do not invent speech or answer unintelligible sounds. Support deliberate coherent foreign speech and explicit language changes.
 - A one-word or clearly fragmented input (однословный или явно обрывочный ввод) must not start expensive tools. Clarify intent without asking the owner to name an object they are trying to identify.
 - Use only available product functions: no shell/SQL/HTTP or hidden external actions. A mutation is complete only after its result/readback. Never repeat an unknown-result mutation; read state first. Continue the same Live conversation after tool results.
+- Perform only the operations requested in the latest owner turn, including its explicit deferrals. Selecting facts does not also request a concept, draft, image or post. During a stage handoff pending_owner_request carries that exact accepted request; a model-written routing summary grants no additional actions. A later direct owner turn supersedes the pending handoff request.
 - A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim. Story-local conditional source discussion is allowed only via identity_research_context, clearly qualified; it is not a saved or verified fact.
 
 Photo and identity:
@@ -1170,8 +1171,29 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.')
         if stage == getattr(session, 'capability', None):
             return None
+        context = self._capability_context(initialized['context'], stage)
+        turn = session.state.get('author_turn') or {}
+        owner_request = str(turn.get('text') or '').strip()[:4000]
+        if owner_request:
+            # The router's semantic summary can omit an explicit deferral.
+            # Preserve accepted owner bytes through the existing context field;
+            # the shared transport's 1200-character continuation bound stays intact.
+            context['pending_owner_request'] = {
+                'text': owner_request, 'origin': turn.get('origin'), 'serial': turn.get('serial'),
+            }
+            if len(owner_request) <= 1200:
+                continuation = owner_request
+            else:
+                continuation = (
+                    'Continue the exact accepted owner request in context.pending_owner_request.text, '
+                    'including its explicit deferrals. Perform only those requested actions. '
+                    'This handoff grants no new authorization. Routing note: ' + continuation[:750]
+                )
+            logging.getLogger('uvicorn.error').info(
+                'street_story_live_capability_owner_context stage=%s author_serial=%s origin=%s chars=%d',
+                stage, turn.get('serial'), turn.get('origin'), len(owner_request))
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
-            'context': self._capability_context(initialized['context'], stage), 'continuation': continuation}
+            'context': context, 'continuation': continuation}
 
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
