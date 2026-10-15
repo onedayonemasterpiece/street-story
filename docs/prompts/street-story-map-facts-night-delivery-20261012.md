@@ -209,6 +209,21 @@ Street Story помогает читателю заметить красоту �
 
 
 - run: SS-MAP-20261012
+- revision: 56
+- state: isolated_research_recovery_coordination
+- nonce: SS-MAP-REV56-20261015T1329
+- текущий native-тред: `01a131ed-8e0a-7bb1-b824-1f52768f8b76`
+
+После запроса владельца на свежий аудит и независимые параллельные исправления root координирует отдельную изолированную Codex-задачу по orphan recovery от base `354eb4873a560bf89dbb34690a66487b6467e506`. Её область: `backend/street_story/native_fact_research.py`, `backend/street_story/native_research_tools.py`, `backend/street_story/fact_agents.py` и соответствующие адресные тесты. Не вести одновременно изменения этих файлов в основном worktree; при необходимом пересечении сначала согласовать владение изменением. Старт, commit и готовность отдельной задачи подтверждаются её собственными receipts, эта запись не является таким подтверждением.
+
+Основной исполнитель продолжает Android contour tap, Live editor, SOURCE capture metadata и подписанные ссылки карт. Требования revision54–55 остаются действующими. Изолированная задача не получает полномочий изменять production, исходный UNKNOWN102, отправлять модельные запросы или публиковать. Перед интеграцией нужны review её commit/diff, адресные проверки и сверка пересечений с текущим HEAD; сырой patch не переносить напрямую в main. Не запускать второй research или повтор UNKNOWN ради параллельной работы.
+
+Ответь `WATCHDOG_ACK revision=56 nonce=SS-MAP-REV56-20261015T1329 blob=<фактический blob>` при следующем штатном чтении. Это координационная пометка, не новая редакторская генерация и не архитектурная перестройка.
+
+### История: revision 55 — оформление ссылок остаётся действующим
+
+
+- run: SS-MAP-20261012
 - revision: 55
 - state: owner_map_link_labels_clarified
 - nonce: SS-MAP-REV55-20261015T1308
