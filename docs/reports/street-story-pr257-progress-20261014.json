@@ -6,19 +6,15 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-14T21:52:17.985888+00:00",
-  "last_useful_progress_at_utc": "2026-10-14T17:28:02.258576+00:00",
+  "updated_at_utc": "2026-10-15T02:05:23.378142+00:00",
+  "last_useful_progress_at_utc": "2026-10-15T01:51:55.986053+00:00",
   "stage": 3,
   "status": "working",
-  "last_action": "Exclude reconsidered candidates from eligible-known model inventory without changing ledger. Clarify distinct existing-ID namespace.99tests and direct guided+autonomous source-packet checks passed.",
+  "last_action": "Corrected102text saved and semanticallyreviewed; oldfalsecanonicalclaim withheld. FirstcorrectedOriginalimageclosedbutrejected for oldaddress/ambiguousinsurerlettering. ActualNativeimagecompleted once; legacy6eOriginalrendererblocked; EF same-operationcache-onlyrecovery importedimagewithoutnewgeneration. Addressededit blockedpre-send visual_layout_invalid becauseMira chose immutable-photo composition. Directchild diagnosed missingpublication artisticinstructions andomittedfirstvisual_instruction. Prompt/schema descriptions fixed,13targetedtestsPASS, including3CItextcontract regressions. No unobservedimagegeneration repeated.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": {
-    "job_id": "job_6f7658a0a16f4328a4e43af5",
-    "status": "all_sent_operations_closed_no_valid_review_response",
-    "original_source_model": "mimo-v2.6-flash-free",
-    "original_session_id": "ses_ec3bf4d10ffeeO7P2XgWFQ99H2",
-    "original_message_id": "msg_13c40b1bb001edcacd1b3b75a9",
-    "readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-105-addressed-review-87ab08d/original-reconciliation.json"
+    "status": "no new active request",
+    "retained_pending": "Codex-off104 original assessment; original source/attempt binding preserved"
   },
   "task_inventory": {
     "limit": 100,
@@ -59,23 +55,27 @@
   },
   "blockers": [
     {
-      "scope": "direct_research_qualification",
-      "reason": "Direct child research in progress; autonomous unhinted repeat and same-contract adapter qualification not yet passed. Child native web search/open lacks frozen server reads/save callbacks; no canonical admission claimed."
+      "scope": "case102_corrected_delivery",
+      "reason": "Correctedtext/selectionsaved. Firstcorrectedvisualhasrejectedlettering/address; oneaddressededitrejectedpresend. Currentpromptfixawaitsrealcomponent. Oldtestpost37807semanticFAIL retained. No correctedpostyet."
     },
     {
       "scope": "observer_controls",
-      "reason": "Quota/owner-warning/empty-work observation during hosted search not implemented."
-    },
-    {
-      "scope": "Android_CI",
-      "reason": "Emulator failure; actual assertion/root cause not yet localized. Prior Android component success retained."
+      "reason": "Periodic quota/owner-warning/empty-work observation during hosted search is incomplete."
     },
     {
       "scope": "product_acceptance",
-      "reason": "Full one-house baseline/atomic comparison, actual map and voice, artistic Original, test publication and other required photos remain incomplete."
+      "reason": "Current ordinary-worker baseline and subsequent complete E2E remain unverified."
+    },
+    {
+      "scope": "case105_addressed_review",
+      "reason": "Original MiMo closed length-exhausted with no review response; original two compound claims remain traceable and unrepaired. Not a102 gate."
+    },
+    {
+      "scope": "case131",
+      "reason": "4 eligible cards but date discrepancy remains; actual ordinary model again emitted next_action.search. Further work must use concrete diagnosis, not blind repeat."
     }
   ],
-  "next_step": "Freeze corrected source-review input and run only addressed new packet on original105; preserve old receipts, do not repeat unchanged scope. Continue independent102/E2E after attachment/repair.",
+  "next_step": "Run one addressed artisticletteringcorrection with current instructions, verify actualbrief includes requiredexclusions/name, observe exactimageoperation; rootreviewthen normalprepare/separateconfirm andcanonicalTelegramreadback. No productiondeploy/merge.",
   "stages": [
     {
       "stage": 0,
@@ -750,20 +750,11 @@
     "completion_claimed": false
   },
   "watchdog_ack": {
-    "run": "SS-MAP-20261012",
-    "revision": 43,
-    "document_commit": "8f1413b",
-    "blob": "eb611dc1a442dc9d3e96afee5bb9afe40f9503fd",
-    "nonce": "SS-MAP-REV43-20261014T2054",
-    "at_utc": "2026-10-14T21:00:04Z",
-    "read_revisions": [
-      38,
-      39,
-      40,
-      41,
-      42,
-      43
-    ]
+    "revision": 44,
+    "nonce": "SS-MAP-REV44-20261014T2114",
+    "document_commit": "ee90e0eeb66ce19da32588f38f161ad3b98b399c",
+    "code_commit": "0927216820be09024a34f51c820e4fe70a83fae4",
+    "ack_at_utc": "2026-10-14T21:58:13.059406+00:00"
   },
   "active_local_checks": {
     "backend": 134,
@@ -1092,7 +1083,7 @@
       }
     }
   ],
-  "work_revision": 64,
+  "work_revision": 70,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1123,5 +1114,347 @@
     "removed_bytes": 163006471,
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
+  },
+  "current_commit": "1b0c1c5c2e7e707dba038d81b673aeb337ff5f0e",
+  "native_baseline_independence": {
+    "photo": 102,
+    "separate_data_directory": true,
+    "fallback105_operations_closed": true,
+    "qualification_mode": "actual current-profile native execution before ordinary worker",
+    "native_admission": "existing quota authority, no override"
+  },
+  "native102_current_profile": {
+    "source_sha": "0927216820be09024a34f51c820e4fe70a83fae4",
+    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-current-profile-0927216/campaign.json",
+    "thread_id": "01a13c6c-63a8-72c3-8492-68ad01fd5d61",
+    "turn_id": "01a13c6c-6664-7983-a2fb-840ba1a27fe3",
+    "elapsed_seconds": 56.39427828788757,
+    "eligible_cards": 3,
+    "completion": {
+      "research_sufficient": true,
+      "reason": "Исследован выбранный дом Житомирская, 22–24, а не соседние строения или район в целом. В ходе независимых поисков и чтения публикаций о здании проверены его довоенное прошлое, арендаторы, архитектурные особенности и ход позднейшего ремонта. Три отдельных подтверждённых факта о жильцах/организациях, архитектуре и ремонте 2025 года уже сохранены в реестре: claim_6601c80f04f0419b715b, claim_536722a37fe35ba1905c и claim_a841cc771db9e4773f6d. Дополнительные поиски по прежним адресам и истории дома в основном повторяли уже извлечённые сведения; они не дали достаточно новых, надёжно подтверждённых утверждений для отдельного сохранения. Чтение одной страницы аудиогида завершилось тайм-аутом, но собственные поисковые результаты предоставили содержательный текст о доме; этот неудачный доступ не трактовался как отсутствие истории.",
+      "remaining_gaps": [
+        "Не установлены по прочитанным материалам архитектор здания и точная дата его строительства внутри указанного периода.",
+        "Не исследованы подробно отдельные жильцы и датированные послевоенные изменения здания."
+      ],
+      "stop_basis": "material_exhausted",
+      "next_action": null
+    },
+    "ordinary_worker": false
+  },
+  "ordinary102_result": {
+    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-baseline-6dda4f7/campaign.json",
+    "material": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-ordinary-baseline-6dda4f7/material-1.json",
+    "source_sha": "ab581ffb3dcebf672cbc4e17fba41c1b74b9c70e",
+    "segments": [
+      {
+        "ordinal": 0,
+        "status": "INCOMPLETE",
+        "elapsed_seconds": 30.522003650665283,
+        "job_state": "retry",
+        "job_error": "worker_failure:OperationalError",
+        "total": 0
+      },
+      {
+        "ordinal": 1,
+        "status": "COMPLETED",
+        "elapsed_seconds": 50.685322999954224,
+        "job_state": "done",
+        "job_error": "research_agent_content_gaps",
+        "total": 3
+      }
+    ],
+    "eligible_count": 3
+  },
+  "owner_material_102": {
+    "status": "PASS",
+    "story_id": "story_f72fbb3cea13b47f8f64a4ea",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-ab581ff/owner-material/material-receipt.json",
+    "scope": "Actual Live text/tool HTTP, not microphone or Android UI"
+  },
+  "visual_original_failed": {
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-ab581ff/artistic-original-current102-receipt.json",
+    "visual_job_created": false,
+    "closed_error": "generate_visual_failed_visual_copy_invalid",
+    "read_topic_denied_units": 17670,
+    "source_sha": "ab581ffb3dcebf672cbc4e17fba41c1b74b9c70e",
+    "draft_and_concept_preserved": false,
+    "selected_fact_ids_preserved": true,
+    "null_args_cause_verified": false,
+    "null_args_diagnostic_note": "Tool argument values at depth4 are erased by existing diagnostic projection. Null omission was a controlled fix; not established root cause of original visual_copy_invalid."
+  },
+  "owner_material_restored": {
+    "path": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-ab581ff/material-restored-after-visual-failure.json",
+    "exact_draft_and_concept": true
+  },
+  "native_prompt_patch": {
+    "commit": "79a77cc",
+    "reason": "Actual read2025leftunretained/unsaved in ordinary singleturn; minimal delivery-before-completion rule, no compulsory judge or numeric target.",
+    "tests": 68,
+    "provider_verification": {
+      "status": "useful_material_preserved",
+      "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-delivery-prompt-79a77cc/campaign.json",
+      "elapsed_seconds": 87.54528784751892,
+      "new_facts": 5,
+      "eligible_total": 8,
+      "not_full_accuracy_claim": true
+    }
+  },
+  "direct_autonomous_131_rev44": {
+    "child_id": "/root/research_autonomous_131_rev44",
+    "requested_model": "gpt-6-luna",
+    "requested_reasoning": "medium",
+    "actual_execution_model": "unexposed",
+    "status": "closed_candidate_report",
+    "report": "/home/dev/artifacts/street-story/20261014T224414Z-direct-autonomous-131-rev44/research-report.md",
+    "canonical_facts_saved": false,
+    "limitation": "Direct child has native search/read but no product retain_native_source/save_facts bindings."
+  },
+  "cleanup_20261015": {
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-result-20261015.json",
+    "verified_removed_bytes": 218223067,
+    "removed_clean_worktree_count": 1
+  },
+  "direct_autonomous_131_actionable_gap": {
+    "child_id": "/root/research_autonomous_131_actionable_gap",
+    "requested_model": "gpt-6-luna",
+    "requested_reasoning": "medium",
+    "prompt_sha256": "a38b81b12821a44560ce76757f943c3eab3d9a6e4f82b47bd3a30ad6b177b362",
+    "status": "closed_source_candidates",
+    "native_reads": [
+      "https://lori.ru/33859231",
+      "https://xn--39-flcmzvudi.xn--p1ai/tinybrowser/files/arhitektura_gradostroitelstvo/obekty_kulturnogo_naslediya/perechen-okn-v-g.sovetske.pdf",
+      "https://visit-kaliningrad.ru/entertainment/sights/gorodskie-zdaniya/gorodskaya-istoricheskaya-zastrojka-sovetska/"
+    ],
+    "save_tools_unavailable": true,
+    "canonical_admission_claimed": false,
+    "limitation": "Research did not fully saturate chronology; absent retain/save are actual component boundary. Final answer is parent-retained, no file written by child."
+  },
+  "case131_current": {
+    "ordinary_baseline": {
+      "source_sha": "79a77cc",
+      "duration_s": 47.8686,
+      "facts": 2
+    },
+    "corrected_native_component": {
+      "source_sha": "4968f44",
+      "duration_s": 44.3806,
+      "added": 1,
+      "total_eligible": 3,
+      "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-131-actionable-gap-4968f44/receipt-0.json"
+    },
+    "ordinary_dated_changes": {
+      "source_sha": "4968f44",
+      "duration_s": 40.4259,
+      "added_fact_id": "claim_7f7dc91a3bf571925a2e",
+      "total_eligible": 4,
+      "job_id": "job_fbcfba3f76684ec29c132e2c",
+      "run_id": "research_9d336f96f6a445df6ebe9d07",
+      "thread_id": "01a13cfd-0c29-7af3-9e64-a31fd09719dc",
+      "model": "gpt-6-luna",
+      "effort": "medium",
+      "completion": "unresolved_gap",
+      "regression": "next_action.search returned again despite explicit prompt; no automatic rerun performed",
+      "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-131-dated-changes-ordinary-4968f44/receipt-rattempt_4f1f999c489c9d12176525aa.json"
+    },
+    "product_acceptance": "partial; 1901/1908 conflict, native autonomy handoff still imperfect, no full current131E2E"
+  },
+  "current_ci": {
+    "source_sha": "08e6d19f08d2fe435f519892b54d1f37b7797c03",
+    "backend": {
+      "run_id": 38661695594,
+      "state": "success"
+    },
+    "android": {
+      "run_id": 38661695614,
+      "state": "success"
+    },
+    "physical_phone": "not_verified"
+  },
+  "case104_current": {
+    "source_sha": "08e6d19f08d2fe435f519892b54d1f37b7797c03",
+    "story_id": "story_6ebd74f82ddf8dc2cd2a6f52",
+    "selected_candidate_id": "osm:relation:3665416",
+    "first_eligible_from_confirmation_s": 39.113,
+    "rest_eligible_proved_count": 3,
+    "own_read_source_count": 1,
+    "outcome": "useful_partial",
+    "coverage_complete": false,
+    "source_unverified_retain": "one third read reference rejected; no false source attachment",
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-104-native-08e6d19/case.json"
+  },
+  "publication102_current": {
+    "scope": "Segmented actual source-backed baseline→saved material→Live text/tool editing→Original generation/recovery→prepare/confirm→Telegram exact readback; NOT Android/physical microphone/full frozen-SHA cold E2E.",
+    "operation_id": "op_c8ee99afa15042828bdb81587fc20119",
+    "publication_id": "pub_23431cbca5d241588e7620b4645de893",
+    "destination": "street_story_e2e_20260928_tg",
+    "scheduled_for_utc": "2026-10-15T00:52:32Z",
+    "state": "independently_read_back",
+    "live_phase": "publish-original102-current-schedule",
+    "visual_original_operation_id": "op_2a40cc363153404aa0ec00cd5a9b268e",
+    "image_regeneration_submits": 0,
+    "exact_text_image_time_preserved": true,
+    "independent_post_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-ab581ff/telegram-independent-readback.json",
+    "retained_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-ab581ff/publication-original-vibe-receipt.json",
+    "semantic_limit": "Model-confirmed facts; independent full historical-atom/source-discrepancy audit is not claimed by this publication transport test.",
+    "message_id": 37807,
+    "posted_at_utc": "2026-10-15T00:52:33+00:00",
+    "published_image_viewed": true,
+    "exact_caption_match": true,
+    "photo_dimensions": [
+      1086,
+      1448
+    ]
+  },
+  "noncodex_current": {
+    "qualification_source_sha": "08e6d19",
+    "old_proofs_reused_as_current": false,
+    "google": {
+      "phase": "failed",
+      "provider_send_state": "response_closed",
+      "error": "GeminiUnavailable",
+      "attempt_id": "rattempt_37b1604d37dfe25f295259b2"
+    },
+    "gigachat": {
+      "phase": "completed",
+      "tool_access_verified": true,
+      "tools": [
+        "websearch",
+        "webfetch"
+      ],
+      "attempt_id": "rattempt_d9a067b0633dc55f3f3332b7",
+      "proof": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/noncodex-giga-current-08e6d19/qualification-proof.json"
+    },
+    "ordinary_photo104": {
+      "status": "useful_partial",
+      "codex_configured": false,
+      "output": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-104-without-codex-08e6d19",
+      "story_id": "story_45e71fcbc8f770699eae403e",
+      "job_id": "job_9d1e9d867cbe4113b86b3fbb",
+      "first_eligible_from_confirmation_s": 48.578,
+      "rest_eligible_proved_count": 3,
+      "own_read_source_count": 1,
+      "reason": "research_agent_original_pending",
+      "pending_original_verification": "Retained; do not duplicate unknown.",
+      "actual_path": "Giga candidate discovery/extraction plus existing Gemini semantic confirmation; Codex excluded from configuration and not used by these provider attempts."
+    }
+  },
+  "semantic_publication_102": {
+    "status": "FAIL",
+    "telegram_message_id": 37807,
+    "fact_id": "claim_0e37ee3f4e0ae7578cf3",
+    "false_qualifier": "До войны applied to independent Soviet occupants",
+    "original_evidence_preserved": true
+  },
+  "native_temporal102": {
+    "source_sha": "9f4daf23b98542b36dff76046545b4148fd827af",
+    "same_story": "story_f72fbb3cea13b47f8f64a4ea",
+    "job_id": "job_05111426d7c643cf9f366fd8",
+    "attempt_id": "rattempt_2e541d844aee2b13292f21e4",
+    "status": "COMPLETED",
+    "elapsed_seconds": 54.905142307281494,
+    "new_fact_ids": [
+      "claim_0001f23b03928a7da66d",
+      "claim_7952778afe1ba2b018bf",
+      "claim_7ea334453d9c9cfbb771"
+    ],
+    "eligible_total": 11,
+    "original_false_fact_still_eligible_before_scoped_review": true,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-temporal-correction-run.log",
+    "campaign": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/native-102-temporal-correction-9f4daf2/campaign.json",
+    "usage": {
+      "by_thread": {
+        "01a13d2e-375f-7b62-b41f-22066deaa9c3": [
+          {
+            "inputTokens": 328291,
+            "cachedInputTokens": 261376,
+            "outputTokens": 2563,
+            "reasoningOutputTokens": 251,
+            "totalTokens": 330854
+          }
+        ]
+      },
+      "total_tokens": 330854,
+      "usage_known": true,
+      "measurement": "owned_journal_cumulative_turn_delta",
+      "reported_last_inference_usage": {
+        "01a13d2e-375f-7b62-b41f-22066deaa9c3": [
+          {
+            "inputTokens": 61634,
+            "cachedInputTokens": 55040,
+            "outputTokens": 454,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 62088
+          }
+        ]
+      },
+      "cost": "unknown"
+    },
+    "first_new_fact_observed_seconds": 37.66496920585632
+  },
+  "vibe_full_local": {
+    "source_sha": "ef3d8baf7a7a7351bb7df5bdfb2fbd9c15564ccd",
+    "passed": 2084,
+    "subtests_passed": 358,
+    "elapsed_seconds": 1342.98,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/vibe-full-browser-cache-ef3d8ba.log",
+    "ci313": "cancelled again; not repeated"
+  },
+  "cleanup_additional_20261015": {
+    "passed_fixture_bytes": 44414447,
+    "closed_corrected_fixture_bytes": 60327063,
+    "unit_logs_and_junit_preserved": true,
+    "no_runtime_or_real_research_evidence_deleted": true
+  },
+  "case102_scoped_repair": {
+    "source_sha": "bba03d701e420324deea2726b3bc67e45747921e",
+    "session_id": "live_ff998709435d4872901752d3d1547d37",
+    "old_false_fact": "claim_0e37ee3f4e0ae7578cf3",
+    "old_status": "withheld",
+    "old_selected": false,
+    "pending_replacement": "claim_b88e131194f4c00e1df2",
+    "scope_complete": false,
+    "other_ready_facts_usable": true,
+    "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/scoped-temporal-review-current-binding-receipt.json"
+  },
+  "live_current_turn_diagnostic": {
+    "child": "/root/live_current_turn_diagnostic",
+    "first_failure": "Model refusal despite available stage router; request delivered/grants succeeded; no toolmutation. Promptclassification narrowedaeba2d3; same request then selectedcorrected3.",
+    "second_failure": "Harness returned at functioncallturncomplete; priorack interrupted then misclassified as nextrequestfailure. set_concept actuallysaved call37508; readback recovered withoutresend.6fba fixesopt-inposttoolack andinterruptiontracking;22testsPASS.",
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/live-current-turn-diagnostic/report.md"
+  },
+  "corrected_material102": {
+    "status": "SAVED_AND_ROOT_SEMANTIC_REVIEWED",
+    "source_sha": "6fba12b7a95779abdac6e2deeaaf3136b1e2c9e1",
+    "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/owner-material/material-receipt.json",
+    "root_review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/corrected-text-semantic-review.json",
+    "selection_count": 3,
+    "old_false_canonical_status": "withheld",
+    "full_v4_recall_claimed": false
+  },
+  "corrected_visual102_v1": {
+    "state": "REJECTED_TEXT_CORRECTIONS_REQUIRED",
+    "operation_id": "op_28044484271747e4ab3c192938926c1c",
+    "visual_job_id": "visual_39dd2d2e18c441158b881247d14b1a56",
+    "native_thread_id": "01a13d43-cd64-7c03-a2b7-d40791617b7f",
+    "native_turn_id": "01a13d43-cea1-7d11-b572-b22c37310bbb",
+    "sha256": "c1979ce0afee2daf4feaae74ca4269fa20dbf35c703c9bd9cbd638c88a3ec0c5",
+    "root_review": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-temporal-9f4daf2/visual-review-rejected-v1.json",
+    "recovery_native_generation_submits": 0,
+    "sameoperation_import_verified": true
+  },
+  "visual_edit_pre_send_failure": {
+    "code": "visual_layout_invalid",
+    "new_image_operation_created": false,
+    "root_cause_evidence": "call8028 chose preserve_source_frame+visual_copy, no layout; visual_source52/67 proveswrongcompositionmode. Firstoperationvisual_instructionempty; ownerexclusionslostfrombrief.",
+    "targeted_fix_source": "1b0c1c5c2e7e707dba038d81b673aeb337ff5f0e",
+    "tests_passed": 13
+  },
+  "last_ci": {
+    "runtime_source": "6fba12b7a95779abdac6e2deeaaf3136b1e2c9e1",
+    "android_run": 38667799032,
+    "android": "success",
+    "backend_run": 38667799071,
+    "backend": "3 failed /3784passed/55skipped; three tests expected exact routingphrase, restoredandtargeted13PASS; finalnewCIpending"
   }
 }
