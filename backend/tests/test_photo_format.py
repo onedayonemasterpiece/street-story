@@ -54,6 +54,36 @@ async def test_live_format_choice_uses_same_story_and_survives_reopen_without_pr
     assert reopened['context']['visual_photo_format']['mode'] == 'original'
 
 
+@pytest.mark.asyncio
+async def test_opaque_upload_token_never_blocks_format_snapshot_or_visual(tmp_path):
+    # Android sends an opaque upload token as photo_sha256, never the image checksum.
+    import hashlib
+    import json
+    from street_story.live import StreetStoryLiveAdapter
+    from test_mvp_visual import FrameBoundary, PHOTO
+    token = hashlib.sha256(b'opaque-upload-token').hexdigest()
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    story = svc.create_story(key='create-opaque', client_story_id='story-opaque', photo_sha256=token,
+        photo_mime_type='image/jpeg', photo_bytes=PHOTO, voice_protocol='voice-chunks-v2', lat=54.7104, lon=20.4522)
+    sid = story['id']
+    chosen = set_photo_format(svc, sid, 'opaque-crop', {'mode': 'crop_4_5', 'expected_photo_sha256': token,
+        'expected_identity_generation': story['identity_generation']})
+    assert chosen['visual_photo_format']['crop_rect'] == [8, 0, 24, 30]
+    adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, lambda _session, _message: None)
+    assert adapter._visual_snapshot(sid, selected_format=True)[1:] == (24, 30)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'opaque-visual', {'selected_fact_ids': []})
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+        context = json.loads(svc._story_row(db, sid)['visual_context_json'])
+    assert context['source_photo_sha256'] == token
+    assert context['source_image_transform']['original_sha256'] == PHOTO_SHA
+    await svc._run_visual(job)
+    assert vp.tune_calls == 1
+
+
 def test_pending_new_format_cannot_label_previous_asset_as_current():
     from street_story.photo_format import projection
     research = {'visual_photo_format': {'mode': 'original', 'revision': 2, 'crop_rect': None}}

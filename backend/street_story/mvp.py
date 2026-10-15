@@ -346,10 +346,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if source_frame is not None:
                 frozen['source_frame'] = source_frame
             from .visual_source import photo_transform
+            # photo_sha256 is an opaque upload token, never a content checksum. The
+            # frozen transform carries the content hash that generation re-verifies.
             _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
                 story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
-            if transform['original_sha256'] != story['photo_sha256']:
-                raise ConflictError('visual_source_original_changed', 'Original source changed.')
             frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}

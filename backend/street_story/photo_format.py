@@ -38,8 +38,6 @@ def set_photo_format(service, story_id, key, body):
         # Validate the actual pixel window now; no network or provider work.
         _raw, _mime, transform = photo_transform(service._source_photo_for_job(story_id),
             row['photo_mime_type'], mode, crop)
-        if transform['original_sha256'] != row['photo_sha256']:
-            raise ConflictError('photo_format_source_changed', 'Исходное фото изменилось.')
         previous = choice(research)
         research['visual_photo_format'] = {'mode': mode, 'crop_rect': transform['crop_rect'] if mode == 'crop_4_5' else None,
             'revision': previous['revision']+1, 'source_photo_sha256': row['photo_sha256'],

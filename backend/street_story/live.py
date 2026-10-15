@@ -1533,10 +1533,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 with self.service.store.connection() as db:
                     row = self.service._story_row(db, story_id)
                     selected = choice(json.loads(row['research_json'] or '{}'))
-                    source, _mime, transform = photo_transform(source, row['photo_mime_type'],
+                    source, _mime, _transform = photo_transform(source, row['photo_mime_type'],
                         selected['mode'], selected.get('crop_rect'))
-                    if transform['original_sha256'] != row['photo_sha256']:
-                        raise ConflictError('visual_source_original_changed', 'Original source changed.')
             with Image.open(io.BytesIO(source)) as opened:
                 image = ImageOps.exif_transpose(opened).convert('RGB')
                 image.thumbnail((768, 768), Image.Resampling.LANCZOS)
