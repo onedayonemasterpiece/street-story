@@ -185,6 +185,7 @@ def _coverage_gaps(state):
 
 def _source_coverage(receipt):
     """Identify completed own reads not represented by a candidate URL."""
+    from .native_fact_research import orphan_pointer, unsent_orphan_continuation
     from .fact_agent_providers import _read_url_key
     proposed = {_read_url_key(row['url']) for row in (receipt.get('result') or {}).get('facts', [])
         if isinstance(row.get('url'), str)}
@@ -199,7 +200,11 @@ def _source_coverage(receipt):
         if (receipt.get('provider_id') == 'codex_native' and source['source_version_id'] not in proposed_versions
                 or receipt.get('provider_id') != 'codex_native' and not (urls - {None}) & proposed):
             unproposed.add(source['source_version_id'])
-    return {**({'native_completion': (receipt.get('raw_result') or {}).get('completion')}
+    return {**({'native_orphan_recovery': orphan_pointer(receipt),
+            **({'retry_at': receipt['route_failure']['retry_at']}
+                if unsent_orphan_continuation(receipt) and (receipt.get('route_failure') or {}).get('retry_at') else {})}
+            if receipt.get('provider_id') == 'codex_native' else {}),
+        **({'native_completion': (receipt.get('raw_result') or {}).get('completion')}
             if receipt.get('provider_id') == 'codex_native' else {}),
         'rejected_candidate_count': len(receipt.get('rejected_candidates') or []),
         'unproposed_source_version_ids': sorted(unproposed),
@@ -241,7 +246,8 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
     store = adapter.service.store
     stage = 'fact_agent_plan:' + run_id
     with store.tx() as db:
-        if headless._snapshot(job, run_id, epoch) is None:
+        snapshot = headless._snapshot(job, run_id, epoch)
+        if snapshot is None:
             raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
         if initial is not None:
             db.execute('INSERT OR IGNORE INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)',
@@ -256,9 +262,18 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
                 raise ConflictError('agent_research_plan_changed', 'The route is outside the original agent plan.')
             routes = saved.setdefault('routes', {})
             old = routes.get(route_id, {})
-            if continuation and (old.get('phase') != 'completed' or old.get('provider_id') != 'codex_native'
+            orphan = (state.get('operation_context') or {}).get('native_orphan_recovery') if state else None
+            if continuation and orphan:
+                from .native_fact_research import load_orphan_parent
+                if old.get('phase') != 'failed' or old.get('native_orphan_recovery') != orphan:
+                    raise ConflictError('agent_research_continuation_changed', 'Closed owned orphan required.')
+                owned_story = snapshot[0]
+                load_orphan_parent(db, orphan, binding={'story_id': job['story_id'], 'job_id': job['id'],
+                    'photo_sha256': owned_story['photo_sha256'], 'generation': owned_story['_identity_generation'],
+                    'control_revision': epoch}, context=state['operation_context'])
+            if continuation and (old.get('phase') != ('failed' if orphan else 'completed') or old.get('provider_id') != 'codex_native'
                     or state.get('phase') != 'created' or state.get('parent_attempt_id') != old.get('attempt_id')
-                    or not (old.get('native_completion') or {}).get('next_action')):
+                    or not orphan and not (old.get('native_completion') or {}).get('next_action')):
                 raise ConflictError('agent_research_continuation_changed', 'Closed owned model action required.')
             if (old.get('phase') not in {'completed', 'failed'} or recovery
                     and state.get('phase') in {old.get('phase'), 'completed'} and state.get('attempt_id')
@@ -679,6 +694,9 @@ async def run_fact_agents(adapter, job, run_id, goal):
         context = state.get('operation_context') or saved['context']
         lineage = {key: state[key] for key in ('operation_context', 'history', 'continuation_keys') if key in state}
         route = routes_by_id.get(route_id)
+        if (state.get('provider_id') == 'codex_native' and state.get('phase') == 'unknown'
+                and state.get('retry_at', 0) > adapter.service.store.now()):
+            return state
         if not state:
             recovered = _recover_route_state(adapter, job, run_id, story, context, route_id)
             if recovered is not None:
@@ -730,7 +748,9 @@ async def run_fact_agents(adapter, job, run_id, goal):
                     row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
                         'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
                 receipt = json.loads(row[0]) if row else {}
-                state = {'phase': 'unknown' if receipt.get('phase') not in {'failed', 'completed', 'created'} else 'failed',
+                from .native_fact_research import unsent_orphan_continuation
+                state = {'phase': 'unknown' if receipt.get('phase') not in {'failed', 'completed', 'created'}
+                        or receipt.get('provider_id') == 'codex_native' and unsent_orphan_continuation(receipt) else 'failed',
                     'reason': str(exc), 'attempt_id': (receipt.get('binding') or {}).get('attempt_id'),
                     **_source_coverage(receipt)}
         state = {**state, **lineage, **({'provider_id': route.provider_id} if route else {})}
@@ -746,6 +766,22 @@ async def run_fact_agents(adapter, job, run_id, goal):
         # Neither a fact count nor a continuation count decides saturation.
         while True:
             result = await one_step(route_id)
+            orphan = result.get('native_orphan_recovery')
+            if result.get('provider_id') == 'codex_native' and result.get('phase') == 'failed' and orphan:
+                guard()
+                next_context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
+                next_context['native_orphan_recovery'] = orphan
+                state = {'phase': 'created', 'provider_id': 'codex_native',
+                    'parent_attempt_id': result['attempt_id'], 'operation_context': next_context,
+                    'continuation_keys': result.get('continuation_keys') or [],
+                    'history': [*(result.get('history') or []), {key: value for key, value in result.items()
+                        if key not in {'history', 'continuation_keys'}}]}
+                persisted = _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id,
+                    state=state, continuation=True)
+                saved['routes'][route_id] = persisted['routes'][route_id]
+                LOG.info('street_story_native_orphan_continuation run_id=%s parent_attempt_id=%s thread_id=%s status=ready',
+                    run_id, result['attempt_id'], orphan['thread_id'])
+                continue
             completion = result.get('native_completion') or {}
             action = completion.get('next_action')
             unresolved = [row for row in result.get('outcomes', []) if row.get('status') == 'unverified']

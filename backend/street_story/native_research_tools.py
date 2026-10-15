@@ -9,10 +9,45 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import threading
+from pathlib import Path
 
 LOG = logging.getLogger(__name__)
 TOOL_METHOD = 'item/tool/call'
 TOOL_VALIDATION_CONTRACT = 'native-tool-schema-feedback-v1'
+ORPHAN_CONTRACT = 'native-owned-callback-recovery-v1'
+
+
+def process_identity(pid):
+    """Nonsecret process incarnation; PID reuse/reboot must not prove liveness."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return {'pid': pid, 'start_ticks': stat[19],
+            'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+    except FileNotFoundError:
+        return {'pid': pid, 'absent': True}
+    except (OSError, IndexError):
+        return None
+
+
+def execution_owner(client):
+    process = getattr(client, '_process', None)
+    return {'backend': process_identity(os.getpid()),
+        'transport': process_identity(getattr(process, 'pid', None))}
+
+
+def lost_execution_owner(owner):
+    for kind in ('backend', 'transport'):
+        previous = (owner or {}).get(kind)
+        if not isinstance(previous, dict) or not previous.get('start_ticks') or not previous.get('boot_id'):
+            continue
+        current = process_identity(previous.get('pid'))
+        if current is not None and current != previous:
+            return {'kind': kind, 'original': previous, 'observed': current}
+    return None
 
 
 class ResearchToolArgumentsInvalid(ValueError):
@@ -61,6 +96,13 @@ def attach_research_tools(client, callback, *, loop=None):
     loop = loop or asyncio.get_running_loop()
     reader = client._reader_loop
     pending = set()
+    active = {}
+    active_lock = threading.Lock()
+    client._street_story_active_calls = active
+    def has_active_call(address):
+        with active_lock:
+            return bool(active.get(address))
+    client._street_story_has_active_call = has_active_call
 
     async def answer(process, message):
         params = message.get('params')
@@ -68,6 +110,9 @@ def attach_research_tools(client, callback, *, loop=None):
         try:
             if not isinstance(params, dict):
                 raise ValueError('native_research_tool_request_invalid')
+            if (getattr(client, '_process', process) is not process
+                    or callable(getattr(process, 'poll', None)) and process.poll() is not None):
+                raise ConnectionError('native_research_callback_process_lost')
             result = await callback(params)
             response = {'success': True, 'contentItems': [{'type': 'inputText',
                 'text': json.dumps(result, ensure_ascii=False)}]}
@@ -92,9 +137,21 @@ def attach_research_tools(client, callback, *, loop=None):
         stream = process.stdout
 
         def dispatch(message):
+            params = message.get('params') or {}
+            address = tuple(params.get(key) if isinstance(params.get(key), str) else None
+                for key in ('threadId', 'turnId', 'callId')) if isinstance(params, dict) else ()
+            # Count duplicates: one finishing response must not hide a sibling.
+            with active_lock:
+                active[address] = active.get(address, 0) + 1
             future = asyncio.run_coroutine_threadsafe(answer(process, message), loop)
             pending.add(future)
-            future.add_done_callback(pending.discard)
+            def done(future):
+                pending.discard(future)
+                with active_lock:
+                    active[address] -= 1
+                    if not active[address]:
+                        active.pop(address)
+            future.add_done_callback(done)
 
         process.stdout = ResearchToolStream(stream, dispatch)
         try:

@@ -112,3 +112,29 @@ def test_model_visible_validation_contract_changes_native_profile(tmp_path, monk
     current = provider.profile_fingerprint
     monkeypatch.setattr(native_research_tools, 'TOOL_VALIDATION_CONTRACT', 'different-schema-feedback')
     assert provider.profile_fingerprint != current
+
+
+@pytest.mark.asyncio
+async def test_late_callback_from_replaced_process_has_no_product_effect():
+    loop = asyncio.get_running_loop()
+    replied, effects, replies = asyncio.Event(), [], []
+    old = SimpleNamespace(stdout=io.StringIO(json.dumps({'id': 44, 'method': 'item/tool/call', 'params': {
+        'threadId': 'owned', 'turnId': 'turn', 'callId': 'save', 'tool': 'save_facts',
+        'arguments': {'facts': []}}}) + '\n'))
+    class Client:
+        _process = object()  # A different process already owns the transport.
+        def _reader_loop(self, process, generation):
+            list(process.stdout)
+        def _write_for_process(self, process, response):
+            replies.append((process, response))
+            loop.call_soon_threadsafe(replied.set)
+            raise ConnectionError('Original process cannot receive a late reply')
+    async def callback(params):
+        effects.append(params)
+        return {'saved': True}
+    client = attach_research_tools(Client(), callback)
+    await asyncio.to_thread(client._reader_loop, old, 1)
+    await asyncio.wait_for(replied.wait(), 2)
+    assert effects == []
+    assert replies[0][0] is old and replies[0][1]['id'] == 44
+    assert replies[0][1]['result']['success'] is False
