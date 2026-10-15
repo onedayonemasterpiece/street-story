@@ -101,7 +101,8 @@ class NativeFactResearch:
     @property
     def profile_fingerprint(self):
         from .native_fact_contract import FINAL_INSTRUCTIONS, RESULT_SCHEMA, PROJECTION_CONTRACT, SOURCE_READ_CONTRACT
-        from .native_source_reads import SOURCE_PAGE_CONTRACT, CURSOR_CONTRACT
+        from .native_source_reads import SOURCE_PAGE_CONTRACT, CURSOR_CONTRACT, NAVIGATION_CONTRACT
+        from .native_source_memory import CONTRACT as SOURCE_MEMORY_CONTRACT
         from .fact_agent_providers import native_tools
         from .native_received_sources import CONTRACT as RECEIVED_CONTENT_CONTRACT
         from .native_research_tools import TOOL_VALIDATION_CONTRACT
@@ -111,6 +112,8 @@ class NativeFactResearch:
             'native_received_content_contract': RECEIVED_CONTENT_CONTRACT,
             'source_page_contract': SOURCE_PAGE_CONTRACT,
             'source_cursor_contract': CURSOR_CONTRACT,
+            'source_navigation_contract': NAVIGATION_CONTRACT,
+            'source_memory_contract': SOURCE_MEMORY_CONTRACT,
             'resource_reporting_contract': 'native-provider-quota-stop-v2',
             'search_delivery_contract': 'native-discovery-locations-only-v1',
             'projection_contract': PROJECTION_CONTRACT,

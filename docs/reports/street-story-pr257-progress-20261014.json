@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T05:16:10.185782+00:00",
+  "updated_at_utc": "2026-10-15T05:35:01.558147+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:01:59.366120+00:00",
   "stage": 2,
   "status": "working",
@@ -751,11 +751,13 @@
     "completion_claimed": false
   },
   "watchdog_ack": {
-    "revision": 44,
-    "nonce": "SS-MAP-REV44-20261014T2114",
-    "document_commit": "ee90e0eeb66ce19da32588f38f161ad3b98b399c",
-    "code_commit": "0927216820be09024a34f51c820e4fe70a83fae4",
-    "ack_at_utc": "2026-10-14T21:58:13.059406+00:00"
+    "run": "SS-MAP-20261012",
+    "revision": 46,
+    "blob": "215a4f4e66463082271bfaead2d4a2937e89cb08",
+    "commit": "d2ea982506c3b11c6c3053b9fa577762c430281a",
+    "nonce": "SS-MAP-REV46-20261015T0524",
+    "at_utc": "2026-10-15T05:28:04.730722+00:00",
+    "decision": "Preserve active104. Multiple search/read/save calls do run within fourth long turn; firstthree model terminals with available actions have no proven cause. Direct real prompt/tools component and autonomous repeat required before next full run; no new harness/ceiling/orchestrator."
   },
   "active_local_checks": {
     "backend": 134,
@@ -806,8 +808,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "native_same_job_model_action_continuation_verification",
-  "current_blocker": "104 ended with an explicit extract action over its retained Klops source; host stopped on save_facts capability. Minimal guard correction locally passes107 tests; real addressed continuation remains to be verified. Broader completeness and public/phone E2E remain open.",
+  "current_stage": "native_owned_chunk_navigation_and_autonomous_turn_component",
+  "current_blocker": "104 closed naturally after4turns/743.906s,40new ledgercards. Not semantic acceptance: own chunk/version mapping defects, compounds/duplicate lease core and chronology conflict. REV46 requires direct real prompt/tools autonomy component and autonomous repeat before another full run. Navigation-only direct Luna proposal completed; no product tool-equivalence claim.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -1263,24 +1265,14 @@
     "product_acceptance": "partial; 1901/1908 conflict, native autonomy handoff still imperfect, no full current131E2E"
   },
   "current_ci": {
-    "source_sha": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
+    "source_sha": "5bc1d2141f2578f6ea85036a1f6b07fd3341127c",
     "backend": {
-      "run_id": 38670314689,
-      "result": "success",
-      "passed": 3789,
-      "skipped": 55,
-      "warnings": 2,
-      "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/backend-142f478-ci.log"
+      "run": 38685891755,
+      "status": "success"
     },
-    "android_pr": {
-      "run_id": 38670314693,
-      "result": "checks+42emulator tests success",
-      "signer": "debug; discarded for owner update"
-    },
-    "android_canonical": {
-      "run_id": 38672152384,
-      "result": "checks+42emulator tests success;Release skipped",
-      "owner_certificate_match": true
+    "android": {
+      "run": 38685891838,
+      "status": "success"
     }
   },
   "case104_current": {
@@ -2290,7 +2282,7 @@
     "semantic_whole_acceptance": false
   },
   "native_continuation_fix": {
-    "status": "LOCAL_TESTS_PASS_REAL_VERIFICATION_PENDING",
+    "status": "ACTUAL_SAME_JOB_THREAD_CONTINUATION_VERIFIED_QUALITY_NOT_ACCEPTED",
     "before_reproduction_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-before.log",
     "before_failures": 4,
     "before_passes": 3,
@@ -2301,7 +2293,10 @@
     "after_log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-after.log",
     "after_junit": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-autonomous-continuation-after.xml",
     "ruff": "passed",
-    "diff_check": "passed"
+    "diff_check": "passed",
+    "job_id": "job_c6f949734e984bbba4d2b633",
+    "run_id": "research_07f105649997f034d7d50ec6",
+    "thread_id": "01a13dfd-ebb3-7083-b402-a6efccbf251d"
   },
   "ordinary_completeness104": {
     "at_utc": "2026-10-15T05:07:01.765654+00:00",
@@ -2439,5 +2434,137 @@
     "semantic_output_atoms": 23,
     "independent_saturation_claim": false,
     "not_an_admission_gate": true
+  },
+  "ordinary104_current": {
+    "at_utc": "2026-10-15T05:30:13.067552+00:00",
+    "status": "CLOSED_PARTIAL_QUALITY_DEFECTS_REMAIN",
+    "source_sha": "5bc1d2141f2578f6ea85036a1f6b07fd3341127c",
+    "story_id": "story_6ebd74f82ddf8dc2cd2a6f52",
+    "selected_candidate_id": "osm:relation:3665416",
+    "job_id": "job_c6f949734e984bbba4d2b633",
+    "run_id": "research_07f105649997f034d7d50ec6",
+    "first_new_eligible_observed_seconds": 45.27310013771057,
+    "terminal_seconds": 743.9062061309814,
+    "new_ledger_cards": 40,
+    "current_total_cards": 47,
+    "preserved_previous": true,
+    "turns": [
+      {
+        "thread_id": "01a13dfd-ebb3-7083-b402-a6efccbf251d",
+        "turn_id": "01a13dfe-bd09-7e23-bbfe-3b1f35e670f9",
+        "native_terminal_status": "completed",
+        "phase": "completed",
+        "provider_send_state": "response_closed",
+        "elapsed_seconds": 116.42018683199785,
+        "attempt_id": "rattempt_3372622fcf195d45237776ff",
+        "total_tokens": 1877473
+      },
+      {
+        "thread_id": "01a13dfd-ebb3-7083-b402-a6efccbf251d",
+        "turn_id": "01a13e00-91ea-7ba3-b837-08e3ca8930a0",
+        "native_terminal_status": "completed",
+        "phase": "completed",
+        "provider_send_state": "response_closed",
+        "elapsed_seconds": 79.67652102400098,
+        "attempt_id": "rattempt_34f78793a55bdf26994beb24",
+        "total_tokens": 1939655
+      },
+      {
+        "thread_id": "01a13dfd-ebb3-7083-b402-a6efccbf251d",
+        "turn_id": "01a13dfd-f0bd-79b3-a33e-83e84a94eec6",
+        "native_terminal_status": "completed",
+        "phase": "completed",
+        "provider_send_state": "response_closed",
+        "elapsed_seconds": 53.148071468000126,
+        "attempt_id": "rattempt_56bddb2334df44abb415b836",
+        "total_tokens": 427599
+      },
+      {
+        "thread_id": "01a13dfd-ebb3-7083-b402-a6efccbf251d",
+        "turn_id": "01a13e01-d179-7811-8d13-a533bd00b5c8",
+        "native_terminal_status": "completed",
+        "phase": "completed",
+        "provider_send_state": "response_closed",
+        "elapsed_seconds": 467.23690039199937,
+        "attempt_id": "rattempt_69da69e3452a04812f987c8c",
+        "total_tokens": 5329991
+      }
+    ],
+    "native_total_tokens": 9574718,
+    "cost": "unknown",
+    "five_minute": {
+      "captured_at_utc": "2026-10-15T05:21:59.096347+00:00",
+      "observation": {
+        "elapsed_seconds": 301.83485746383667,
+        "fact_ids": [
+          "claim_b89b62c4f1acceed9636",
+          "claim_29c2af752909ec694b45",
+          "claim_48ce09ed6e3c7d6c52a8",
+          "claim_ce9b747c86c0d2f17161",
+          "claim_8a50640fd371e7511b90",
+          "claim_96513889c2fde255df38",
+          "claim_eb3e7ac3804f21264a14",
+          "claim_e637306ebed0976c5c4d",
+          "claim_ab5aeedb31312d98602f",
+          "claim_ec9d609161851cca0f86",
+          "claim_321f0f7cd30ede136d88",
+          "claim_18e9fcb1c008159af122",
+          "claim_1cb4e7c9a594406a6051",
+          "claim_9d063c61289abf29a4ff",
+          "claim_25484da1c3dfcd233c39",
+          "claim_69d9fd0e8812660fb38b",
+          "claim_e8b3030a95e0d85cd9fc",
+          "claim_997f948ecf41fc00df5b",
+          "claim_83b78b8b13bfc5b80534",
+          "claim_47fea566f8c80ab428b0",
+          "claim_85bf8cfeaec73a64304d",
+          "claim_c544a303d8f0ce3573fa",
+          "claim_663078fe2a472e805dc0",
+          "claim_5d73c29efb8bb6da69c1",
+          "claim_8cc5d3ce2ecc5721744e"
+        ]
+      },
+      "new_eligible_card_count": 18,
+      "semantic_acceptance": false,
+      "reference_recall": null,
+      "reason": "Offline audit found wrong attached chunk mapping for some claims; exact known scope retained separately."
+    },
+    "completion": {
+      "next_action": null,
+      "reason": "Продолжены извлечение и проверка сведений из доступных источников. Сохранены новые факты об использовании башни в 1910 и 1928 годах, аренде и электрокабеле, конкурсах на реставрацию в 2024 году, отсутствии работ и пересчёте документации в 2025-м, экскурсиях и планах на 2026 год. Были рассмотрены история, архитектура, арендаторы, военное прошлое, судебные документы и позднейшие события; часть ранее известного содержания не повторялась. Официальный перечень объектов культурного наследия удалось прочитать, но он усилил, а не разрешил расхождение дат: муниципальная карточка указывает 1853–1856 годы, официальный перечень и камень, описанный репортёрами, — 1859-й. Чтение подробной музейной страницы завершилось тайм-аутами, а найденная OCR-книга объёмом около 10,8 МБ не открылась. Повторять уже сделанные запросы по тем же датам или попытки чтения без нового способа доступа вряд ли добавит независимое свидетельство; для решения противоречия нужны строительные или архивные документы. Самостоятельно сохранённые поддержанные факты здесь не повторяются; два датированных утверждения о 1859 годе возвращены как кандидаты с реальным конфликтом, а не как новые разрешённые даты.",
+      "remaining_gaps": [
+        "Не разрешено, обозначает ли 1859 год фактическое завершение строительства или иной вид датировки; он расходится с принятым диапазоном 1853–1856 годов.",
+        "Не установлено, проводились ли ремонтные работы после сообщений августа 2026 года и завершения анонсированных экскурсий в сентябре 2026 года."
+      ],
+      "research_sufficient": false,
+      "stop_basis": "unresolved_gap"
+    },
+    "quality_audit_fixed_first13": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/atomic-review104-5bc1d21/report.md",
+    "quality_audit_final40": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/atomic-review104-5bc1d21/final-audit.json",
+    "unique_atomic_claim_count": null,
+    "N": null,
+    "H": null,
+    "recall": null,
+    "full_acceptance": false,
+    "baseline_single_autonomous_turn": false,
+    "external_publication": false,
+    "new_eligible_cards": 38,
+    "new_withheld_cards": 2,
+    "current_total_eligible": 44
+  },
+  "native_navigation_memory_fix": {
+    "at_utc": "2026-10-15T05:35:01.558147+00:00",
+    "status": "LOCAL_TESTS_AND_READONLY_REPLAY_PASS_NOT_PROVIDER_QUALIFICATION",
+    "new_profile_sha256": "2f74071b9eddd4bac6143f866478a4d92084a53d8b59b82e7a921ec5f8bb8334",
+    "old_profile_sha256": "0f69e255356df7889a38d887a3f9dc43d4e03cc72f945b5317204f12516faf5e",
+    "old_qualification_reused": false,
+    "local_tests_passed": 102,
+    "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/native-navigation-memory-guard.log",
+    "retained_sources_visible_in_closed104_memory": 11,
+    "read_only": true,
+    "write_or_inference_calls": 0,
+    "direct_navigation_child": "/root/native_chunk_navigation_104_direct",
+    "direct_proposals_only": true,
+    "remaining": "REV46 real single-turn Native tool component, then autonomous repeat before full adapter run. Addressed canonical source/atomic/attribution repair remains open."
   }
 }

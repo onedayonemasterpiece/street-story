@@ -4,10 +4,45 @@ import json
 import pytest
 
 from street_story.native_source_reads import source_page
+from street_story.native_source_reads import native_chunk_navigation
 from street_story.pdf_sources import extract_pdf, persist_pdf
 from street_story.research_runs import persist_source_version
 from test_headless_facts import URL, fixture
 from test_pdf_sources import document
+
+
+@pytest.mark.asyncio
+async def test_native_navigation_locates_tail_without_issuing_text_or_filling_line_gaps(tmp_path):
+    service, _, _, reader, _ = await fixture(tmp_path)
+    # Cyrillic text recreates a native excerpt exceeding the byte page budget.
+    text = '\n'.join(f'L{n}: ' + 'История укреплений. ' * 180 for n in [112, 113, 133, 175, 204, 208])
+    try:
+        with service.store.tx() as db:
+            version = persist_source_version(db, run_id='headless-run', requested_url=URL, final_url=URL,
+                title='Received native excerpt', content_type='text/plain', http_status=0, redirect_chain=[],
+                normalized_text=text, read_status='native_received_partial', access_scope='public',
+                now=service.store.now())
+            first = source_page(db, run_id='headless-run', url=URL, version=version['source_version_id'])
+            assert first['has_more']
+            before = json.dumps(first, sort_keys=True)
+            nav = native_chunk_navigation(db, run_id='headless-run', url=URL, version=version['source_version_id'])
+            assert json.dumps(first, sort_keys=True) == before
+            labels = {n for entry in nav['chunks'] for start, end in entry['native_line_ranges']
+                for n in range(start, end+1)}
+            assert labels == {112, 113, 133, 175, 204, 208}
+            assert all('text' not in entry for entry in nav['chunks'])
+            target = next(entry for entry in nav['chunks'] if any(start <= 208 <= end
+                for start, end in entry['native_line_ranges']))
+            assert target['chunk_id'] not in {chunk['chunk_id'] for chunk in first['chunks']}
+            later = source_page(db, run_id='headless-run', url=URL, cursor=target['cursor'])
+            assert later['source_version_id'] == version['source_version_id']
+            assert any(chunk['chunk_id'] == target['chunk_id'] and 'L208:' in chunk['text']
+                for chunk in later['chunks'])
+            with pytest.raises(ValueError, match='not_owned'):
+                native_chunk_navigation(db, run_id='foreign', url=URL, version=version['source_version_id'])
+            assert first['read_status'] == 'native_received_partial'
+    finally:
+        await reader.search_http.aclose()
 
 
 @pytest.mark.asyncio

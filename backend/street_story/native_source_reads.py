@@ -4,14 +4,42 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 
 SOURCE_PAGE_CONTRACT = 'native-frozen-chunk-pages-v2'
 CURSOR_CONTRACT = 'native-frozen-source-cursor-v2-short-reference'
+NAVIGATION_CONTRACT = 'native-received-chunk-navigation-v1'
 
 
 def _cursor_checksum(url, version, content_sha256, chunk, page):
     return hashlib.sha256(json.dumps([url, version, content_sha256, chunk, page],
         ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()[:16]
+
+
+def native_chunk_navigation(db, *, run_id, url, version):
+    """Locate received native line labels without a semantic or delivery grant."""
+    page = source_page(db, run_id=run_id, url=url, version=version)
+    entries = []
+    for row in db.execute('SELECT chunk_id,ordinal,chunk_text FROM source_chunks '
+            'WHERE source_version_id=? ORDER BY ordinal', (version,)):
+        ranges = []
+        for match in re.finditer(r'(?m)^L(\d+)(?:@P\d+(?:-\d+)?)?:', row['chunk_text']):
+            line = int(match[1])
+            if ranges and line == ranges[-1][1] + 1:
+                ranges[-1][1] = line
+            elif not ranges or line != ranges[-1][1]:
+                ranges.append([line, line])
+        entries.append({'chunk_id': row['chunk_id'], 'ordinal': row['ordinal'],
+            'native_line_ranges': ranges,
+            'cursor': f'sourcepage:{version}:{row["ordinal"]}:0:'
+                + _cursor_checksum(url, version, page['content_sha256'], row['ordinal'], 0)})
+    return {'contract': NAVIGATION_CONTRACT, 'source_version_id': version,
+        'content_sha256': page['content_sha256'], 'requested_url': page['requested_url'], 'chunks': entries,
+        'meaning': 'Navigation only: exact native line labels present in each cached chunk, '
+            'with gaps preserved; a label does not prove its whole paragraph is in that chunk. '
+            'No new text delivery or semantic verdict. Use webfetch with '
+            'the matching cursor to receive needed chunk text/IDs before citing it. '
+            'A range does not prove the whole native document was acquired or read.'}
 
 
 def source_page(db, *, run_id, url, version=None, cursor=None, byte_budget=24000):

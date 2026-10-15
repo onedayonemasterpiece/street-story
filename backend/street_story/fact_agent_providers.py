@@ -623,6 +623,11 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 for document, source in zip(value['documents'], docs):
                     document.update({key: source[key] for key in
                         ('discovery_links', 'discovery_links_provenance', 'native_source_provenance') if key in source})
+                    if name == 'retain_native_source':
+                        from .native_source_reads import native_chunk_navigation
+                        with adapter.service.store.connection() as db:
+                            document['chunk_navigation'] = native_chunk_navigation(db,
+                                run_id=context['run_id'], url=args['url'], version=source['source_version_id'])
                 with adapter.service.store.connection() as db:
                     attempted = db.execute('SELECT status,error_code,source_version_id FROM research_run_sources '
                         'WHERE run_id=? AND url=?', (context['run_id'], args['url'].rstrip('/'))).fetchone()

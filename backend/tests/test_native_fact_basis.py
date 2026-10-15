@@ -260,7 +260,7 @@ async def test_one_claim_keeps_two_frozen_versions_of_same_url(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('damage', [None, 'changed_chunk', 'missing_chunk', 'unmarked'])
+@pytest.mark.parametrize('damage', [None, 'changed_chunk', 'missing_chunk', 'unmarked', 'navigation_only_chunk'])
 async def test_compact_native_read_preserves_complete_frozen_chunks_or_fails_closed(tmp_path, damage):
     from street_story.native_fact_contract import SOURCE_READ_CONTRACT
     service, job, reader, _, agent, receipt, save = await setup(tmp_path)
@@ -273,6 +273,9 @@ async def test_compact_native_read_preserves_complete_frozen_chunks_or_fails_clo
         document['chunks'] = []
     elif damage == 'unmarked':
         document.pop('read_contract')
+    elif damage == 'navigation_only_chunk':
+        document['chunk_navigation'] = {'chunks': document['chunks']}
+        document['chunks'] = []
     save()
     try:
         outcome = await service.confirm_agent_fact(job, 'headless-run',

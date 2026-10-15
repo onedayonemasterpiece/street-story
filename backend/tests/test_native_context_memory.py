@@ -70,7 +70,8 @@ async def test_native_callback_reads_exact_frozen_history_without_network_or_sou
 
 
 @pytest.mark.asyncio
-async def test_source_memory_counts_inherited_calls_once_and_exposes_actual_unread_chunks(tmp_path):
+@pytest.mark.parametrize('tool_name', ['webfetch', 'retain_native_source'])
+async def test_source_memory_counts_inherited_calls_once_and_exposes_actual_unread_chunks(tmp_path, tool_name):
     service, _, _, reader, _ = await fixture(tmp_path)
     try:
         with service.store.tx() as db:
@@ -81,13 +82,18 @@ async def test_source_memory_counts_inherited_calls_once_and_exposes_actual_unre
             first = source_page(db, run_id='headless-run', url=URL,
                 version=version['source_version_id'], byte_budget=1)
             assert first['has_more']
-            call = {'phase': 'completed', 'input': {'thread_id': 'own', 'name': 'webfetch',
+            call = {'phase': 'completed', 'input': {'thread_id': 'own', 'name': tool_name,
                 'arguments': {'url': URL}}, 'result': {'documents': [first]}}
-            receipts = [{'native_tool_calls': {'one': call}}, {'native_tool_calls': {'one': call}}]
+            pending = {**call, 'phase': 'submitted'}
+            receipts = [{'native_tool_calls': {'one': call, 'unknown': pending}},
+                {'native_tool_calls': {'one': call}}]
             known = [{'fact_id': 'claim', 'sources': [{'supports': [{'source_version_id': version['source_version_id']}]}]}]
             memory = source_memory(db, receipts, known)
             source = memory['sources'][0]
             assert source['model_read_requests'] == source['initial_read_requests'] == 1
+            if tool_name == 'retain_native_source':
+                assert source['native_retention_requests'] == 1
+                assert source['native_read_scope'] == 'actual_received_excerpt_not_full_publication'
             assert source['delivery_state'] == 'partial' and source['acquisition_complete']
             assert source['extracted_claim_ids'] == ['claim']
             next_page = source_page(db, run_id='headless-run', url=URL, cursor=source['next_unread_cursor'])
