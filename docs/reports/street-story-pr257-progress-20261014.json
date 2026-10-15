@@ -6,7 +6,7 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "8d09a76913427409bce17b7e6c6009d7f7f0e7e9",
-  "updated_at_utc": "2026-10-15T11:33:57.668599+00:00",
+  "updated_at_utc": "2026-10-15T11:49:06.573192+00:00",
   "last_useful_progress_at_utc": "2026-10-15T05:19:40.737387+00:00",
   "stage": 2,
   "status": "working",
@@ -827,8 +827,8 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "related_map_context_checked_shared_live_history_budget_diagnostic",
-  "current_blocker": "Mira selection mutation not qualified: exact closed RESOURCE_TOKEN_BUDGET while restoring history after an admitted setup. Shared payload-local retry diagnosis in progress, no duplicate requests.",
+  "current_stage": "shared_history_admission_fix_checked_actual_mira_control_next",
+  "current_blocker": "Actual owner-selection mutation and caption remain unqualified. Shared unsent-history/setup replay bug fixed and component-tested in version0.3.11-rc.4; next narrowly run actual Mira on the original store, no new research.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
   "free_bytes": 506421248,
   "signed_apk": {
@@ -1632,7 +1632,7 @@
       ]
     }
   ],
-  "current_source_sha": "d9fc88708d6182832eb98225781e26fe4df66c90",
+  "current_source_sha": "f7cd3980bd485c4688b9ac2cdb36f6d96bb5f3c9",
   "case131_reference_fix_review": {
     "source_sha": "8864dd944acefd3e55199fa1e1ac966c8418f7da",
     "session_id": "live_a5a3bc38156a40cd91251dfae9b8e997",
@@ -2679,7 +2679,6 @@
     "evidence": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/android-ed8bf3d-map-tap-pass"
   },
   "canonical_android_dispatch_reconciliation": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/canonical-android-ed8bf3d-dispatch.json",
-  "current_source_has_related_map_patch_uncommitted": true,
   "whole_product_accepted": false,
   "map_context_revision53": {
     "status": "DIRECT_REPLAY_AND_ADAPTER_TESTS_PASS_NOT_PROVIDER_QUALIFICATION",
@@ -2714,5 +2713,35 @@
     "android_run": 38722978324,
     "android": "success",
     "semantic_selection_mutation_qualification": false
-  }
+  },
+  "framework_history_budget_fix": {
+    "version": "0.3.11-rc.4",
+    "source_sha": "dc9a7793b356629d346bde7a9bcecb5b552bf7df",
+    "source_repository": "onedayonemasterpiece/live-interaction",
+    "base_source_sha": "71c400a5368604e820863c12ec28e8173b07eeba",
+    "source_branch": "chatgpt/live-bootstrap-budget-wait-20261015",
+    "archive_sha256": "d5a3b37060b5a6b4b65c54a6bd086cd9438fa56a342cb9f8adbe02fe043a8421",
+    "public_release_published": false,
+    "release_status": "candidate",
+    "changes": "Wait only for unsent history restore on the same admitted private socket; never repeat an accepted setup after history budget denial. Recheck Stop/generation/deadline after in-flight admission before actual write. Continuation remains fail-fast.",
+    "shared_tests": {
+      "python": 86,
+      "node": 63
+    },
+    "direct_child": "/root/mira_editor_scope_prompt",
+    "direct_reproduction_after_fix": {
+      "stop_during_admission_history_sends": 0,
+      "deadline_during_admission_history_sends": 0
+    },
+    "real_provider_qualification": false,
+    "production_changed": false,
+    "runtime_target": "/home/dev/artifacts/street-story/20261015T102722Z-active-scoped-test-runtime-20261015/framework-rc4",
+    "protected_base_environment_mutated": false,
+    "consumer_local_tests": {
+      "editor": 70,
+      "socket_and_integrity": 6,
+      "status": "PASS"
+    }
+  },
+  "candidate_dependency_patch_at_capture": "0.3.11-rc.4 archive/lock/requirements checked; commit follows this capture"
 }
