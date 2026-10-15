@@ -64,6 +64,26 @@ Gemini; failure leaves the currently running Street Story release untouched.
 
 The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search stays inside that same Live session. Provider-native Google Search on `gemini-3.8-live` is preferred because it preserves one conversational context with no second research workflow. If native search is unavailable, Street Story falls back to its synchronous `search_web` application function using grounded `gemini-3.1-flash-lite`, then `gemini-3.5-flash-lite`, then search-only `gemini-3.8-flash`. If Google grounding is exhausted across all of those routes, `search_web` performs one bounded independent web-result lookup and returns source-linked search snippets to the same Live session as low-confidence discovery evidence; it never silently upgrades snippets into verified facts. Lite/search helpers return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
+## Installing qualified fact-agent routes
+
+For an explicitly selected current agent proof, the existing DevCoveer installer
+accepts `--fact-agent-qualification /absolute/path/to/proof.json` alongside
+`--expected-sha`. The operator-controlled file must have mode0600 and use
+`research-agent-verification-v1`, with immutable actual search/read receipts for
+every route. The release verifies those receipts and their hashes, the executed
+model, current prompt/tool/schema profile, and source ownership through the same
+qualification loader used by product acceptance. A changed profile requires new
+evidence; an old success flag is insufficient.
+
+After validation, the installer persists the proof in the existing cache and
+writes its exact routes to `STREET_STORY_FACT_AGENT_ROUTES` in the service
+environment. Luna remains the single native primary; configured qualified routes
+remain available under the ordinary closed-failure fallback rules. Installation
+performs no research inference. This explicit path does not require requalifying
+the separate legacy extraction pool. Existing vision/review qualifications,
+retained operations, Stop and UNKNOWN protections remain independently enforced.
+Without this option the existing legacy installation path remains unchanged.
+
 ## LLM-first semantic boundary
 
 Semantic product decisions are model-owned. Mira/the configured Gemini route decides what

@@ -1112,7 +1112,7 @@ def preview_preflight(token: str, sha: str) -> dict[str, str]:
     }
 
 
-def write_service_env(device: str, vibe: str, sha: str) -> None:
+def write_service_env(device: str, vibe: str, sha: str, *, fact_agent_routes=None) -> None:
     private_write(
         SERVICE_ENV,
         render_env(
@@ -1133,6 +1133,8 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
                 "STREET_STORY_RESEARCH_DIRECTORY": str(RESEARCH_DIRECTORY),
                 "STREET_STORY_RESEARCH_MODEL": "mimo-v2.6-flash-free",
                 "STREET_STORY_NATIVE_VISION_RESERVE": "true" if RESEARCH_QUALIFICATION.is_file() else "false",
+                **({"STREET_STORY_FACT_AGENT_ROUTES": json.dumps(fact_agent_routes)}
+                   if fact_agent_routes is not None else {}),
             }
         ),
     )
@@ -1227,6 +1229,53 @@ def validate_fact_semantic_pool(caches, evidence, text):
                 'source_sha256': route['qualification_sha256'],
                 **{key: route[key] for key in ('provider_id', 'model_id', 'endpoint', 'directory')}}
         seen.add(model)
+
+
+def install_fact_agent_runtime(release: Path, venv: Path, qualification_path: Path) -> dict[str, Any]:
+    """Verify the current actual agent proof and seed the existing route cache.
+
+    This explicit path does not requalify the unrelated legacy extraction pool.
+    No inference, recovery, publication, or global worker is started.
+    """
+    if qualification_path.is_symlink():
+        raise DeployError('agent qualification symlink is not accepted')
+    qualification_path = qualification_path.resolve(strict=True)
+    require_mode(qualification_path, 0o600)
+    source = release / 'source'
+    env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1',
+           'PYTHONPATH': os.pathsep.join((str(source / 'backend'), str(source / 'backend/tools')))}
+    program = '''
+import asyncio,json,os,sys
+from dataclasses import replace
+from pathlib import Path
+from devcoveer_story_diag import load_installer
+from owner_place_acceptance import load_agent_qualification
+from street_story.config import Settings
+from street_story.runtime import RuntimeStreetStoryService
+from street_story.fact_agents import QUALIFICATION_KEY
+proof_path=Path(sys.argv[1]);data=Path(sys.argv[2]);installer=load_installer()
+for path in (Path(sys.argv[3]),Path(sys.argv[4])):
+ if path.exists():
+  installer.require_mode(path,0o600);os.environ.update(installer.parse_dotenv(path))
+proof=json.loads(proof_path.read_text())
+config=[{k:r[k] for k in ('provider_id','model_id','endpoint','directory') if r.get(k) is not None}
+        for r in proof['routes']]
+settings=replace(Settings.from_env(),data_dir=data,fact_agent_routes=tuple(config),
+                 vibepublish_base_url='',vibepublish_bearer_token='')
+service=RuntimeStreetStoryService(settings)
+if service.providers.research is None: raise ValueError('configured agent provider unavailable')
+checked,provenance=load_agent_qualification(proof_path,
+    routes=service.providers.research.fact_agent_routes(include_unqualified=True))
+service.store.cache_put(QUALIFICATION_KEY,checked,30*86400)
+async def close():
+ await service.providers.research.close()
+ await service.providers.gemini.close()
+asyncio.run(close())
+print(json.dumps({'qualification_sha256':provenance['agent_qualification_sha256'],
+ 'fact_agent_routes':config,'new_inference':False,'cache_key':QUALIFICATION_KEY}))
+'''
+    return json.loads(run([str(venv / 'bin/python'), '-c', program, str(qualification_path),
+        str(DATA_ROOT), str(PROVIDERS_ENV), str(SERVICE_ENV)], env=env, timeout=45))
 
 
 def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
@@ -1486,6 +1535,8 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument('--fact-agent-qualification', type=Path,
+        help='Current immutable actual agent-tool proof; verify and install these routes without legacy pool requalification')
     args = parser.parse_args()
     expected_sha = args.expected_sha.strip().lower()
 
@@ -1497,11 +1548,15 @@ def main() -> int:
     os.chmod(STATE_ROOT, 0o700)
     configure_provider_env()
     resource_preflight = verify_live_resource_control(venv)
-    research_preflight = install_research_runtime(release, venv)
+    research_preflight = (install_fact_agent_runtime(release, venv, args.fact_agent_qualification)
+        if args.fact_agent_qualification is not None else install_research_runtime(release, venv))
     device, token_created = device_token()
     principal, vibe_token = ensure_vibe_principal(sha)
     preflight = preview_preflight(vibe_token, sha)
-    write_service_env(device, vibe_token, sha)
+    if args.fact_agent_qualification is not None:
+        write_service_env(device, vibe_token, sha, fact_agent_routes=research_preflight['fact_agent_routes'])
+    else:
+        write_service_env(device, vibe_token, sha)
     install_service(release, venv)
     status = service_status()
     health, capabilities = verify_runtime(sha, device)
