@@ -73,6 +73,15 @@ This remains inside the existing Street Story backend and SQLite store. A separa
 POI service or materialized database should be introduced only if future scale or
 query requirements justify it.
 
+
+### Photo time and editorial relevance — owner clarification, 15 October 2026
+
+Keep source publication time, the described event time, original photo capture time and publication time distinct. Preserve available original EXIF DateTimeOriginal and its offset, provenance and SOURCE hash, and supply that capture context to the caption writer alongside the actual photo. Do not substitute upload time, filename, current date or a source date for capture time. Missing or conflicting metadata stays explicitly unknown; do not invent a timezone. The photo only supports what is actually visible in its frame at capture time.
+
+An evidence-supported fact is not automatically useful caption material. Select details that explain this house and the photographed scene. A dated report about scaffolding removal may be historically true while being irrelevant filler for a later unobstructed photo. Do not make a source-month preamble or repair bulletin into storytelling merely to consume every selected fact. Conversely, a restoration can matter when it explains a visible feature or meaningful change; this is model editorial judgment, not a blanket ban on restoration facts or dates. Reconsider the editorial selection when needed without deleting the durable evidence or silently changing unrelated selected facts. A technical exact-caption delivery PASS is distinct from owner editorial acceptance.
+
+The visit ending should help locate the actual selected building: confirmed address and city hashtag, plus verified Yandex Maps and 2GIS building links when requested. Verify the physical house and address range; do not substitute a nearby organization, camera GPS, unverified search result or fabricated map URL. Missing links do not erase a useful story or justify invented access/opening claims.
+
 ## Owner review 2026-10-02 — LLM-first quality boundary
 
 The canonical review `voice-20261002-152036-8d69118b` exposed article titles,
