@@ -18,6 +18,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -791,6 +792,8 @@ class LiveGoldenInstrumentedTest {
             var view: org.maplibre.android.maps.MapView? = null
             var centered = false
             var target: android.graphics.Point? = null
+            var targetLocation: org.maplibre.android.geometry.LatLng? = null
+            var previousBounds: Rect? = null
             fun descendants(node: View): Sequence<View> = sequence {
                 yield(node)
                 if (node is ViewGroup) for (index in 0 until node.childCount) yieldAll(descendants(node.getChildAt(index)))
@@ -811,15 +814,21 @@ class LiveGoldenInstrumentedTest {
                         } else if (visible.isAttachedToWindow && visible.hasWindowFocus() && !visible.isLayoutRequested) {
                             val origin = IntArray(2); visible.getLocationOnScreen(origin)
                             val bounds = Rect(); visible.getGlobalVisibleRect(bounds)
+                            // As in the existing native-map test: queryable tiles
+                            // can precede removal of the SDK's loading overlay.
+                            val stable = visible.foreground == null && previousBounds == bounds
+                            previousBounds = Rect(bounds)
                             // Locate an interior rendered point even for a ring/courtyard.
                             // This is read-only hit testing, never a click callback or selection mutation.
                             for (row in 1..9) for (column in 1..9) if (target == null) {
-                                val point = map.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(
-                                    south + (north - south) * row / 10, west + (east - west) * column / 10))
+                                val location = org.maplibre.android.geometry.LatLng(
+                                    south + (north - south) * row / 10, west + (east - west) * column / 10)
+                                val point = map.projection.toScreenLocation(location)
                                 val x = origin[0] + point.x.toInt(); val y = origin[1] + point.y.toInt()
-                                if (bounds.contains(x, y) && map.queryRenderedFeatures(point, "owner-buildings-fill")
+                                if (stable && bounds.contains(x, y) && map.queryRenderedFeatures(point, "owner-buildings-fill")
                                     .any { it.id() == candidateId || (it.hasProperty("candidate_id") && it.getStringProperty("candidate_id") == candidateId) }) {
                                     target = android.graphics.Point(x, y)
+                                    targetLocation = location
                                 }
                             }
                         }
@@ -827,18 +836,64 @@ class LiveGoldenInstrumentedTest {
                 }
                 target != null
             }
-            EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
-            val point = requireNotNull(target)
-            assertTrue("Inject exactly one physical contour tap", device.click(point.x, point.y))
-            waitUntil(5000, "Physical contour tap did not enable confirmation") {
-                device.findObject(By.desc("owner-place-confirm"))?.isEnabled == true
+            try {
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-place-map")
+                scenario.onActivity {
+                    // Window readiness can change the scroll/layout. Recompute
+                    // the same geographic hit immediately before the one tap.
+                    val map = requireNotNull(nativeMap)
+                    val visible = requireNotNull(view)
+                    val point = map.projection.toScreenLocation(requireNotNull(targetLocation))
+                    val origin = IntArray(2); visible.getLocationOnScreen(origin)
+                    val bounds = Rect(); assertTrue(visible.getGlobalVisibleRect(bounds))
+                    assertNull("Map loading overlay still intercepts touch", visible.foreground)
+                    assertTrue("Current physical tap must hit the expected contour", map.queryRenderedFeatures(point, "owner-buildings-fill")
+                        .any { it.id() == candidateId || (it.hasProperty("candidate_id") && it.getStringProperty("candidate_id") == candidateId) })
+                    target = android.graphics.Point(origin[0] + point.x.toInt(), origin[1] + point.y.toInt())
+                    assertTrue("Physical tap must lie in current visible map", bounds.contains(target!!.x, target!!.y))
+                }
+                val point = requireNotNull(target)
+                assertTrue("Inject exactly one physical contour tap", device.click(point.x, point.y))
+                waitUntil(5000, "Physical contour tap did not enable confirmation") {
+                    var enabled = false
+                    scenario.onActivity { activity ->
+                        // UiAutomator omits off-screen controls. Read the real
+                        // button state before scrolling it into view to tap it.
+                        enabled = descendants(activity.findViewById(android.R.id.content))
+                            .single { it.contentDescription?.toString() == "owner-place-confirm" }.isEnabled
+                    }
+                    enabled
+                }
+            } finally {
+                // Diagnostic UI is separate from SOURCE/provider media. Keep
+                // the failed screen, actual button state and native touch logs.
+                runCatching {
+                    val state = linkedMapOf<String, Any?>("candidate_id" to candidateId,
+                        "target_x" to target?.x, "target_y" to target?.y)
+                    scenario.onActivity { activity ->
+                        val controls = descendants(activity.findViewById(android.R.id.content)).toList()
+                        val button = controls.single { it.contentDescription?.toString() == "owner-place-confirm" }
+                        val bounds = Rect()
+                        state["confirmation_enabled"] = button.isEnabled
+                        state["confirmation_visible"] = button.getGlobalVisibleRect(bounds)
+                        state["confirmation_bounds"] = bounds.toShortString()
+                        state["map_foreground"] = view?.foreground?.javaClass?.simpleName
+                        state["map_status"] = (controls.singleOrNull { it.contentDescription?.toString() == "owner-place-status" }
+                            as? android.widget.TextView)?.text?.toString()
+                    }
+                    File(root, "owner-map-tap.json").writeText(gson.toJson(state))
+                    device.dumpWindowHierarchy(File(root, "owner-map-tap.xml"))
+                    device.takeScreenshot(File(root, "owner-map-tap.png"))
+                }
             }
             scenario.onActivity { activity ->
                 descendants(activity.findViewById(android.R.id.content))
                     .single { it.contentDescription?.toString() == "owner-place-confirm" }
                     .let { it.requestRectangleOnScreen(Rect(0, 0, it.width, it.height), true) }
             }
-            requireNotNull(device.findObject(By.desc("owner-place-confirm"))).click()
+            val confirm = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(By.desc("owner-place-confirm")), 5000))
+            assertTrue("Scrolled physical confirmation must remain enabled", confirm.isEnabled)
+            confirm.click()
             pollStory(api, initial.id) { it.visualIdentity?.candidateId == candidateId && it.visualIdentity?.status == "owner_confirmed" }
             waitUntil(5000, "Normal outbox acknowledgement did not reach local projection") {
                 ResearchProjectionStore(context).get(localId)?.candidateId == candidateId

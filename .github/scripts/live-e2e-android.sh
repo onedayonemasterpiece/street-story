@@ -121,6 +121,13 @@ adb shell am instrument -w \
 adb exec-out "run-as $PKG cat files/live-golden/stage-progress.json" > "$ARTIFACT_DIR/android-stage-progress.json" || true
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
 adb exec-out "run-as $PKG cat files/live-golden/identity-resume-intent.json" > "$ARTIFACT_DIR/android-identity-resume-intent.json" || true
+for extension in json xml png; do
+  if adb shell "run-as $PKG test -s files/live-golden/owner-map-tap.$extension"; then
+    adb exec-out "run-as $PKG cat files/live-golden/owner-map-tap.$extension" > "$ARTIFACT_DIR/android-owner-map-tap.$extension"
+  fi
+done
+adb logcat -d -v threadtime -s StreetStoryMap:V StreetStoryMapE2E:V '*:S' \
+  | tail -n 1000 > "$ARTIFACT_DIR/android-owner-map-touch-logcat.txt" || true
 grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
 python - <<'PY'
