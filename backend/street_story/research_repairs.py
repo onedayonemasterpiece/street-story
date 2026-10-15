@@ -74,6 +74,12 @@ def repair(adapter, session, command_id, args):
         if row['result_json']:
             raise ConflictError('live_review_packet_stale', 'Begin a new attempt before repairing a completed review.')
         changes = args.get('repairs')
+        from .headless_review_quotes import required_live_read
+        parents = changes if isinstance(changes, list) else [args]
+        pending_read = required_live_read(session, payload, ref,
+            [change.get('fact') for change in parents if isinstance(change, dict)])
+        if pending_read is not None:
+            return pending_read
         if changes is None:
             result = _apply_repair(adapter, session, db, row, payload, stable_id, args)
         else:

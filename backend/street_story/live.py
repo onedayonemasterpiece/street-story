@@ -1374,6 +1374,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if kind == "tool_call":
             session.state["research_provider_tool_pending"] = True
             session.state["research_continuation_queued"] = False
+            # Responses are delivered after the entire shared-host batch. A
+            # read earlier in this batch cannot authorize its later mutation.
+            visible = {ref: frozenset(packet.get('quote_catalog', {})) for ref, packet in
+                       session.state.get('review_quote_packets', {}).items()}
+            pending = session.state.setdefault('review_call_read_snapshots', {})
+            for call in event.get('calls') or []:
+                if call.get('name') in {'repair_research_fact', 'finalize_fact_review'}:
+                    pending[str(call.get('id') or '')] = visible
         if kind == "output_transcript":
             session.state["research_continuation_queued"] = False
         if kind == "input_timing":
@@ -1644,6 +1652,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         session.state["research_tool_busy"] = True
+        visible = session.state.get('review_call_read_snapshots', {}).pop(str(call.get('id') or ''), None)
+        if visible is not None:
+            session.state['review_active_read_snapshot'] = visible
         name = call.get("name")
         if name in {"search_web", "get_research_chunk"}:
             session.state["research_output_pending"] = True
@@ -1693,6 +1704,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     raise ConflictError("live_research_partial", "Review paused after three invalid references/verdicts. Saved facts and packet decisions remain; resume the same run in a new Live session.") from exc
             raise
         finally:
+            session.state.pop('review_active_read_snapshot', None)
             session.state["research_tool_busy"] = False
             session.state["research_provider_tool_pending"] = False
 
@@ -1776,6 +1788,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         if name == "repair_research_fact":
             result = research_repairs.repair(self, session, command_id, args)
+            if result.get('read_required'):
+                logger.info('street_story_research_repair event=own_read_required story=%s packet=%s',
+                            story_id, args.get('packet_ref'))
+                return result
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
             repairs = result.get('repairs', [result])
             logger.info("street_story_research_repair story=%s run=%s parents=%s children=%s policy=%s", story_id, session.state.get("research_run_id"), len(repairs), sum(len(r['fact_ids']) for r in repairs), review_packets.POLICY_VERSION)
@@ -2254,7 +2270,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "withheld_count": int(result.get("withheld_count") or 0),
                 "unreviewed_count": int(result.get("unreviewed_count") or 0),
                 "conflict_ids": list(result.get("conflict_ids") or [])[:40],
-                **{key: result[key] for key in ("packet_ref", "review_saved", "remaining_facts", "cross_packet_review_required", "next_tool", "next_args") if key in result},
+                **{key: result[key] for key in ("packet_ref", "review_saved", "read_required", "instruction", "remaining_facts", "cross_packet_review_required", "next_tool", "next_args") if key in result},
             }
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])

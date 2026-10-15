@@ -556,6 +556,9 @@ def read(adapter, session, args):
             'and qualifiers_preserved checks plus own literal basis_quotes. This is partial candidate '
             'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
     slices = bounded_review_slices(page, slices, quote_refs=args.get('_live_quote_refs') is True)
+    if args.get('_live_quote_refs') is True:
+        from .headless_review_quotes import remember_live_layout
+        remember_live_layout(session, page, slices)
     if page.get('nearby_existing_claims') and cursor < len(slices):
         while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
             page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
@@ -709,6 +712,13 @@ def prepare(adapter, session, args):
                     'No decision from this request was saved. Return one decision per fact number; '
                     'multiple source slices belong in its evidence/basis arrays, not separate decisions.')
             incoming_by_fact[number] = (index, decision)
+        from .headless_review_quotes import required_live_read
+        pending_read = required_live_read(session, payload, ref,
+            [decision['fact'] for decision in accepted if decision['verdict'] == 'supported'])
+        if pending_read is not None:
+            LOG.info('street_story_fact_review event=own_read_required story=%s packet=%s',
+                     session.resource_id, ref)
+            return pending_read, None, None
         for decision in accepted:
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:

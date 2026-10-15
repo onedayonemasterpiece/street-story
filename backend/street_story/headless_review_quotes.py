@@ -50,6 +50,48 @@ def remember_live_page(session, packet):
     return {key: value for key, value in addressed.items() if key != 'quote_catalog'}
 
 
+def remember_live_layout(session, packet, slices):
+    """Keep the real bounded cursor order, without another copy of source text."""
+    session.state.setdefault('review_quote_layouts', {})[packet['packet_ref']] = [
+        {'fact': item['fact'], 'evidence': item['evidence'], 'offset': item['offset'],
+         'length': len(item['passage']), 'quote_ref': item['quote_ref']}
+        for item in slices]
+
+
+def required_live_read(session, payload, ref, numbers):
+    """Require issued own slices; provider batches may only use prior reads."""
+    def continuation(cursor):
+        return {'packet_ref': ref, 'read_required': True, 'review_saved': False,
+                'complete': False, 'next_tool': 'get_review_packet',
+                'next_args': {'packet_ref': ref, 'cursor': cursor},
+                'instruction': 'Read the remaining own evidence pages for this fact before '
+                               'repairing or accepting it. No decisions or repairs were saved. '
+                               'After reading, retry your semantic operation; reading is not support.'}
+    layout = session.state.get('review_quote_layouts', {}).get(ref)
+    visible = session.state.get('review_active_read_snapshot')
+    wanted = {n for n in numbers if type(n) is int and 0 <= n < len(payload['items'])}
+    if layout is None:
+        # Closed/API reviewers keep their existing contract; real Live calls
+        # must first read the packet even when they use legacy literal quotes.
+        return continuation(0) if visible is not None and wanted else None
+    received = session.state.get('review_quote_packets', {}).get(ref, {})
+    issued = {item['quote_ref']: item for item in received.get('items', [])}
+    for cursor, part in enumerate(layout):
+        if part['fact'] not in wanted:
+            continue
+        item = (issued.get(part['quote_ref']) if visible is None
+                or part['quote_ref'] in visible.get(ref, ()) else None)
+        if item is None:
+            return continuation(cursor)
+        own = payload['items'][part['fact']]['evidence'][part['evidence']]['text']
+        start, end = part['offset'], part['offset'] + part['length']
+        if (item['fact'] != part['fact'] or item['evidence'] != part['evidence']
+                or item['offset'] != start or item['passage'] != own[start:end]
+                or _entry({'packet_ref': ref}, item)[0] != part['quote_ref']):
+            raise ConflictError('live_fact_review_evidence_invalid', 'Issued own evidence changed; read the unchanged packet.')
+    return None
+
+
 def resolve_live_rows(session, args):
     """Resolve only issued labels; leave semantic verdicts and raw args intact."""
     decisions = args.get('decisions')

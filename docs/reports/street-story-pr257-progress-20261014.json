@@ -6,11 +6,11 @@
   "branch": "chatgpt/street-story-map-facts-20261012",
   "checked_out_commit_at_start": "be0eeb3cea9b52dd59d978aacd94f2b568296c5c",
   "production_commit": "93a0878a80f0f7c6b0cef286e4b691f2462c0206",
-  "updated_at_utc": "2026-10-15T03:55:47.233383+00:00",
+  "updated_at_utc": "2026-10-15T04:14:29.179106+00:00",
   "last_useful_progress_at_utc": "2026-10-15T02:55:27.549971+00:00",
   "stage": 4,
   "status": "working",
-  "last_action": "Removed141807616 allocated bytes of closed reproducible fixtures/cache; applied Live-only original-claim semantic prompt correction,22 existing tests and Ruff passed; direct autonomous child still running. No new research job or production activation.",
+  "last_action": "Completed scoped own-page read guard, including per-call pre-provider-batch snapshot and exact bounded cursor recovery;54 affected checks+6 critical post-refactor checks/Ruff passed. Original131 real review failure reconciled, no research jobs/sends; own server closed. Ready to commit existing PR.",
   "active_jobs_started_by_this_continuation": [],
   "active_provider_request": null,
   "task_inventory": {
@@ -69,14 +69,14 @@
     },
     {
       "scope": "case131",
-      "reason": "131 scoped Live review returned supported for navigation quote and silently narrowed compound assertions; production142/EF activation answer remains pending."
+      "reason": "Closed isolated68f0c08 Mira review split compounds but still used navigation proof and skipped own page continuations. Local page-delivery guard passes; actual normal-provider semantic verification remains open. Not a102 gate."
     },
     {
       "scope": "production_activation",
       "reason": "Owner answer pending for prepared exactStreetStory142f478 +VibeEF paired switch; no services changed.131fix is a separate undeployed candidate."
     }
   ],
-  "next_step": "Debug existing Live review prompt directly before one autonomous component. Reuse current repair writer; do not add a mandatory Native judge or new framework.",
+  "next_step": "Push own-page guard; observe its existing CI. Next targeted semantic component must use normal provider capabilities and read all own pages; do not replay closed operations or call technical checks product acceptance. Paired142/EF public rollout awaits existing owner answer.",
   "stages": [
     {
       "stage": 0,
@@ -743,7 +743,7 @@
       ]
     }
   ],
-  "checked_out_commit": "87ab08d76ceb9ea84ca3bca26bc24a480115e463",
+  "checked_out_commit": "68f0c0868dee6e312cf727162a3475d23433101f",
   "code_changes": "Current code pushed to existing PR257; backend CI success, Android emulator CI failure.",
   "interruption": {
     "reason": "Agent ended turn after answering a status question instead of continuing the active implementation.",
@@ -806,10 +806,10 @@
     "operation_id": "op_8e0cef8b13454f3bb3286887749477b3",
     "receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-102-cb24068/artistic-crop-semantic-review.json"
   },
-  "current_stage": "direct_review_prompt_diagnostic_after_semantic_fail131",
-  "current_blocker": "131 scoped Live review returned supported for navigation quote and silently narrowed compound assertions; production142/EF activation answer remains pending.",
+  "current_stage": "repair_missing_own_page_coverage_in_existing_live_adapter",
+  "current_blocker": "131 model-owned repair split2parents/4children but positive navigation quote still failed semantic review; incomplete own-page reads were mechanically allowed. Local guard now tested including shared-host same-batch read+mutation. Paired142/EF production activation answer still pending.",
   "updated_at": "2026-10-15T03:51:50.138458+00:00",
-  "free_bytes": 476979200,
+  "free_bytes": 506421248,
   "signed_apk": {
     "run_id": 38672152384,
     "artifact_id": 11943883581,
@@ -1086,7 +1086,7 @@
       }
     }
   ],
-  "work_revision": 78,
+  "work_revision": 79,
   "revision43_correction": {
     "removed": "multi-number→documented_site gate",
     "source": "https://www.klgd.ru/activity/social/culture/memory/reg_2409.pdf",
@@ -1118,7 +1118,7 @@
     "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-own-passed-unit-fixtures.json",
     "real_provider_evidence_preserved": true
   },
-  "current_commit": "142f47801fb60610d55ce70b87af15d93c9e3e4d",
+  "current_commit": "68f0c0868dee6e312cf727162a3475d23433101f",
   "native_baseline_independence": {
     "photo": 102,
     "separate_data_directory": true,
@@ -1410,7 +1410,9 @@
     "subtests_passed": 358,
     "elapsed_seconds": 1342.98,
     "log": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/tests/vibe-full-browser-cache-ef3d8ba.log",
-    "ci313": "cancelled again; not repeated"
+    "ci313": "cancelled again; not repeated",
+    "verbose_junit_removed_as_closed_unit_output": true,
+    "retained_junit_metrics_and_hash": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-closed-unit-output-plan.json"
   },
   "cleanup_additional_20261015": {
     "passed_fixture_bytes": 44414447,
@@ -1715,14 +1717,14 @@
     "next_change": "Truthful pre-aggregation duplicate validation; Live-only descriptions require quote refs while API still accepts exact literal legacy quotes. Restricted exact review-call capture before resolution in next component."
   },
   "current_ci_followup": {
-    "source_sha": "7328306cac00bb5ef500efaab38566e50ff7ef0e",
+    "source_sha": "68f0c0868dee6e312cf727162a3475d23433101f",
     "backend": {
-      "id": 38677245088,
+      "id": 38678810228,
       "status": "completed",
       "conclusion": "success"
     },
     "android": {
-      "id": 38677245040,
+      "id": 38678810342,
       "status": "completed",
       "conclusion": "success"
     }
@@ -1754,23 +1756,72 @@
     "local_server_closed": true
   },
   "cleanup_current_continuation": {
-    "allocated_bytes_removed": 141807616,
+    "allocated_bytes_removed": 193122304,
     "cli_logical_size": "156.0MiB",
     "plan": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-closed-synthetic-additional-plan.json",
     "applied_receipt": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-closed-synthetic-additional-applied.txt",
     "remaining_own_worktrees": 2,
     "all_current_worktrees_required": true,
     "no_runtime_or_provider_evidence_removed": true,
-    "free_bytes_after": 476979200
+    "free_bytes_after": 506421248,
+    "allocated_mib_removed": 184.17578125,
+    "report": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/cleanup-owner-request-20261015.json"
   },
   "direct_review_prompt_correction": {
-    "status": "AUTONOMOUS_CHILD_RUNNING",
+    "status": "DIRECT_AUTONOMOUS_DIAGNOSTIC_COMPLETED",
     "child_id": "/root/review_original_claim_autonomous_131",
     "requested_model": "gpt-6-luna",
     "requested_effort": "medium",
     "input": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-live-review-correction-131",
     "prompt_sha256": "7bc4353402225b9c4e15aa55dd385d3d685a9671fa61f74127ba874555f91a7e",
     "local_tests_passed": 22,
-    "scope": "Live prompt only, existing writer unchanged; direct child has no bound callbacks; not actual Mira qualification"
+    "scope": "Live prompt only, existing writer unchanged; direct child has no bound callbacks; not actual Mira qualification",
+    "response": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/direct-live-review-correction-131/response.json",
+    "qualification": false,
+    "actual_callback_tools_bound": false
+  },
+  "case131_original_claim_component": {
+    "status": "CLOSED_PARTIAL_REPAIR_SEMANTIC_FAIL",
+    "source_sha": "68f0c0868dee6e312cf727162a3475d23433101f",
+    "session_id": "live_4abdd314b2644538b3de5d7bce70a26e",
+    "same_original_story": true,
+    "same_database": true,
+    "ordinary_owner_wording": true,
+    "hidden_truth_ids_in_request": false,
+    "new_research_job": false,
+    "automatic_resends": 0,
+    "private_capture": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-original-review-68f0c08/review-calls.jsonl",
+    "server_exec_session": 99351,
+    "client_exec_session": 24648,
+    "semantic_readback": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-original-review-68f0c08/semantic-readback.json",
+    "new_research_jobs": 0,
+    "new_research_provider_sends": 0,
+    "source_and_final_house_preserved": true,
+    "old_parents_withheld": 2,
+    "model_replacement_children": 4,
+    "not_all_children_eligible": true,
+    "normal_gemini_advice_disabled_in_harness": true,
+    "local_server_closed": true
+  },
+  "review_read_coverage_fix": {
+    "status": "LOCAL_CHECKS_PASSED_READY_TO_COMMIT",
+    "scope": "existing Live issued quote layout + per-call pre-batch snapshot; defer positive review/parent repair until own slices issued, no semantic decisions in code",
+    "initial_affected_tests_passed": 40,
+    "shared_host_and_coverage_tests_passed": 6,
+    "normal_headless_and_API_contract_preserved": true,
+    "semantic_quality_still_requires_actual_provider_verification": true,
+    "new_framework_or_judge": false,
+    "affected_tests_passed": 54,
+    "after_refactor_critical_tests_passed": 6,
+    "ruff": "passed",
+    "peer_review": "/root/live_current_turn_diagnostic: no blocking issues in final diff",
+    "actual_bad_trace_replay": "/home/dev/artifacts/street-story/20261014T104149Z-research-unblocking-20261014/owner-product-131-original-review-68f0c08/own-page-guard-mechanical-replay.json",
+    "replay_scope": "4 historical premature mutations defer; pure bounded-layout replay, not current admission or semantic qualification",
+    "runtime_files_sha256": {
+      "backend/street_story/headless_review_quotes.py": "56488da040f452af14bc0e4efa27708b56283d9a51ba35fc212de44defe0f6dc",
+      "backend/street_story/review_packets.py": "25451edf63446b3b95090e300624cb0f1df2a4bc0abfbbc771103481bc033d46",
+      "backend/street_story/research_repairs.py": "602cc6271eaea4176c5d294e84dc49edfdac3fd41d2decb24ea5edc600d0fbd6",
+      "backend/street_story/live.py": "18c5a2a95530759ad2e74e4296ea7ff30ee3dfbe368bad7c54cafeaacbfebc32"
+    }
   }
 }
