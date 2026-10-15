@@ -7,6 +7,11 @@ from urllib.parse import urlsplit
 _LINK = re.compile(r'\[([^\]\n]+)\]\((https://[^\s)]+)\)')
 
 
+def visible_text(text: str) -> str:
+    """Text as the reader sees it: named links show only their labels."""
+    return _LINK.sub(lambda match: match[1], text)
+
+
 def publication_content(text: str) -> dict:
     runs = []
     cursor = 0

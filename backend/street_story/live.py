@@ -25,6 +25,8 @@ from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
+from .map_links import with_map_links
+from .publication_content import visible_text
 from .fact_conflicts import (
     conflict_rows,
     conflict_scan_items,
@@ -1007,8 +1009,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'event and current dates; keep missing time/offset unknown. Choose relevant '
                 'details for the photographed scene rather than consuming every selected fact. '
                 'Omitting an irrelevant fact from prose does not deselect or delete it. '
-                'For requested clickable map links use [label](verified HTTPS URL) in the saved text, '
-                'with the owner-requested labels and supplied or verified building targets. Never invent a map URL. '
+                'The server appends the confirmed building\'s verified ЯндексКарты · 2ГИС links as the last '
+                'line of the saved text; keep that line last and do not type, change or repeat map links. '
+                'Never invent a map URL. '
                 'On live_text_revision_conflict read_topic and retry once with the current revision. '
                 'Protect verbatim spans; explicit dictation belongs to dictation. '
                 'Text-style changes preserve the image; visual-only changes preserve text. '
@@ -5644,6 +5647,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         "The edit would change protected verbatim text without explicit author permission",
                     )
             research = json.loads(story["research_json"] or "{}")
+            # The confirmed building's map links are server-owned; Mira never types them.
+            new_text = with_map_links(new_text, research)
             if research.get("content_identity_changed"):
                 research["content_identity_changed"] = False
             research["draft_needs_refresh"] = False
@@ -5756,6 +5761,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 new_text = text if not current_text else text + "\n\n" + current_text
             else:
                 new_text = text if not current_text else current_text + "\n\n" + text
+            new_text = with_map_links(new_text, json.loads(story["research_json"] or "{}"))
             literal_id = "literal_" + uuid.uuid4().hex[:16]
             literals = [*literals, {"literal_id": literal_id, "text": text, "position": position}]
             next_revision = current_revision + 1
@@ -5995,10 +6001,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 )
             asset_ref = str(story["vibepublish_asset_ref"] or "")
             visual_revision = str(visual.get("content_revision") or "")
-            text_value = str(story["draft_text"] or "")
+            text_value = with_map_links(str(story["draft_text"] or ""), research)
             if not text_value:
                 raise InvalidStateError("publish_text_missing", "Publication text is empty")
-            if len(text_value) > 1024:
+            if len(visible_text(text_value)) > 1024:
                 raise ConflictError("publish_text_too_long", "Telegram photo caption exceeds 1024 characters")
             if not asset_ref or not visual_revision or visual.get("stale"):
                 raise InvalidStateError("visual_not_ready", "A current verified visual is required")
@@ -6060,7 +6066,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if (
                 not editor
                 or int(editor["text_revision"]) != int(confirmation["text_revision"])
-                or str(story["draft_text"] or "") != str(confirmation["text_value"])
+                or with_map_links(str(story["draft_text"] or ""), json.loads(story["research_json"] or "{}"))
+                != str(confirmation["text_value"])
                 or str(story["vibepublish_asset_ref"] or "") != str(confirmation["asset_ref"])
                 or str(visual.get("content_revision") or "") != str(confirmation["visual_revision"])
                 or bool(visual.get("stale"))

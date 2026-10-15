@@ -680,7 +680,9 @@ class MainActivity : Activity() {
 
         previewText?.apply {
             val draft = story.draftText?.takeIf { it.isNotBlank() }
-            text = draft.orEmpty()
+            // Named map links show as their labels, as in the published post.
+            text = draft?.let(MarkdownLite::render) ?: ""
+            movementMethod = LinkMovementMethod.getInstance()
             visibility = if (draft == null) View.GONE else View.VISIBLE
         }
 

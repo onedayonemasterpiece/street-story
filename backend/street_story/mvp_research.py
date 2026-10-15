@@ -2038,7 +2038,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         if test_alias and body.get("destinations") != [test_alias]:
             raise ConflictError("test_destination_only", "This Street Story deployment only publishes to its configured test group")
         text = body.get("text_override")
-        if text is not None and len(str(text)) > 1024:
+        from .publication_content import visible_text
+        if text is not None and len(visible_text(str(text))) > 1024:
             raise ConflictError(
                 "publish_text_too_long",
                 "Telegram photo caption exceeds the current VibePublish 1024-character limit",
