@@ -1,7 +1,12 @@
 package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
@@ -29,10 +34,28 @@ internal object EmulatorWindowGuard {
                 "Pixel Launcher ANR did not close after its single close action"
             }
         }
-        val productVisible = device.wait(Until.hasObject(By.pkg(context.packageName)), 3000)
-        if (!productVisible || device.currentPackageName != context.packageName) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val power = context.getSystemService(PowerManager::class.java)
+        val deadline = SystemClock.elapsedRealtime() + 3000
+        var focused = false
+        // Accessibility can retain a populated hierarchy while the emulator
+        // shows a black frame and has no focused input window. Observe the
+        // resumed Activity's actual window before injecting the one product tap.
+        do {
+            instrumentation.runOnMainSync {
+                focused = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED).any { activity ->
+                        activity.packageName == context.packageName &&
+                            activity.hasWindowFocus() && activity.window.decorView.isShown
+                    }
+            }
+            if (focused && power.isInteractive && device.currentPackageName == context.packageName) return
+            SystemClock.sleep(50)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        if (!focused || !power.isInteractive || device.currentPackageName != context.packageName) {
             capture(context, device, "$evidencePrefix-window-blocked")
-            error("Street Story must own the active accessibility window before interaction; actual=${device.currentPackageName}")
+            error("Street Story needs a focused resumed window and interactive display before interaction; " +
+                "actual=${device.currentPackageName} focused=$focused interactive=${power.isInteractive}")
         }
     }
 
