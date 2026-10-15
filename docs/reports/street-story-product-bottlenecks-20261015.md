@@ -74,3 +74,54 @@
 Ближайший полезный результат: дом выбран физически, доступны подтверждённые источниками факты, текст и одна голосовая правка сохранены с контекстом фото, разрешённая публикация сохраняет ссылки. Частичный результат допустим без ослабления точности, согласия на публикацию и сохранности данных.
 
 Источники: [исторический аудит 11:40/12:05](https://github.com/onedayonemasterpiece/street-story/blob/docs/photo-registry-20261012/docs/reports/street-story-code-audit-delta-20261015-1140.md), [PR #257](https://github.com/onedayonemasterpiece/street-story/pull/257).
+
+
+## Дополнение: доступ к JSON и структуре данных, 15 октября, 15:02 UTC
+
+Это read-only аудит кода на `9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0`; ссылки и номера строк ниже закреплены за этой версией. Предыдущий срез 13:28 выше сохраняется как история. Новые проверки моделей, research и production-изменения в рамках аудита не выполнялись.
+
+### Что уже доказано и что ещё открыто
+
+Оперативное состояние смешано с тяжёлыми материалами в `research_json`: целые документы разбираются ради поколения, конечного флага либо списка карточек. Это конкретный риск структуры доступа, а не основание увеличить таймаут или удалить доказательства.
+
+По read-only SQL основного исполнителя в 14:40:30: 176 историй; сумма `length(research_json)` 23 817 878, максимум 5 273 955, у текущей истории фото104 — 3 870 255. Это длина SQLite TEXT в символах, **не UTF-8 байты**. Активных jobs в этом срезе нет. Сэмплирование процесса показало 3,20 из 4,93 секунды внутри visual scheduler, 1,8 секунды leaf `raw_decode`, наблюдаемый CPU около93%.
+
+Первое адресное исправление уже существует: [6083cd35](https://github.com/onedayonemasterpiece/street-story/commit/6083cd35bea859e15d9d51f9527c252487d9b946) добавляет индекс ожидающих кандидатов и индекс jobs(story_id,kind), отсекая истории, которые прежняя Python-проверка всё равно пропускала. Replay реальных таблиц только в RAM: 89 декодирований/1,04125с → 0/0,005975с, одинаковый пустой набор кандидатов. 56 адресных тестов и 16 повторных scheduler-тестов прошли; эти наборы пересекаются. [Backend CI](https://github.com/onedayonemasterpiece/street-story/actions/runs/38754572465) и [Android CI](https://github.com/onedayonemasterpiece/street-story/actions/runs/38754572650) независимо проверены в 15:00: обе success на exact6083, обновлены соответственно14:54:41 и14:55:24.
+
+**Production-проверка 6083 не подтверждена.** Последний подтверждённый deploy —9613; его одиночный GET карты истёк у клиента через35,052с и завершился на сервере через98,383с, сохранив114 полных контуров и3 неполных. Это закрытый поздний исход с проваленной клиентской проверкой, не успешный API. Исходный исполнитель остановлен пользователем в14:52:41; аудит и этот коммит документа не возобновляют исполнение. Revision58 постановки сохранена, но её прочтение/ACK пока не подтверждены.
+
+### 1. Лёгкие список и статус вместо полного detail
+
+[service.py:308–310](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/service.py#L308-L310) загружает все stories и строит полный `_story_repr`; [364–449](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/service.py#L364-L449) разбирает research_json, все facts/sources_json, карту и фото/EXIF. GET одной истории дополнительно разбирает JSON в hydrate на строке281, затем в repr.
+
+Минимальное направление: небольшая проекция карточки/статуса; факты, карта и тяжёлые материалы — при открытии деталей. Сначала проверить реальные контракты клиентов и сохранить detail API. Частота polling и задержка этого пути отдельно не измерены.
+
+### 2. Глобальный legacy backfill внутри repr
+
+[service.py:377](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/service.py#L377) вызывает [fact_ledger.py:511–518](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/fact_ledger.py#L511-L518): поиск facts без ограничения story_id. Для списка N историй поиск повторяется N раз; найденные legacy-факты дополнительно разбирают sources и записывают ledger.
+
+Минимальное направление: миграция/legacy writer или адресный backfill нужной истории вместо глобальной обязанности каждого repr. Совместимость старых БД обязательна. Если missing assertions нет, записей нет; стоимость повторного поиска ещё не измерена.
+
+### 3. Карты отдельно от оперативного JSON
+
+[place_selection.py:505–508](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/place_selection.py#L505-L508) сохраняет текущий snapshot и в `place_map`, и среди последних трёх `place_map_snapshots`. В них входят геометрия, организации, адреса и observation; затем переписывается весь research_json. Декодирование при map read есть на строках373,404,502; cache hit всё равно проходит первые два.
+
+Минимальное направление: один неизменяемый snapshot по snapshot_id/cache_key; оперативное состояние содержит ссылку, center/focus и scope. Повторно использовать существующее хранилище checkpoint/cache только после проверки контракта и retention; при необходимости небольшая адресная таблица. Убрать дублирование current snapshot и чтение всех снимков ради scope. Не удалять observations и основания выбора. Размеры отдельных ключей не измерены, поэтому их вклад пока не количественная оценка.
+
+### 4. Guards и budget — маленькая согласованная проекция
+
+[service.py:1341–1354](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/service.py#L1341-L1354) перед send разбирает полный JSON ради generation, затем вызывает require_remaining. [research_budget.py:79–121](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/research_budget.py#L79-L121) через ensure_budget снова разбирает JSON и ещё раз ради automatic_research_outcome: до трёх полных decode на guard. [reserve_work:142–156 и note_evidence:163–176](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/research_budget.py#L142-L176) повторяют чтения и переписывают полный материал при учёте work unit/evidence.
+
+Минимальное направление: SQL-проекция scope/outcome/budget, один адресный read-modify-write в транзакции; после замера отделить маленькое control/budget от тяжёлых материалов. Сохранить Stop, scope, исходные receipts и UNKNOWN. Не вводить несогласованный кеш guards. Частота и CPU этого пути пока неизвестны.
+
+### 5. Второй scheduler и цена индексов при записи
+
+[service.py:1153–1189](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/service.py#L1153-L1189), `_schedule_confirmed_facts`, делает SELECT* identity_ready и Python-фильтрацию полного JSON. Вызовы идут из worker_story_ids/run_once. [app.py:98–137](https://github.com/onedayonemasterpiece/street-story/blob/9613cbde2b10e1977d2f1a84c4576bc6fcc3b9b0/backend/street_story/app.py#L98-L137) показывает исходный identity scheduler в трёх lanes.
+
+Исправление6083 учитывать, не повторять параллельно. Для confirmed facts проверить SQL-отбор до decode с существующим jobs ledger. Сохранить fairness: ранние неподходящие истории не скрывают поздние допустимые. SQL json_extract сам может разбирать большой TEXT; partial/expression index помогает чтению, но цена UPDATE research_json должна измеряться. Добавлять индексы без измерений не предлагается.
+
+### Приоритет и проверки
+
+Ближайший самостоятельный участок после согласования с основным исполнителем: лёгкий list/status и устранение глобального backfill из repr. Для хранения сначала получить агрегаты размеров верхних ключей и число decode/write на одном реальном GET/status/map, затем отделить доказанно крупные материалы. Эти замеры предложены, а не выполнены.
+
+Проверки должны сохранить старые БД, одинаковые scope/Stop/UNKNOWN/accepted facts, неизменные source bytes и receipts, отсутствие повторного send. Сравнить latency и объём декодированных данных на тех же входах. Новые cache/framework/validator и массовое удаление не требуются. Этот аудит не добавляет новый блокирующий gate к уже подготовленной scheduler-правке и не поручает её запуск после остановки владельцем.
