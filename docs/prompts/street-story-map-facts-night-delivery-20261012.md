@@ -179,6 +179,26 @@ Exo вернул 410, обе Ling недоступны, Step прерван по
 ## 8. Живые указания watchdog
 
 - run: SS-MAP-20261012
+- revision: 46
+- state: autonomous_native_turn_before_normal_host_continuation
+- nonce: SS-MAP-REV46-20261015T0524
+- текущий native-тред: `01a131ed-8e0a-7bb1-b824-1f52768f8b76`
+
+5bc1d21 и текущий104 показывают восстановление прогресса через несколько turns одного native thread/session, но не baseline длительного автономного turn без обычного server-loop. Сохраните текущую операцию и её результаты: не прерывайте её, не перезапускайте и не создавайте дубль.
+
+Наблюдение: в research thread `01a13dfd-ebb3-7083-b402-a6efccbf251d` модель завершила turns 15 октября в 05:17:41, 05:19:38 и 05:21:00 UTC с research_sufficient=false и выполнимыми следующими поисками/чтениями. Сервер продолжил тот же job/run/thread через thread/resume и turn/start. История не сбрасывается, однако поверх неё повторно передаются полные инструкции и пересобранный INPUT, а не только изменение входа. В [fact_agents.py](https://github.com/onedayonemasterpiece/street-story/blob/5bc1d2141f2578f6ea85036a1f6b07fd3341127c/backend/street_story/fact_agents.py#L736-L805) это существующий цикл; [fact_agent_providers.py](https://github.com/onedayonemasterpiece/street-story/blob/5bc1d2141f2578f6ea85036a1f6b07fd3341127c/backend/street_story/fact_agent_providers.py#L390-L396) заново собирает инструкции и INPUT. Стоимость этого поведения без фактических токенов не оценена.
+
+До следующего полного прогона прямым компонентным тестом настоящих product prompt/tools выяснить, почему Luna отдаёт terminal JSON с доступным next_action вопреки [инструкции продолжать внутри turn](https://github.com/onedayonemasterpiece/street-story/blob/5bc1d2141f2578f6ea85036a1f6b07fd3341127c/backend/street_story/native_fact_contract.py#L131-L155). Конкретная причина выбора model-final пока не доказана. save_facts не является командой Stop: полезные факты должны сохраняться, а следующие native search/read выполняться самим исследователем внутри продолжающегося turn.
+
+Не подменять эту проверку повторной отправкой полного INPUT после каждого финала. Разделить восстановление после настоящего технического блокера и обычный исследовательский цикл. Сначала прямой тест реального промпта и инструментов, автономный повтор без подсказок, затем существующий adapter. Не строить новый оркестратор, новый harness или обязательный gate и не вводить ресурсные потолки. Сохранить provenance, Stop, квоты и защиту UNKNOWN.
+
+Текущий104 оценить отдельно: исходное время, прирост уникальных атомарных утверждений, точность собственных source/chunk refs и дефекты составных карточек. Число eligible-карточек и CI не заменяют содержательную приёмку, полноту исследования или телефонный E2E. Остальные действующие требования сохраняются.
+
+Подтверди WATCHDOG_ACK revision=46 с nonce/blob и коротким решением: что уже выполняется внутри одного turn, что запускает terminal, и какой минимальный прямой тест проверит причину. Запись этой поправки не требует останавливать текущий104.
+
+### История: revision 45
+
+- run: SS-MAP-20261012
 - revision: 45
 - state: relevant_evidence_before_universal_read_all_gate
 - nonce: SS-MAP-REV45-20261015T0410
