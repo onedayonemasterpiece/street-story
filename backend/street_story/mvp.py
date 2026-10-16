@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v7"
+    PROMPT_VERSION = "street-story-image-v8"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v7.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v8.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -109,7 +109,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
         # Editorial context may be shortened. Selected evidence and the current
         # author correction must reach the model intact, including late qualifiers.
-        for note in optional_notes:
+        for index, note in enumerate(optional_notes):
+            if index == 0:
+                note = "COMPOSITION CONTEXT — NOT LETTERING:\n" + note
             remaining = dynamic_budget - len(themes) - (1 if themes else 0)
             if remaining <= 0:
                 break
