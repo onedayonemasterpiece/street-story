@@ -250,11 +250,12 @@ async def test_manual_live_clarification_defaults_to_map_and_normal_read_never_r
     a = confirm_place(service, story['id'], 'a', command(story, snapshot, 'osm:way:2', 'a'))
     initialized = adapter.initialize(resource_id=a['id'], actor=None, model='gemini-3.8-live')
     assert initialized['capability'] == 'place_map'
-    assert 'describe_owner_place' in {f['name'] for f in initialized['configuration']['functions']}
+    describe = next(f for f in initialized['configuration']['functions'] if f['name'] == 'describe_owner_place')
+    assert 'author_answer_quote verbatim' in describe['description']
+    assert 'pending name/address question for this house' in describe['description']
+    assert 'An unrelated remark, a question or quoted third-party speech' in describe['description']
     described = {f['name']: f['description'] for f in initialized['configuration']['functions']}
-    # The model sees the whole guidance that separates "don't know the address" from "don't know the place".
-    assert 'owner_does_not_know=true' in described['describe_owner_place']
-    assert 'owner_does_not_know=true' in described.get('mark_place_unknown', 'owner_does_not_know=true')
+    assert 'owner_does_not_know=true' in described['mark_place_unknown']  # whole guidance reaches the model
     _, session = live(service, a)
     async def forbidden(*_):
         raise AssertionError('Manual navigation must not launch visual identity')
@@ -438,7 +439,8 @@ async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(
     args = {'candidate_id': 'osm:way:1'}
     if reply == 'does_not_know':
         begin_turn(session, 'Не знаю, какой там адрес', origin='audio')
-        args.update(owner_does_not_know=True, owner_quote='Не знаю, какой там адрес')
+        args['owner_does_not_know'] = True
+        args['author_answer_quote'] = 'Не знаю, какой там адрес'
     else:
         address = 'Университетская улица 3' if reply == 'same_address' else 'Профессора Севастьянова 3'
         begin_turn(session, f'Это {address}', origin='audio')
@@ -476,9 +478,10 @@ async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_f
         await adapter.execute_tool(session, {'name': 'mark_place_unknown', 'id': 'unknown', 'args': {}})
     with pytest.raises(ConflictError):  # a refusal must quote the current reply
         await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'unquoted',
-            'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'owner_quote': 'другие слова'}})
+            'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'author_answer_quote': 'другие слова'}})
     result = await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'dont-know',
-        'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'owner_quote': 'Не знаю, как называется'}})
+        'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True,
+                 'author_answer_quote': 'Не знаю, как называется этот дом и какой у него адрес'}})
     current = service.story(story['id'])
     assert current['state'] == 'researching' and not current['identity_clarification']
     assert current['identity_generation'] == selected['identity_generation']
@@ -517,4 +520,129 @@ async def test_dont_know_without_an_open_question_is_not_a_refusal(tmp_path):
     begin_turn(session, 'Не знаю, может быть позже', origin='audio')
     with pytest.raises(ConflictError):
         await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'unasked', 'args': {
-            'candidate_id': 'osm:way:1', 'owner_does_not_know': True, 'owner_quote': 'Не знаю, может быть позже'}})
+            'candidate_id': 'osm:way:1', 'owner_does_not_know': True, 'author_answer_quote': 'Не знаю, может быть позже'}})
+@pytest.mark.parametrize('before,after,same', [
+    ('улица Мира 3', 'проспект Мира 3', False),
+    ('улица Мира 3/5', 'улица Мира 5/3', False),
+    ('улица Мира 3-5', 'улица Мира 3/5', False),
+    ('улица Мира 3 корпус 2', 'улица Мира 2 корпус 3', False),
+    ('  УЛИЦА Мира  3/5 ', 'улица мира 3/5', True),
+    ('улица Мира 3', 'улица Мира 3', True),
+])
+def test_search_values_preserve_address_structure(before, after, same):
+    from street_story.place_selection import search_terms
+    def chosen(address):
+        return {'name': address, 'search_anchor': {'address': address}}
+    assert (search_terms(chosen(after)) <= search_terms(chosen(before))) is same
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('street,number,address', [
+    ('улица Мира', '3', 'проспект Мира 3'),
+    ('улица Мира', '3/5', 'улица Мира 5/3'),
+    ('улица Мира', '3-5', 'улица Мира 3/5'),
+])
+async def test_corrected_address_with_same_words_restarts_research(tmp_path, street, number, address):
+    class AddressTag(NoCity):
+        async def _map_nearby(self, *args):
+            raw = await super()._map_nearby(*args)
+            raw['elements'][0]['tags'].update({'addr:street': street, 'addr:housenumber': number})
+            return raw
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = AddressTag()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:1', 'select'))
+    with service.store.tx() as db:
+        row = service._story_row(db, story['id'])
+        research = json.loads(row['research_json'])
+        from street_story.fact_agents import _ask_owner_for_place_context
+        assert _ask_owner_for_place_context(research, {**dict(row), '_identity_generation': selected['identity_generation']}, 'empty')
+        db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (json.dumps(research), story['id']))
+        jobs_before = db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0]
+    adapter, session = live(service, selected)
+    begin_turn(session, address)
+    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'correct',
+        'args': {'candidate_id': 'osm:way:1', 'address': address}})
+    current = service.story(story['id'])
+    assert current['state'] == 'researching'
+    assert current['identity_generation'] == selected['identity_generation']
+    assert current['place_selection']['candidate']['map_geometry'] == selected['place_selection']['candidate']['map_geometry']
+    assert current['visual_identity']['search_anchor']['address'] == address
+    with service.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == jobs_before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', ['missing_quote', 'invented_quote', 'unrelated_question', 'no_question',
+                                    'stale_question', 'wrong_waiting_house', 'stale_turn', 'consumed_turn', 'noise'])
+async def test_unknown_answer_requires_fresh_quote_and_matching_pending_question(tmp_path, invalid):
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = NoCity()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    if invalid in {'unrelated_question', 'no_question', 'stale_question', 'wrong_waiting_house'}:
+        with service.store.tx() as db:
+            research = json.loads(service._story_row(db, story['id'])['research_json'])
+            if invalid == 'unrelated_question':
+                research['identity_clarification']['reason'] = 'choose_publication_platform'
+            elif invalid == 'no_question':
+                research.pop('identity_clarification')
+            elif invalid == 'stale_question':
+                research['identity_clarification']['generation'] -= 1
+            else:
+                research['owner_research_waiting_context']['candidate_id'] = 'osm:way:999'
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), story['id']))
+    adapter, session = live(service, selected)
+    answer = 'Не знаю другого названия'
+    begin_turn(session, 'Привет' if invalid == 'invented_quote' else answer)
+    if invalid == 'stale_turn':
+        session.state['author_turn']['at'] -= 31
+    elif invalid == 'consumed_turn':
+        session.state['author_turn']['consumed'] = True
+    elif invalid == 'noise':
+        session.state['author_turn']['suspected_noise'] = True
+    args = {'candidate_id': 'osm:way:2', 'owner_does_not_know': True}
+    if invalid != 'missing_quote':
+        args['author_answer_quote'] = answer
+    with service.store.connection() as db:
+        before = dict(service._story_row(db, story['id']))
+        jobs_before = db.execute('SELECT count(*) FROM jobs').fetchone()[0]
+    call = {'name': 'describe_owner_place', 'id': 'invalid', 'args': args}
+    if invalid == 'noise':
+        # The shared noise guard refuses before dispatch, returning its existing
+        # ignored receipt rather than invoking the handler or raising a conflict.
+        result = await adapter.execute_tool(session, call)
+        assert result['ignored'] is True and result['reason'] == 'suspected_noise_turn'
+    else:
+        with pytest.raises(ConflictError):
+            await adapter.execute_tool(session, call)
+    with service.store.connection() as db:
+        assert dict(service._story_row(db, story['id'])) == before
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == jobs_before
+    assert session.state['author_turn']['consumed'] is (invalid == 'consumed_turn')
+
+
+@pytest.mark.asyncio
+async def test_unknown_answer_records_verbatim_evidence_without_language_classifier(tmp_path):
+    # Meaning is the model's responsibility; the boundary verifies provenance,
+    # not an allowlist of phrases. A truthful quote alone cannot prove intent.
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = NoCity()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    adapter, session = live(service, selected)
+    answer = "I cannot recall this building's address."
+    begin_turn(session, answer)
+    args = {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'author_answer_quote': answer}
+    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'answer', 'args': args})
+    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'answer', 'args': args})
+    current = service.story(story['id'])
+    context = current['visual_identity']['search_anchor']['owner_context']
+    assert context['author_answer_quote'] == answer and context['turn_serial'] == 1
+    assert current['identity_generation'] == selected['identity_generation']
+    assert current['state'] == 'researching'
+    with service.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1
