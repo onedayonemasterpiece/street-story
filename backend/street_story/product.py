@@ -303,8 +303,10 @@ class ProductStreetStoryService(StreetStoryService):
         if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
             return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
         if context.get('output_frame_contract') == ORIGINAL_ART_FRAME_CONTRACT:
+            # Same proportion up to one output pixel: a coprime original such as
+            # 3925x2944 has no exact smaller frame (122 returned 1448x1086).
             size = (context.get('source_image_transform') or {}).get('output_size')
-            return bool(size and width * size[1] == height * size[0])
+            return bool(size and abs(width * size[1] - height * size[0]) <= max(size))
         return False
 
     def _record_visual_frame(self, story_id, context, receipt, *, candidate=None, job=None):
@@ -364,7 +366,9 @@ class ProductStreetStoryService(StreetStoryService):
                 db.execute("UPDATE stories SET visual_context_json=?,state='needs_review',error_code=?,"
                            "error_message=?,processed_image_url=NULL,vibepublish_asset_ref=NULL,"
                            'revision=revision+1,updated_at=? WHERE id=?',
-                           (canonical(latest), reason, 'Визуал не соответствует выбранному формату. Нужна проверка.',
+                           (canonical(latest), reason, 'Изображение отклонено: его формат не совпал с выбранным. '
+                            'Можно создать изображение заново.' if reason == 'visual_format_mismatch'
+                            else 'Визуал не соответствует выбранному формату. Нужна проверка.',
                             self.store.now(), story_id))
             else:
                 db.execute('UPDATE stories SET visual_context_json=?,updated_at=? WHERE id=?',

@@ -174,7 +174,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             and observed.get('operation_id') == context.get('operation_id') == proof.get('operation_id')
             and proof.get('observed_operation_id') == observed.get('operation_id')
             and observed.get('visual_job_id') == context.get('visual_job_id')
-            and context.get('output_frame_contract') == proof.get('contract') == POST_4_5_FRAME_CONTRACT
+            and context.get('output_frame_contract') == proof.get('contract')
+            and proof.get('contract') in {POST_4_5_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT}
             and proof.get('state') == 'rejected' and proof.get('reason') == 'visual_format_mismatch'
             and proof.get('content_revision') == context.get('content_revision')
             and all(proof.get(key) == context.get(key) for key in
@@ -184,7 +185,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 [('candidate_id', 'id'), ('asset_ref', 'asset_ref'), ('sha256', 'sha256'),
                  ('width', 'width'), ('height', 'height')])
             and type(proof.get('width')) is int and type(proof.get('height')) is int
-            and proof['width'] > 0 and proof['height'] > 0 and 5*proof['width'] != 4*proof['height'])
+            and proof['width'] > 0 and proof['height'] > 0
+            and not self._frame_dimensions_match(context, proof['width'], proof['height']))
 
     async def _observe_existing_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         """Resume the normal importer for the saved operation; never generate."""
