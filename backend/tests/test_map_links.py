@@ -122,3 +122,27 @@ def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_nearby_ad
     lonely = box('osm:way:9', 54.7300, 20.5300, 'Тихая улица', '1')
     snapshot_surroundings({'candidates': [lonely], 'streets': {'features': []}}, lonely)
     assert 'map_surroundings' not in lonely['search_anchor']
+
+
+def test_address_point_inside_a_nameless_contour_names_the_chosen_house():
+    # The owner taps a contour without address tags; an OSM address point inside it is its address.
+    from street_story.place_selection import snapshot_inner_address
+    ring = [{'lat': 54.7265, 'lon': 20.4840}, {'lat': 54.7267, 'lon': 20.4840}, {'lat': 54.7267, 'lon': 20.4843},
+            {'lat': 54.7265, 'lon': 20.4843}, {'lat': 54.7265, 'lon': 20.4840}]
+    chosen = {'candidate_id': 'osm:way:1', 'name': 'Здание osm:way:1', 'name_provenance': 'map.placeholder',
+              'search_anchor': {'city': 'Калининград', 'street': '', 'house_number': ''},
+              'map_geometry': {'rings': [{'role': 'outer', 'closed': True, 'points': ring}]}}
+    def node(cid, lat, lon, number):
+        return {'candidate_id': cid, 'url': 'https://www.openstreetmap.org/node/' + cid.rsplit(':', 1)[1],
+                'map_coordinates': {'latitude': lat, 'longitude': lon},
+                'map_address': {'street': 'Зоологическая улица', 'house_number': number}}
+    snapshot = {'city_objects': [node('osm:node:7', 54.72657, 20.48415, '47А'), node('osm:node:8', 54.72663, 20.48492, '48')]}
+    snapshot_inner_address(snapshot, chosen)
+    anchor = chosen['search_anchor']
+    assert (anchor['street'], anchor['house_number']) == ('Зоологическая улица', '47А')
+    assert anchor['address_provenance'] == 'osm_address_point_inside_contour'
+    assert [p['candidate_id'] for p in anchor['address_points']] == ['osm:node:7']
+    assert chosen['name'] == 'Зоологическая улица 47А' and chosen['map_label'] == 'Здание osm:way:1'
+    tagged = {**chosen, 'name': 'Дом', 'search_anchor': {'street': 'Другая улица', 'house_number': '1'}}
+    snapshot_inner_address(snapshot, tagged)
+    assert tagged['search_anchor'] == {'street': 'Другая улица', 'house_number': '1'}  # own tags win

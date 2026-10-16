@@ -958,9 +958,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
         'research_agent_original_pending' if pending else 'research_agent_route_failed' if failed
             else 'research_agent_content_gaps' if gaps else 'research_agent_completed',
         pending=pending or failed or bool(gaps), content_gaps=gaps,
-        provider_availability=saved.get('provider_availability'), retained_waits=waits,
-        candidates=sum(int(part.get('candidate_count') or 0) for result in outcomes
-                       for part in (result, *(result.get('history') or []))))
+        provider_availability=saved.get('provider_availability'), retained_waits=waits)
     if future_waits:
         # The existing worker keeps the same job/run at the last outstanding
         # refusal deadline; provider admission remains mandatory after waking.
@@ -980,34 +978,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
     return outcome
 
 
-def _ask_owner_for_place_context(research, story, run_id) -> bool:
-    """After an empty search the owner's own name or address is the next search anchor.
-
-    Reuses the existing owner-context wait: Mira asks by voice, describe_owner_place
-    saves the answer as owner_voice context and enqueues one new research job.
-    """
-    identity = research.get('visual_identity') or {}
-    selection = research.get('place_selection') or {}
-    generation = story['_identity_generation']
-    if selection.get('mode') != 'exact' or identity.get('status') != 'owner_confirmed':
-        return False
-    hint = research.get('owner_place_hint') or {}
-    if ((identity.get('search_anchor') or {}).get('owner_context')
-            or hint.get('photo_sha256') == story['photo_sha256'] and hint.get('generation') == generation):
-        return False  # The owner already answered for this house: never ask the same question again.
-    research['identity_clarification'] = {
-        'question': 'По этому дому не нашлось проверяемых сведений. Как ещё называют этот дом или какой у него адрес?',
-        'reason': 'owner_selected_context_missing', 'photo_sha256': story['photo_sha256'],
-        'generation': generation, 'scope': 'search_context_only'}
-    research['owner_research_waiting_context'] = {
-        'photo_sha256': story['photo_sha256'], 'generation': generation,
-        'candidate_id': identity.get('candidate_id'), 'command_id': 'owner-context-' + run_id,
-        'reason': 'owner_research_found_no_sources'}
-    return True
-
-
 def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_gaps=None,
-            provider_availability=None, retained_waits=None, candidates=0):
+            provider_availability=None, retained_waits=None):
     from .service import canonical
     with adapter.service.store.tx() as db:
         snapshot = headless._snapshot(job, run_id, epoch)
@@ -1018,11 +990,6 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
             (job['story_id'],)).fetchone()[0]
         # A completed search that found nothing about this house is not a provider outage.
         no_sources = not eligible and reason == 'research_agent_content_gaps'
-        # Only an empty search points at the house's name/address. Found but
-        # unadmitted claims are an admission matter, not a question for the owner.
-        found_any = db.execute('SELECT COUNT(*) FROM fact_assertions WHERE story_id=?', (job['story_id'],)).fetchone()[0]
-        admission_gaps = set(content_gaps or []) & {'candidate_admission_unresolved', 'candidate_format_rejections',
-                                                    'read_sources_without_candidates'}
         outcome = ('useful_partial' if eligible and pending else 'useful_complete' if eligible
                    else 'no_supported_facts' if no_sources or not pending else 'resource_blocked')
         value = {'outcome': outcome, 'reason': reason, 'eligible_count': eligible,
@@ -1036,12 +1003,10 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         if retained_waits:
             value.update(retained_waits=retained_waits, retry_at=max(row['retry_at'] for row in retained_waits))
         research['research_outcome'] = value
-        asking = (no_sources and not found_any and not candidates and not admission_gaps
-                  and _ask_owner_for_place_context(research, story, run_id))
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)
         db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
-            (canonical(research), 'needs_review' if asking else 'facts_ready', adapter.service.store.now(), story['id']))
+            (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
     adapter.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:'+run_id, value)
     return value

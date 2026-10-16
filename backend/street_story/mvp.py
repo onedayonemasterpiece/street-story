@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v8"
+    PROMPT_VERSION = "street-story-image-v9"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v8.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v9.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:

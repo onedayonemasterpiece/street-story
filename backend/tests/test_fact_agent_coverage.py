@@ -406,9 +406,7 @@ async def test_missing_route_state_recovers_original_journal_before_any_discover
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner_selected,prior', [(True, None), (False, None), (True, 'owner_answered'),
                                                   (True, 'found_unadmitted')])
-async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_context(tmp_path, monkeypatch, owner_selected, prior):
-    # Only an empty search asks, once per house: never after the owner answered,
-    # and never when claims were found but not admitted.
+async def test_completed_empty_search_is_not_an_outage_and_never_questions_the_owner(tmp_path, monkeypatch, owner_selected, prior):
     service, job, _, reader, _ = await fixture(tmp_path)
     with service.store.tx() as db:
         row = service._story_row(db, job['story_id'])
@@ -442,11 +440,8 @@ async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_co
         with service.store.connection() as db:
             row = service._story_row(db, job['story_id'])
         research = json.loads(row['research_json'])
-        if owner_selected and not prior:
-            assert research['identity_clarification']['reason'] == 'owner_selected_context_missing'
-            assert research['owner_research_waiting_context']['command_id'] == 'owner-context-headless-run'
-            assert row['state'] == 'needs_review'
-        else:
-            assert 'owner_research_waiting_context' not in research and 'identity_clarification' not in research
+        # The owner is never asked to do the search's work: an empty search is reported, not questioned.
+        assert row['state'] == 'facts_ready'
+        assert 'owner_research_waiting_context' not in research and 'identity_clarification' not in research
     finally:
         await reader.search_http.aclose()

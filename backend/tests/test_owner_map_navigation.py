@@ -33,6 +33,22 @@ def live(service, story):
     return adapter, session
 
 
+def ask_after_empty_search(service, story_id):
+    """The only state where Mira may still ask: a completed search found nothing."""
+    with service.store.tx() as db:
+        row = service._story_row(db, story_id)
+        research = json.loads(row['research_json'])
+        generation = int(research.get('identity_generation') or 0)
+        research['identity_clarification'] = {'question': 'По этому дому не нашлось проверяемых сведений. Как ещё называют этот дом или какой у него адрес?',
+            'reason': 'owner_selected_context_missing', 'photo_sha256': row['photo_sha256'], 'generation': generation,
+            'scope': 'search_context_only'}
+        research['owner_research_waiting_context'] = {'photo_sha256': row['photo_sha256'], 'generation': generation,
+            'candidate_id': research['visual_identity']['candidate_id'], 'command_id': 'owner-context-run',
+            'reason': 'owner_research_found_no_sources'}
+        db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (json.dumps(research), story_id))
+    return service.story(story_id)
+
+
 class NoCity(MapOSM):
     reverse_url = 'https://osm.test/reverse'
 
@@ -248,6 +264,8 @@ async def test_manual_live_clarification_defaults_to_map_and_normal_read_never_r
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
     a = confirm_place(service, story['id'], 'a', command(story, snapshot, 'osm:way:2', 'a'))
+    assert a['state'] == 'researching' and not a['identity_clarification']  # no question at selection
+    a = ask_after_empty_search(service, a['id'])
     initialized = adapter.initialize(resource_id=a['id'], actor=None, model='gemini-3.8-live')
     assert initialized['capability'] == 'place_map'
     describe = next(f for f in initialized['configuration']['functions'] if f['name'] == 'describe_owner_place')
@@ -339,38 +357,17 @@ def test_selected_address_comes_only_from_proved_own_closed_way_entrances(invali
 
 
 @pytest.mark.asyncio
-async def test_nameless_selected_house_waits_for_voice_then_enqueues_once_same_identity(tmp_path):
+async def test_nameless_selected_house_is_researched_at_once_without_asking(tmp_path):
+    # The owner chose the house on the map; research starts from the map, nobody asks for an address.
     service, _ = make_service(tmp_path)
     story = manual(service)
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
-    assert selected['state'] == 'needs_review'
-    assert selected['visual_identity']['status'] == 'owner_confirmed'
-    assert selected['identity_clarification']['reason'] == 'owner_selected_context_missing'
+    assert selected['state'] == 'researching' and not selected['identity_clarification']
+    assert selected['visual_identity']['candidate_id'] == 'osm:way:2'
     with service.store.connection() as db:
-        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
-    # Even a recovered identity_ready projection must not silently bypass the hold.
-    service.providers.research = SimpleNamespace(facts_available=True)
-    with service.store.tx() as db:
-        db.execute("UPDATE stories SET state='identity_ready' WHERE id=?", (story['id'],))
-    service._schedule_confirmed_facts()
-    with service.store.connection() as db:
-        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
-    adapter, session = live(service, selected)
-    begin_turn(session, 'Житомирская улица 22', origin='audio')
-    args = {'candidate_id': 'osm:way:2', 'address': 'Житомирская улица 22'}
-    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'describe', 'args': args})
-    await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'describe', 'args': args})
-    current = service.story(story['id'])
-    assert current['state'] == 'researching' and current['identity_generation'] == selected['identity_generation']
-    assert current['visual_identity']['candidate_id'] == 'osm:way:2'
-    assert current['visual_identity']['candidate_name'] == 'Житомирская улица 22'
-    assert current['place_selection']['candidate']['map_geometry'] == selected['place_selection']['candidate']['map_geometry']
-    assert not current['identity_clarification']
-    with service.store.connection() as db:
-        jobs = list(db.execute('SELECT kind,payload_json FROM jobs'))
-    assert len(jobs) == 1 and jobs[0]['kind'] == 'research'
+        assert [row['kind'] for row in db.execute('SELECT kind FROM jobs')] == ['research']
 
 
 class WrongAddressTag(NoCity):
@@ -464,21 +461,17 @@ async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(
         assert jobs == jobs_before and current['state'] == 'facts_ready'
         assert research['automatic_research_outcome']['reason'] == 'research_agent_content_gaps'
         assert 'Новое исследование не запущено' in result['instruction']
-    # Asked once: a further empty search for this house does not ask again.
-    from street_story.fact_agents import _ask_owner_for_place_context
-    assert not _ask_owner_for_place_context(research, {'photo_sha256': selected['photo_sha256'],
-                                                        '_identity_generation': generation}, 'next-run')
 
 
 @pytest.mark.asyncio
-async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_from_the_map(tmp_path):
+async def test_dont_know_after_an_empty_search_keeps_the_house_without_a_rerun(tmp_path):
     # "Не знаю" answers the open name/address question; it never discards the house chosen on the map.
     service, _ = make_service(tmp_path)
     story = manual(service)
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
-    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
-    assert selected['state'] == 'needs_review' and selected['identity_clarification']
+    confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    selected = ask_after_empty_search(service, story['id'])
     adapter, session = live(service, selected)
     begin_turn(session, 'Не знаю, как называется этот дом и какой у него адрес', origin='audio')
     with pytest.raises(ConflictError, match='Дом уже выбран'):
@@ -490,11 +483,11 @@ async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_f
         'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True,
                  'author_answer_quote': 'Не знаю, как называется этот дом и какой у него адрес'}})
     current = service.story(story['id'])
-    assert current['state'] == 'researching' and not current['identity_clarification']
+    assert current['state'] == 'facts_ready' and not current['identity_clarification']
     assert current['identity_generation'] == selected['identity_generation']
     assert current['visual_identity']['candidate_id'] == 'osm:way:2'
     assert current['visual_identity']['search_anchor']['owner_context']['owner_does_not_know'] is True
-    assert 'исследование идёт по карте' in result['instruction']
+    assert 'Новое исследование не запущено' in result['instruction']
     with service.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1
 
@@ -561,11 +554,9 @@ async def test_corrected_address_with_same_words_restarts_research(tmp_path, str
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:1', 'select'))
     with service.store.tx() as db:
-        row = service._story_row(db, story['id'])
-        research = json.loads(row['research_json'])
-        from street_story.fact_agents import _ask_owner_for_place_context
-        assert _ask_owner_for_place_context(research, {**dict(row), '_identity_generation': selected['identity_generation']}, 'empty')
-        db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (json.dumps(research), story['id']))
+        # The first search is over; the owner volunteers a corrected address (nobody asked).
+        db.execute("UPDATE jobs SET state='done' WHERE story_id=? AND kind='research'", (story['id'],))
+        db.execute("UPDATE stories SET state='facts_ready' WHERE id=?", (story['id'],))
         jobs_before = db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0]
     adapter, session = live(service, selected)
     begin_turn(session, address)
@@ -589,6 +580,7 @@ async def test_unknown_answer_requires_fresh_quote_and_matching_pending_question
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    selected = ask_after_empty_search(service, story['id'])
     if invalid in {'unrelated_question', 'no_question', 'stale_question', 'wrong_waiting_house'}:
         with service.store.tx() as db:
             research = json.loads(service._story_row(db, story['id'])['research_json'])
@@ -640,6 +632,7 @@ async def test_unknown_answer_records_verbatim_evidence_without_language_classif
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    selected = ask_after_empty_search(service, story['id'])
     adapter, session = live(service, selected)
     answer = "I cannot recall this building's address."
     begin_turn(session, answer)
@@ -650,7 +643,7 @@ async def test_unknown_answer_records_verbatim_evidence_without_language_classif
     context = current['visual_identity']['search_anchor']['owner_context']
     assert context['author_answer_quote'] == answer and context['turn_serial'] == 1
     assert current['identity_generation'] == selected['identity_generation']
-    assert current['state'] == 'researching'
+    assert current['state'] == 'facts_ready'  # an answer after an empty search closes the question without a rerun
     with service.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1
 
@@ -662,9 +655,34 @@ async def test_open_question_reaches_mira_so_she_can_ask_it_by_voice(tmp_path):
     service.providers.osm = NoCity()
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    selected = ask_after_empty_search(service, story['id'])
     ensure_live_schema(service)
     adapter = StreetStoryLiveAdapter(service, lambda *_: None, lambda *_: None)
     initialized = adapter.initialize(resource_id=selected['id'], actor=None, model='gemini-3.8-live')
     assert initialized['capability'] == 'place_map'
     assert initialized['context']['pending_owner_question'] == selected['identity_clarification']['question']
     assert 'pending_owner_question' in initialized['configuration']['system_instruction']
+
+
+@pytest.mark.asyncio
+async def test_chosen_house_without_any_mapped_address_gets_one_from_its_own_point(tmp_path):
+    # A chosen building always leaves the map with an address; the owner is never asked for it.
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    calls = []
+    def reverse(request):
+        calls.append(request)
+        return httpx.Response(200, json={'address': {'city': 'Калининград', 'road': 'Зоологическая улица', 'house_number': '48'}})
+    osm = NoCity()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reverse)) as http:
+        osm.http = http
+        service.providers.osm = osm
+        snapshot = await place_map(service, story['id'])
+        body = command(story, snapshot, 'osm:way:2', 'selected')  # way 2 has no address tags or points
+        await prepare_place_context(service, story['id'], body)
+        result = confirm_place(service, story['id'], 'selected', body)
+    anchor = result['visual_identity']['search_anchor']
+    assert (anchor['street'], anchor['house_number']) == ('Зоологическая улица', '48')
+    assert anchor['address_provenance'] == 'osm.selected_center_reverse' and len(calls) == 1
+    assert result['place_name'] == 'Зоологическая улица 48'
+    assert result['state'] == 'researching' and not result['identity_clarification']

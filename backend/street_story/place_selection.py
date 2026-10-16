@@ -117,6 +117,50 @@ def snapshot_member_address(snapshot, chosen):
                       name_provenance='osm_closed_way_node_membership')
 
 
+def _point_in_ring(lat, lon, ring):
+    inside = False
+    for (y1, x1), (y2, x2) in zip(ring, ring[1:]):
+        if (y1 > lat) != (y2 > lat) and lon < x1 + (lat - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def snapshot_inner_address(snapshot, chosen):
+    """An OSM address point inside the selected building's outline is that building's address.
+
+    Used only when the contour carries no address of its own; the owner chose the
+    house on the map and should not have to name it.
+    """
+    anchor = chosen.setdefault('search_anchor', {})
+    if anchor.get('address') or anchor.get('street') and anchor.get('house_number'):
+        return
+    rings = (chosen.get('map_geometry') or {}).get('rings') or []
+    outer = [[(p['lat'], p['lon']) for p in r.get('points') or []] for r in rings if r.get('role', 'outer') == 'outer']
+    inner = [[(p['lat'], p['lon']) for p in r.get('points') or []] for r in rings if r.get('role') == 'inner']
+    if not any(len(r) > 3 for r in outer):
+        return
+    found = {}
+    for item in [*(snapshot.get('address_objects') or []), *(snapshot.get('city_objects') or [])]:
+        address = item.get('map_address') or {}
+        point = object_center(item) if str(item.get('candidate_id') or '').startswith('osm:node:') else None
+        if not point or not address.get('street') or not address.get('house_number'):
+            continue
+        lat, lon = point['latitude'], point['longitude']
+        if any(_point_in_ring(lat, lon, r) for r in outer) and not any(_point_in_ring(lat, lon, r) for r in inner):
+            found[item['candidate_id']] = {'candidate_id': item['candidate_id'], 'address': dict(address),
+                                           'coordinates': point, 'source_url': item.get('url')}
+    streets = list(dict.fromkeys(e['address']['street'] for e in found.values()))
+    if len(streets) != 1:
+        return
+    numbers = list(dict.fromkeys(e['address']['house_number'] for e in found.values()))
+    anchor.update(street=streets[0], house_numbers=numbers, house_number=', '.join(numbers),
+                  address=' / '.join(streets[0] + ' ' + n for n in numbers),
+                  address_points=list(found.values()), address_provenance='osm_address_point_inside_contour')
+    if chosen.get('name_provenance') == 'map.placeholder':
+        chosen.update(map_label=chosen['name'], name=streets[0] + ' ' + ', '.join(numbers),
+                      name_provenance='osm_address_point_inside_contour')
+
+
 def owner_context_missing(chosen):
     anchor = chosen.get('search_anchor') or {}
     return not (anchor.get('names') or anchor.get('address')
@@ -361,7 +405,8 @@ async def reverse_selected_city(service, center):
         response.raise_for_status()
         address = response.json().get('address') or {}
         city = next((str(address[k])[:180] for k in ('city', 'town', 'village', 'municipality') if address.get(k)), '')
-        receipt.update(status='completed', city=city, provenance='osm.selected_center_reverse')
+        receipt.update(status='completed', city=city, provenance='osm.selected_center_reverse',
+                       street=str(address.get('road') or '')[:180], house_number=str(address.get('house_number') or '')[:40])
     except (httpx.HTTPError, ValueError, AttributeError, TypeError) as exc:
         receipt['reason'] = type(exc).__name__
     finally:
@@ -396,17 +441,27 @@ async def prepare_place_context(service, story_id, body):
     targets = [c for c in snapshot['candidates'] if c['candidate_id'] in ids]
     for chosen in targets:
         snapshot_member_address(snapshot, chosen)
-        if snapshot_city(snapshot, chosen):
+        snapshot_inner_address(snapshot, chosen)
+        has_city = snapshot_city(snapshot, chosen)
+        if has_city and not owner_context_missing(chosen):
             continue
+        # A chosen house always leaves the map with an address: as a last resort the
+        # reverse geocode of its own point (provenance kept; it is a search anchor).
         center = object_center(chosen)
         cached = snapshot.setdefault('city_reverse', {}).get(chosen['candidate_id'])
         if cached is None and center:
             cached = await reverse_selected_city(service, center)
             snapshot['city_reverse'][chosen['candidate_id']] = cached
-            LOG.info('street_story_map stage=selected_city story_id=%s generation=%s candidate_id=%s status=%s',
-                     story_id, generation, chosen['candidate_id'], cached['status'])
-        if cached and cached.get('city'):
+            LOG.info('street_story_map stage=selected_reverse story_id=%s generation=%s candidate_id=%s status=%s address=%s',
+                     story_id, generation, chosen['candidate_id'], cached['status'], bool(cached.get('house_number')))
+        if cached and cached.get('city') and not has_city:
             chosen['search_anchor'].update(city=cached['city'], city_provenance=cached['provenance'])
+        if cached and owner_context_missing(chosen) and cached.get('street') and cached.get('house_number'):
+            label = cached['street'] + ' ' + cached['house_number']
+            chosen['search_anchor'].update(street=cached['street'], house_number=cached['house_number'], address=label,
+                                           address_provenance='osm.selected_center_reverse')
+            if chosen.get('name_provenance') == 'map.placeholder':
+                chosen.update(map_label=chosen['name'], name=label, name_provenance='osm.selected_center_reverse')
     with service.store.tx() as db:
         current = service._story_row(db, story_id)
         latest = json.loads(current['research_json'] or '{}')
@@ -419,6 +474,7 @@ async def prepare_place_context(service, story_id, body):
                     selected = next((c for c in targets if c['candidate_id'] == feature['id']), None)
                     if selected:
                         feature['properties']['search_anchor'] = selected['search_anchor']
+                        feature['properties'].update(name=selected['name'], label=selected['name'])
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
 
 
@@ -693,6 +749,7 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
         if has_organization_tags(item.get('tags') or {})]
     for candidate in candidates:
         snapshot_member_address({'address_objects': address_objects}, candidate)
+        snapshot_inner_address({'address_objects': address_objects, 'city_objects': city_objects}, candidate)
         snapshot_city({'city_objects': city_objects}, candidate)
     by_id = {c['candidate_id']: c for c in candidates}
     for feature in buildings:
@@ -770,6 +827,7 @@ def confirm_place(service, story_id, key, body):
             if not chosen:
                 raise ConflictError('place_candidate_unknown', 'Выберите один показанный контур здания.')
             snapshot_member_address(snapshot, chosen)
+            snapshot_inner_address(snapshot, chosen)
             snapshot_city(snapshot, chosen)
             snapshot_related_objects(snapshot, chosen)
             snapshot_surroundings(snapshot, chosen)
@@ -919,10 +977,6 @@ def transition_owner_selection(service, db, row, research, chosen, command, *, b
         'approval_evidence': approval or {'kind': 'owner_map_ui', 'command_id': command, 'confirmed_at': now},
         'source_links': [chosen['url']] if chosen.get('url') else []}
     research['visual_identity'] = confirmed
-    if owner_context_missing(chosen):
-        research['identity_clarification'] = {'question': 'Как называется этот выбранный дом или какой у него адрес?',
-            'reason': 'owner_selected_context_missing', 'photo_sha256': row['photo_sha256'],
-            'generation': generation, 'scope': 'search_context_only'}
     if body.get('owner_comment'):
         research['transcript'] = str(body['owner_comment'])[:5000]
     research['place_selection'] = {'mode': 'exact', 'candidate_id': cid, 'poi_id': cid,
@@ -939,13 +993,8 @@ def transition_owner_selection(service, db, row, research, chosen, command, *, b
     target = chosen.get('map_coordinates') or {}
     research['poi_id'] = ensure_poi_identity(db, confirmed, latitude=target.get('latitude'), longitude=target.get('longitude'), now=now)
     research['poi_reused_fact_count'] = hydrate_story_facts(db, confirmed, story_id)
-    if owner_context_missing(chosen):
-        research['owner_research_waiting_context'] = {'photo_sha256': row['photo_sha256'],
-            'generation': generation, 'candidate_id': cid, 'command_id': command,
-            'reason': 'owner_selected_context_missing'}
-        db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (canonical(research), story_id))
-        LOG.info('street_story_map stage=context_required story_id=%s generation=%s candidate_id=%s', story_id, generation, cid)
-        return service._story_repr(db, service._story_row(db, story_id))
+    # The owner chose the house by place; research starts at once from the map
+    # (location, address points, nearby streets) instead of asking them to name it.
     job = enqueue_owner_research(service, db, row, research, command, cid)
     result = service._story_repr(db, service._story_row(db, story_id))
     LOG.info('street_story_map stage=confirmed story_id=%s generation=%s candidate_id=%s job_id=%s', story_id, generation, cid, job)
