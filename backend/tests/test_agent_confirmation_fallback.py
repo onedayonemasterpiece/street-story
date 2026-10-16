@@ -2,6 +2,7 @@
 import json
 import sys
 from types import ModuleType, SimpleNamespace
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -116,6 +117,16 @@ async def test_google_explicit_fallback_reason_requires_every_original_settled_w
 @pytest.mark.asyncio
 async def test_qualified_alternate_commits_three_distinct_facts_to_normal_ledger_and_memory(tmp_path):
     service, job, reader, giga, bodies, admission, _ = await setup(tmp_path)
+    original_admission = giga.admission
+
+    @asynccontextmanager
+    async def scoped_admission(binding, workload):
+        from street_story.research_adapter import ProductResearchAdapter
+        ProductResearchAdapter.guard_binding(SimpleNamespace(service=service), binding)
+        async with original_admission(binding, workload) as lease:
+            yield lease
+
+    giga.admission = scoped_admission
     try:
         candidates = [CANDIDATE, {**CANDIDATE, 'text': 'Facade restored in 1998.', 'quote': 'Facade restored in 1998.'},
             {**CANDIDATE, 'text': 'Exhibition opened in 2010.', 'quote': 'Exhibition opened in 2010.'}]

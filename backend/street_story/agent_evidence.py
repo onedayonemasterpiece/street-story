@@ -528,6 +528,8 @@ class AgentEvidenceMixin:
         def checkpoint(receipt):
             binding = {'story_id': story['id'], 'run_id': run_id, 'job_id': job['id'],
                 'generation': story['_identity_generation'], 'photo_sha256': story['photo_sha256'],
+                'purpose': 'facts', 'control_revision': story['_fact_research_control_revision'],
+                'job_attempt': job['attempts'],
                 'fact_unit_id': unit, 'contract': receipt.get('contract', CONTRACT)}
             receipt['binding'] = binding
             receipt['source_version_id'] = version
@@ -552,8 +554,15 @@ class AgentEvidenceMixin:
             routes = adapter.fact_agent_routes() if callable(getattr(adapter, 'fact_agent_routes', None)) else []
             alternate = next((route for route in routes if route.provider_id == 'gigachat'), None)
             if alternate is not None:
+                LOG.info('street_story_agent_confirmation_alternate story_id=%s run_id=%s job_id=%s '
+                    'generation=%s purpose=facts provider=gigachat reason=original_routes_settled',
+                    story['id'], run_id, job['id'], story['_identity_generation'])
                 verified = await verify_with_gigachat(alternate, payload, checkpoint, guard,
-                    binding={'story_id': story['id'], 'research_run_id': run_id, 'fact_unit_id': unit, 'contract': NETWORK_CONTRACT})
+                    binding={'story_id': story['id'], 'research_run_id': run_id, 'fact_unit_id': unit,
+                        'contract': NETWORK_CONTRACT, 'photo_sha256': story['photo_sha256'],
+                        'generation': story['_identity_generation'], 'purpose': 'facts',
+                        'control_revision': story['_fact_research_control_revision'],
+                        'job_id': job['id'], 'job_attempt': job['attempts']})
         guard()
         row = verified.get('result')
         if not isinstance(row, dict) or not _confirmation_result_valid(row, verified.get('receipt') or {}):
