@@ -435,10 +435,13 @@ FUNCTIONS = [
         {'area_id': {'type': 'string'}}, ['area_id']),
     _tool_schema('describe_owner_place',
         'Record fresh literal author speech as owner_voice name/address context for the already selected exact house. '
-        'If the author says they do not know another name or address, set owner_does_not_know=true instead. '
+        'Only when answering the pending name/address question for this house, interpret the fresh author answer. '
+        'If it means they do not know, set owner_does_not_know=true and provide author_answer_quote verbatim from that turn. '
+        'An unrelated remark, a question or quoted third-party speech is not such an answer. '
         'Never change the physical ID, city, geometry or generation.',
         {'candidate_id': {'type': 'string'}, 'name': {'type': 'string'}, 'address': {'type': 'string'},
-         'owner_does_not_know': {'type': 'boolean'}}, ['candidate_id']),
+         'owner_does_not_know': {'type': 'boolean'},
+         'author_answer_quote': {'type': 'string', 'description': 'Required for owner_does_not_know: verbatim fresh answer to the pending question; not a paraphrase or inferred intent.'}}, ['candidate_id']),
     _tool_schema(
         'mark_place_unknown',
         'When the author says they do not know where the photo was taken, retain the photo in place_unknown '
@@ -912,7 +915,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'focus_owner_map using a returned area_id. This moves only the viewport. Do not choose a house yourself. '
                 'The author can tap any displayed contour or explicitly confirm its exact name/ID with confirm_place. '
                 'If they do not know where the photo was taken, use mark_place_unknown. If a house is already selected and they '
-                'do not know its name or address, use describe_owner_place with owner_does_not_know=true: the house stays '
+                'do not know its name or address, use describe_owner_place with owner_does_not_know=true and author_answer_quote from the fresh answer to the pending question: the house stays '
                 'selected and research uses the map. Save speech as owner context, not established facts. '
                 'Never ask for typed city/address/coordinates. Do not use automatic recognition/G/T/REF to revisit an owner selection. '
                 'The photo GPS marker never moves. After confirmed selection use research/editor as appropriate.')
@@ -1289,7 +1292,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "First document: choose a competent discovery source and copy source_ref. Follow saved next_args for later pages; empty source_ref follows the next unread source."
                     if function["name"] == "get_research_chunk" else function["description"]
                     if function["name"] in {'get_review_packet', 'get_review_context', 'assess_review_packet',
-                        'repair_research_fact', 'finalize_fact_review'}
+                        'repair_research_fact', 'finalize_fact_review', 'describe_owner_place'}
                     else function["description"].split(". ")[0][:140]
                 )} for function in FUNCTIONS],
                 "voice": "Aoede",
@@ -2867,12 +2870,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         from .live_author_intent import normalized
         cid = _bounded_text(args.get('candidate_id'), 300, required=True)
         values = {key: _bounded_text(args.get(key), 300) for key in ('name', 'address')}
-        unknown = args.get('owner_does_not_know') is True and not any(values.values())
+        unknown = args.get('owner_does_not_know') is True
+        answer_quote = _bounded_text(args.get('author_answer_quote'), 4000)
+        if unknown and any(values.values()):
+            raise ConflictError('owner_voice_context_required', 'Ответ не может одновременно содержать адрес и отсутствие сведений.')
         turn = session.state.get('author_turn') or {}
         text = ' ' + normalized(str(turn.get('text') or '')) + ' '
         if (not (any(values.values()) or unknown) or turn.get('consumed') or turn.get('suspected_noise')
                 or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30
-                or any(' ' + normalized(value) + ' ' not in text for value in values.values() if value)):
+                or any(' ' + normalized(value) + ' ' not in text for value in values.values() if value)
+                or unknown and (not answer_quote or answer_quote not in str(turn.get('text') or ''))):
             raise ConflictError('owner_voice_context_required', 'Нужно уточнение в текущей реплике автора.')
         with self.service.store.tx() as db:
             row = self.service._story_row(db, session.resource_id)
@@ -2886,6 +2893,18 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     or selection.get('mode') != 'exact' or identity.get('status') != 'owner_confirmed'
                     or identity.get('candidate_id') != cid):
                 raise ConflictError('place_selection_stale', 'Уточнение должно относиться к текущему выбранному дому.')
+            if unknown:
+                # Model owns meaning. Code binds its interpretation to actual
+                # fresh speech and this house's pending question, not a lexicon.
+                question = research.get('identity_clarification') or {}
+                waiting = research.get('owner_research_waiting_context') or {}
+                if (question.get('reason') != 'owner_selected_context_missing'
+                        or question.get('scope') != 'search_context_only'
+                        or question.get('photo_sha256') != row['photo_sha256']
+                        or question.get('generation') != generation
+                        or waiting.get('photo_sha256') != row['photo_sha256']
+                        or waiting.get('generation') != generation or waiting.get('candidate_id') != cid):
+                    raise ConflictError('owner_place_question_required', 'Нет текущего вопроса о названии или адресе этого дома.')
             chosen = dict(selection['candidate'])
             from .place_selection import apply_owner_address, search_terms
             before = search_terms(chosen)
@@ -2894,7 +2913,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             anchor = dict(chosen.get('search_anchor') or {})
             context = {'provenance': 'owner_voice', 'scope': 'search_context_only',
                        'independently_verified': False, 'turn_serial': turn.get('serial'),
-                       **({'owner_does_not_know': True} if unknown else {}),
+                       **({'owner_does_not_know': True, 'author_answer_quote': answer_quote} if unknown else {}),
                        **{key: value for key, value in values.items() if value}}
             anchor.update(owner_context=context, owner_context_provenance='owner_voice')
             if values['name']:
@@ -3022,7 +3041,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # answers it; it never discards the house the author chose on the map.
             raise ConflictError('owner_selected_house_question_open',
                 'Дом уже выбран на карте. Если автор не знает его названия или адреса, вызови '
-                'describe_owner_place с owner_does_not_know=true; дом останется выбранным.')
+                'describe_owner_place с owner_does_not_know=true и author_answer_quote из текущего ответа; дом останется выбранным.')
         scope = session.state.get('research_control_scope') or {}
         result = place_action(self.service, story['id'], command_id, {
             'expected_photo_sha256': scope.get('expected_photo_sha256'), 'expected_identity_generation': scope.get('expected_identity_generation'),

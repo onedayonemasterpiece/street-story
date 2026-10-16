@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import asyncio
-import re
+import unicodedata
 import time
 import uuid
 
@@ -123,17 +123,18 @@ def owner_context_missing(chosen):
                 or anchor.get('street') and anchor.get('house_number'))
 
 
-_GENERIC_PLACE_WORDS = {'улица', 'ул', 'проспект', 'пр', 'переулок', 'пер', 'площадь', 'пл', 'бульвар',
-                        'шоссе', 'набережная', 'аллея', 'дом', 'д', 'город', 'г'}
-
-
 def search_terms(chosen):
-    """Literal search words of the selected house (name, address, names), without street types or city."""
+    """Conservative whole search values, not a bag of address words.
+
+    Only Unicode composition, case and whitespace are presentation-equivalent.
+    Keep street types, word order and house-number punctuation: e.g. 3/5 and
+    5/3 must not suppress a corrected search. Uncertain equivalence may rerun.
+    """
     anchor = chosen.get('search_anchor') or {}
-    text = ' '.join(str(value or '') for value in (chosen.get('name'), anchor.get('address'), anchor.get('street'),
-                                                    anchor.get('house_number'), *(anchor.get('names') or [])))
-    city = set(re.findall(r'[0-9a-zа-яё]+', str(anchor.get('city') or '').casefold()))
-    return set(re.findall(r'[0-9a-zа-яё]+', text.casefold())) - _GENERIC_PLACE_WORDS - city
+    address = anchor.get('address') or ' '.join(str(anchor.get(key) or '') for key in ('street', 'house_number')).strip()
+    values = (chosen.get('name'), address, *(anchor.get('names') or []))
+    return {' '.join(unicodedata.normalize('NFC', str(value)).casefold().split())
+            for value in values if value and str(value).strip()}
 
 
 _MAP_ADDRESS_KEYS = ('street', 'house_number', 'house_numbers', 'address',
