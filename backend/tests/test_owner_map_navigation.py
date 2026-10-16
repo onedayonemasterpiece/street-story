@@ -575,8 +575,15 @@ async def test_unknown_answer_requires_fresh_quote_and_matching_pending_question
     with service.store.connection() as db:
         before = dict(service._story_row(db, story['id']))
         jobs_before = db.execute('SELECT count(*) FROM jobs').fetchone()[0]
-    with pytest.raises(ConflictError):
-        await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'invalid', 'args': args})
+    call = {'name': 'describe_owner_place', 'id': 'invalid', 'args': args}
+    if invalid == 'noise':
+        # The shared noise guard refuses before dispatch, returning its existing
+        # ignored receipt rather than invoking the handler or raising a conflict.
+        result = await adapter.execute_tool(session, call)
+        assert result['ignored'] is True and result['reason'] == 'suspected_noise_turn'
+    else:
+        with pytest.raises(ConflictError):
+            await adapter.execute_tool(session, call)
     with service.store.connection() as db:
         assert dict(service._story_row(db, story['id'])) == before
         assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == jobs_before
