@@ -401,3 +401,42 @@ async def test_missing_route_state_recovers_original_journal_before_any_discover
             assert discoveries == [] and len(extractions) == 1
     finally:
         await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner_selected', [True, False])
+async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_context(tmp_path, monkeypatch, owner_selected):
+    service, job, _, reader, _ = await fixture(tmp_path)
+    with service.store.tx() as db:
+        research = json.loads(service._story_row(db, job['story_id'])['research_json'])
+        if owner_selected:
+            research['visual_identity']['status'] = 'owner_confirmed'
+            research['place_selection'] = {'mode': 'exact', 'candidate_id': research['visual_identity'].get('candidate_id')}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
+    adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
+    routes = [AgentRoute('google', 'only', 'https://example.org', object())]
+    monkeypatch.setattr('street_story.fact_agents.SystemRandom', lambda: SimpleNamespace(shuffle=lambda _rows: None))
+    monkeypatch.setattr('street_story.fact_agents.configured_routes', lambda _adapter: routes)
+    monkeypatch.setattr('street_story.fact_agent_providers.retained_source_cohort', lambda *_args, **_kwargs: None)
+
+    async def invoke(_adapter, _current, _story, _context, *, binding, guard):
+        guard()
+        receipt = {'binding': binding, 'phase': 'completed', 'result': {'facts': []}, 'rejected_candidates': []}
+        adapter._checkpoint_receipt(binding, receipt)
+        return {'receipt': receipt, 'result': receipt['result']}
+
+    monkeypatch.setattr('street_story.fact_agents.run_tool_agent', invoke)
+    try:
+        outcome = await run_fact_agents(adapter, job, 'headless-run', 'History')
+        assert outcome['outcome'] == 'no_supported_facts' and outcome['reason'] == 'research_agent_content_gaps'
+        with service.store.connection() as db:
+            row = service._story_row(db, job['story_id'])
+        research = json.loads(row['research_json'])
+        if owner_selected:
+            assert research['identity_clarification']['reason'] == 'owner_selected_context_missing'
+            assert research['owner_research_waiting_context']['command_id'] == 'owner-context-headless-run'
+            assert row['state'] == 'needs_review'
+        else:
+            assert 'owner_research_waiting_context' not in research and 'identity_clarification' not in research
+    finally:
+        await reader.search_http.aclose()
