@@ -379,3 +379,46 @@ def test_text_over_unaltered_photo_in_4_5_needs_an_explicit_frame(tmp_path):
     with pytest.raises(ConflictError, match='явно выбранный кадр'):
         svc.mutate_visual(sid, 'source-frame', {'selected_fact_ids': [], 'preserve_source_frame': True,
             'visual_copy': {'title': 'Исходное фото'}, 'visual_layout': {'text_box': [.05, .02, .9, .14]}})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tamper', [False, True])
+async def test_queued_v1_visual_replays_its_frozen_transform_or_rejects_changes(tmp_path, monkeypatch, tamper):
+    from street_story import visual_source
+    from test_mvp_visual import FrameBoundary, visual_context
+    from street_story.service import canonical
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    transform = visual_source.photo_transform
+    with monkeypatch.context() as patch:
+        patch.setattr(visual_source, 'photo_transform',
+            lambda data, mime, mode, crop_rect=None: transform(data, mime, mode, crop_rect,
+                contract='owner-photo-transform-v1'))
+        svc.mutate_visual(sid, 'queued-before-upgrade', {'selected_fact_ids': []})
+    frozen = visual_context(svc, sid)['source_image_transform']
+    ingress = []
+    original_ingress = vp.ingress_asset
+    async def record_ingress(data, mime, key):
+        import hashlib
+        ingress.append(hashlib.sha256(data).hexdigest())
+        return await original_ingress(data, mime, key)
+    vp.ingress_asset = record_ingress
+    with svc.store.tx() as db:
+        if tamper:
+            context = visual_context(svc, sid)
+            context['source_image_transform']['output_sha256'] = '0' * 64
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), sid))
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    if tamper:
+        await svc._run_visual(job)
+        assert 'visual_source_transform_changed' in svc.story(sid)['error']['message']
+        assert vp.tune_calls == 0 and not ingress
+    else:
+        await svc._run_visual(job)
+        saved = visual_context(svc, sid)
+        assert saved['source_image_transform'] == frozen
+        assert ingress == [frozen['output_sha256']]
+        assert vp.tune_calls == 1

@@ -103,3 +103,28 @@ def test_photo_crop_rejects_expansion_stretch_and_noninteger_window(rect):
     Image.new('RGB', (40, 30)).save(stream, format='PNG')
     with pytest.raises(ConflictError):
         photo_transform(stream.getvalue(), 'image/png', 'crop_4_5', rect)
+
+
+@pytest.mark.parametrize('mode', ['original', 'crop_4_5'])
+def test_frozen_v1_transform_keeps_legacy_pixels_and_hash_after_downscale_upgrade(mode):
+    from street_story.visual_source import photo_transform
+    raw = io.BytesIO()
+    Image.new('RGB', (2400, 3000), (120, 80, 40)).save(raw, format='JPEG')
+    data = raw.getvalue()
+    with Image.open(io.BytesIO(data)) as image:
+        expected = image.convert('RGB')
+        if mode == 'crop_4_5':
+            stream = io.BytesIO()
+            expected.save(stream, format='PNG')
+            expected_bytes, expected_mime = stream.getvalue(), 'image/png'
+        else:
+            expected_bytes, expected_mime = data, 'image/jpeg'
+    old, mime, frozen = photo_transform(data, 'image/jpeg', mode, contract='owner-photo-transform-v1')
+    assert old == expected_bytes and mime == expected_mime
+    assert frozen['output_size'] == [2400, 3000]
+    assert frozen['output_sha256'] == hashlib.sha256(expected_bytes).hexdigest()
+    assert frozen['pixel_operations'] == ['exif_orientation'] + (['crop'] if mode == 'crop_4_5' else [])
+    current, _, new = photo_transform(data, 'image/jpeg', mode)
+    assert new['contract'] == 'owner-photo-transform-v2'
+    assert max(new['output_size']) <= 2048 and current != old
+    assert hashlib.sha256(data).hexdigest() == frozen['original_sha256'] == new['original_sha256']

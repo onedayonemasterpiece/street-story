@@ -469,8 +469,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     from .visual_source import photo_transform
                     frozen_transform = context['source_image_transform']
                     photo, source_mime, transform = photo_transform(photo, source_mime,
-                        frozen_transform['mode'], frozen_transform['crop_rect'] if frozen_transform['mode'] == 'crop_4_5' else None)
+                        frozen_transform['mode'], frozen_transform['crop_rect'] if frozen_transform['mode'] == 'crop_4_5' else None,
+                        contract=frozen_transform['contract'])
                     if transform != frozen_transform:
+                        logging.getLogger(__name__).warning(
+                            'street_story_visual_source_rejected story_id=%s reason=frozen_transform_changed contract=%s',
+                            story_id, frozen_transform.get('contract'))
                         raise PermanentProviderError('visual_source_transform_changed')
                     orientation = transform['orientation']
                 elif context.get('source_orientation_contract'):
@@ -484,6 +488,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     else canonical([story_id, orientation]) if orientation
                     else f"{story_id}:{story['photo_sha256']}")
                 ingress_key = "ss-vp-asset-" + hashlib.sha256(ingress_binding.encode()).hexdigest()[:48]
+                logging.getLogger(__name__).info(
+                    'street_story_visual_source_ready story_id=%s contract=%s bytes=%s',
+                    story_id, (context.get('source_image_transform') or {}).get('contract'), len(photo))
                 ingress = await self.providers.vibepublish.ingress_asset(
                     photo, source_mime, ingress_key
                 )

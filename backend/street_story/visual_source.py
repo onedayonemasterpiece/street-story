@@ -16,18 +16,24 @@ CONTRACT = 'visual-source-exif-orientation-v1'
 VISUAL_SOURCE_LONG_SIDE = 2048
 
 
-def photo_transform(data, mime, mode, crop_rect=None):
+def photo_transform(data, mime, mode, crop_rect=None, *, contract='owner-photo-transform-v2'):
     """EXIF transpose, a uniform downscale and only an explicitly requested crop.
 
     crop_4_5 without an explicit rectangle sends the whole frame: the image model
     composes the 4:5 picture, so no deterministic cut can remove the building.
     """
     from .service import ConflictError
+    if contract not in {'owner-photo-transform-v1', 'owner-photo-transform-v2'}:
+        raise PermanentProviderError('visual_source_transform_contract_unknown')
+    legacy = contract == 'owner-photo-transform-v1'
     if mode not in {'original', 'crop_4_5'}:
         raise ConflictError('photo_format_invalid', 'Choose original or crop_4_5.')
     oriented, oriented_mime, orientation = oriented_visual_source(data, mime)
     width, height = orientation['oriented_size']
     rect = [0, 0, width, height]
+    if legacy and mode == 'crop_4_5' and crop_rect is None:
+        unit = min(width // 4, height // 5)
+        crop_rect = [(width - 4 * unit) // 2, (height - 5 * unit) // 2, 4 * unit, 5 * unit]
     if mode == 'original' or crop_rect is None:
         if mode == 'original' and crop_rect is not None:
             raise ConflictError('photo_crop_not_selected', 'Original preserves the complete oriented frame.')
@@ -40,7 +46,7 @@ def photo_transform(data, mime, mode, crop_rect=None):
             raise ConflictError('photo_crop_invalid', 'Supply an in-bounds exact 4:5 rectangle of oriented source pixels.')
         with Image.open(io.BytesIO(oriented)) as image:
             cropped = image.crop((rect[0], rect[1], rect[0]+rect[2], rect[1]+rect[3])).convert('RGB')
-            target = _target(rect[2:], exact_4_5=True)
+            target = rect[2:] if legacy else _target(rect[2:], exact_4_5=True)
             stream = io.BytesIO()
             if target == rect[2:]:
                 cropped.save(stream, format='PNG')
@@ -49,10 +55,10 @@ def photo_transform(data, mime, mode, crop_rect=None):
                 cropped.resize(tuple(target), Image.Resampling.LANCZOS).save(stream, format='JPEG', quality=92, optimize=True)
                 output, output_mime = stream.getvalue(), 'image/jpeg'
     cropped_frame = mode == 'crop_4_5' and crop_rect is not None
-    size = _target(rect[2:], exact_4_5=True)
-    if not cropped_frame:
+    size = rect[2:] if legacy else _target(rect[2:], exact_4_5=True)
+    if not cropped_frame and not legacy:
         output, output_mime, size = _bounded(output, output_mime, rect[2:], exact_4_5=False)
-    return output, output_mime, {'contract': 'owner-photo-transform-v1', 'mode': mode,
+    return output, output_mime, {'contract': contract, 'mode': mode,
         'original_sha256': hashlib.sha256(data).hexdigest(), 'orientation': orientation,
         'oriented_size': [width, height], 'crop_rect': rect if cropped_frame else None if mode == 'crop_4_5' else rect,
         'output_size': size, 'output_sha256': hashlib.sha256(output).hexdigest(), 'original_preserved': True,
