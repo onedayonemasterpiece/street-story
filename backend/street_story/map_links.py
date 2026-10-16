@@ -90,8 +90,13 @@ def building_links(research: dict[str, Any]) -> dict[str, str] | None:
         return None
     lat, lon = point
     target = f'{lon:.6f}%2C{lat:.6f}'
-    return {'ЯндексКарты': f'https://yandex.ru/maps/?whatshere%5Bpoint%5D={target}&whatshere%5Bzoom%5D=18',
-            '2ГИС': f'https://2gis.ru/geo/{target}'}
+    # Checked in a real mobile browser: without an explicit zoom 2ГИС resolves the
+    # point to the whole city; at zoom 18 it opens the building (or the main
+    # organisation in it) with photos, reviews and organisations. Yandex opens the
+    # address card of the house, which can be saved; ll/z centre it at house scale.
+    return {'ЯндексКарты': f'https://yandex.ru/maps/?ll={target}&z=18&mode=whatshere'
+                           f'&whatshere%5Bpoint%5D={target}&whatshere%5Bzoom%5D=18',
+            '2ГИС': f'https://2gis.ru/geo/{target}?m={target}%2F18'}
 
 
 def city_hashtag(research: dict[str, Any]) -> str | None:

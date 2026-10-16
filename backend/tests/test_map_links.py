@@ -22,7 +22,8 @@ def test_ring_building_link_point_lies_in_the_walls_not_the_courtyard_or_camera(
     assert 0.0002 < distance < 0.0003
     links = building_links(tower())
     assert set(links) == {'ЯндексКарты', '2ГИС'}
-    assert f'{lon:.6f}%2C{lat:.6f}' in links['ЯндексКарты'] and links['2ГИС'].endswith(f'{lon:.6f}%2C{lat:.6f}')
+    target = f'{lon:.6f}%2C{lat:.6f}'
+    assert target in links['ЯндексКарты'] and links['2ГИС'] == f'https://2gis.ru/geo/{target}?m={target}%2F18'
     assert '20.514000' not in links['ЯндексКарты']
 
 
@@ -30,7 +31,7 @@ def test_footer_is_appended_once_and_replaces_typed_or_invented_links():
     research = tower()
     draft = 'Башня Врангеля.\n\nАдрес: улица Профессора Баранова, 2А, Калининград. #Калининград'
     saved = with_place_footer(draft, research)
-    assert saved.startswith(draft + '\n\n[ЯндексКарты](https://yandex.ru/maps/?whatshere%5Bpoint%5D=')
+    assert saved.startswith(draft + '\n\n[ЯндексКарты](https://yandex.ru/maps/?ll=')
     assert saved.count('ЯндексКарты') == 1 and saved.count('2ГИС') == 1
     assert with_place_footer(saved, research) == saved
     typed = draft + '\n\n[ЯндексКарты](https://yandex.ru/maps/invented) · [2ГИС](https://2gis.ru/invented)\n\nЕщё абзац.'
@@ -146,3 +147,30 @@ def test_address_point_inside_a_nameless_contour_names_the_chosen_house():
     tagged = {**chosen, 'name': 'Дом', 'search_anchor': {'street': 'Другая улица', 'house_number': '1'}}
     snapshot_inner_address(snapshot, tagged)
     assert tagged['search_anchor'] == {'street': 'Другая улица', 'house_number': '1'}  # own tags win
+
+
+def test_both_links_round_trip_to_one_point_inside_an_l_shaped_building():
+    # The reader opens either link to find, save and visit the building: the point must be on the
+    # building itself, also for a concave outline whose centre falls outside it.
+    import re
+    from urllib.parse import unquote
+    pts = [(54.7200, 20.5000), (54.7206, 20.5000), (54.7206, 20.5003), (54.7202, 20.5003),
+           (54.7202, 20.5010), (54.7200, 20.5010), (54.7200, 20.5000)]
+    ring = {'closed': True, 'points': [{'lat': a, 'lon': o} for a, o in pts]}
+    centre = {'latitude': sum(a for a, _ in pts[:-1]) / 6, 'longitude': sum(o for _, o in pts[:-1]) / 6,
+              'provenance': 'osm.center'}
+    research = {'place_selection': {'mode': 'exact', 'candidate': {'map_coordinates': centre,
+                                                                     'map_geometry': {'rings': [ring]}}}}
+    links = building_links(research)
+    y = re.search(r'whatshere\[point\]=([\d.]+),([\d.]+)&whatshere\[zoom\]=18$', unquote(links['ЯндексКарты']))
+    g = re.search(r'^https://2gis\.ru/geo/([\d.]+),([\d.]+)\?m=([\d.]+),([\d.]+)/18$', unquote(links['2ГИС']))
+    # 2ГИС needs the explicit zoom: without it the point opens the city card, not the building.
+    assert y and g and y.groups() == g.groups()[:2] == g.groups()[2:]
+    lon, lat = map(float, y.groups())
+    def inside(lat, lon):
+        c = False
+        for (a1, o1), (a2, o2) in zip(pts, pts[1:]):
+            if (a1 > lat) != (a2 > lat) and lon < o1 + (lat - a1) * (o2 - o1) / (a2 - a1):
+                c = not c
+        return c
+    assert inside(lat, lon)
