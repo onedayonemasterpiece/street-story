@@ -618,9 +618,17 @@ class IdentityLifecycleMixin:
                 question = ((latest.get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload', {}).get('clarification_question')
                 pending_visual = reference_work_pending and bool(
                     getattr(getattr(self.providers, 'research', None), 'vision_available', False))
-                if not valid and not (isinstance(question, str) and question.strip()):
+                current_hint = latest.get('identity_owner_hint') or {}
+                owner_context_available = (bool(current_hint.get('text'))
+                    and current_hint.get('photo_sha256') == story['photo_sha256']
+                    and current_hint.get('generation') == generation
+                    and current_hint.get('control_revision') == control_revision)
+                if (not valid and not owner_context_available
+                        and not (isinstance(question, str) and question.strip())):
                     # Missing coordinates are an observed input limitation,
-                    # independent of semantic identity or provider availability.
+                    # but do not erase an answered question because a literal
+                    # owner hint could not be geocoded. A new model question
+                    # remains available when more specific input is needed.
                     question = 'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.'
                 if not valid and isinstance(question, str) and question.strip():
                     latest['identity_clarification'] = {'question': question.strip()[:200],

@@ -1235,6 +1235,7 @@ async def _suggest(service, story, transcript, candidates):
     def reuse_initial_plan():
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
         nonlocal source_text_receipt, text_articles, joint_resolution_required
+        nonlocal issued_followup_source_map_receipt
         from .identity_plan_diagnostics import reusable_closed_initial_plan
         marker = joint_operation_marker(service, story, stage='initial')
         saved = reusable_closed_initial_plan(marker, initial_unit_binding)
@@ -1255,6 +1256,9 @@ async def _suggest(service, story, transcript, candidates):
         # Optional TEXT's unknown outcome remains fenced in its original marker;
         # it supplies neither a new decision nor authority to resend that unit.
         scene, scene_manifest, physical_context, resolution_packet = initial_map_context
+        # The unsent followup retains its own frozen diagnostic, but cannot
+        # supply MAP context when revalidating the closed initial response.
+        issued_followup_source_map_receipt = None
         geometry_prior_ids = []
         story['_identity_search_plan_route'] = 'google'
         response_id_resolutions[:] = saved['identity_response_id_resolutions']
