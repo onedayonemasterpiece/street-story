@@ -1,4 +1,5 @@
 """Photo GPS is a hint; owner navigation and selected geometry remain authoritative."""
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -6,6 +7,7 @@ import pytest
 
 from street_story.app import create_app
 from street_story.config import reveal
+from street_story.fact_agents import agent_context
 from street_story.live import StreetStoryLiveAdapter, ensure_live_schema
 from street_story.live_author_intent import begin_turn
 from street_story.mvp_location import MvpLocationStreetStoryService
@@ -364,3 +366,46 @@ async def test_nameless_selected_house_waits_for_voice_then_enqueues_once_same_i
     with service.store.connection() as db:
         jobs = list(db.execute('SELECT kind,payload_json FROM jobs'))
     assert len(jobs) == 1 and jobs[0]['kind'] == 'research'
+
+
+class WrongAddressTag(NoCity):
+    async def _map_nearby(self, *args):
+        raw = await super()._map_nearby(*args)
+        raw['elements'][0]['tags'].update({'addr:street': 'Университетская улица', 'addr:housenumber': '3'})
+        return raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['selection_hint', 'voice'])
+async def test_owner_address_replaces_a_wrong_map_address_tag_as_the_only_search_address(tmp_path, path):
+    # 105: the OSM tag of the photographed contour says Университетская улица 3;
+    # the author says Профессора Севастьянова 3. Research must not search the tag.
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = WrongAddressTag()
+    snapshot = await place_map(service, story['id'])
+    owner = 'Калининград, улица Профессора Севастьянова, 3'
+    body = command(story, snapshot, 'osm:way:1', 'select')
+    if path == 'selection_hint':
+        confirm_place(service, story['id'], 'select', {**body, 'owner_context': {'address': owner}})
+    else:
+        selected = confirm_place(service, story['id'], 'select', body)
+        assert selected['visual_identity']['search_anchor']['street'] == 'Университетская улица'
+        adapter, session = live(service, selected)
+        begin_turn(session, 'Это дом с адресом Калининград, улица Профессора Севастьянова, 3', origin='audio')
+        await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'describe',
+            'args': {'candidate_id': 'osm:way:1', 'address': owner}})
+    current = service.story(story['id'])
+    with service.store.connection() as db:
+        identity = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?',
+                                         (story['id'],)).fetchone()[0])['visual_identity']
+    anchor = identity['search_anchor']
+    assert anchor['address'] == owner and not {'street', 'house_number', 'address_entries'} & set(anchor)
+    assert identity['candidate_id'] == 'osm:way:1'
+    assert identity['candidate_name'] == current['place_name'] == owner
+    chosen = current['place_selection']['candidate']
+    assert chosen['replaced_map_address']['street'] == 'Университетская улица'
+    assert chosen['map_address']['street'] == 'Университетская улица'  # observation kept
+    assert chosen['map_geometry']['rings'][0]['closed']
+    selected_object = json.dumps(agent_context(identity, 'goal', 'run', 0)['selected_object'], ensure_ascii=False)
+    assert 'Профессора Севастьянова' in selected_object and 'Университетская' not in selected_object

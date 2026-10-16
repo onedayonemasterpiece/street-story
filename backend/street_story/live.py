@@ -2881,15 +2881,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     or identity.get('candidate_id') != cid):
                 raise ConflictError('place_selection_stale', 'Уточнение должно относиться к текущему выбранному дому.')
             chosen = dict(selection['candidate'])
+            if values['address']:
+                from .place_selection import apply_owner_address
+                chosen = apply_owner_address(chosen, values['address'], 'owner_voice')
             anchor = dict(chosen.get('search_anchor') or {})
             context = {'provenance': 'owner_voice', 'scope': 'search_context_only',
                        'independently_verified': False, 'turn_serial': turn.get('serial'),
                        **{key: value for key, value in values.items() if value}}
             anchor.update(owner_context=context, owner_context_provenance='owner_voice')
-            if values['address']:
-                anchor['address'] = values['address']
-                if not values['name'] and chosen.get('name_provenance') == 'map.placeholder':
-                    chosen.update(map_label=chosen['name'], name=values['address'], name_provenance='owner_voice')
             if values['name']:
                 anchor['names'] = list(dict.fromkeys([*anchor.get('names', []), values['name']]))
                 if not ((chosen.get('map_object') or {}).get('tags') or {}).get('name'):

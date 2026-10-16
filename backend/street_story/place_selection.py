@@ -122,6 +122,107 @@ def owner_context_missing(chosen):
                 or anchor.get('street') and anchor.get('house_number'))
 
 
+_MAP_ADDRESS_KEYS = ('street', 'house_number', 'house_numbers', 'address',
+                     'address_entries', 'address_membership_proof', 'address_provenance')
+_ADDRESS_DERIVED_NAMES = {'map.placeholder', 'osm.tags.address', 'osm_closed_way_node_membership'}
+
+
+def apply_owner_address(chosen, address, provenance):
+    """The author's address becomes the only search address of the selected house.
+
+    Map address tags can be wrong (105: the tag says Университетская 3, the author
+    says Профессора Севастьянова 3). They move out of the search anchor into
+    replaced_map_address; the ID, observed tags, map_address and geometry stay.
+    """
+    anchor = dict(chosen.get('search_anchor') or {})
+    replaced = {key: anchor.pop(key) for key in _MAP_ADDRESS_KEYS if key in anchor}
+    anchor.update(address=address, address_provenance=provenance)
+    chosen = {**chosen, 'search_anchor': anchor}
+    if replaced and replaced.get('address') != address:
+        chosen['replaced_map_address'] = {**replaced, 'replaced_by': provenance}
+    if chosen.get('name_provenance') in _ADDRESS_DERIVED_NAMES:
+        chosen.setdefault('map_label', chosen.get('name'))
+        chosen.update(name=address, name_provenance=provenance)
+    return chosen
+
+
+def _outline_gap_m(left, right):
+    """Shortest gap between two sets of polylines, each a list of (lat, lon), in metres."""
+    if not any(left) or not any(right):
+        return None
+    scale = 111_320 * math.cos(math.radians(next(line for line in left if line)[0][0]))
+    def xy(lines):
+        return [[(lon * scale, lat * 111_320) for lat, lon in line] for line in lines]
+    def gap(point_lines, segment_lines):
+        best = math.inf
+        for (ax, ay), (bx, by) in ((a, b) for line in segment_lines for a, b in zip(line, line[1:])):
+            dx, dy = bx - ax, by - ay
+            for px, py in (p for line in point_lines for p in line):
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / ((dx * dx + dy * dy) or 1)))
+                best = min(best, math.hypot(px - ax - t * dx, py - ay - t * dy))
+        return best
+    a, b = xy(left), xy(right)
+    value = min(gap(a, b), gap(b, a))
+    return None if value == math.inf else value
+
+
+def _rings(candidate):
+    return [[(p['lat'], p['lon']) for p in r.get('points') or []]
+            for r in (candidate.get('map_geometry') or {}).get('rings') or []]
+
+
+def _label(address):
+    return ' '.join(str(address.get(k) or '').strip() for k in ('street', 'house_number')).strip()
+
+
+def snapshot_surroundings(snapshot, chosen):
+    """Map observations beside the selected contour, for discovering its other addresses.
+
+    A map address tag can name a street that is not beside the building (105:
+    the tag says Университетская 3, 75 m away; the house fronts Профессора
+    Севастьянова, and its neighbouring contour is 3/5к2). The owner chooses the
+    house by place, not by address. These are search observations only: never
+    facts, never the selected building's address, never a new identity.
+    """
+    outline = _rings(chosen)
+    if not outline or not outline[0]:
+        return
+    streets = {}
+    for feature in (snapshot.get('streets') or {}).get('features') or []:
+        name = str((feature.get('properties') or {}).get('name') or '').strip()
+        lines = [[(lat, lon) for lon, lat in line] for line in (feature.get('geometry') or {}).get('coordinates') or []]
+        gap = _outline_gap_m(outline, lines) if name else None
+        if gap is not None and gap < streets.get(name, math.inf):
+            streets[name] = gap
+    own = chosen.get('map_address') or {}
+    own_label = _label(own).casefold()
+    neighbours = {}
+    centre = object_center(chosen)
+    for other in [*(snapshot.get('candidates') or []), *(snapshot.get('address_objects') or [])]:
+        label = _label(other.get('map_address') or {})
+        other_centre = object_center(other)
+        if (not label or other.get('candidate_id') == chosen.get('candidate_id') or label.casefold() == own_label
+                or not centre or not other_centre or offset_m(centre, other_centre) > 150):
+            continue
+        spot = (other_centre['latitude'], other_centre['longitude'])
+        gap = _outline_gap_m(outline, _rings(other) or [[spot, spot]])
+        if gap is not None and gap <= 60 and gap < neighbours.get(label, (math.inf,))[0]:
+            neighbours[label] = (gap, other.get('candidate_id'))
+    frontage = [{'name': name, 'distance_m': round(gap)} for name, gap in sorted(streets.items(), key=lambda s: s[1]) if gap <= 35][:3]
+    surroundings = {'provenance': 'osm.snapshot_geometry', 'scope': 'search_discovery_only',
+        'snapshot_id': snapshot.get('snapshot_id'), 'frontage_streets': frontage,
+        'neighbour_addresses': [{'address': label, 'distance_m': round(gap), 'candidate_id': cid}
+                                for label, (gap, cid) in sorted(neighbours.items(), key=lambda n: n[1][0])[:6]]}
+    tagged = str(own.get('street') or '').strip()
+    if tagged:
+        distance = streets.get(tagged)
+        surroundings['tagged_street_distance_m'] = None if distance is None else round(distance)
+        surroundings['tagged_street_beside_contour'] = any(s['name'] == tagged for s in frontage)
+    if not frontage and not surroundings['neighbour_addresses']:
+        return
+    chosen['search_anchor'] = {**chosen['search_anchor'], 'map_surroundings': surroundings}
+
+
 def _spelling_distance(left, right):
     previous = list(range(len(right) + 1))
     for i, a in enumerate(left, 1):
@@ -595,17 +696,17 @@ def confirm_place(service, story_id, key, body):
             snapshot_member_address(snapshot, chosen)
             snapshot_city(snapshot, chosen)
             snapshot_related_objects(snapshot, chosen)
+            snapshot_surroundings(snapshot, chosen)
         owner_context = body.get('owner_context')
         if owner_context is not None:
             if not isinstance(owner_context, dict) or any(k not in {'city', 'address', 'name'}
                     or not isinstance(v, str) or len(v) > 300 for k, v in owner_context.items()):
                 raise ConflictError('place_owner_context_invalid', 'Нужны короткие сведения автора о выбранном доме.')
             chosen = {**chosen, 'search_anchor': dict(chosen['search_anchor'])}
-            anchor = chosen['search_anchor']
             owner_context = {k: v.strip() for k, v in owner_context.items() if v.strip()}
-            for field in ('address',):
-                if not anchor.get(field) and owner_context.get(field):
-                    anchor[field] = owner_context[field]
+            if owner_context.get('address'):
+                chosen = apply_owner_address(chosen, owner_context['address'], 'owner.explicit_selection_hint')
+            anchor = chosen['search_anchor']
             if owner_context.get('name'):
                 anchor['names'] = list(dict.fromkeys([*anchor.get('names', []), owner_context['name']]))
             observed_name = ((chosen.get('map_object') or {}).get('tags') or {}).get('name')
@@ -613,7 +714,7 @@ def confirm_place(service, story_id, key, body):
             if cid.startswith('osm:') and not observed_name and owner_label:
                 # An author's literal label replaces only navigation context.
                 # The selected ID, observed tags and geometry stay unchanged.
-                chosen['map_label'] = chosen['name']
+                chosen.setdefault('map_label', chosen['name'])
                 chosen['name'] = owner_label
                 chosen['name_provenance'] = 'owner.explicit_selection_hint'
             anchor['owner_context'] = owner_context

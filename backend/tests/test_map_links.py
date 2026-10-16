@@ -78,3 +78,36 @@ def test_selected_city_typo_takes_the_local_majority_spelling_but_not_another_ci
     border = {'candidate_id': 'osm:way:2', 'search_anchor': {'city': 'Гурьевск'}}
     snapshot_city({'city_objects': objects('Калининград', 9, 'c')}, border)
     assert border['search_anchor'] == {'city': 'Гурьевск', 'city_provenance': 'osm.selected.addr_city'}
+
+
+def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_frontage_neighbours():
+    # 105: the contour is tagged Университетская 3 but stands beside Профессора Севастьянова.
+    from street_story.fact_agents import agent_context
+    from street_story.place_selection import snapshot_surroundings
+    def box(cid, lat, lon, street='', number=''):
+        pts = [(lat, lon), (lat + .0002, lon), (lat + .0002, lon + .0002), (lat, lon + .0002), (lat, lon)]
+        return {'candidate_id': cid, 'search_anchor': {'city': 'Калининград', 'street': street, 'house_number': number},
+                'map_address': {'street': street, 'house_number': number} if street else {},
+                'map_geometry': {'rings': [{'role': 'outer', 'closed': True, 'points': [{'lat': a, 'lon': o} for a, o in pts]}]}}
+    def street(name, lat):
+        return {'type': 'Feature', 'properties': {'name': name},
+                'geometry': {'type': 'MultiLineString', 'coordinates': [[[20.5060, lat], [20.5090, lat]]]}}
+    chosen = box('osm:way:1', 54.7149, 20.5073, 'Университетская улица', '3')
+    snapshot = {'snapshot_id': 'map_1', 'candidates': [chosen,
+        box('osm:way:2', 54.7149, 20.5078, 'улица Профессора Севастьянова', '3/5к2'),
+        box('osm:way:3', 54.7200, 20.5073, 'Далёкая улица', '1'), box('osm:way:4', 54.7149, 20.5068)],
+        'streets': {'features': [street('улица Профессора Севастьянова', 54.7148), street('Университетская улица', 54.7158)]}}
+    snapshot_surroundings(snapshot, chosen)
+    seen = chosen['search_anchor']['map_surroundings']
+    assert seen['scope'] == 'search_discovery_only' and seen['snapshot_id'] == 'map_1'
+    assert seen['frontage_streets'] == [{'name': 'улица Профессора Севастьянова', 'distance_m': 11}]
+    assert seen['tagged_street_beside_contour'] is False and seen['tagged_street_distance_m'] == 78
+    assert [(n['address'], n['candidate_id']) for n in seen['neighbour_addresses']] == [
+        ('улица Профессора Севастьянова 3/5к2', 'osm:way:2')]
+    # The observed tag stays the search address; surroundings only add discovery routes.
+    assert chosen['search_anchor']['street'] == 'Университетская улица'
+    assert agent_context({'candidate_id': 'osm:way:1', 'search_anchor': chosen['search_anchor']}, 'goal', 'run', 0)[
+        'selected_object']['search_anchor']['map_surroundings'] == seen
+    lonely = box('osm:way:9', 54.7300, 20.5300, 'Тихая улица', '1')
+    snapshot_surroundings({'candidates': [lonely], 'streets': {'features': []}}, lonely)
+    assert 'map_surroundings' not in lonely['search_anchor']
