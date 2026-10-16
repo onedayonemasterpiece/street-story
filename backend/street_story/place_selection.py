@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import asyncio
+import re
 import time
 import uuid
 
@@ -122,6 +123,19 @@ def owner_context_missing(chosen):
                 or anchor.get('street') and anchor.get('house_number'))
 
 
+_GENERIC_PLACE_WORDS = {'улица', 'ул', 'проспект', 'пр', 'переулок', 'пер', 'площадь', 'пл', 'бульвар',
+                        'шоссе', 'набережная', 'аллея', 'дом', 'д', 'город', 'г'}
+
+
+def search_terms(chosen):
+    """Literal search words of the selected house (name, address, names), without street types or city."""
+    anchor = chosen.get('search_anchor') or {}
+    text = ' '.join(str(value or '') for value in (chosen.get('name'), anchor.get('address'), anchor.get('street'),
+                                                    anchor.get('house_number'), *(anchor.get('names') or [])))
+    city = set(re.findall(r'[0-9a-zа-яё]+', str(anchor.get('city') or '').casefold()))
+    return set(re.findall(r'[0-9a-zа-яё]+', text.casefold())) - _GENERIC_PLACE_WORDS - city
+
+
 _MAP_ADDRESS_KEYS = ('street', 'house_number', 'house_numbers', 'address',
                      'address_entries', 'address_membership_proof', 'address_provenance')
 _ADDRESS_DERIVED_NAMES = {'map.placeholder', 'osm.tags.address', 'osm_closed_way_node_membership'}
@@ -130,9 +144,9 @@ _ADDRESS_DERIVED_NAMES = {'map.placeholder', 'osm.tags.address', 'osm_closed_way
 def apply_owner_address(chosen, address, provenance):
     """The author's address becomes the only search address of the selected house.
 
-    Map address tags can be wrong (105: the tag says Университетская 3, the author
-    says Профессора Севастьянова 3). They move out of the search anchor into
-    replaced_map_address; the ID, observed tags, map_address and geometry stay.
+    A map address tag can be stale or name another street. Its values move out
+    of the search anchor into replaced_map_address; the ID, observed tags,
+    map_address and geometry stay.
     """
     anchor = dict(chosen.get('search_anchor') or {})
     replaced = {key: anchor.pop(key) for key in _MAP_ADDRESS_KEYS if key in anchor}
@@ -178,11 +192,11 @@ def _label(address):
 def snapshot_surroundings(snapshot, chosen):
     """Map observations beside the selected contour, for discovering its other addresses.
 
-    A map address tag can name a street that is not beside the building (105:
-    the tag says Университетская 3, 75 m away; the house fronts Профессора
-    Севастьянова, and its neighbouring contour is 3/5к2). The owner chooses the
-    house by place, not by address. These are search observations only: never
-    facts, never the selected building's address, never a new identity.
+    The owner chooses a house by place, not by address, and a map address tag
+    can be stale or name a street away from the building. Named streets within
+    35 m, the distance to the tagged street and neighbouring mapped addresses are
+    search hints for the building's other addresses. Map proximity does not prove
+    which street the facade faces: never facts, never its address, never a new identity.
     """
     outline = _rings(chosen)
     if not outline or not outline[0]:
@@ -208,17 +222,18 @@ def snapshot_surroundings(snapshot, chosen):
         gap = _outline_gap_m(outline, _rings(other) or [[spot, spot]])
         if gap is not None and gap <= 60 and gap < neighbours.get(label, (math.inf,))[0]:
             neighbours[label] = (gap, other.get('candidate_id'))
-    frontage = [{'name': name, 'distance_m': round(gap)} for name, gap in sorted(streets.items(), key=lambda s: s[1]) if gap <= 35][:3]
+    nearby = [{'name': name, 'distance_m': round(gap)} for name, gap in sorted(streets.items(), key=lambda s: s[1]) if gap <= 35][:3]
     surroundings = {'provenance': 'osm.snapshot_geometry', 'scope': 'search_discovery_only',
-        'snapshot_id': snapshot.get('snapshot_id'), 'frontage_streets': frontage,
+        'meaning': 'map proximity to the contour; not proof of the facade street or address',
+        'snapshot_id': snapshot.get('snapshot_id'), 'streets_within_35m': nearby,
         'neighbour_addresses': [{'address': label, 'distance_m': round(gap), 'candidate_id': cid}
                                 for label, (gap, cid) in sorted(neighbours.items(), key=lambda n: n[1][0])[:6]]}
     tagged = str(own.get('street') or '').strip()
     if tagged:
         distance = streets.get(tagged)
         surroundings['tagged_street_distance_m'] = None if distance is None else round(distance)
-        surroundings['tagged_street_beside_contour'] = any(s['name'] == tagged for s in frontage)
-    if not frontage and not surroundings['neighbour_addresses']:
+        surroundings['tagged_street_within_35m'] = any(s['name'] == tagged for s in nearby)
+    if not nearby and not surroundings['neighbour_addresses']:
         return
     chosen['search_anchor'] = {**chosen['search_anchor'], 'map_surroundings': surroundings}
 
@@ -249,16 +264,23 @@ def _neighbourhood_city_spelling(snapshot, chosen, city):
     return None
 
 
+def _majority_city_spelling(snapshot, chosen):
+    # Keep the observed tag; the reader-facing city uses the local spelling,
+    # whether the tag came from the selected object or a neighbour.
+    anchor = chosen['search_anchor']
+    corrected = _neighbourhood_city_spelling(snapshot, chosen, anchor['city'])
+    if corrected:
+        anchor.update(city=corrected, city_provenance='osm.snapshot_majority_spelling',
+                      **({'city_selected_tag': anchor['city']} if anchor['city_provenance'] == 'osm.selected.addr_city'
+                         else {'city_neighbour_tag': anchor['city']}))
+
+
 def snapshot_city(snapshot, chosen):
     anchor = chosen.setdefault('search_anchor', {})
     if anchor.get('city'):
         anchor.setdefault('city_provenance', 'osm.selected.addr_city')
         if anchor['city_provenance'] == 'osm.selected.addr_city':
-            corrected = _neighbourhood_city_spelling(snapshot, chosen, anchor['city'])
-            if corrected:
-                # Keep the observed tag; the reader-facing city uses the local spelling.
-                anchor.update(city=corrected, city_provenance='osm.snapshot_majority_spelling',
-                              city_selected_tag=anchor['city'])
+            _majority_city_spelling(snapshot, chosen)
         return True
     center = object_center(chosen)
     neighbors = [(offset_m(center, p) if center and (p := object_center(c)) else 0, c)
@@ -269,6 +291,7 @@ def snapshot_city(snapshot, chosen):
         source = min(neighbors, key=lambda item: item[0])[1]
         anchor.update(city=source['search_anchor']['city'], city_provenance='osm.snapshot_neighbor.addr_city',
                       city_source_candidate_id=source['candidate_id'])
+        _majority_city_spelling(snapshot, chosen)
         return True
     return False
 

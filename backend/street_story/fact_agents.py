@@ -14,6 +14,15 @@ from .research_runs import set_run_state
 
 LOG = logging.getLogger(__name__)
 QUALIFICATION_KEY = 'research-agent-verification-v1'
+# Host hand-backs of the model's own unresolved gaps when it named no next step.
+GAP_CONTINUATIONS = 2
+
+
+def _gap_pointer_matches(state, old):
+    from .native_fact_contract import unresolved_gaps
+    gaps = unresolved_gaps(old.get('native_completion') or {})
+    pointer = (state.get('operation_context') or {}).get('native_continuation') or {}
+    return bool(gaps) and pointer.get('unresolved_gaps') == gaps and pointer.get('original_attempt_id') == old.get('attempt_id')
 
 
 def retained_plan_scope_matches(db, job, plan, *, photo_sha256, generation, control_revision):
@@ -273,7 +282,8 @@ def _persist_plan(adapter, job, run_id, headless, epoch, *, initial=None, route_
                     'control_revision': epoch}, context=state['operation_context'])
             if continuation and (old.get('phase') != ('failed' if orphan else 'completed') or old.get('provider_id') != 'codex_native'
                     or state.get('phase') != 'created' or state.get('parent_attempt_id') != old.get('attempt_id')
-                    or not orphan and not (old.get('native_completion') or {}).get('next_action')):
+                    or not orphan and not ((old.get('native_completion') or {}).get('next_action')
+                        or _gap_pointer_matches(state, old))):
                 raise ConflictError('agent_research_continuation_changed', 'Closed owned model action required.')
             if (old.get('phase') not in {'completed', 'failed'} or recovery
                     and state.get('phase') in {old.get('phase'), 'completed'} and state.get('attempt_id')
@@ -389,10 +399,11 @@ def agent_context(identity, goal, run_id, now):
         'organization and event gaps with another concise query or article when resources permit. '
         'Vary street-type suffixes and quoted versus unquoted address queries when needed. '
         'The owner chose this house by place on the map; its map address tag can be stale or one of '
-        'several. search_anchor.map_surroundings lists mapped streets beside the contour and nearby '
-        'mapped addresses as search observations only: when the tagged address finds nothing or its '
-        'street is not beside the contour, look for this same building under addresses on those '
-        'streets. Attribute knowledge only to the selected building, never to a neighbour. '
+        'several. search_anchor.map_surroundings lists named streets near the contour and nearby '
+        'mapped addresses as search hints only; map proximity does not prove its facade street or '
+        'address. When the tagged address finds nothing or its street is not near the contour, look '
+        'for this same building under addresses on those streets, and bind a source to it only on the '
+        'source\'s own evidence. Attribute knowledge only to the selected building, never to a neighbour. '
         'Read the full page before citing it. Never invent facts to meet a count.')
     return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
@@ -787,8 +798,10 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 LOG.info('street_story_native_orphan_continuation run_id=%s parent_attempt_id=%s thread_id=%s status=ready',
                     run_id, result['attempt_id'], orphan['thread_id'])
                 continue
+            from .native_fact_contract import unresolved_gaps
             completion = result.get('native_completion') or {}
             action = completion.get('next_action')
+            gaps = unresolved_gaps(completion) if not action else []
             unresolved = [row for row in result.get('outcomes', []) if row.get('status') == 'unverified']
             # A closed native packet with a rejected own-source reference has
             # no outstanding judge send. Return the actual mechanical rejection
@@ -797,7 +810,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 row.get('reason') == 'native_fact_source_not_owned_read' and not row.get('receipt')
                 and not row.get('confirmation') for row in unresolved)
             if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
-                    or completion.get('research_sufficient') or not action or action.get('kind') == 'ask_owner'
+                    or completion.get('research_sufficient') or not (action or gaps)
+                    or (action or {}).get('kind') == 'ask_owner'
                     or completion.get('stop_basis') == 'resource_unavailable'
                     or unresolved and not closed_reference_errors):
                 return result
@@ -826,6 +840,25 @@ async def run_fact_agents(adapter, job, run_id, goal):
             progress_key = hashlib.sha256(json.dumps([action, knowledge, reads, failures],
                 ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             keys = result.get('continuation_keys') or []
+            knowledge_sha256 = hashlib.sha256(json.dumps(knowledge, sort_keys=True).encode()).hexdigest()
+            if gaps:
+                # The model named gaps but no step of its own. Hand its gaps back a
+                # bounded number of times; a gap turn that neither read nor learned
+                # anything ends the run instead of looping on the same question.
+                previous = [context['native_continuation'] for context in
+                    [result.get('operation_context') or {}, *((item.get('operation_context') or {})
+                     for item in result.get('history') or [])]
+                    if (context.get('native_continuation') or {}).get('unresolved_gaps')]
+                current = ((result.get('operation_context') or {}).get('native_continuation') or {})
+                blocker = ('gap_continuation_limit' if len(previous) >= GAP_CONTINUATIONS
+                    else 'gap_continuation_without_new_knowledge' if current.get('unresolved_gaps')
+                    and current.get('knowledge_sha256') == knowledge_sha256 and not reads else None)
+                if blocker:
+                    state = {**result, 'continuation_blocker': blocker}
+                    _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state, recovery=True)
+                    LOG.info('street_story_native_continuation run_id=%s attempt_id=%s status=stopped reason=%s gaps=%s',
+                        run_id, result['attempt_id'], blocker, len(gaps))
+                    return state
             if progress_key in keys:
                 state = {**result, 'continuation_blocker': 'same_action_without_new_input'}
                 _persist_plan(adapter, job, run_id, headless, epoch, route_id=route_id, state=state, recovery=True)
@@ -833,7 +866,8 @@ async def run_fact_agents(adapter, job, run_id, goal):
                     run_id, result['attempt_id'])
                 return state
             pointer = {'original_attempt_id': result['attempt_id'], 'thread_id': parent['thread_id'],
-                'parent_turn_id': parent['turn_id'], 'next_action': action, 'parent_sha256': native_parent_digest(parent)}
+                'parent_turn_id': parent['turn_id'], 'next_action': action, 'parent_sha256': native_parent_digest(parent),
+                **({'unresolved_gaps': gaps, 'knowledge_sha256': knowledge_sha256} if gaps else {})}
             next_context = native_agent_context(adapter.service, story, research['visual_identity'], goal, run_id)
             next_context['native_continuation'] = pointer
             if closed_reference_errors:
@@ -853,7 +887,7 @@ async def run_fact_agents(adapter, job, run_id, goal):
                 state=state, continuation=True)
             saved['routes'][route_id] = persisted['routes'][route_id]
             LOG.info('street_story_native_continuation run_id=%s parent_attempt_id=%s thread_id=%s action=%s status=ready',
-                run_id, result['attempt_id'], parent['thread_id'], action['kind'])
+                run_id, result['attempt_id'], parent['thread_id'], action['kind'] if action else 'unresolved_gaps')
 
     ids = saved['route_ids']
     primary_count = saved.get('primary_count', min(2, len(ids)))
@@ -913,7 +947,9 @@ async def run_fact_agents(adapter, job, run_id, goal):
         'research_agent_original_pending' if pending else 'research_agent_route_failed' if failed
             else 'research_agent_content_gaps' if gaps else 'research_agent_completed',
         pending=pending or failed or bool(gaps), content_gaps=gaps,
-        provider_availability=saved.get('provider_availability'), retained_waits=waits)
+        provider_availability=saved.get('provider_availability'), retained_waits=waits,
+        candidates=sum(int(part.get('candidate_count') or 0) for result in outcomes
+                       for part in (result, *(result.get('history') or []))))
     if future_waits:
         # The existing worker keeps the same job/run at the last outstanding
         # refusal deadline; provider admission remains mandatory after waking.
@@ -941,9 +977,13 @@ def _ask_owner_for_place_context(research, story, run_id) -> bool:
     """
     identity = research.get('visual_identity') or {}
     selection = research.get('place_selection') or {}
+    generation = story['_identity_generation']
     if selection.get('mode') != 'exact' or identity.get('status') != 'owner_confirmed':
         return False
-    generation = story['_identity_generation']
+    hint = research.get('owner_place_hint') or {}
+    if ((identity.get('search_anchor') or {}).get('owner_context')
+            or hint.get('photo_sha256') == story['photo_sha256'] and hint.get('generation') == generation):
+        return False  # The owner already answered for this house: never ask the same question again.
     research['identity_clarification'] = {
         'question': 'По этому дому не нашлось проверяемых сведений. Как ещё называют этот дом или какой у него адрес?',
         'reason': 'owner_selected_context_missing', 'photo_sha256': story['photo_sha256'],
@@ -956,7 +996,7 @@ def _ask_owner_for_place_context(research, story, run_id) -> bool:
 
 
 def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_gaps=None,
-            provider_availability=None, retained_waits=None):
+            provider_availability=None, retained_waits=None, candidates=0):
     from .service import canonical
     with adapter.service.store.tx() as db:
         snapshot = headless._snapshot(job, run_id, epoch)
@@ -967,6 +1007,11 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
             (job['story_id'],)).fetchone()[0]
         # A completed search that found nothing about this house is not a provider outage.
         no_sources = not eligible and reason == 'research_agent_content_gaps'
+        # Only an empty search points at the house's name/address. Found but
+        # unadmitted claims are an admission matter, not a question for the owner.
+        found_any = db.execute('SELECT COUNT(*) FROM fact_assertions WHERE story_id=?', (job['story_id'],)).fetchone()[0]
+        admission_gaps = set(content_gaps or []) & {'candidate_admission_unresolved', 'candidate_format_rejections',
+                                                    'read_sources_without_candidates'}
         outcome = ('useful_partial' if eligible and pending else 'useful_complete' if eligible
                    else 'no_supported_facts' if no_sources or not pending else 'resource_blocked')
         value = {'outcome': outcome, 'reason': reason, 'eligible_count': eligible,
@@ -980,7 +1025,8 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         if retained_waits:
             value.update(retained_waits=retained_waits, retry_at=max(row['retry_at'] for row in retained_waits))
         research['research_outcome'] = value
-        asking = no_sources and _ask_owner_for_place_context(research, story, run_id)
+        asking = (no_sources and not found_any and not candidates and not admission_gaps
+                  and _ask_owner_for_place_context(research, story, run_id))
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)

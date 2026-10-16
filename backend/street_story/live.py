@@ -435,12 +435,15 @@ FUNCTIONS = [
         {'area_id': {'type': 'string'}}, ['area_id']),
     _tool_schema('describe_owner_place',
         'Record fresh literal author speech as owner_voice name/address context for the already selected exact house. '
+        'If the author says they do not know another name or address, set owner_does_not_know=true instead. '
         'Never change the physical ID, city, geometry or generation.',
-        {'candidate_id': {'type': 'string'}, 'name': {'type': 'string'}, 'address': {'type': 'string'}}, ['candidate_id']),
+        {'candidate_id': {'type': 'string'}, 'name': {'type': 'string'}, 'address': {'type': 'string'},
+         'owner_does_not_know': {'type': 'boolean'}}, ['candidate_id']),
     _tool_schema(
         'mark_place_unknown',
         'When the author says they do not know where the photo was taken, retain the photo in place_unknown '
-        'and stop identity/fact work. The author may return to the map later.', {}),
+        'and stop identity/fact work. The author may return to the map later. Not for an already selected house '
+        'whose name or address the author does not know: use describe_owner_place(owner_does_not_know=true).', {}),
     _tool_schema(
         "resolve_place",
         "Resolve the photographed place before factual research. Uses the source photo plus GPS when available, OSM and nearby Wikipedia candidates, and visual identity. This does not publish or rewrite the post.",
@@ -825,16 +828,16 @@ Research and durable evidence:
 Concept, editing and publication:
 - Persist an owner's publication angle with set_concept while preserving the saved fact selection. A concept, draft or visual request does not authorize choosing different facts to fit the angle. If other facts would help, ask the author before changing selection. Call select_facts only when the author explicitly asks to choose or change facts; an explicit instruction to preserve the selection takes precedence. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
-- Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events.
+- Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events. Connecting words are assertions too: "continues", "still", "since then", "therefore", "as before" need support in the selected facts; a later different use is a change, not continuity of purpose. Name an institution as it was called at the dated event and mention a successor only as "ныне …" when a fact says so. Do not imply original fabric ("these walls") when an eligible fact reports later rebuilding; tell the author if such a fact changes the meaning of the selection.
 - Write captions for the reader: keep research-process comments, publication-age explanations and missing-date reports in evidence/source context, not in the finished text or visual instructions. An accurately supported former use may be stated without dates. Preserve attribution, genuine uncertainty and material conflicts when omitting them would mislead; never invent a period or use a source publication date as an event date. Apply this editorial distinction to both edit_text and generate_visual annotations.
-- Help a reader notice this particular building and understand why it is worth noticing. Develop a meaningful angle from a visible feature or selected supported detail; connect architecture, people or past uses rather than reciting cards or repeating the image labels. Finish with the confirmed building address and its actual city hashtag when available in confirmed_place. This is a reader goal, not a fixed paragraph template. Visible beauty may be an author's impression; do not invent scenes, motives, superlatives or access promises.
+- Help a reader notice this particular building and understand why it is worth noticing. Develop a meaningful angle from a visible feature or selected supported detail; connect architecture, people or past uses rather than reciting cards or repeating the image labels. Open with the strongest specific supported detail, never a generic promise (such as an "interesting history") the text does not then deliver. Several facts about one episode make one point, not a list. Finish with the confirmed building address and its actual city hashtag when available in confirmed_place. This is a reader goal, not a fixed paragraph template. Visible beauty may be an author's impression; do not invent scenes, motives, superlatives or access promises.
 - photo_capture describes original SOURCE EXIF capture time, not upload, publication or an event date. Keep its provenance and unknown timezone/status; never substitute current_date_utc or a source publication date. The photo supports only what is visible in its frame at capture. Use selected facts relevant to this photographed house and the owner's angle; a supported fact need not appear just to consume the selection. A past repair report can matter when it explains a visible feature, but a source-month repair bulletin is not automatically a useful story. Preserve the saved fact selection and evidence unless the owner asks to change it.
 - Make former uses unmistakably past in both prose and visual notes (for example, “Прежде: бакалея”). Include supported years briefly; otherwise use “раньше” or “здесь прежде”. Do not imply all tenants were simultaneous or pre-war. Current use needs current evidence; owner-reported current use remains a reported hint until verified. Reuse richer eligible inventory when helpful, but obtain the author's selection authorization before changing it and save the change normally. Caption should add meaning beyond the short visual notes, not duplicate their list.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
 - Choose facts semantically from the full eligible inventory according to the owner's intent, not a fixed count or fixed angle. For another post use previous_editorial_context and the current selection/concept as compact history; vary the angle and selection when useful, without forcing novelty or selecting unapproved facts for an existing post.
 - Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 is a true pixel crop. Inspect crop against essential building/context; if it cannot fit, explain the conflict and offer original. Do not silently contain, stretch or outpaint.
-- On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. For a rich owner-selected set, pass a small readable subset in fact_ids; every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
+- On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. Plan caption and image together so they complement each other: pass in fact_ids only the selected facts that read well as short notes on this image (a date, a visible feature, a former use); the caption develops the others and their connections. When a draft exists, do not hand the image the same list the caption already tells; one shared central point is fine. With few selected facts keep image notes to one or two. Every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
@@ -908,7 +911,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Ask briefly what the author remembers, call find_place_area with their spoken description, then '
                 'focus_owner_map using a returned area_id. This moves only the viewport. Do not choose a house yourself. '
                 'The author can tap any displayed contour or explicitly confirm its exact name/ID with confirm_place. '
-                'If they do not know where it is, use mark_place_unknown. Save speech as owner context, not established facts. '
+                'If they do not know where the photo was taken, use mark_place_unknown. If a house is already selected and they '
+                'do not know its name or address, use describe_owner_place with owner_does_not_know=true: the house stays '
+                'selected and research uses the map. Save speech as owner context, not established facts. '
                 'Never ask for typed city/address/coordinates. Do not use automatic recognition/G/T/REF to revisit an owner selection. '
                 'The photo GPS marker never moves. After confirmed selection use research/editor as appropriate.')
         elif capability == 'identity':
@@ -2862,9 +2867,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         from .live_author_intent import normalized
         cid = _bounded_text(args.get('candidate_id'), 300, required=True)
         values = {key: _bounded_text(args.get(key), 300) for key in ('name', 'address')}
+        unknown = args.get('owner_does_not_know') is True and not any(values.values())
         turn = session.state.get('author_turn') or {}
         text = ' ' + normalized(str(turn.get('text') or '')) + ' '
-        if (not any(values.values()) or turn.get('consumed') or turn.get('suspected_noise')
+        if (not (any(values.values()) or unknown) or turn.get('consumed') or turn.get('suspected_noise')
                 or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30
                 or any(' ' + normalized(value) + ' ' not in text for value in values.values() if value)):
             raise ConflictError('owner_voice_context_required', 'Нужно уточнение в текущей реплике автора.')
@@ -2881,12 +2887,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     or identity.get('candidate_id') != cid):
                 raise ConflictError('place_selection_stale', 'Уточнение должно относиться к текущему выбранному дому.')
             chosen = dict(selection['candidate'])
+            from .place_selection import apply_owner_address, search_terms
+            before = search_terms(chosen)
             if values['address']:
-                from .place_selection import apply_owner_address
                 chosen = apply_owner_address(chosen, values['address'], 'owner_voice')
             anchor = dict(chosen.get('search_anchor') or {})
             context = {'provenance': 'owner_voice', 'scope': 'search_context_only',
                        'independently_verified': False, 'turn_serial': turn.get('serial'),
+                       **({'owner_does_not_know': True} if unknown else {}),
                        **{key: value for key, value in values.items() if value}}
             anchor.update(owner_context=context, owner_context_provenance='owner_voice')
             if values['name']:
@@ -2902,14 +2910,32 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             db.execute('UPDATE stories SET place_name=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                        (chosen['name'], canonical(research), self.service.store.now(), row['id']))
             waiting = research.get('owner_research_waiting_context') or {}
+            instruction = 'Контекст автора сохранён. Выбранный дом остался тем же; это не проверенный факт.'
             if waiting.get('photo_sha256') == row['photo_sha256'] and waiting.get('generation') == generation and waiting.get('candidate_id') == cid:
                 from .place_selection import enqueue_owner_research, owner_context_missing
-                if not owner_context_missing(chosen):
+                # A new search only for new search terms: "don't know" or the same
+                # address/name already searched closes the question without a rerun.
+                if unknown and waiting.get('reason') == 'owner_selected_context_missing':
+                    # Asked at selection, before any search: research the chosen house from the map.
+                    research.pop('owner_research_waiting_context', None)
+                    enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
+                    db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (canonical(research), row['id']))
+                    instruction = ('Автор не знает названия или адреса. Дом остался выбранным; исследование идёт по карте '
+                                   '(место, соседние улицы и адреса). Это не проверенные факты.')
+                elif unknown or search_terms(chosen) <= before:
+                    research.pop('owner_research_waiting_context', None)
+                    db.execute("UPDATE stories SET state=CASE WHEN state='needs_review' THEN 'facts_ready' ELSE state END,"
+                               "research_json=? WHERE id=?", (canonical(research), row['id']))
+                    instruction = ('Автор не знает другого названия или адреса. ' if unknown else
+                        'Эти название и адрес уже были в поиске. ') + (
+                        'Новое исследование не запущено; по выбранному дому проверяемых сведений пока нет. '
+                        'Скажи это автору прямо и ничего не выдумывай.')
+                elif not owner_context_missing(chosen):
                     research.pop('owner_research_waiting_context', None)
                     enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
                     db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (canonical(research), row['id']))
             result = {'story': self.service._story_repr(db, self.service._story_row(db, row['id'])),
-                      'instruction': 'Контекст автора сохранён. Выбранный дом остался тем же; это не проверенный факт.'}
+                      'instruction': instruction}
             self._store_command(db, row['id'], command_id, 'describe_owner_place', args, result)
         turn['consumed'] = True
         self.emit(session, {'type': 'product_state', 'state': self._compact_context(self._topic_state(row['id']))})
@@ -2989,6 +3015,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 or not any(value in text for value in ('не знаю', 'не помню', 'неизвестно'))):
             raise ConflictError('owner_place_unknown_consent_required', 'Автор должен сказать, что не знает место съёмки.')
         story = self.service.story(session.resource_id)
+        if ((story.get('identity_clarification') or {}).get('reason') == 'owner_selected_context_missing'
+                and (story.get('place_selection') or {}).get('mode') == 'exact'
+                and (story.get('visual_identity') or {}).get('status') == 'owner_confirmed'):
+            # The open question is about the chosen house's name/address, so "не знаю"
+            # answers it; it never discards the house the author chose on the map.
+            raise ConflictError('owner_selected_house_question_open',
+                'Дом уже выбран на карте. Если автор не знает его названия или адреса, вызови '
+                'describe_owner_place с owner_does_not_know=true; дом останется выбранным.')
         scope = session.state.get('research_control_scope') or {}
         result = place_action(self.service, story['id'], command_id, {
             'expected_photo_sha256': scope.get('expected_photo_sha256'), 'expected_identity_generation': scope.get('expected_identity_generation'),

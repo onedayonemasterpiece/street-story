@@ -197,6 +197,11 @@ FINAL_INSTRUCTIONS = (
     'If INPUT.native_continuation is present, continue the specified owned '
     'parent turn in this same thread, preserving its read versions and useful '
     'facts; it is not permission to reidentify the selected house. '
+    'If it carries unresolved_gaps, your previous turn ended with those gaps while '
+    'resources remained and without a next step of its own: pursue them now through '
+    'distinct new directions (another source family, historical street names and '
+    'numbers, material you found but did not read, scoped Sol help) and save supported '
+    'knowledge, or explain concretely for each gap why further research cannot close it. '
     'Use INPUT.source_memory to distinguish discovery, partial delivery, all stored '
     'chunks delivered, extracted claims and blocked access. All delivered does not '
     'mean exhausted for every question or complete OCR/acquisition. Cached bytes '
@@ -264,6 +269,14 @@ def delivered_candidates(receipt):
     return {'facts': [*delivered, *final['facts']]}
 
 
+def unresolved_gaps(completion):
+    """The model's own remaining gaps after an unresolved_gap stop, as sent back to it."""
+    if (completion or {}).get('research_sufficient') or (completion or {}).get('stop_basis') != 'unresolved_gap':
+        return []
+    return [gap.strip()[:500] for gap in (completion.get('remaining_gaps') or [])[:8]
+            if isinstance(gap, str) and gap.strip()]
+
+
 def native_parent_digest(receipt):
     """Fingerprint immutable closed inference/read ownership, excluding accounting retries."""
     packet = {key: receipt.get(key) for key in ('binding', 'native_contract', 'provider_id', 'model_id',
@@ -281,10 +294,15 @@ def load_native_parent(db, pointer, *, binding, context):
     except (KeyError, IndexError, ValueError) as exc:
         raise ValueError('native_continuation_parent_unverified') from exc
     completion = (parent.get('raw_result') or {}).get('completion') or {}
+    # The model's own reported gaps continue its turn when it named no next step.
+    gap_continuation = (not completion.get('next_action') and pointer.get('unresolved_gaps')
+        and completion.get('stop_basis') == 'unresolved_gap'
+        and pointer['unresolved_gaps'] == unresolved_gaps(completion))
     if (not row['role'].startswith('facts_agent_') or parent.get('native_contract') != CONTRACT
             or parent.get('phase') != 'completed' or parent.get('provider_send_state') != 'response_closed'
             or parent.get('native_terminal_status') != 'completed' or completion.get('research_sufficient')
-            or not completion.get('next_action') or completion['next_action'].get('kind') == 'ask_owner'
+            or not (completion.get('next_action') or gap_continuation)
+            or (completion.get('next_action') or {}).get('kind') == 'ask_owner'
             or parent.get('provider_id') != 'codex_native' or parent.get('model_id') != 'gpt-6-luna'
             or pointer.get('thread_id') != parent.get('thread_id')
             or pointer.get('parent_turn_id') != parent.get('turn_id')

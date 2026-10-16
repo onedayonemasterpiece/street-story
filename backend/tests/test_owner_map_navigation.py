@@ -378,8 +378,8 @@ class WrongAddressTag(NoCity):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('path', ['selection_hint', 'voice'])
 async def test_owner_address_replaces_a_wrong_map_address_tag_as_the_only_search_address(tmp_path, path):
-    # 105: the OSM tag of the photographed contour says Университетская улица 3;
-    # the author says Профессора Севастьянова 3. Research must not search the tag.
+    # The map tag of the chosen contour names another address than the author's.
+    # Research must not search the tag next to the author's address.
     service, _ = make_service(tmp_path)
     story = manual(service)
     service.providers.osm = WrongAddressTag()
@@ -409,3 +409,74 @@ async def test_owner_address_replaces_a_wrong_map_address_tag_as_the_only_search
     assert chosen['map_geometry']['rings'][0]['closed']
     selected_object = json.dumps(agent_context(identity, 'goal', 'run', 0)['selected_object'], ensure_ascii=False)
     assert 'Профессора Севастьянова' in selected_object and 'Университетская' not in selected_object
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply', ['does_not_know', 'same_address', 'new_address'])
+async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(tmp_path, reply):
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = WrongAddressTag()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:1', 'select'))
+    with service.store.tx() as db:
+        row = service._story_row(db, story['id'])
+        research = json.loads(row['research_json'])
+        generation = int(research['identity_generation'])
+        # The state an empty completed search leaves behind.
+        research['identity_clarification'] = {'question': 'Какой у него адрес?', 'reason': 'owner_selected_context_missing',
+            'photo_sha256': row['photo_sha256'], 'generation': generation, 'scope': 'search_context_only'}
+        research['owner_research_waiting_context'] = {'photo_sha256': row['photo_sha256'], 'generation': generation,
+            'candidate_id': 'osm:way:1', 'command_id': 'owner-context-run', 'reason': 'owner_research_found_no_sources'}
+        db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (json.dumps(research), story['id']))
+        jobs_before = db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0]
+    adapter, session = live(service, selected)
+    args = {'candidate_id': 'osm:way:1'}
+    if reply == 'does_not_know':
+        begin_turn(session, 'Не знаю, какой там адрес', origin='audio')
+        args['owner_does_not_know'] = True
+    else:
+        address = 'Университетская улица 3' if reply == 'same_address' else 'Профессора Севастьянова 3'
+        begin_turn(session, f'Это {address}', origin='audio')
+        args['address'] = address
+    result = await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'answer', 'args': args})
+    current = service.story(story['id'])
+    with service.store.connection() as db:
+        jobs = db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0]
+        research = json.loads(service._story_row(db, story['id'])['research_json'])
+    assert not current['identity_clarification'] and 'owner_research_waiting_context' not in research
+    assert current['visual_identity']['candidate_id'] == 'osm:way:1'
+    if reply == 'new_address':
+        assert jobs == jobs_before + 1 and current['state'] == 'researching'
+    else:
+        assert jobs == jobs_before and current['state'] == 'facts_ready'
+        assert 'Новое исследование не запущено' in result['instruction']
+    # Asked once: a further empty search for this house does not ask again.
+    from street_story.fact_agents import _ask_owner_for_place_context
+    assert not _ask_owner_for_place_context(research, {'photo_sha256': selected['photo_sha256'],
+                                                        '_identity_generation': generation}, 'next-run')
+
+
+@pytest.mark.asyncio
+async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_from_the_map(tmp_path):
+    # "Не знаю" answers the open name/address question; it never discards the house chosen on the map.
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = NoCity()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    assert selected['state'] == 'needs_review' and selected['identity_clarification']
+    adapter, session = live(service, selected)
+    begin_turn(session, 'Не знаю, как называется этот дом и какой у него адрес', origin='audio')
+    with pytest.raises(ConflictError, match='Дом уже выбран'):
+        await adapter.execute_tool(session, {'name': 'mark_place_unknown', 'id': 'unknown', 'args': {}})
+    result = await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'dont-know',
+        'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True}})
+    current = service.story(story['id'])
+    assert current['state'] == 'researching' and not current['identity_clarification']
+    assert current['identity_generation'] == selected['identity_generation']
+    assert current['visual_identity']['candidate_id'] == 'osm:way:2'
+    assert current['visual_identity']['search_anchor']['owner_context']['owner_does_not_know'] is True
+    assert 'исследование идёт по карте' in result['instruction']
+    with service.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1

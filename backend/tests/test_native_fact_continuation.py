@@ -9,7 +9,7 @@ from street_story.db import Store
 from street_story.errors import RetryableProviderError
 from street_story.fact_agent_providers import AgentRoute
 from street_story.fact_agent_providers import native_tools
-from street_story.fact_agents import run_fact_agents
+from street_story.fact_agents import GAP_CONTINUATIONS, run_fact_agents
 from street_story.native_fact_research import CONTRACT
 from street_story.research_adapter import ProductResearchAdapter
 from test_headless_facts import fixture
@@ -145,5 +145,46 @@ async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts
         else:
             await run_fact_agents(adapter,job,'headless-run','Original research')
             assert calls==['codex_native','gigachat']
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['then_sufficient', 'no_new_knowledge', 'limit'])
+async def test_reported_gaps_without_own_next_step_continue_same_thread_bounded(tmp_path, monkeypatch, mode):
+    # Ending with unresolved gaps while resources remain is not "done": the
+    # model's own gaps go back to the same thread, a bounded number of times.
+    service, job, _, reader, _ = await fixture(tmp_path)
+    adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
+    route = AgentRoute('codex_native','gpt-6-luna','native',object())
+    monkeypatch.setattr('street_story.fact_agents.configured_routes', lambda adapter:[route])
+    calls = []
+    async def invoke(adapter, current, story, context, *, binding, guard):
+        guard()
+        calls.append(copy.deepcopy(context))
+        number = len(calls)
+        if number > 1:
+            pointer = context['native_continuation']
+            assert pointer['next_action'] is None and pointer['unresolved_gaps'] == ['Historical linkage remains']
+            assert pointer['thread_id'] == 'same-owned-luna' and pointer['parent_turn_id'] == f'closed-{number-1}'
+        raw = packet(sufficient=True, basis='material_exhausted') if mode == 'then_sufficient' and number == 2 else packet()
+        value = receipt(binding, context, raw, number)
+        if mode == 'limit':  # each gap turn reads something new but never closes the gap
+            value['native_tool_calls'] = {f'read-{number}': {'phase': 'completed', 'result': {'documents': [
+                {'source_version_id': f'srcv_{number}', 'content_sha256': 'a'*64, 'chunks': [{'chunk_id': f'c{number}'}]}]}}}
+        adapter._checkpoint_receipt(binding, value)
+        return {'result': value['result'], 'receipt': value}
+    monkeypatch.setattr('street_story.fact_agents.run_tool_agent', invoke)
+    try:
+        await run_fact_agents(adapter, job, 'headless-run', 'Original research')
+        state = service.store.checkpoint_get(job['id'], 'fact_agent_plan:headless-run')['routes'][route.route_id]
+        if mode == 'then_sufficient':
+            assert len(calls) == 2 and state['native_completion']['research_sufficient']
+        elif mode == 'no_new_knowledge':
+            assert len(calls) == 2 and state['continuation_blocker'] == 'gap_continuation_without_new_knowledge'
+        else:
+            assert len(calls) == 1 + GAP_CONTINUATIONS and state['continuation_blocker'] == 'gap_continuation_limit'
+        with service.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] <= 1
     finally:
         await reader.search_http.aclose()

@@ -75,13 +75,18 @@ def test_selected_city_typo_takes_the_local_majority_spelling_but_not_another_ci
     assert snapshot_city(snapshot, chosen)
     assert chosen['search_anchor'] == {'city': 'Калининград', 'city_provenance': 'osm.snapshot_majority_spelling',
                                        'city_selected_tag': 'Калиининград'}
+    unnamed = {'candidate_id': 'osm:way:9', 'search_anchor': {}}  # no own city tag; nearest neighbour has the typo
+    snapshot_city({'city_objects': [{**objects('Калиининград', 1, 'n')[0], 'search_anchor': {
+        'city': 'Калиининград', 'city_provenance': 'osm.selected.addr_city'}}, *objects('Калининград', 9, 'd')]}, unnamed)
+    assert unnamed['search_anchor']['city'] == 'Калининград'
+    assert unnamed['search_anchor']['city_neighbour_tag'] == 'Калиининград'
     border = {'candidate_id': 'osm:way:2', 'search_anchor': {'city': 'Гурьевск'}}
     snapshot_city({'city_objects': objects('Калининград', 9, 'c')}, border)
     assert border['search_anchor'] == {'city': 'Гурьевск', 'city_provenance': 'osm.selected.addr_city'}
 
 
-def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_frontage_neighbours():
-    # 105: the contour is tagged Университетская 3 but stands beside Профессора Севастьянова.
+def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_nearby_addresses():
+    # The contour's address tag names a street that is not beside it.
     from street_story.fact_agents import agent_context
     from street_story.place_selection import snapshot_surroundings
     def box(cid, lat, lon, street='', number=''):
@@ -100,8 +105,9 @@ def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_frontage_
     snapshot_surroundings(snapshot, chosen)
     seen = chosen['search_anchor']['map_surroundings']
     assert seen['scope'] == 'search_discovery_only' and seen['snapshot_id'] == 'map_1'
-    assert seen['frontage_streets'] == [{'name': 'улица Профессора Севастьянова', 'distance_m': 11}]
-    assert seen['tagged_street_beside_contour'] is False and seen['tagged_street_distance_m'] == 78
+    assert seen['streets_within_35m'] == [{'name': 'улица Профессора Севастьянова', 'distance_m': 11}]
+    assert seen['tagged_street_within_35m'] is False and seen['tagged_street_distance_m'] == 78
+    assert 'not proof' in seen['meaning']
     assert [(n['address'], n['candidate_id']) for n in seen['neighbour_addresses']] == [
         ('улица Профессора Севастьянова 3/5к2', 'osm:way:2')]
     # The observed tag stays the search address; surroundings only add discovery routes.

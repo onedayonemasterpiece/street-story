@@ -404,14 +404,24 @@ async def test_missing_route_state_recovers_original_journal_before_any_discover
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('owner_selected', [True, False])
-async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_context(tmp_path, monkeypatch, owner_selected):
+@pytest.mark.parametrize('owner_selected,prior', [(True, None), (False, None), (True, 'owner_answered'),
+                                                  (True, 'found_unadmitted')])
+async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_context(tmp_path, monkeypatch, owner_selected, prior):
+    # Only an empty search asks, once per house: never after the owner answered,
+    # and never when claims were found but not admitted.
     service, job, _, reader, _ = await fixture(tmp_path)
     with service.store.tx() as db:
-        research = json.loads(service._story_row(db, job['story_id'])['research_json'])
+        row = service._story_row(db, job['story_id'])
+        research = json.loads(row['research_json'])
         if owner_selected:
             research['visual_identity']['status'] = 'owner_confirmed'
             research['place_selection'] = {'mode': 'exact', 'candidate_id': research['visual_identity'].get('candidate_id')}
+        if prior == 'owner_answered':
+            research['owner_place_hint'] = {'provenance': 'owner_voice', 'address': 'Street 1',
+                'photo_sha256': row['photo_sha256'], 'generation': int(research.get('identity_generation') or 0)}
+        if prior == 'found_unadmitted':
+            db.execute("INSERT INTO fact_assertions(story_id,assertion_id,display_text,review_status,eligibility,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?,?,?)", (job['story_id'], 'claim_withheld', 'Withheld claim', 'withheld', 'withheld', 1, 1))
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
     adapter = ProductResearchAdapter(service, admission=SimpleNamespace())
     routes = [AgentRoute('google', 'only', 'https://example.org', object())]
@@ -432,7 +442,7 @@ async def test_completed_empty_search_is_not_an_outage_and_asks_the_owner_for_co
         with service.store.connection() as db:
             row = service._story_row(db, job['story_id'])
         research = json.loads(row['research_json'])
-        if owner_selected:
+        if owner_selected and not prior:
             assert research['identity_clarification']['reason'] == 'owner_selected_context_missing'
             assert research['owner_research_waiting_context']['command_id'] == 'owner-context-headless-run'
             assert row['state'] == 'needs_review'
