@@ -2935,6 +2935,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             db.execute('UPDATE stories SET place_name=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                        (chosen['name'], canonical(research), self.service.store.now(), row['id']))
             waiting = research.get('owner_research_waiting_context') or {}
+            research_job_id = None
             instruction = 'Контекст автора сохранён. Выбранный дом остался тем же; это не проверенный факт.'
             if waiting.get('photo_sha256') == row['photo_sha256'] and waiting.get('generation') == generation and waiting.get('candidate_id') == cid:
                 from .place_selection import enqueue_owner_research, owner_context_missing
@@ -2943,8 +2944,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if unknown and waiting.get('reason') == 'owner_selected_context_missing':
                     # Asked at selection, before any search: research the chosen house from the map.
                     research.pop('owner_research_waiting_context', None)
-                    enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
-                    db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (canonical(research), row['id']))
+                    research_job_id = enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
+                    # Enqueue persisted the new envelope; don't restore the prior terminal outcome.
+                    db.execute("UPDATE stories SET state='researching' WHERE id=?", (row['id'],))
                     instruction = ('Автор не знает названия или адреса. Дом остался выбранным; исследование идёт по карте '
                                    '(место, соседние улицы и адреса). Это не проверенные факты.')
                 elif unknown or search_terms(chosen) <= before:
@@ -2957,14 +2959,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         'Скажи это автору прямо и ничего не выдумывай.')
                 elif not owner_context_missing(chosen):
                     research.pop('owner_research_waiting_context', None)
-                    enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
-                    db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (canonical(research), row['id']))
+                    research_job_id = enqueue_owner_research(self.service, db, row, research, waiting['command_id'], cid)
+                    # Enqueue persisted the new envelope; don't restore the prior terminal outcome.
+                    db.execute("UPDATE stories SET state='researching' WHERE id=?", (row['id'],))
             result = {'story': self.service._story_repr(db, self.service._story_row(db, row['id'])),
                       'instruction': instruction}
             self._store_command(db, row['id'], command_id, 'describe_owner_place', args, result)
         turn['consumed'] = True
         self.emit(session, {'type': 'product_state', 'state': self._compact_context(self._topic_state(row['id']))})
-        logger.info('street_story_owner_map stage=voice_context story_id=%s generation=%s candidate_id=%s', row['id'], generation, cid)
+        logger.info('street_story_owner_map stage=voice_context story_id=%s generation=%s candidate_id=%s research_job_id=%s',
+                    row['id'], generation, cid, research_job_id)
         return result
 
     async def _find_place_area(self, session, command_id, args):

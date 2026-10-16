@@ -425,6 +425,8 @@ async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(
     snapshot = await place_map(service, story['id'])
     selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:1', 'select'))
     with service.store.tx() as db:
+        from street_story.research_budget import finish_attempt
+        finish_attempt(service, db, story['id'], outcome='no_supported_facts', reason='research_agent_content_gaps')
         row = service._story_row(db, story['id'])
         research = json.loads(row['research_json'])
         generation = int(research['identity_generation'])
@@ -454,8 +456,13 @@ async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(
     assert current['visual_identity']['candidate_id'] == 'osm:way:1'
     if reply == 'new_address':
         assert jobs == jobs_before + 1 and current['state'] == 'researching'
+        from street_story.research_budget import require_remaining
+        assert require_remaining(service, story['id']) == float('inf')
+        assert 'automatic_research_outcome' not in research
+        assert research['research_attempt_history'][-1]['automatic_research_outcome']['reason'] == 'research_agent_content_gaps'
     else:
         assert jobs == jobs_before and current['state'] == 'facts_ready'
+        assert research['automatic_research_outcome']['reason'] == 'research_agent_content_gaps'
         assert 'Новое исследование не запущено' in result['instruction']
     # Asked once: a further empty search for this house does not ask again.
     from street_story.fact_agents import _ask_owner_for_place_context
