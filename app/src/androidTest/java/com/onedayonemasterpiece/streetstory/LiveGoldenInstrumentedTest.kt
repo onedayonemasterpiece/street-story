@@ -1154,7 +1154,7 @@ class LiveGoldenInstrumentedTest {
     }
 
     companion object {
-        private const val OWNER_PROMPT_SHA256 = "7148b7ff4bcecde685c1c10935d5790d7be3dc52b8092541d5c7021503e27cca"
+        private const val OWNER_PROMPT_SHA256 = "32b32762e31438a7d371f584ff54bbb4d652ec4cdc8714fad4ec2111d6504dcd"
         private const val PCM_CHUNK_SAMPLES = EfficientVad.FRAME_SAMPLES
         private const val PCM_CHUNK_SLEEP_MS = EfficientVad.FRAME_MS
         private const val RESEARCH_TIMEOUT_MS = 90_000L
