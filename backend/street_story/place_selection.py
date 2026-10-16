@@ -123,17 +123,30 @@ def owner_context_missing(chosen):
                 or anchor.get('street') and anchor.get('house_number'))
 
 
-_GENERIC_PLACE_WORDS = {'улица', 'ул', 'проспект', 'пр', 'переулок', 'пер', 'площадь', 'пл', 'бульвар',
-                        'шоссе', 'набережная', 'аллея', 'дом', 'д', 'город', 'г'}
+_STREET_TYPE = {'ул': 'улица', 'пр': 'проспект', 'пр-т': 'проспект', 'просп': 'проспект', 'пер': 'переулок',
+                'пл': 'площадь', 'б-р': 'бульвар', 'бул': 'бульвар', 'наб': 'набережная', 'ш': 'шоссе'}
+_NUMBER = r'\d+[0-9a-zа-я/-]*'
+
+
+def _address_key(text, city):
+    """Street words with their type, plus the whole house number (3/5к2 is not 3)."""
+    text = str(text or '').casefold().replace('ё', 'е')
+    numbers = re.findall(_NUMBER, text)
+    words = [_STREET_TYPE.get(word, word) for word in re.findall(r'[a-zа-я][a-zа-я-]*', re.sub(_NUMBER, ' ', text))]
+    street = frozenset(word for word in [*words, *numbers[:-1]] if word not in city and word not in {'дом', 'д', 'город', 'г'})
+    return street, numbers[-1] if numbers else ''
 
 
 def search_terms(chosen):
-    """Literal search words of the selected house (name, address, names), without street types or city."""
+    """Literal search keys of the selected house: each address as (street words, number) and each name."""
     anchor = chosen.get('search_anchor') or {}
-    text = ' '.join(str(value or '') for value in (chosen.get('name'), anchor.get('address'), anchor.get('street'),
-                                                    anchor.get('house_number'), *(anchor.get('names') or [])))
-    city = set(re.findall(r'[0-9a-zа-яё]+', str(anchor.get('city') or '').casefold()))
-    return set(re.findall(r'[0-9a-zа-яё]+', text.casefold())) - _GENERIC_PLACE_WORDS - city
+    city = set(re.findall(r'[a-zа-я][a-zа-я-]*', str(anchor.get('city') or '').casefold().replace('ё', 'е')))
+    addresses = [anchor.get('address'), ' '.join(str(anchor.get(k) or '') for k in ('street', 'house_number'))]
+    names = [value for value in anchor.get('names') or [] if str(value or '').strip()]
+    keys = {('address', _address_key(value, city)) for value in [*addresses, chosen.get('name'), *names]
+            if str(value or '').strip()}
+    keys |= {('name', ' '.join(re.findall(r'[0-9a-zа-я]+', str(value).casefold().replace('ё', 'е')))) for value in names}
+    return {key for key in keys if key[0] == 'name' or any(key[1])}
 
 
 _MAP_ADDRESS_KEYS = ('street', 'house_number', 'house_numbers', 'address',

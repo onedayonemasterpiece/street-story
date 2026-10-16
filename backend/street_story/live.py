@@ -438,7 +438,9 @@ FUNCTIONS = [
         'If the author says they do not know another name or address, set owner_does_not_know=true instead. '
         'Never change the physical ID, city, geometry or generation.',
         {'candidate_id': {'type': 'string'}, 'name': {'type': 'string'}, 'address': {'type': 'string'},
-         'owner_does_not_know': {'type': 'boolean'}}, ['candidate_id']),
+         'owner_does_not_know': {'type': 'boolean'},
+         'owner_quote': {'type': 'string', 'description': 'With owner_does_not_know: the exact words of the current author reply.'}},
+        ['candidate_id']),
     _tool_schema(
         'mark_place_unknown',
         'When the author says they do not know where the photo was taken, retain the photo in place_unknown '
@@ -1289,7 +1291,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "First document: choose a competent discovery source and copy source_ref. Follow saved next_args for later pages; empty source_ref follows the next unread source."
                     if function["name"] == "get_research_chunk" else function["description"]
                     if function["name"] in {'get_review_packet', 'get_review_context', 'assess_review_packet',
-                        'repair_research_fact', 'finalize_fact_review'}
+                        'repair_research_fact', 'finalize_fact_review', 'describe_owner_place', 'mark_place_unknown'}
                     else function["description"].split(". ")[0][:140]
                 )} for function in FUNCTIONS],
                 "voice": "Aoede",
@@ -2870,6 +2872,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         unknown = args.get('owner_does_not_know') is True and not any(values.values())
         turn = session.state.get('author_turn') or {}
         text = ' ' + normalized(str(turn.get('text') or '')) + ' '
+        if unknown:
+            # "Не знаю" answers only the open question about this chosen house, quoted from the fresh reply;
+            # the model still decides what the reply means.
+            quote = normalized(_bounded_text(args.get('owner_quote'), 300))
+            question = (self.service.story(session.resource_id).get('identity_clarification') or {})
+            if (question.get('reason') != 'owner_selected_context_missing' or len(quote.split()) < 2
+                    or ' ' + quote + ' ' not in text):
+                raise ConflictError('owner_voice_context_required',
+                    'Нужен открытый вопрос о выбранном доме и дословная цитата текущего ответа автора.')
         if (not (any(values.values()) or unknown) or turn.get('consumed') or turn.get('suspected_noise')
                 or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30
                 or any(' ' + normalized(value) + ' ' not in text for value in values.values() if value)):

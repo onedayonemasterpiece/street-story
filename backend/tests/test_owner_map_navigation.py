@@ -251,6 +251,10 @@ async def test_manual_live_clarification_defaults_to_map_and_normal_read_never_r
     initialized = adapter.initialize(resource_id=a['id'], actor=None, model='gemini-3.8-live')
     assert initialized['capability'] == 'place_map'
     assert 'describe_owner_place' in {f['name'] for f in initialized['configuration']['functions']}
+    described = {f['name']: f['description'] for f in initialized['configuration']['functions']}
+    # The model sees the whole guidance that separates "don't know the address" from "don't know the place".
+    assert 'owner_does_not_know=true' in described['describe_owner_place']
+    assert 'owner_does_not_know=true' in described.get('mark_place_unknown', 'owner_does_not_know=true')
     _, session = live(service, a)
     async def forbidden(*_):
         raise AssertionError('Manual navigation must not launch visual identity')
@@ -434,7 +438,7 @@ async def test_owner_answer_after_empty_search_reruns_only_for_new_search_terms(
     args = {'candidate_id': 'osm:way:1'}
     if reply == 'does_not_know':
         begin_turn(session, 'Не знаю, какой там адрес', origin='audio')
-        args['owner_does_not_know'] = True
+        args.update(owner_does_not_know=True, owner_quote='Не знаю, какой там адрес')
     else:
         address = 'Университетская улица 3' if reply == 'same_address' else 'Профессора Севастьянова 3'
         begin_turn(session, f'Это {address}', origin='audio')
@@ -470,8 +474,11 @@ async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_f
     begin_turn(session, 'Не знаю, как называется этот дом и какой у него адрес', origin='audio')
     with pytest.raises(ConflictError, match='Дом уже выбран'):
         await adapter.execute_tool(session, {'name': 'mark_place_unknown', 'id': 'unknown', 'args': {}})
+    with pytest.raises(ConflictError):  # a refusal must quote the current reply
+        await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'unquoted',
+            'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'owner_quote': 'другие слова'}})
     result = await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'dont-know',
-        'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True}})
+        'args': {'candidate_id': 'osm:way:2', 'owner_does_not_know': True, 'owner_quote': 'Не знаю, как называется'}})
     current = service.story(story['id'])
     assert current['state'] == 'researching' and not current['identity_clarification']
     assert current['identity_generation'] == selected['identity_generation']
@@ -480,3 +487,34 @@ async def test_dont_know_for_a_nameless_selected_house_keeps_it_and_researches_f
     assert 'исследование идёт по карте' in result['instruction']
     with service.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1
+
+
+def test_search_terms_keep_street_type_and_whole_house_number():
+    from street_story.place_selection import search_terms
+    def house(address):
+        return {'name': address, 'search_anchor': {'city': 'Калининград', 'address': address}}
+    tagged = {'name': 'Университетская улица 3', 'name_provenance': 'osm.tags.address',
+              'search_anchor': {'city': 'Калининград', 'street': 'Университетская улица', 'house_number': '3'}}
+    before = search_terms(tagged)
+    assert search_terms(house('улица Университетская, 3')) <= before
+    assert search_terms(house('Калининград, ул. Университетская, 3')) <= before
+    assert not search_terms(house('Университетский проспект 3')) <= before
+    assert not search_terms(house('Университетская улица 3/5')) <= before
+    assert not search_terms(house('Университетская улица 3А')) <= before
+    named = {**tagged, 'search_anchor': {**tagged['search_anchor'], 'names': ['Дом Отто Брауна']}}
+    assert not search_terms(named) <= before
+
+
+@pytest.mark.asyncio
+async def test_dont_know_without_an_open_question_is_not_a_refusal(tmp_path):
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = WrongAddressTag()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:1', 'select'))
+    assert not selected['identity_clarification']
+    adapter, session = live(service, selected)
+    begin_turn(session, 'Не знаю, может быть позже', origin='audio')
+    with pytest.raises(ConflictError):
+        await adapter.execute_tool(session, {'name': 'describe_owner_place', 'id': 'unasked', 'args': {
+            'candidate_id': 'osm:way:1', 'owner_does_not_know': True, 'owner_quote': 'Не знаю, может быть позже'}})
