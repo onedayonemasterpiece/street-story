@@ -27,9 +27,10 @@ internal object ImagePreviewDecoder {
                           format: PhotoFormatWire?): Bitmap? {
         val bitmap = decode(context, path, targetWidth, targetHeight) ?: return null
         if (format?.mode != "crop_4_5") return bitmap
+        // Without an author crop, the model composes 4:5 from this whole frame.
+        val rect = format.cropRect ?: return bitmap
         val full = format.orientedSize
-        val rect = format.cropRect
-        val requested = if (full?.size == 2 && rect?.size == 4 && full[0] > 0 && full[1] > 0) {
+        val requested = if (full?.size == 2 && rect.size == 4 && full[0] > 0 && full[1] > 0) {
             val x = (rect[0].toDouble() * bitmap.width / full[0]).toInt()
             val y = (rect[1].toDouble() * bitmap.height / full[1]).toInt()
             val width = (rect[2].toDouble() * bitmap.width / full[0]).toInt()

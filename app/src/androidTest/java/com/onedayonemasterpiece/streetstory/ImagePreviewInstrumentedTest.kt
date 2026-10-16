@@ -27,11 +27,19 @@ class ImagePreviewInstrumentedTest {
         assertEquals(60, cropped.height)
         assertEquals(source.getPixel(16, 0), cropped.getPixel(0, 0))
         assertEquals(source.getPixel(63, 59), cropped.getPixel(47, 59))
+        val composedFormat = PhotoFormatWire().apply {
+            mode = "crop_4_5"; orientedSize = listOf(80, 60); cropRect = null
+        }
+        val composed = ImagePreviewDecoder.decodePhotoFormat(context, file.absolutePath, 100, 100, composedFormat)!!
+        assertEquals(80, composed.width)
+        assertEquals(60, composed.height)
+        assertEquals(source.getPixel(0, 0), composed.getPixel(0, 0))
+        assertEquals(source.getPixel(79, 59), composed.getPixel(79, 59))
         val original = ImagePreviewDecoder.decodePhotoFormat(context, file.absolutePath, 100, 100, PhotoFormatWire())!!
         assertEquals(80, original.width)
         assertEquals(60, original.height)
         org.junit.Assert.assertArrayEquals(before, file.readBytes())
-        source.recycle(); cropped.recycle(); original.recycle(); file.delete()
+        source.recycle(); cropped.recycle(); composed.recycle(); original.recycle(); file.delete()
     }
 
     @Test
