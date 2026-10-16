@@ -244,7 +244,7 @@ def test_artistic_original_rejects_wrong_aspect_instead_of_stretching():
 
 @pytest.mark.asyncio
 async def test_rejected_artistic_original_frame_allows_a_new_author_request(tmp_path):
-    # 122: after a rejected original-aspect result Mira could neither show it nor request another.
+    # After a rejected original-aspect result Mira could neither show it nor request another.
     from test_mvp_visual import FrameBoundary, visual_context
     vp = FrameBoundary({'width': 40, 'height': 40})
     svc = service(tmp_path, vp)
@@ -270,3 +270,33 @@ async def test_rejected_artistic_original_frame_allows_a_new_author_request(tmp_
     assert second['content_revision'] != first['content_revision']
     assert second['attempt_history'][-1]['output_frame_evidence'] == first['output_frame_evidence']
     assert vp.tune_calls == 1 and vp.select_calls == 0 and not vp.publish_effects
+
+
+@pytest.mark.asyncio
+async def test_observing_a_result_rejected_by_rounding_imports_it_without_new_generation(tmp_path, monkeypatch):
+    # A result rejected under the former exact-proportion rule is recovered by
+    # observing the same operation: no tune, no new image task.
+    from street_story.product import ProductStreetStoryService
+    from test_mvp_visual import FrameBoundary, visual_context
+    exact = staticmethod(lambda context, width, height: width * 30 == height * 40)
+    vp = FrameBoundary({'width': 1449, 'height': 1086})  # 40x30 original: 1086.75 rounds to 1086
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    set_photo_format(svc, sid, 'owner-format', {'mode': 'original', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'first-art', {'selected_fact_ids': [], 'visual_instruction': 'Ink sketch.'})
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    with monkeypatch.context() as patch:
+        patch.setattr(ProductStreetStoryService, '_frame_dimensions_match', exact)
+        await svc._run_visual(job)
+    assert visual_context(svc, sid)['output_frame_evidence']['reason'] == 'visual_format_mismatch'
+    await svc.request_visual(sid, 'observe-existing', {'selected_fact_ids': [], 'observe_existing_visual': True})
+    with svc.store.connection() as db:
+        observe = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual' AND id!=?", (sid, job['id'])).fetchone())
+    await svc._run_visual(observe)
+    assert visual_context(svc, sid)['output_frame_evidence']['state'] == 'verified'
+    assert svc.story(sid)['processed_image_url'] and svc.story(sid)['state'] == 'ready_to_publish'
+    assert vp.tune_calls == 1 and vp.select_calls == 1

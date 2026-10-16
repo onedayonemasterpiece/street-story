@@ -303,8 +303,8 @@ class ProductStreetStoryService(StreetStoryService):
         if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
             return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
         if context.get('output_frame_contract') == ORIGINAL_ART_FRAME_CONTRACT:
-            # Same proportion up to one output pixel: a coprime original such as
-            # 3925x2944 has no exact smaller frame (122 returned 1448x1086).
+            # Same proportion up to one output pixel: an original with coprime
+            # sides has no exact smaller frame, so exact equality never passes.
             size = (context.get('source_image_transform') or {}).get('output_size')
             return bool(size and abs(width * size[1] - height * size[0]) <= max(size))
         return False
