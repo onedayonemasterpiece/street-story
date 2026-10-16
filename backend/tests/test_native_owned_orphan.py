@@ -73,6 +73,34 @@ def test_journal_rejects_foreign_or_changed_ownership(tmp_path, monkeypatch, cha
         native.NativeFactResearch._callback_journal(thread, TURN, INPUT[0]['text'], TOOLS)
 
 
+ENV_CONTEXT = {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+    'content': [{'type': 'input_text', 'text': '<environment_context>\n  <cwd>/data</cwd>\n</environment_context>'}],
+    'internal_chat_message_metadata_passthrough': {'turn_id': TURN,
+        'content_item_kinds': ['environments.environment_context']}}}
+
+
+@pytest.mark.parametrize('variant', ['codex_first_turn', 'unlabelled', 'after_input', 'extra_text'])
+def test_journal_skips_only_codex_environment_context_before_owned_input(tmp_path, monkeypatch, variant):
+    """Codex prepends <environment_context> to a thread's first turn; it is not other owner input."""
+    from test_native_rollout_readback import journal
+    thread, _ = journal(tmp_path, monkeypatch)
+    path = add_call(thread)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    context = copy.deepcopy(ENV_CONTEXT)
+    if variant == 'unlabelled':
+        context['payload'].pop('internal_chat_message_metadata_passthrough')
+    elif variant == 'extra_text':
+        context['payload']['content'].append({'type': 'input_text', 'text': 'another owner'})
+    rows.insert(6 if variant == 'after_input' else 5, context)
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    if variant == 'codex_first_turn':
+        calls, terminal = native.NativeFactResearch._callback_journal(thread, TURN, INPUT[0]['text'], TOOLS)
+        assert [call['call_id'] for call in calls] == ['save-1'] and terminal is None
+    else:
+        with pytest.raises(ValueError, match='native_orphan_input_unverified'):
+            native.NativeFactResearch._callback_journal(thread, TURN, INPUT[0]['text'], TOOLS)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('boundary', ['before_callback', 'submitted', 'committed', 'completed_before_reply', 'load_closed'])
 async def test_restart_reconciles_exact_save_before_interrupt_without_double_effect(tmp_path, monkeypatch, boundary):

@@ -770,6 +770,8 @@ class NativeFactResearch:
             if row.get('type') != 'response_item':
                 continue
             if payload.get('type') == 'message' and payload.get('role') == 'user':
+                if not matched and cls._codex_environment_context(payload):
+                    continue  # Codex prepends it to a thread's first turn; not owner input.
                 content = [{'type': 'text', 'text': part.get('text')} for part in payload.get('content', [])
                     if part.get('type') == 'input_text']
                 if matched or not cls._input_matches(content, [{'type': 'text', 'text': prompt}]):
@@ -887,6 +889,14 @@ class NativeFactResearch:
             return None
         delta = {names[key]: total[key] - baseline[key] for key in names}
         return delta if all(value >= 0 for value in delta.values()) else None
+
+    @staticmethod
+    def _codex_environment_context(payload):
+        meta = payload.get('internal_chat_message_metadata_passthrough') or {}
+        parts = payload.get('content') or []
+        return (meta.get('content_item_kinds') == ['environments.environment_context'] and len(parts) == 1
+            and parts[0].get('type') == 'input_text'
+            and str(parts[0].get('text') or '').startswith('<environment_context>'))
 
     @staticmethod
     def _input_matches(actual, expected):
