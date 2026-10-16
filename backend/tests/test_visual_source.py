@@ -77,7 +77,16 @@ def test_photo_choice_original_and_actual_crop_have_exact_oriented_pixels(orient
     with Image.open(io.BytesIO(full)) as result:
         assert result.size == expected.size
         assert ImageChops.difference(expected, result.convert('RGB')).getbbox() is None
-    crop, _, metadata = photo_transform(raw, 'image/jpeg', 'crop_4_5')
+    # crop_4_5 alone sends the whole frame; the image model composes the portrait.
+    composed, _, whole = photo_transform(raw, 'image/jpeg', 'crop_4_5')
+    assert whole['crop_rect'] is None and whole['output_size'] == list(expected.size)
+    with Image.open(io.BytesIO(composed)) as result:
+        assert ImageChops.difference(expected, result.convert('RGB')).getbbox() is None
+    # Only an explicitly requested rectangle cuts pixels, exactly.
+    w, h = expected.size
+    unit = min(w // 4, h // 5)
+    rect = [(w - 4 * unit) // 2, (h - 5 * unit) // 2, 4 * unit, 5 * unit]
+    crop, _, metadata = photo_transform(raw, 'image/jpeg', 'crop_4_5', rect)
     x, y, width, height = metadata['crop_rect']
     assert width * 5 == height * 4 and metadata['output_size'] == [width, height]
     with Image.open(io.BytesIO(crop)) as result:

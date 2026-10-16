@@ -11,40 +11,77 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from .errors import PermanentProviderError
 
 CONTRACT = 'visual-source-exif-orientation-v1'
+# Posts end up in Telegram/VK at a few thousand pixels at most and the image
+# model returns ~1.5 MP; a 4000x3000 PNG (15-19 MB) only slows the request.
+VISUAL_SOURCE_LONG_SIDE = 2048
 
 
 def photo_transform(data, mime, mode, crop_rect=None):
-    """Only EXIF transpose and a declared pixel crop; never outpaint/stretch."""
+    """EXIF transpose, a uniform downscale and only an explicitly requested crop.
+
+    crop_4_5 without an explicit rectangle sends the whole frame: the image model
+    composes the 4:5 picture, so no deterministic cut can remove the building.
+    """
     from .service import ConflictError
     if mode not in {'original', 'crop_4_5'}:
         raise ConflictError('photo_format_invalid', 'Choose original or crop_4_5.')
     oriented, oriented_mime, orientation = oriented_visual_source(data, mime)
     width, height = orientation['oriented_size']
     rect = [0, 0, width, height]
-    if mode == 'original':
-        if crop_rect is not None:
+    if mode == 'original' or crop_rect is None:
+        if mode == 'original' and crop_rect is not None:
             raise ConflictError('photo_crop_not_selected', 'Original preserves the complete oriented frame.')
         output, output_mime = oriented, oriented_mime
     else:
-        if crop_rect is None:
-            unit = min(width//4, height//5)
-            rect = [(width-4*unit)//2, (height-5*unit)//2, 4*unit, 5*unit]
-        else:
-            rect = crop_rect
+        rect = crop_rect
         if (not isinstance(rect, list) or len(rect) != 4 or any(type(v) is not int or v < 0 for v in rect)
                 or rect[2] <= 0 or rect[3] <= 0 or rect[0]+rect[2] > width or rect[1]+rect[3] > height
                 or 5*rect[2] != 4*rect[3]):
             raise ConflictError('photo_crop_invalid', 'Supply an in-bounds exact 4:5 rectangle of oriented source pixels.')
         with Image.open(io.BytesIO(oriented)) as image:
             cropped = image.crop((rect[0], rect[1], rect[0]+rect[2], rect[1]+rect[3])).convert('RGB')
+            target = _target(rect[2:], exact_4_5=True)
             stream = io.BytesIO()
-            cropped.save(stream, format='PNG')
-            output, output_mime = stream.getvalue(), 'image/png'
+            if target == rect[2:]:
+                cropped.save(stream, format='PNG')
+                output, output_mime = stream.getvalue(), 'image/png'
+            else:
+                cropped.resize(tuple(target), Image.Resampling.LANCZOS).save(stream, format='JPEG', quality=92, optimize=True)
+                output, output_mime = stream.getvalue(), 'image/jpeg'
+    cropped_frame = mode == 'crop_4_5' and crop_rect is not None
+    size = _target(rect[2:], exact_4_5=True)
+    if not cropped_frame:
+        output, output_mime, size = _bounded(output, output_mime, rect[2:], exact_4_5=False)
     return output, output_mime, {'contract': 'owner-photo-transform-v1', 'mode': mode,
         'original_sha256': hashlib.sha256(data).hexdigest(), 'orientation': orientation,
-        'oriented_size': [width, height], 'crop_rect': rect, 'output_size': rect[2:],
-        'output_sha256': hashlib.sha256(output).hexdigest(), 'original_preserved': True,
-        'pixel_operations': ['exif_orientation'] + (['crop'] if mode == 'crop_4_5' else [])}
+        'oriented_size': [width, height], 'crop_rect': rect if cropped_frame else None if mode == 'crop_4_5' else rect,
+        'output_size': size, 'output_sha256': hashlib.sha256(output).hexdigest(), 'original_preserved': True,
+        **({'composition': 'model_4_5_from_whole_frame'} if mode == 'crop_4_5' and not cropped_frame else {}),
+        'pixel_operations': ['exif_orientation'] + (['crop'] if cropped_frame else [])
+            + (['downscale'] if size != rect[2:] else [])}
+
+
+def _target(size, *, exact_4_5):
+    width, height = size
+    if max(width, height) <= VISUAL_SOURCE_LONG_SIDE:
+        return list(size)
+    if exact_4_5:
+        unit = min(width // 4, height // 5, VISUAL_SOURCE_LONG_SIDE // 5)
+        return [4 * unit, 5 * unit]
+    scale = VISUAL_SOURCE_LONG_SIDE / max(width, height)
+    return [max(1, round(width * scale)), max(1, round(height * scale))]
+
+
+def _bounded(data, mime, size, *, exact_4_5):
+    """Uniform downscale to the visual input bound; never stretch or change the frame."""
+    target = _target(size, exact_4_5=exact_4_5)
+    if target == list(size):
+        return data, mime, list(size)
+    with Image.open(io.BytesIO(data)) as image:
+        resized = image.convert('RGB').resize(tuple(target), Image.Resampling.LANCZOS)
+        stream = io.BytesIO()
+        resized.save(stream, format='JPEG', quality=92, optimize=True)
+    return stream.getvalue(), 'image/jpeg', target
 
 
 def source_frame_input(body):

@@ -17,7 +17,7 @@ def test_owner_format_persists_replays_without_job_and_old_visual_cannot_be_curr
         'expected_identity_generation': svc.story(sid)['identity_generation']}
     cropped = set_photo_format(svc, sid, 'crop-intent', payload)
     assert cropped['visual_photo_format']['mode'] == 'crop_4_5'
-    assert cropped['visual_photo_format']['crop_rect'] == [8, 0, 24, 30]
+    assert cropped['visual_photo_format']['crop_rect'] is None  # the image model composes 4:5; no cut
     assert not cropped['visual_photo_format']['current_visual']
     replay = set_photo_format(svc, sid, 'crop-intent', payload)
     assert replay['visual_photo_format']['revision'] == 1
@@ -69,9 +69,9 @@ async def test_opaque_upload_token_never_blocks_format_snapshot_or_visual(tmp_pa
     sid = story['id']
     chosen = set_photo_format(svc, sid, 'opaque-crop', {'mode': 'crop_4_5', 'expected_photo_sha256': token,
         'expected_identity_generation': story['identity_generation']})
-    assert chosen['visual_photo_format']['crop_rect'] == [8, 0, 24, 30]
+    assert chosen['visual_photo_format']['crop_rect'] is None
     adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, lambda _session, _message: None)
-    assert adapter._visual_snapshot(sid, selected_format=True)[1:] == (24, 30)
+    assert adapter._visual_snapshot(sid, selected_format=True)[1:] == (40, 30)  # whole frame, nothing cut
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
     svc.mutate_visual(sid, 'opaque-visual', {'selected_fact_ids': []})
@@ -114,7 +114,7 @@ def test_visual_mira_snapshot_uses_chosen_crop_but_identity_keeps_original(tmp_p
     sid = create_story(svc)['id']
     adapter = StreetStoryLiveAdapter(svc, lambda _session, _message: None, lambda _session, _message: None)
     set_photo_format(svc, sid, 'crop-view', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
-        'expected_identity_generation': svc.story(sid)['identity_generation']})
+        'crop_rect': [8, 0, 24, 30], 'expected_identity_generation': svc.story(sid)['identity_generation']})
     _raw, width, height = adapter._visual_snapshot(sid)
     assert (width, height) == (40, 30)
     raw, width, height = adapter._visual_snapshot(sid, selected_format=True)
@@ -192,7 +192,7 @@ async def test_photo_choice_never_infers_source_frame_from_model_copy(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode,size', [('original', (40, 30)), ('crop_4_5', (24, 30))])
+@pytest.mark.parametrize('mode,size', [('original', (40, 30)), ('crop_4_5', (40, 30))])
 async def test_artistic_tune_uses_actual_owner_frame_without_source_composition(tmp_path, mode, size):
     import io
     from PIL import Image
@@ -210,8 +210,10 @@ async def test_artistic_tune_uses_actual_owner_frame_without_source_composition(
             assert command['formats'] == ['original' if mode == 'original' else 'post_4_5']
             assert 'handwritten' in command['brief'] and 'single tasteful accent' in command['brief']
             assert 'Never add floors, arches' in command['brief']
+            if mode == 'crop_4_5':  # the whole frame goes in; the model composes the portrait
+                assert 'composed by you from the whole supplied photo' in command['brief']
             return {'operation_id': 'frame-op', 'state': 'accepted', 'visual_job_id': 'frame-job'}
-    vp = ArtisticBoundary({'width': size[0] * 2, 'height': size[1] * 2})
+    vp = ArtisticBoundary({'width': size[0] * 2, 'height': size[1] * 2} if mode == 'original' else {'width': 48, 'height': 60})
     svc = service(tmp_path, vp)
     sid = create_story(svc)['id']
     set_photo_format(svc, sid, 'owner-format', {'mode': mode, 'expected_photo_sha256': PHOTO_SHA,
@@ -300,3 +302,80 @@ async def test_observing_a_result_rejected_by_rounding_imports_it_without_new_ge
     assert visual_context(svc, sid)['output_frame_evidence']['state'] == 'verified'
     assert svc.story(sid)['processed_image_url'] and svc.story(sid)['state'] == 'ready_to_publish'
     assert vp.tune_calls == 1 and vp.select_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('complete', [True, False])
+async def test_closed_image_task_without_result_allows_a_new_author_request(tmp_path, complete):
+    # A failed image task (VibePublish "blocked", retry_safe=false, no candidate)
+    # must not leave the story without any way to get a picture.
+    from street_story.service import ConflictError
+    from test_mvp_visual import FrameBoundary, visual_context
+    vp = FrameBoundary({'width': 40, 'height': 30})
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    set_photo_format(svc, sid, 'owner-format', {'mode': 'original', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'first-art', {'selected_fact_ids': [], 'visual_instruction': 'Ink sketch.'})
+    async def failed_status(operation):
+        return {'operation_id': operation, 'state': 'blocked', 'retry_safe': False, 'operation_complete': complete,
+                'visual_job_id': 'frame-job', 'candidates': []}
+    vp.status = failed_status
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    try:
+        await svc._run_visual(job)
+    except Exception:
+        pass  # the worker records the closed failure; this test only needs the saved operation
+    first = visual_context(svc, sid)
+    assert first.get('operation_id') == 'frame-op'
+    body = {'selected_fact_ids': [], 'visual_instruction': 'Warmer ink sketch.'}
+    if complete:
+        await svc.request_visual(sid, 'second-art', body)
+        assert visual_context(svc, sid)['content_revision'] != first['content_revision']
+    else:  # still running or unknown: only observation, never a parallel generation
+        with pytest.raises(ConflictError):
+            await svc.request_visual(sid, 'second-art', body)
+        assert visual_context(svc, sid)['content_revision'] == first['content_revision']
+
+
+def test_visual_input_is_downscaled_uniformly_for_social_publication():
+    import io
+    from PIL import Image
+    from street_story.visual_source import VISUAL_SOURCE_LONG_SIDE, photo_transform
+    stream = io.BytesIO()
+    Image.new('RGB', (3925, 2944), (180, 120, 90)).save(stream, format='JPEG')
+    original, mime, transform = photo_transform(stream.getvalue(), 'image/jpeg', 'original')
+    width, height = transform['output_size']
+    assert max(width, height) == VISUAL_SOURCE_LONG_SIDE and mime == 'image/jpeg'
+    assert abs(width * 2944 - height * 3925) <= 3925 and 'downscale' in transform['pixel_operations']
+    with Image.open(io.BytesIO(original)) as image:
+        assert list(image.size) == transform['output_size']
+    composed = photo_transform(stream.getvalue(), 'image/jpeg', 'crop_4_5')[2]
+    assert composed['composition'] == 'model_4_5_from_whole_frame' and 'crop' not in composed['pixel_operations']
+    assert composed['output_size'] == transform['output_size'] and composed['crop_rect'] is None
+    _cut, _mime, crop = photo_transform(stream.getvalue(), 'image/jpeg', 'crop_4_5', [786, 2, 2352, 2940])
+    assert 5 * crop['output_size'][0] == 4 * crop['output_size'][1] and max(crop['output_size']) <= VISUAL_SOURCE_LONG_SIDE
+    # Original keeps the whole frame in any orientation: no crop, only a uniform downscale.
+    tall = io.BytesIO()
+    Image.new('RGB', (3000, 4000)).save(tall, format='JPEG')
+    vertical = photo_transform(tall.getvalue(), 'image/jpeg', 'original')[2]
+    assert vertical['output_size'] == [1536, 2048] and vertical['crop_rect'] == [0, 0, 3000, 4000]
+    assert 'crop' not in vertical['pixel_operations'] and 'crop' not in transform['pixel_operations']
+    small = io.BytesIO()
+    Image.new('RGB', (40, 30)).save(small, format='JPEG')
+    assert photo_transform(small.getvalue(), 'image/jpeg', 'original')[2]['output_size'] == [40, 30]
+
+
+def test_text_over_unaltered_photo_in_4_5_needs_an_explicit_frame(tmp_path):
+    svc = service(tmp_path)
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    set_photo_format(svc, sid, 'portrait', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'expected_identity_generation': svc.story(sid)['identity_generation']})
+    with pytest.raises(ConflictError, match='явно выбранный кадр'):
+        svc.mutate_visual(sid, 'source-frame', {'selected_fact_ids': [], 'preserve_source_frame': True,
+            'visual_copy': {'title': 'Исходное фото'}, 'visual_layout': {'text_box': [.05, .02, .9, .14]}})

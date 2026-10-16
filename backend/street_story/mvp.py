@@ -87,6 +87,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         frame_instruction = (
             f'\n\nOUTPUT FRAME: preserve original aspect {size[0]}:{size[1]} from the supplied oriented photo.'
             if transform.get('mode') == 'original' and size else
+            '\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350) composed by you from the whole supplied photo: '
+            'keep the complete building uniformly scaled, never crop it; give extra height to sky, notes or graphic areas.'
+            if transform.get('composition') == 'model_4_5_from_whole_frame' else
             '\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350); the supplied photo is already cropped.')
         frame_instruction += (' Never outpaint, stretch, correct perspective or invent architecture. '
             'No hidden contain fields, blank padding or borders. Keep all supplied frame boundaries. '
@@ -155,9 +158,15 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 if not rejected:
                     raise ConflictError('visual_observation_required',
                         'Import and review the existing result before requesting another generation.')
+            # A closed operation that produced no image (a failed image task) allows
+            # a new explicit author request; it is a new operation, not a resend.
+            closed_without_image = (observed.get('state') in {'failed', 'cancelled', 'blocked'}
+                and observed.get('operation_complete') is True
+                and not observed.get('candidates') and not observed.get('selected_asset_ref'))
             if observed.get('operation_id') != operation or not (
                 observed.get('state') in {'verified', 'needs_selection'}
                 or (observed.get('state') in {'failed', 'cancelled'} and observed.get('retry_safe') is True)
+                or closed_without_image
             ):
                 raise ConflictError('visual_outcome_unresolved',
                                     'Observe the original generation outcome before requesting another visual.')
@@ -352,6 +361,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             # frozen transform carries the content hash that generation re-verifies.
             _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
                 story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
+            if source_frame is not None and transform.get('composition') == 'model_4_5_from_whole_frame':
+                # Text over unaltered pixels cannot become 4:5 without a cut; never cut silently.
+                raise ConflictError('visual_source_frame_crop_required',
+                    'Для текста поверх неизменённого фото в 4:5 нужен явно выбранный кадр. Выберите оригинал или кадр.')
             frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}

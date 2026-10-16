@@ -116,10 +116,16 @@ def create_story(svc: MvpProductStreetStoryService, *, portrait=True):
     )
     if not portrait:
         return story
-    # These existing worker fixtures exercise the explicit portrait flow.
+    # These existing worker fixtures exercise the explicit portrait crop flow.
+    import io
+    from PIL import Image
     from street_story.photo_format import set_photo_format
+    with Image.open(io.BytesIO(svc._source_photo_bytes(story['id']))) as image:
+        width, height = image.size
+    unit = min(width // 4, height // 5)
     return set_photo_format(svc, story['id'], 'fixture-owner-portrait', {
         'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'crop_rect': [(width - 4 * unit) // 2, (height - 5 * unit) // 2, 4 * unit, 5 * unit],
         'expected_identity_generation': story['identity_generation']})
 
 
@@ -302,7 +308,7 @@ async def test_source_frame_request_preserves_layout_and_uses_existing_visual_wo
         'visual_layout': {'text_box': [.05, .02, .9, .14], 'title_size': 42, 'body_size': 28}}
     from street_story.photo_format import set_photo_format
     set_photo_format(svc, sid, 'choose-crop', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
-        'expected_identity_generation': svc.story(sid)['identity_generation']})
+        'crop_rect': [8, 0, 24, 30], 'expected_identity_generation': svc.story(sid)['identity_generation']})
     svc.mutate_visual(sid, 'source-frame', body)
     with svc.store.connection() as db:
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())

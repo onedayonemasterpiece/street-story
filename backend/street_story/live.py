@@ -662,9 +662,8 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "set_photo_format",
-        "Persist the owner's explicit choice: original keeps the oriented SOURCE aspect; crop_4_5 makes an actual pixel crop. "
-        "Optional crop_rect is [x,y,width,height] in oriented source pixels, strictly inside SOURCE with exact 4:5 ratio. "
-        "Inspect the photo; if essential building/context cannot fit, explain the conflict and offer original. "
+        "Persist the owner's explicit choice: original keeps the oriented SOURCE aspect; crop_4_5 lets the image model compose 4:5 from the whole photo. "
+        "Pass crop_rect [x,y,width,height] (oriented pixels, exact 4:5) only when the author explicitly asks for a specific crop. "
         "This tool starts no generation and must precede composition; no stretch, outpainting or silent contain padding.",
         {"mode": {"type": "string", "enum": ["original", "crop_4_5"]},
          "crop_rect": {"type": "array", "items": {"type": "integer"}}},
@@ -840,7 +839,7 @@ Concept, editing and publication:
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
 - Choose facts semantically from the full eligible inventory according to the owner's intent, not a fixed count or fixed angle. For another post use previous_editorial_context and the current selection/concept as compact history; vary the angle and selection when useful, without forcing novelty or selecting unapproved facts for an existing post.
-- Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 is a true pixel crop. Inspect crop against essential building/context; if it cannot fit, explain the conflict and offer original. Do not silently contain, stretch or outpaint.
+- Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 sends the whole photo and the image model composes 4:5 keeping the complete building. An explicit pixel crop (crop_rect) only on the author's specific request; check it against essential building/context and offer original if it cannot fit. Do not silently contain, stretch or outpaint.
 - On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. Plan caption and image together so they complement each other: pass in fact_ids only the selected facts that read well as short notes on this image (a date, a visible feature, a former use); the caption develops the others and their connections. When a draft exists, do not hand the image the same list the caption already tells; one shared central point is fine. With few selected facts keep image notes to one or two. Every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
@@ -1039,9 +1038,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
         elif capability == 'photo_format':
             overlay = ('Use set_photo_format for the owner choice original or crop_4_5. '
-                'crop_rect is an in-bounds exact4:5 rectangle of oriented SOURCE pixels. '
-                'Inspect the photo: preserve essential building/context; if it cannot fit, explain and offer original. '
-                'Honor visual_photo_format: original retains aspect;4:5 is actual pixel crop, never hidden contain/stretch/outpaint. '
+                'crop_4_5 sends the whole photo; the image model composes 4:5 keeping the complete building. '
+                'crop_rect (in-bounds exact 4:5 oriented pixels) only when the author asks for a specific crop. '
+                'Honor visual_photo_format: original retains aspect; never hidden contain/stretch. '
                 'Only an explicit creation request uses generate_visual through the existing artistic tune with visual_instruction. '
                 'An explicit unchanged-photo composition instead uses preserve_source_frame=true with complete visual_copy and visual_layout. '
                 'Preserve visible architecture in a hybrid photo/ink sketch; artistic surroundings inside the frame are allowed. '
