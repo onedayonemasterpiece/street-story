@@ -198,6 +198,41 @@ def _rings(candidate):
             for r in (candidate.get('map_geometry') or {}).get('rings') or []]
 
 
+def _sampled(lines, limit=64):
+    # Distances are compared with tens-of-metres thresholds; a very detailed
+    # outline does not need every vertex (and must not block a request).
+    count = sum(len(line) for line in lines)
+    step = max(1, math.ceil(count / limit))
+    return [line[::step] + ([line[-1]] if step > 1 and (len(line) - 1) % step else []) for line in lines if line]
+
+
+def _box(lines, margin_m=0.0):
+    points = [p for line in lines for p in line]
+    if not points:
+        return None
+    lat0 = points[0][0]
+    dlat, dlon = margin_m / 111_320, margin_m / (111_320 * max(0.1, math.cos(math.radians(lat0))))
+    return (min(p[0] for p in points) - dlat, min(p[1] for p in points) - dlon,
+            max(p[0] for p in points) + dlat, max(p[1] for p in points) + dlon)
+
+
+def _overlaps(a, b):
+    return bool(a and b) and a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+def _near_runs(line, box):
+    # Keep only consecutive segments whose own box meets the search box.
+    runs, run = [], []
+    for a, b in zip(line, line[1:]):
+        if _overlaps(box, _box([[a, b]])):
+            run = run or [a]
+            run.append(b)
+        elif run:
+            runs.append(run)
+            run = []
+    return runs + ([run] if run else [])
+
+
 def _label(address):
     return ' '.join(str(address.get(k) or '').strip() for k in ('street', 'house_number')).strip()
 
@@ -211,14 +246,16 @@ def snapshot_surroundings(snapshot, chosen):
     search hints for the building's other addresses. Map proximity does not prove
     which street the facade faces: never facts, never its address, never a new identity.
     """
-    outline = _rings(chosen)
+    outline = _sampled(_rings(chosen))  # bounded work inside the selection transaction
     if not outline or not outline[0]:
         return
+    street_box, neighbour_box = _box(outline, 150), _box(outline, 60)
     streets = {}
     for feature in (snapshot.get('streets') or {}).get('features') or []:
         name = str((feature.get('properties') or {}).get('name') or '').strip()
         lines = [[(lat, lon) for lon, lat in line] for line in (feature.get('geometry') or {}).get('coordinates') or []]
-        gap = _outline_gap_m(outline, lines) if name else None
+        near = [run for line in lines for run in _near_runs(line, street_box)] if name else []
+        gap = _outline_gap_m(outline, _sampled(near, 100)) if near else None
         if gap is not None and gap < streets.get(name, math.inf):
             streets[name] = gap
     own = chosen.get('map_address') or {}
@@ -232,7 +269,10 @@ def snapshot_surroundings(snapshot, chosen):
                 or not centre or not other_centre or offset_m(centre, other_centre) > 150):
             continue
         spot = (other_centre['latitude'], other_centre['longitude'])
-        gap = _outline_gap_m(outline, _rings(other) or [[spot, spot]])
+        shape = _rings(other) or [[spot, spot]]
+        if not _overlaps(neighbour_box, _box(shape)):
+            continue
+        gap = _outline_gap_m(outline, _sampled(shape, 100))
         if gap is not None and gap <= 60 and gap < neighbours.get(label, (math.inf,))[0]:
             neighbours[label] = (gap, other.get('candidate_id'))
     nearby = [{'name': name, 'distance_m': round(gap)} for name, gap in sorted(streets.items(), key=lambda s: s[1]) if gap <= 35][:3]

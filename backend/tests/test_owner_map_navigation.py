@@ -646,3 +646,18 @@ async def test_unknown_answer_records_verbatim_evidence_without_language_classif
     assert current['state'] == 'researching'
     with service.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_open_question_reaches_mira_so_she_can_ask_it_by_voice(tmp_path):
+    service, _ = make_service(tmp_path)
+    story = manual(service)
+    service.providers.osm = NoCity()
+    snapshot = await place_map(service, story['id'])
+    selected = confirm_place(service, story['id'], 'select', command(story, snapshot, 'osm:way:2', 'select'))
+    ensure_live_schema(service)
+    adapter = StreetStoryLiveAdapter(service, lambda *_: None, lambda *_: None)
+    initialized = adapter.initialize(resource_id=selected['id'], actor=None, model='gemini-3.8-live')
+    assert initialized['capability'] == 'place_map'
+    assert initialized['context']['pending_owner_question'] == selected['identity_clarification']['question']
+    assert 'pending_owner_question' in initialized['configuration']['system_instruction']

@@ -166,6 +166,7 @@ async def test_reported_gaps_without_own_next_step_continue_same_thread_bounded(
         if number > 1:
             pointer = context['native_continuation']
             assert pointer['next_action'] is None and pointer['unresolved_gaps'] == ['Historical linkage remains']
+            assert 'unresolved_gaps' in pointer['meaning']  # guidance travels as input, not contract text
             assert pointer['thread_id'] == 'same-owned-luna' and pointer['parent_turn_id'] == f'closed-{number-1}'
         raw = packet(sufficient=True, basis='material_exhausted') if mode == 'then_sufficient' and number == 2 else packet()
         value = receipt(binding, context, raw, number)
@@ -188,3 +189,13 @@ async def test_reported_gaps_without_own_next_step_continue_same_thread_bounded(
             assert db.execute("SELECT count(*) FROM jobs WHERE kind='research'").fetchone()[0] <= 1
     finally:
         await reader.search_http.aclose()
+
+
+def test_native_research_profile_still_matches_the_deployed_qualification():
+    # The installer refuses a release whose research profile differs from the
+    # qualified one. Changing contract text, schema or tools needs a new agent
+    # qualification first; update this pin together with that receipt.
+    from types import SimpleNamespace
+    from street_story.native_fact_research import NativeFactResearch
+    assert NativeFactResearch.profile_fingerprint.fget(SimpleNamespace(timeout=None)) == (
+        '220bef4b0d176d7d3d86d842a0215f8f3bf7d5609bd24340b82e2777c3827414')

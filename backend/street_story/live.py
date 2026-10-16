@@ -911,6 +911,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if capability == 'place_map':
             overlay = ('The author chooses a building on the map; GPS is only the initial hint and may be displaced. '
                 'For an already selected house use describe_owner_place for spoken name/address without selecting again. '
+                'If pending_owner_question is present, ask it briefly in your first reply (the house stays selected) '
+                'and accept the spoken answer, including "не знаю", through describe_owner_place. '
                 'Ask briefly what the author remembers, call find_place_area with their spoken description, then '
                 'focus_owner_map using a returned area_id. This moves only the viewport. Do not choose a house yourself. '
                 'The author can tap any displayed contour or explicitly confirm its exact name/ID with confirm_place. '
@@ -2714,6 +2716,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             'identity_mode': story.get('identity_mode'),
             'place_map_focus': story.get('place_map_focus'),
             'owner_place_hint': story.get('owner_place_hint'),
+            # Voice-first: the open question reaches the author only through Mira.
+            'pending_owner_question': (lambda q: q.get('question') if q.get('reason') == 'owner_selected_context_missing'
+                and q.get('photo_sha256') == story.get('photo_sha256') and q.get('generation') == story.get('identity_generation')
+                else None)(story.get('identity_clarification') or {}),
             'owner_map': {key: (story.get('place_map') or {}).get(key) for key in ('snapshot_id', 'center', 'zoom')},
             'owner_map_candidates': [{key: (feature.get('properties') or {}).get(key) for key in
                 ('candidate_id', 'name', 'address')} for feature in (story.get('place_map') or {}).get('buildings', {}).get('features', [])[:64]],

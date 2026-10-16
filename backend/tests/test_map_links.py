@@ -112,8 +112,13 @@ def test_surroundings_flag_a_tag_street_away_from_the_contour_and_list_nearby_ad
         ('улица Профессора Севастьянова 3/5к2', 'osm:way:2')]
     # The observed tag stays the search address; surroundings only add discovery routes.
     assert chosen['search_anchor']['street'] == 'Университетская улица'
-    assert agent_context({'candidate_id': 'osm:way:1', 'search_anchor': chosen['search_anchor']}, 'goal', 'run', 0)[
-        'selected_object']['search_anchor']['map_surroundings'] == seen
+    selected = agent_context({'candidate_id': 'osm:way:1', 'search_anchor': chosen['search_anchor']}, 'goal', 'run', 0)['selected_object']
+    assert selected['map_search_hints'] == seen and 'map_surroundings' not in selected['search_anchor']
+    # Source verifiers see the selected building, never the neighbouring addresses.
+    from street_story.identity_model_context import compact_physical_identity
+    verifier = compact_physical_identity({'status': 'owner_confirmed', 'candidate_id': 'osm:way:1',
+                                          'search_anchor': chosen['search_anchor']})
+    assert 'map_surroundings' not in verifier.get('search_anchor', {}) and '3/5к2' not in str(verifier)
     lonely = box('osm:way:9', 54.7300, 20.5300, 'Тихая улица', '1')
     snapshot_surroundings({'candidates': [lonely], 'streets': {'features': []}}, lonely)
     assert 'map_surroundings' not in lonely['search_anchor']

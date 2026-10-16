@@ -218,6 +218,10 @@ def compact_physical_identity(identity, *, photo_sha256=None, generation=None, c
     anchor = identity.get('search_anchor')
     if isinstance(anchor, dict):
         import json
+        # Map search hints (nearby streets, neighbouring addresses) are discovery
+        # context for research only; a source verifier must not read them as
+        # describing the selected building.
+        anchor = {key: value for key, value in anchor.items() if key != 'map_surroundings'}
         encoded = json.dumps(anchor, ensure_ascii=False)
         if len(encoded) <= 8000:
             result['search_anchor'] = json.loads(encoded)
