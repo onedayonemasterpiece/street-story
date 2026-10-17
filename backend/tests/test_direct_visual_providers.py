@@ -92,7 +92,7 @@ async def test_native_direct_image_urls_ram_no_image_file_and_permission_lease(t
     assert base64.b64decode(images[1]['url'].split(',', 1)[1]) == normalize_reference(snapshot)[1]
     assert len(images) == 2 and not list(tmp_path.rglob('*.jpg'))
     assert 'localImage' not in json.dumps(turns) and 'sha256' not in json.dumps(receipts)
-    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2
     assert len(sends) == 2 and result['receipt']['quota_permission']['expires_at'] == 1900
 
 

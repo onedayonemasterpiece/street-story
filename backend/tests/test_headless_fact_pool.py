@@ -1,5 +1,6 @@
 """Real frozen chunk leases, async extractors, serial candidate ledger commits."""
 import asyncio
+import copy
 import json
 from types import SimpleNamespace
 
@@ -179,6 +180,90 @@ async def test_unknown_one_core_does_not_stall_siblings_or_resend_on_restart(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('pending', [False, True])
+async def test_owner_addressed_readback_precedes_paid_deadline_and_keeps_original_binding(tmp_path, monkeypatch, pending):
+    from contextvars import ContextVar
+    from street_story.opencode_research import ResearchUnavailable
+    from street_story.research_adapter import ProductResearchAdapter
+    from test_headless_facts import review_candidates
+
+    svc, job = fixture(tmp_path, count=1)
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, job['story_id'])['research_json'])
+        research['visual_identity'].update(status='owner_confirmed', selection_basis='owner_exact')
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
+    now = svc.store.now()
+    monkeypatch.setattr(svc.store, 'now', lambda: now)
+    harness = HeadlessFacts(svc)
+    story = harness._snapshot(job, RUN)[0]
+    unit = (await harness._prepare_units(job, RUN, 'mimo-v2.6-flash-free', 0))[0]
+    unit_id = unit['page']['_unit_id']
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service, adapter.giga = svc, None
+    adapter._active_binding = ContextVar('addressed-owner-readback', default=None)
+    adapter._fact_extractor_clients = {}
+    calls = []
+
+    async def observe(capsule, binding):
+        calls.append(copy.deepcopy(binding))
+        assert binding['attempt_id'] == original['attempt_id']
+        assert binding['session_id'] == 'ses_original' and binding['message_id'] == 'msg_original'
+        assert binding['frozen_prompt'] == 'Frozen original prompt'
+        receipt = {**original_receipt, 'binding': binding}
+        if pending:
+            await adapter.checkpoint(binding, receipt)
+            raise ResearchUnavailable('research_timeout', receipt)
+        extracted = result(unit['page'])
+        receipt.update(phase='completed', result=extracted['result'])
+        await adapter.checkpoint(binding, receipt)
+        return {**extracted, 'receipt': receipt}
+
+    adapter.client = SimpleNamespace(model_id='mimo-v2.6-flash-free', provider_id='opencode',
+        endpoint='http://127.0.0.1:4097', directory='/existing/research', extract_facts=observe)
+    original, _ = adapter.attempt({**story, '_fact_pool_unit_id': unit_id}, 'facts', unit_id)
+    original_receipt = {'binding': original, 'phase': 'submitted', 'provider_id': 'opencode',
+        'model_id': adapter.client.model_id, 'session_id': 'ses_original', 'message_id': 'msg_original',
+        'frozen_prompt': 'Frozen original prompt', 'provider_send_state': 'submitted',
+        'route_failure': {'code': 'research_timeout', 'retry_at': now + 300}}
+    await adapter.checkpoint(original, original_receipt)
+    harness._unit_phase(job, unit_id, 'unknown', owner=unit['owner'],
+                        chunk_id=unit['page']['chunk_id'], retry_at=now + 300)
+    svc.providers.research = adapter
+    # No qualification and a paid route cooldown must still permit the one original readback.
+    svc.store.cache_put('research-quota-health:opencode:' + adapter.client.model_id,
+                        {'category': 'research_provider_quota', 'retry_at': now + 3600}, 3600)
+    await partial(harness, job)
+    assert len(calls) == 1 and calls[0]['attempt_id'] == original['attempt_id']
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM research_provider_attempts').fetchone()[0] == 1
+    if pending:
+        saved = svc.store.checkpoint_get(job['id'], 'headless_fact_unit:' + unit_id)
+        assert saved['readback_at'] == now + 30
+        assert harness._pending_retry_at(job, RUN) == now + 30
+        await partial(harness, job)
+        assert len(calls) == 1  # The polling deadline is bounded; no immediate read or new prompt.
+        async def execute(current_job):
+            return await harness.run(current_job, RUN, 'History', 'history')
+        monkeypatch.setattr(svc, '_execute_job_with_deadline', execute)
+        monkeypatch.setattr(svc, '_schedule_identity_visual', lambda: None)
+        monkeypatch.setattr(svc, '_schedule_confirmed_facts', lambda: None)
+        assert await svc.run_once(claim_kind='research', claim_story_id=job['story_id'])
+        with svc.store.connection() as db:
+            queued = db.execute('SELECT state,available_at FROM jobs WHERE id=?', (job['id'],)).fetchone()
+            assert queued['state'] == 'retry' and queued['available_at'] == now + 30
+        assert svc._claim(claim_kind='research', claim_story_id=job['story_id']) is None
+        now += 31
+        assert await svc.run_once(claim_kind='research', claim_story_id=job['story_id'])
+        assert len(calls) == 2 and calls[-1]['attempt_id'] == original['attempt_id']
+    else:
+        await review_candidates(svc, job['story_id'], RUN)
+        public = svc.story(job['story_id'])
+        assert len(public['facts']) == 1 and public['facts'][0]['eligibility'] == 'eligible'
+        await partial(harness, job)
+        assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_closed_malformed_core_can_take_new_available_route_without_blocking_siblings(tmp_path):
     svc, job = fixture(tmp_path)
     calls, available = [], False
@@ -282,13 +367,18 @@ async def test_exhausted_article_ends_automatic_run_without_suppressing_other_su
         ControlledReview.mode = 'positive'
         assert await ControlledReview(harness).run(job, RUN, 0) == 1
         outcome = await harness.run(job, RUN, 'History', 'history')
-    assert outcome['outcome'] == ('useful_partial' if useful else 'no_supported_facts')
+    # No reader returned a valid empty assessment for the failed source.
+    # Exhausted routes prove unavailable processing, not absent supported facts.
+    assert outcome['outcome'] == ('useful_partial' if useful else 'resource_blocked')
+    assert outcome['reason'] == 'research_fact_routes_exhausted'
     assert outcome['coverage_complete'] is False
     assert outcome['eligible_count'] == (1 if useful else 0)
     before = list(calls)
     assert await harness.run(job, RUN, 'History', 'history') == outcome
     assert calls == before
     with svc.store.connection() as db:
+        run = db.execute('SELECT state,status_detail FROM research_runs WHERE run_id=?', (RUN,)).fetchone()
+        assert run['state'] == 'partial' and run['status_detail'] == 'research_fact_routes_exhausted'
         assert db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE status='failed'").fetchone()[0] == 1
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] in {0, None}
 

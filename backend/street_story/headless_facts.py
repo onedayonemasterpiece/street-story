@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from . import review_packets
@@ -237,6 +238,11 @@ class HeadlessFacts:
                     if isinstance(item, dict) and item.get('research_run_id') == run_id:
                         item.update(search_provider=receipt['backend'], source_urls=list(stored),
                                     source_refs=[_search_source_ref(url) for url in stored])
+            if receipt.get('query_attempts'):
+                for item in history:
+                    if isinstance(item, dict) and item.get('research_run_id') == run_id:
+                        item['query_attempts'] = [{key: attempt.get(key) for key in
+                            ('query', 'outcome', 'source_count')} for attempt in receipt['query_attempts']]
             grounding = {str(item.get('url') or '').rstrip('/'): item
                          for item in research.get('grounding_sources') or [] if isinstance(item, dict)}
             for url, source in stored.items():
@@ -256,21 +262,52 @@ class HeadlessFacts:
         due = self.service.store.now() + delay if retry_at is None else max(self.service.store.now() + 1, retry_at)
         raise RetryableProviderError(reason, retry_at=due)
 
+    def _reader_failure_reason(self, job, story, manifest):
+        failed = {chunk['chunk_id'] for chunk in manifest.get('chunks') or []
+                  if chunk['status'] == 'failed' and chunk.get('error_code') == 'research_fact_routes_exhausted'}
+        if not failed:
+            return None
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? "
+                              "AND stage LIKE 'headless_fact_unit:%'", (job['id'],)).fetchall()
+        from .fact_unit_receipts import unit_attempt_rows
+        for row in rows:
+            if json.loads(row['value_json']).get('chunk_id') not in failed:
+                continue
+            unit = row['stage'].removeprefix('headless_fact_unit:')
+            seen = set()
+            for attempt in unit_attempt_rows(self.service.store, story, unit, legacy_binding=True):
+                if attempt['logical_id'] in seen:
+                    continue
+                seen.add(attempt['logical_id'])
+                receipt = json.loads(attempt['receipt_json'])
+                if receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') in {'not_sent', 'response_closed'}
+                                                        or receipt.get('retry_safe') is True):
+                    return str(receipt.get('error_code') or receipt.get('error_type') or
+                               'research_fact_routes_exhausted')[:1000]
+        return 'research_fact_routes_exhausted'
+
     def _finish(self, job, run_id, control_revision, reason):
         with self.service.store.tx() as db:
             snapshot = self._snapshot(job, run_id, control_revision)
             if snapshot is None:
                 return None
             manifest = run_manifest(db, run_id)
+            reader_failure = (self._reader_failure_reason(job, snapshot[0], manifest)
+                              if reason == 'source_manifest_exhausted' else None)
+            if reader_failure:
+                reason = reader_failure
             eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
                                   (job['story_id'],)).fetchone()[0]
-            complete = (manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
+            incomplete = reason == 'source_selection_unavailable' or bool(reader_failure)
+            complete = (not incomplete and manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
                         and not review_packets.pending_candidates(db, job['story_id'], run_id))
             outcome = (('useful_complete' if complete else 'useful_partial') if eligible else
-                       'resource_blocked' if reason == 'live_research_original_outcome_unavailable' else
+                       'resource_blocked' if incomplete or reason == 'live_research_original_outcome_unavailable' else
                        'no_supported_facts')
             value = {'outcome': outcome, 'reason': reason, 'coverage_complete': complete, 'eligible_count': eligible}
-            set_run_state(db, run_id, 'completed', detail=outcome, now=self.service.store.now(), completed=True)
+            set_run_state(db, run_id, 'partial' if incomplete else 'completed',
+                          detail=reason if incomplete else outcome, now=self.service.store.now(), completed=True)
             pending = snapshot[1].get('pending_fact_request')
             joined = (isinstance(pending, dict) and pending.get('photo_sha256', snapshot[0]['photo_sha256']) == snapshot[0]['photo_sha256']
                       and pending.get('identity_generation', snapshot[0]['_identity_generation']) == snapshot[0]['_identity_generation'])
@@ -295,10 +332,11 @@ class HeadlessFacts:
                                                   "AND status NOT IN ('extracted','no_claims')", (run_id,))}
             states = [json.loads(row[0]) for row in db.execute("SELECT value_json FROM research_checkpoints "
                 "WHERE job_id=? AND stage LIKE 'headless_fact_unit:%'", (job['id'],))]
-        due = [state['retry_at'] for state in states if state.get('chunk_id') in chunks
-               and isinstance(state.get('retry_at'), (int, float))
-               and not isinstance(state['retry_at'], bool) and math.isfinite(state['retry_at'])
-               and state['retry_at'] > self.service.store.now()]
+        deadlines = [state.get('readback_at', state.get('retry_at'))
+                     for state in states if state.get('chunk_id') in chunks]
+        due = [deadline for deadline in deadlines if isinstance(deadline, (int, float))
+               and not isinstance(deadline, bool) and math.isfinite(deadline)
+               and deadline > self.service.store.now()]
         return min(due) if due else None
 
     def _only_unobservable_live_work(self, job, run_id, story):
@@ -352,7 +390,9 @@ class HeadlessFacts:
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
-        story, _, _ = snapshot
+        story, research, _ = snapshot
+        story['_fact_research_goal'] = goal
+        story['_confirmed_fact_identity'] = compact_physical_identity(research['visual_identity'])
         # Keep the accepted model discovery decision across a route failure.
         with self.service.store.tx() as db:
             if self._snapshot(job, run_id, control_revision) is None:
@@ -369,6 +409,8 @@ class HeadlessFacts:
                          'backend': (found.get('receipt') or {}).get('backend', 'external_search')}
         if not self._bind_discovery(job, run_id, goal, scope, added, found_receipt, control_revision):
             return
+        if not added and found.get('outcome') == 'selection_unavailable':
+            return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
         with self.service.store.connection() as db:
             unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL "
                                 "AND status!='failed' LIMIT 1", (run_id,)).fetchone()
@@ -611,8 +653,9 @@ class HeadlessFacts:
         snapshot = self._snapshot(job, run_id)
         if snapshot is None:
             return None
-        if snapshot[2]['state'] == 'completed':
-            return self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
+        terminal = self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
+        if terminal or snapshot[2]['state'] == 'completed':
+            return terminal
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
         if self._model_sufficient(job, run_id, control_revision, []):
@@ -678,21 +721,38 @@ class HeadlessFacts:
                 raise RetryableProviderError('research_search_unavailable', retry_at=self.service.store.now() + 60)
             identity = research['visual_identity']
             payload = json.loads(job.get('payload_json') or '{}')
-            query = str(payload.get('research_query') or ' '.join(
-                str(value or '').strip() for value in (identity.get('candidate_name'), goal))).strip()
-            if self._snapshot(job, run_id, control_revision) is None:
-                return
-            found = await search(query, story)
-            snapshot = self._snapshot(job, run_id, control_revision)
-            if snapshot is None:
-                return
-            sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
-            search_receipt = found.get('receipt') or {}
+            from .fact_search_context import fact_search_queries
+            queries = fact_search_queries(identity, payload.get('research_query'))
+            story['_fact_research_goal'] = goal
+            story['_confirmed_fact_identity'] = compact_physical_identity(identity)
+            attempts = []
+            found = {'outcome': 'completed_empty'}
+            for query in queries:
+                if self._snapshot(job, run_id, control_revision) is None:
+                    return
+                stage = 'headless_fact_search:' + hashlib.sha256(query.encode()).hexdigest()
+                found = self.service.store.checkpoint_get(job['id'], stage)
+                if found is None:
+                    found = await search(query, story)
+                    if self._snapshot(job, run_id, control_revision) is None:
+                        return
+                    self.service.store.checkpoint_put(job['id'], stage, found)
+                sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
+                attempts.append({'query': query, 'outcome': found.get('outcome', 'completed'),
+                                 'source_count': len(sources), 'receipt': found.get('receipt') or {}})
+                owner_exact = identity.get('status') == 'owner_confirmed' and identity.get('selection_basis') == 'owner_exact'
+                continuable = {'completed_empty', 'selection_unavailable'} if owner_exact else {'completed_empty'}
+                if sources or found.get('outcome', 'completed_empty') not in continuable:
+                    break
+                LOG.info('street_story_fact_search_empty story_id=%s run_id=%s attempt=%s continuation=%s',
+                         story['id'], run_id, len(attempts), len(attempts) < len(queries))
+            search_receipt = {**(found.get('receipt') or {}), 'query_attempts': attempts}
+            if not sources and any(attempt['outcome'] == 'selection_unavailable' for attempt in attempts):
+                self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
+                return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
             if not sources and found.get('outcome', 'completed_empty') == 'completed_empty':
                 self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
                 return self._finish(job, run_id, control_revision, 'search_exhausted')
-            if not sources and found.get('outcome') == 'selection_unavailable':
-                return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
         if not self._bind_discovery(job, run_id, goal, scope, sources, search_receipt, control_revision):
             return
         snapshot = self._snapshot(job, run_id, control_revision)
@@ -780,6 +840,10 @@ class HeadlessFacts:
                 'SELECT DISTINCT s.url FROM research_run_sources s JOIN research_runs r ON r.run_id=s.run_id '
                 f'WHERE r.poi_key IN ({placeholders})', tuple(poi_keys)))
             context = {
+                # The run owns this review date across retries and midnight;
+                # source publication/event dates still come from own evidence.
+                'review_as_of_date_utc': datetime.fromtimestamp(
+                    snapshot[2]['created_at'], timezone.utc).date().isoformat(),
                 'confirmed_identity': compact_physical_identity(research['visual_identity'],
                     photo_sha256=story['photo_sha256'], generation=story['_identity_generation'],
                     control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
@@ -794,6 +858,8 @@ class HeadlessFacts:
                 'previously_processed_sources': source_window,
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
+        LOG.info('street_story_fact_review_context story_id=%s run_id=%s review_as_of_date_utc=%s',
+                 story['id'], run_id, context['review_as_of_date_utc'])
         suggestions, failures = [], []
         for unit in units:
             unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
@@ -1039,11 +1105,14 @@ class HeadlessFacts:
             if not saved and old.get('owner') and old['owner'] != owner:
                 self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
                 continue  # A result-checkpoint crash cannot rebind old inference to edited inputs.
-            due = old.get('retry_at')
+            from .research_adapter import ProductResearchAdapter
+            readback_at = ProductResearchAdapter.fact_unit_readback_at(self, story, page['_unit_id'])
+            # Historical UNKNOWN checkpoints used the paid route's 5m wait.
+            # Addressed original observations need only their own polling fence.
+            due = old.get('readback_at') if readback_at is not None else old.get('retry_at')
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
-                from .research_adapter import ProductResearchAdapter
                 receipts = ProductResearchAdapter._fact_pool_receipts(self, story, page['_unit_id'])
                 addressed = any(ProductResearchAdapter._fact_pool_unknown(receipt)
                     and receipt.get('provider_id') == 'opencode'
@@ -1142,9 +1211,12 @@ class HeadlessFacts:
                 self._unit_phase(job, page['_unit_id'], 'exhausted', chunk_id=page['chunk_id'], error_code=str(exc))
                 return unit, None, exc
             known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
+            from .research_adapter import ProductResearchAdapter
+            readback_at = None if known else ProductResearchAdapter.fact_unit_readback_at(self, story, page['_unit_id'])
             self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
                              chunk_id=page['chunk_id'], error_type=type(exc).__name__,
                              error_code=type(exc).__name__,
+                             **({'readback_at': readback_at} if readback_at is not None else {}),
                              retry_at=getattr(exc, 'retry_at', None) or (None if known else self.service.store.now()+300))
             return unit, None, exc
         finally:
@@ -1189,6 +1261,12 @@ class HeadlessFacts:
             extracted = isolated
         result = extracted['result']
         claims = result['facts'] if result['source_matches_poi'] and result['source_content_valid'] else []
+        if not result['source_matches_poi'] or not result['source_content_valid']:
+            LOG.info('street_story_fact_source_rejected story_id=%s run_id=%s generation=%s '
+                     'candidate_id=%s chunk_id=%s reason=%s',
+                     story['id'], run_id, story['_identity_generation'],
+                     research['visual_identity'].get('candidate_id'), page['chunk_id'],
+                     'source_subject_mismatch' if not result['source_matches_poi'] else 'source_content_invalid')
         if any(not isinstance(fact, dict) for fact in claims):
             raise MalformedProviderResponse('research_fact_page_claim_invalid')
         receipt = extracted.get('receipt') or {}

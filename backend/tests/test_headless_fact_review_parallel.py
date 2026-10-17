@@ -223,6 +223,27 @@ async def test_explicit_backend_reconsideration_changes_only_requested_eligible_
 
 
 @pytest.mark.asyncio
+async def test_reconsidered_claim_is_not_its_own_known_equivalent_or_sufficiency_basis(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=3)
+    engine = ControlledReview(harness)
+    assert await engine.run(job, RUN, 0) == 1
+    with svc.store.connection() as db:
+        ids = [row[0] for row in db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id')]
+        before = [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility '
+            'FROM fact_assertions ORDER BY assertion_id')]
+    session = SimpleNamespace(id='reconsider-known', resource_id=job['story_id'], actor=None,
+        closed=False, model='fixture', state={'fact_research_control_revision': 0, 'fact_review_origin': 'backend'})
+    packet, _, _ = engine._prepare_packet(job, RUN, session, [ids[0]], reconsider=True)
+    assert packet is not None
+    view = model_packet(packet)
+    assert {row['fact_id'] for row in view['eligible_facts']} == set(ids[1:])
+    assert ids[0] not in {row['fact_id'] for row in view['nearby_existing_claims']}
+    with svc.store.connection() as db:
+        assert [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility '
+            'FROM fact_assertions ORDER BY assertion_id')] == before
+
+
+@pytest.mark.asyncio
 async def test_explicit_scope_never_repeats_unknown_but_independent_claim_can_progress(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=6)
     engine = ControlledReview(harness)

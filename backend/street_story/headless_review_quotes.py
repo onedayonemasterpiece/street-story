@@ -1,4 +1,4 @@
-"""Private literal addressing for frozen headless reviews; no semantic verdicts."""
+"""Literal addressing for frozen source-backed reviews; no semantic verdicts."""
 from copy import deepcopy
 import hashlib
 
@@ -16,6 +16,12 @@ def _entry(packet, item):
                    'offset': item['offset'], 'passage_sha256': digest}
 
 
+def with_quote_ref(packet, item):
+    """Address an unchanged slice before the existing response-size check."""
+    label, _ = _entry(packet, item)
+    return {**item, 'quote_ref': label}
+
+
 def with_quote_catalog(packet):
     """Label every already bounded literal slice without duplicating source text."""
     packet = deepcopy(packet)
@@ -28,6 +34,53 @@ def with_quote_catalog(packet):
         catalog[label] = entry
     packet['quote_catalog'] = catalog
     return packet
+
+
+def remember_live_page(session, packet):
+    """Reuse literal addressing for slices issued in this interactive session."""
+    addressed = with_quote_catalog(packet)
+    received = session.state.setdefault('review_quote_packets', {}).setdefault(packet['packet_ref'],
+        {'packet_ref': packet['packet_ref'], 'items': [], 'quote_catalog': {}})
+    for item in addressed['items']:
+        label = item['quote_ref']
+        if label not in received['quote_catalog']:
+            received['items'].append(item)
+            received['quote_catalog'][label] = addressed['quote_catalog'][label]
+    # The model needs the inline address, not a duplicate address catalog.
+    return {key: value for key, value in addressed.items() if key != 'quote_catalog'}
+
+
+def resolve_live_rows(session, args):
+    """Resolve only the used own labels, without requiring unrelated pages."""
+    decisions = args.get('decisions')
+    visible = session.state.get('review_active_read_snapshot')
+    if not isinstance(decisions, list):
+        return decisions
+    uses_labels = any(isinstance(row, dict) and isinstance(row.get('basis_quotes'), list)
+        and any(isinstance(q, str) and q.startswith(PREFIX) for q in row['basis_quotes'])
+        for row in decisions)
+    if not uses_labels and visible is None:
+        return decisions  # Existing literal API/headless contract.
+    ref = args.get('packet_ref')
+    received = session.state.get('review_quote_packets', {}).get(ref)
+    if not received and visible is None:
+        raise ConflictError('live_fact_review_evidence_invalid',
+                            'Read this packet in the current session before choosing its quote_ref labels.')
+    received = received or {'packet_ref': ref, 'items': [], 'quote_catalog': {}}
+    request = args
+    if visible is not None:
+        # The shared host sends responses after all calls in one batch. A
+        # positive basis must have been issued before this provider batch.
+        labels = visible.get(ref, ())
+        received = {**received,
+            'items': [item for item in received['items'] if item['quote_ref'] in labels],
+            'quote_catalog': {q: entry for q, entry in received['quote_catalog'].items() if q in labels}}
+        request = deepcopy(args)
+        for row in request['decisions']:
+            if isinstance(row, dict) and isinstance(row.get('basis_quotes'), list) and any(
+                    not isinstance(q, str) or not q.startswith(PREFIX) for q in row['basis_quotes']):
+                row['_row_error'] = 'live_fact_review_evidence_invalid'
+    return resolve_rows(received, request)['decisions']
 
 
 def response_schema(packet, public_schema):

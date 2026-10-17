@@ -89,6 +89,11 @@ def _map_query_context(story, candidates):
             anchors.append(anchor)
     context['nearby_address_hypotheses'] = anchors
     context['observed_address_context'] = observed_address_context(story, candidates)
+    if story.get('_owner_selected_group'):
+        context['owner_selected_group'] = story['_owner_selected_group']
+        context['group_instruction'] = ('Only these owner-selected physical members may become the identity. '
+            'Sources/REFs may support a member but cannot add another physical candidate. '
+            'Unresolved member binding requires uncertainty or a contextual question.')
     return context
 
 
@@ -894,6 +899,7 @@ async def _suggest(service, story, transcript, candidates):
     native_source_map_receipt = None
     issued_followup_source_map_receipt = None
     original_followup_context = {}
+    reusing_initial_map_context = False
     joint_resolution_required = 'subject_resolution' in schema['properties']
     response_id_resolutions = []
     def diagnostic_stage(raw_json):
@@ -908,11 +914,11 @@ async def _suggest(service, story, transcript, candidates):
     def joint_source_map_receipt(*, current_scene=False):
         from .identity_geometry_contract import CONTRACT
         from .identity_subject_resolution import CONTRACT as RESOLUTION_CONTRACT
-        if original_followup_context:
+        if original_followup_context and not reusing_initial_map_context:
             return original_followup_context['source_map_receipt']
-        if issued_followup_source_map_receipt is not None and joint_followup_used and not current_scene:
+        if issued_followup_source_map_receipt is not None and joint_followup_used and not current_scene and not reusing_initial_map_context:
             return {**issued_followup_source_map_receipt, 'model_id': joint_model_id}
-        if native_source_map_receipt is not None and not joint_followup_used and not current_scene:
+        if native_source_map_receipt is not None and (not joint_followup_used or reusing_initial_map_context) and not current_scene:
             return native_source_map_receipt
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -1234,7 +1240,7 @@ async def _suggest(service, story, transcript, candidates):
         return result
     def reuse_initial_plan():
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
-        nonlocal source_text_receipt, text_articles, joint_resolution_required
+        nonlocal source_text_receipt, text_articles, joint_resolution_required, reusing_initial_map_context
         from .identity_plan_diagnostics import reusable_closed_initial_plan
         marker = joint_operation_marker(service, story, stage='initial')
         saved = reusable_closed_initial_plan(marker, initial_unit_binding)
@@ -1255,6 +1261,9 @@ async def _suggest(service, story, transcript, candidates):
         # Optional TEXT's unknown outcome remains fenced in its original marker;
         # it supplies neither a new decision nor authority to resend that unit.
         scene, scene_manifest, physical_context, resolution_packet = initial_map_context
+        # The closed initial JSON was evaluated against this MAP. The optional
+        # followup receipt stays frozen in its journal, including UNKNOWN.
+        reusing_initial_map_context = True
         geometry_prior_ids = []
         story['_identity_search_plan_route'] = 'google'
         response_id_resolutions[:] = saved['identity_response_id_resolutions']
@@ -3741,6 +3750,10 @@ async def recover(service, story, transcript, candidates, excluded):
         if web_hints:
             record_identity_event(service, story['id'], 'identity_web_search_hints', {
                 'hint_count': len(web_hints)})
+        if story.get('_owner_selected_group'):
+            # Exhausting member reference acquisition cannot authorize a new
+            # Wiki/Commons physical-hypothesis fallback outside the group.
+            return None
         discovered = await retrieve(
             service, search_queries, commons_query, excluded, entity_name=entity_name, story=story)
         record_identity_event(service, story['id'], 'identity_discovery_candidates', {

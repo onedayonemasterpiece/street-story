@@ -63,6 +63,8 @@ class Settings:
     gemini_web_search_tertiary_model: str = 'gemini-3.8-flash'
     gemini_transcription_model: str = 'gemini-3.5-flash-lite'
     gemini_transcription_fallback_model: str = 'gemini-3.1-flash-lite'
+    # Caption writer: any lite model that answers; quality is comparable, availability is not.
+    gemini_writer_models: tuple[str, ...] = ('gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.6-flash-lite')
     worker_poll_seconds: float = 1.0
     gemini_api_keys: tuple[SecretStr, ...] = field(default=(), repr=False)
     gemini_key_refs: tuple[str, ...] = ()
@@ -89,6 +91,8 @@ class Settings:
     research_gigachat_key: SecretStr | str | None = field(default=None, repr=False)
     research_gigachat_ca: str | None = None
     research_gigachat_scope: str = 'GIGACHAT_API_PERS'
+    # Data-only route configuration; credentials remain in existing adapters.
+    fact_agent_routes: tuple[dict, ...] = ()
 
     def __post_init__(self):
         if self.publication_test_alias and not re.fullmatch(r"street_story_e2e_[a-zA-Z0-9_]{1,80}", self.publication_test_alias):
@@ -96,6 +100,15 @@ class Settings:
         for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key','research_gigachat_key','rkb_poi_service_token'):
             object.__setattr__(self, name, secret(getattr(self, name)))
         object.__setattr__(self, 'gemini_api_keys', tuple(secret(k) for k in self.gemini_api_keys))
+        if len(self.fact_agent_routes) > 16:
+            raise ValueError('At most 16 fact agent routes may be configured')
+        for route in self.fact_agent_routes:
+            if (not isinstance(route, dict) or route.get('provider_id') not in {'google', 'gigachat', 'opencode', 'codex_native'}
+                    or not isinstance(route.get('model_id'), str) or not route['model_id'].strip()
+                    or set(route) - {'provider_id', 'model_id', 'endpoint', 'directory', 'enabled'}):
+                raise ValueError('Invalid fact agent route')
+            if route['provider_id'] == 'codex_native' and route['model_id'] != 'gpt-6-luna':
+                raise ValueError('Native fact research must start in Luna')
 
     @property
     def gemini_keys(self) -> tuple[SecretStr, ...]:
@@ -163,6 +176,7 @@ class Settings:
             gemini_web_search_tertiary_model=os.getenv('GEMINI_WEB_SEARCH_TERTIARY_MODEL', 'gemini-3.8-flash'),
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
+            gemini_writer_models=tuple(m.strip() for m in os.getenv('GEMINI_WRITER_MODELS', 'gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.6-flash-lite').split(',') if m.strip()),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
             rkb_poi_service_token=os.getenv('STREET_STORY_RKB_POI_SERVICE_TOKEN', '').strip() or None,
             vibepublish_http_host=_dns_host('VIBEPUBLISH_HTTP_HOST'),
@@ -173,6 +187,7 @@ class Settings:
             research_endpoint=os.getenv('STREET_STORY_RESEARCH_ENDPOINT', '').strip() or None,
             research_directory=Path(os.environ['STREET_STORY_RESEARCH_DIRECTORY']) if os.getenv('STREET_STORY_RESEARCH_DIRECTORY') else None,
             research_model=os.getenv('STREET_STORY_RESEARCH_MODEL', 'mimo-v2.6-flash-free'),
+            fact_agent_routes=tuple(json.loads(os.getenv('STREET_STORY_FACT_AGENT_ROUTES', '[]'))),
             native_vision_reserve=os.getenv('STREET_STORY_NATIVE_VISION_RESERVE', '').lower() in {'1', 'true', 'yes'},
             research_gigachat_key=os.getenv('STREET_STORY_GIGACHAT_KEY') or None,
             research_gigachat_ca=os.getenv('STREET_STORY_GIGACHAT_CA') or None,

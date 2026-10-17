@@ -18,6 +18,8 @@ from typing import Any
 from .config import Settings, reveal
 from .db import Store
 from .errors import research_retry_at
+from .map_pages import from_visitor_reviews
+from .publication_content import publication_content
 from .providers import (
     GeminiClient,
     GroundedResearch,
@@ -99,6 +101,7 @@ class StreetStoryService:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.data_dir / "street-story.sqlite3")
         self._maintenance_lock = asyncio.Lock()
+        self._owner_map_requests: dict[str, asyncio.Task] = {}
         from .temporary_photos import TemporaryPhotos
         self._temporary_photos = TemporaryPhotos()
         self.providers = providers or ProviderBundle(
@@ -110,6 +113,8 @@ class StreetStoryService:
 
         if self.providers.research is None and (settings.research_endpoint or settings.native_vision_reserve
                 or reveal(settings.research_gigachat_key)
+                or any(route.get('provider_id') == 'codex_native' and route.get('enabled') is not False
+                    for route in settings.fact_agent_routes)
                 or settings.gemini_keys and settings.gemini_quota_supabase_url):
             from .research_adapter import ProductResearchAdapter
             self.providers.research = ProductResearchAdapter(self)
@@ -227,6 +232,13 @@ class StreetStoryService:
     def _source_photo_available(self, story_id: str) -> bool:
         return self._temporary_photos.get(story_id) is not None or self._saved_source_photo(story_id) is not None
 
+    def _photo_capture_context(self, story_id: str) -> dict[str, Any]:
+        from .photo_metadata import inspect_capture_time
+        try:
+            return inspect_capture_time(self._source_photo_bytes(story_id))
+        except ConflictError:
+            return {'status': 'unknown', 'provenance': 'source_exif', 'reason': 'source_unavailable'}
+
     def _source_photo_for_job(self, story_id: str) -> bytes:
         try:
             return self._source_photo_bytes(story_id)
@@ -289,7 +301,9 @@ class StreetStoryService:
             if poi_id and research.get('poi_id') != poi_id:
                 research['poi_id'] = poi_id
                 db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), row['id']))
-        added = hydrate_story_facts(db, identity, row['id'])
+        from .fact_ledger import subject_reads
+        with subject_reads():
+            added = hydrate_story_facts(db, identity, row['id'])
         if added:
             db.execute('UPDATE stories SET revision=revision+1,updated_at=? WHERE id=?', (self.store.now(), row['id']))
         return added
@@ -345,6 +359,8 @@ class StreetStoryService:
         return {"ok": True, "story_id": story_id}
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        from .photo_format import projection as photo_format_projection
+        from .place_selection import camera_point
         from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
         from .research_control import KINDS, PURPOSES, research_stopped
         if research is None:
@@ -374,6 +390,10 @@ class StreetStoryService:
                 "eligibility": str(assertion.get("eligibility") or "unreviewed"),
                 "eligibility_reason": assertion.get("eligibility_reason"),
                 "revision_digest": str(assertion.get("revision_digest") or ""),
+                # A fact resting on visitor reviews from the house's map card is marked as such.
+                "from_visitor_reviews": any(from_visitor_reviews(str(item[0])) for item in db.execute(
+                    "SELECT e.source_url FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+                    "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (row['id'], fact['fact_id']))),
                 "supporting_evidence_keys": sorted({digest(list(evidence)) for evidence in db.execute(
                     "SELECT e.source_url,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256 "
                     "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
@@ -428,6 +448,15 @@ class StreetStoryService:
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
             "source_available": self._source_photo_available(row['id']),
+            "photo_capture": self._photo_capture_context(row['id']),
+            "camera_point": camera_point(row, research),
+            "identity_mode": research.get("identity_mode", "auto"),
+            "place_selection": research.get("place_selection"),
+            "identity_clarification": research.get("identity_clarification"),
+            "place_map": research.get("place_map"),
+            "place_map_focus": research.get("place_map_focus"),
+            "place_navigation_active": bool(research.get("place_navigation_active")),
+            "owner_place_hint": research.get("owner_place_hint"),
             "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
@@ -435,7 +464,10 @@ class StreetStoryService:
                 'photo_sha256': row['photo_sha256'], 'identity_generation': generation,
             } for purpose in PURPOSES},
             "research_pending": pending_research,
-            "research_outcome": research.get('automatic_research_outcome'),
+            "visual_photo_format": photo_format_projection(research,
+                json.loads(row['visual_context_json'] or '{}'), row['vibepublish_asset_ref']),
+            "research_outcome": (research.get('automatic_research_outcome')
+                if research.get('automatic_research_outcome') is not None else research.get('research_outcome')),
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
@@ -454,15 +486,26 @@ class StreetStoryService:
         lat: float | None,
         lon: float | None,
         location_provenance: dict | None = None,
+        identity_mode: str = "auto",
     ) -> dict[str, Any]:
+        if identity_mode not in {"auto", "manual"}:
+            raise ConflictError("identity_mode_invalid", "Выберите ручной или автоматический поиск объекта.")
         # Legacy API field is an opaque upload token, never an image checksum.
         if not photo_bytes:
             raise ConflictError('photo_empty', 'Uploaded photo is empty')
+        if identity_mode == 'manual':
+            from .photo_metadata import inspect_gps
+            gps = inspect_gps(photo_bytes)
+            if gps['status'] != 'gps_present':
+                raise ConflictError('photo_gps_required', 'В фото нет координат GPS — выберите снимок с геолокацией.')
+            if location_provenance is not None:
+                raise ConflictError('camera_context_invalid', 'Ручная точка камеры недоступна; используйте GPS снимка.')
+            lat, lon = gps['latitude'], gps['longitude']
         if voice_protocol != "voice-chunks-v2":
             raise ConflictError("voice_protocol_unsupported", "voice-chunks-v2 is required")
         identity = {
             "client_story_id": client_story_id, "photo_sha256": photo_sha256.lower(), "photo_mime_type": photo_mime_type,
-            "voice_protocol": voice_protocol, "lat": lat, "lon": lon,
+            "voice_protocol": voice_protocol, "lat": lat, "lon": lon, "identity_mode": identity_mode,
         }
         if location_provenance is not None:
             import math
@@ -507,6 +550,7 @@ class StreetStoryService:
                 (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
             self._restore_source_photo(db, story_id, photo_bytes)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical({'identity_mode': identity_mode}), story_id))
             if location_provenance is not None:
                 current = self._story_row(db, story_id)
                 research = json.loads(current['research_json'] or '{}')
@@ -722,23 +766,118 @@ class StreetStoryService:
             self._enqueue_job(db, story_id, "visual", f"visual:{key}", {"selected_fact_ids": selected})
             return self._story_repr(db, self._story_row(db, story_id))
 
+    async def refresh_failed_publication(self, story_id: str) -> None:
+        """Observe the exact failed command before preparing another card; never POST."""
+        with self.store.connection() as db:
+            job = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish' "
+                             "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story_id,)).fetchone()
+            if not job or job['state'] != 'failed':
+                return
+            job_id = job['id']
+            intent_id = json.loads(job['payload_json']).get('intent_id')
+            row = db.execute('SELECT * FROM publish_intents WHERE id=? AND story_id=?',
+                             (intent_id, story_id)).fetchone()
+            if not row or not row['vibepublish_operation_id'] or row['state'] == 'blocked':
+                return
+            operation_id, publication_id = row['vibepublish_operation_id'], row['vibepublish_publication_id']
+        payload = await self.providers.vibepublish.status(operation_id)
+        receipts = payload.get('receipts')
+        current = next((item for item in receipts if isinstance(item, dict)
+                        and item.get('operation_id') == operation_id), {}) if isinstance(receipts, list) else payload
+        if (current.get('operation_id') != operation_id or current.get('resource_id') != publication_id
+                or not publication_id or current.get('action') != 'publish'
+                or current.get('operation_complete') is not True or current.get('state') != 'blocked'):
+            raise ConflictError('publication_outcome_unresolved',
+                                'The original publication has no closed bound rejection; no new send is allowed.')
+        with self.store.tx() as db:
+            latest = db.execute("SELECT id,state FROM jobs WHERE story_id=? AND kind='publish' "
+                                "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story_id,)).fetchone()
+            intent = db.execute('SELECT * FROM publish_intents WHERE id=? AND story_id=?',
+                                (intent_id, story_id)).fetchone()
+            if (not latest or latest['id'] != job_id or latest['state'] != 'failed' or not intent
+                    or intent['vibepublish_operation_id'] != operation_id
+                    or intent['vibepublish_publication_id'] != publication_id):
+                raise ConflictError('publication_observation_stale', 'The original publication owner changed.')
+            prior = json.loads(intent['receipt_json'] or '{}')
+            dispatch = prior.get('_publish_dispatch')
+            receipt = {**current, **({'_publish_dispatch': dispatch} if dispatch else {})}
+            db.execute("UPDATE publish_intents SET state='blocked',receipt_json=?,updated_at=? WHERE id=?",
+                       (canonical(receipt), self.store.now(), intent_id))
+        logging.getLogger(__name__).info('street_story_publication_observation story_id=%s operation_id=%s state=blocked new_dispatch=false',
+                                         story_id, operation_id)
+
     def _rejected_publication_can_be_reconfirmed(self, db, story) -> bool:
         """Only definite pre-dispatch rejection permits a new intent after review.
 
-        A lost response, accepted operation or generic provider failure is NOT
-        evidence that publication did not happen. Never replay those here.
+        An accepted command or generic failure is not evidence of no delivery.
+        Only a bound completed native preflight receipt with every destination
+        not_attempted can permit a distinct owner-confirmed corrected intent.
+        Never replay the original operation here.
         """
-        if story["state"] != "needs_review" or story["error_code"] != "provider_permanent_error":
+        if story["state"] != "needs_review":
             return False
         job = db.execute(
             "SELECT * FROM jobs WHERE story_id=? AND kind='publish' ORDER BY created_at DESC LIMIT 1",
             (story["id"],),
         ).fetchone()
-        if not job or job["state"] != "failed" or job["last_error"] != "VibePublish request failed: HTTP 422":
+        if not job or job["state"] != "failed":
             return False
         intent_id = json.loads(job["payload_json"] or "{}").get("intent_id")
         intent = db.execute("SELECT * FROM publish_intents WHERE id=? AND story_id=?", (intent_id, story["id"])).fetchone()
-        return bool(intent and not intent["vibepublish_operation_id"])
+        if not intent:
+            return False
+        intent = dict(intent)
+        if not intent['vibepublish_operation_id']:
+            return job['last_error'] == 'VibePublish request failed: HTTP 422'
+        # An accepted VibePublish command is normally not safely repeatable.
+        # This one typed, CLOSED preflight result proves every native delivery
+        # was not attempted. Keep the original operation/key/receipt unchanged;
+        # the owner must confirm a distinct corrected publication intent.
+        try:
+            receipt = json.loads(intent.get('receipt_json') or '{}')
+            request = json.loads(intent['request_json'] or '{}')
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(receipt, dict) or not isinstance(request, dict) or not isinstance(receipt.get('error'), dict):
+            return False
+        error_code = (receipt.get('error') or {}).get('code')
+        if (intent['state'] != 'blocked'
+                or receipt.get('operation_id') != intent['vibepublish_operation_id']
+                or receipt.get('resource_id') != intent['vibepublish_publication_id']
+                or not intent['vibepublish_publication_id']
+                or receipt.get('action') != 'publish' or receipt.get('operation_complete') is not True
+                or receipt.get('state') != 'blocked'
+                or error_code not in {'native_time_precision', 'command_expired'}):
+            return False
+        try:
+            prior_time = datetime.fromisoformat(str(request.get('scheduled_for') or '').replace('Z', '+00:00'))
+        except ValueError:
+            return False
+        if prior_time.tzinfo is None or (error_code == 'native_time_precision'
+                                        and not prior_time.astimezone(timezone.utc).microsecond):
+            return False
+        destinations = request.get('destinations')
+        deliveries = receipt.get('deliveries')
+        if (not isinstance(destinations, list) or not destinations or not all(isinstance(item, str) and item for item in destinations)
+                or len(set(destinations)) != len(destinations) or not isinstance(deliveries, list)
+                or len(deliveries) != len(destinations)):
+            return False
+        seen, attempts = set(), set()
+        for delivery in deliveries:
+            if (not isinstance(delivery, dict) or delivery.get('destination') not in destinations
+                    or delivery['destination'] in seen or delivery.get('provider') != 'telegram'
+                    or delivery.get('state') != 'blocked' or delivery.get('stage') != 'blocked'
+                    or delivery.get('observed') != 'not_attempted'
+                    or delivery.get('missing_checks') != [error_code]
+                    or 'applied_revision' not in delivery or delivery['applied_revision'] is not None
+                    or not isinstance(delivery.get('attempt_id'), str) or not delivery['attempt_id']
+                    or delivery['attempt_id'] in attempts):
+                return False
+            seen.add(delivery['destination'])
+            attempts.add(delivery['attempt_id'])
+        logging.getLogger(__name__).info('street_story_publication_reconfirmation story_id=%s operation_id=%s basis=closed_not_attempted reason=%s',
+                 story['id'], intent['vibepublish_operation_id'], error_code)
+        return True
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
@@ -750,6 +889,8 @@ class StreetStoryService:
                 raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
             if scheduled_dt.tzinfo is None:
                 raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
+            if scheduled_dt.astimezone(timezone.utc).microsecond:
+                raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
             now_dt = datetime.now(timezone.utc)
             scheduled_utc = scheduled_dt.astimezone(timezone.utc)
             if scheduled_utc <= now_dt or scheduled_utc > now_dt + timedelta(days=90):
@@ -759,7 +900,7 @@ class StreetStoryService:
             delay = int(body.get("delay_minutes", 60))
             if delay < 1 or delay > 24 * 60:
                 raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
-            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).isoformat().replace("+00:00", "Z")
+            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         if datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=90):
             raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
         with self.store.tx() as db:
@@ -971,6 +1112,8 @@ class StreetStoryService:
         if researcher is None or not researcher.vision_available:
             return
         scheduled = 0
+        inspected = 0
+        started = time.monotonic()
         with self.store.tx() as db:
             # Bound new work, not the stories inspected before eligibility checks.
             # Skipped and already queued stories must not hide later hypotheses.
@@ -981,10 +1124,15 @@ class StreetStoryService:
                 "AND json_extract(origin.payload_json,'$.queue_priority')='interactive') AS interactive_identity "
                 "FROM stories WHERE state IN ('needs_review','identifying','photo_ready') "
                 "AND json_extract(stories.research_json,'$.automatic_research_outcome') IS NULL "
+                # Match the partial index: large map/source histories without a
+                # pending visual candidate never need a full Python JSON decode.
+                "AND coalesce(json_extract(stories.research_json,'$.visual_identity.status'),'') NOT IN ('match','owner_confirmed') "
+                "AND json_array_length(stories.research_json,'$.visual_identity.candidates')>0 "
                 "AND NOT EXISTS(SELECT 1 FROM jobs queued WHERE queued.semantic_key="
                 "'identity-visual:'||stories.id||':'||coalesce(json_extract(stories.research_json,'$.identity_generation'),0)"
                 "||':'||stories.photo_sha256) "
                 "ORDER BY interactive_identity DESC,created_at,id"):
+                inspected += 1
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
@@ -1000,6 +1148,11 @@ class StreetStoryService:
                 scheduled += 1
                 if scheduled >= 20:
                     break
+        duration_ms = round((time.monotonic() - started) * 1000)
+        if duration_ms >= 250:
+            logging.getLogger('uvicorn.error').warning(
+                'street_story_worker_scan stage=identity_visual outcome=slow duration_ms=%s inspected=%s scheduled=%s',
+                duration_ms, inspected, scheduled)
         if scheduled:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'identity_visual', 'scheduled': scheduled}))
@@ -1022,7 +1175,8 @@ class StreetStoryService:
                 generation = int(research.get('identity_generation') or 0)
                 automatic = research.get('automatic_fact_request') or {}
                 from .identity_proof import accepted_identity
-                if (not accepted_identity(identity, photo_sha256=row['photo_sha256'], generation=generation,
+                if (research.get('owner_research_waiting_context')
+                        or not accepted_identity(identity, photo_sha256=row['photo_sha256'], generation=generation,
                         control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)) or research.get('input_revision')
                         or research.get('automatic_research_outcome')
                         or automatic.get('photo_sha256') == row['photo_sha256'] and automatic.get('identity_generation') == generation
@@ -1424,7 +1578,7 @@ class StreetStoryService:
                 raise PermanentProviderError("Requested destination is not in current VibePublish bootstrap projection")
             payload = {
                 "to": request["destinations"],
-                "content": {"text": request.get("text") or "", "format": "plain"},
+                "content": publication_content(request.get("text") or ""),
                 "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
                 "surface": "post",
                 "delivery": {"kind": "at", "at": request["scheduled_for"]},

@@ -23,6 +23,29 @@ internal object FactPresentation {
             !control.stopped && projection.researchPending["facts"] == true
     }
 
+    fun researchOutcomeNotice(projection: ResearchProjectionSnapshot?, photoSha: String): String? {
+        val result = projection?.researchOutcome ?: return null
+        if (photoSha.isBlank() || projection.photoSha256 != photoSha ||
+            projection.identityGeneration == null || result.photoSha256 != photoSha ||
+            result.identityGeneration != projection.identityGeneration || result.purpose != "facts" ||
+            projection.researchPending["facts"] == true || result.coverageComplete != false) return null
+        return when {
+            result.reason == "research_routes_unavailable" ->
+                "Исследование недоступно · нет двух независимых проверенных маршрутов"
+            result.reason == "source_selection_unavailable" ->
+                "Исследование не завершено · временная проблема с выбором источников"
+            result.reason in setOf("research_output_exhausted", "research_empty_response",
+                "research_fact_routes_exhausted", "research_fact_executor_unavailable",
+                "research_provider_failed", "research_transport_unavailable") ->
+                "Не удалось обработать найденные источники · исследование не завершено"
+            result.outcome == "resource_blocked" ->
+                "Исследование не завершено · временная ошибка обработки"
+            result.outcome == "useful_partial" ->
+                "Исследование не завершено · найдена часть подтверждённых фактов"
+            else -> "Исследование не завершено"
+        }
+    }
+
     fun concise(raw: String): String {
         val text = raw.replace(Regex("\\s+"), " ").trim()
         if (text.length <= MAX_FACT_CHARS) return text

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from typing import Any
@@ -139,6 +140,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         req_digest = digest({"story_id": story_id, **body})
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
+            current_research = json.loads(story['research_json'] or '{}')
+            if (body.get('expected_identity_generation') is not None and body['expected_identity_generation']
+                    != int(current_research.get('identity_generation') or 0)):
+                raise ConflictError('fact_selection_stale', 'Объект изменился; обновите историю.')
+            if (body.get('expected_research_control_revision') is not None
+                    and body['expected_research_control_revision'] != int(
+                        ((current_research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)):
+                raise ConflictError('research_control_stale', 'Управление исследованием изменилось; обновите историю.')
             if self._idem(db, key, "research", req_digest, "story", story_id):
                 return self._story_repr(db, self._story_row(db, story_id))
             research = json.loads(story["research_json"] or "{}")
@@ -155,6 +164,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "research_voice_required", "At least one completed voice message is required"
                 )
             ordered_ids = [row["session_id"] for row in sessions]
+            if self._resume_unsent_retained_research(db, story, research, body, ordered_ids):
+                return self._story_repr(db, self._story_row(db, story_id))
             request_revision = int(research.get("fact_request_revision") or 0) + 1
             request_goal = str(body.get("coverage_goal") or body.get("goal") or "").strip()[:1600]
             request_scope = str(body.get("extraction_scope") or "").strip()[:1600] or None
@@ -231,12 +242,94 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             self._enqueue_job(db, story_id, "research", f"research-explicit:{input_revision}", request_payload)
             return self._story_repr(db, self._story_row(db, story_id))
 
+    def _resume_unsent_retained_research(self, db, story, research, body, voice_ids):
+        """An explicit same-scope request continues admission on its saved job."""
+        from .fact_agents import retained_plan_scope_matches, retained_retry_waits
+        from .research_budget import archive_attempt
+        from .research_control import research_stopped
+        generation = int(research.get('identity_generation') or 0)
+        epoch = int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        identity = research.get('visual_identity') or {}
+        stopped = (research_stopped(research, 'facts', photo_sha256=story['photo_sha256'], identity_generation=generation)
+            or research.get('research_cancelled') or research.get('fact_research_cancelled'))
+        job = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='research' "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1", (story['id'],)).fetchone()
+        if not job or job['state'] not in ({'done', 'ready', 'retry', 'running', 'cancelled'} if stopped
+                else {'done', 'ready', 'retry', 'running'}):
+            return False
+        job = dict(job)
+        payload = json.loads(job['payload_json'])
+        if (payload.get('photo_sha256') != story['photo_sha256']
+                or payload.get('identity_generation') != generation
+                or list(payload.get('voice_session_ids') or []) != voice_ids):
+            return False
+        run_id = payload.get('resume_run_id') or 'research_' + hashlib.sha256(
+            f"{job['id']}:{payload.get('input_revision') or ''}".encode()).hexdigest()[:24]
+        run = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+            (run_id, story['id'])).fetchone()
+        checkpoint = db.execute('SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?',
+            (job['id'], 'fact_agent_plan:'+run_id)).fetchone()
+        if not run or not checkpoint:
+            return False
+        plan = json.loads(checkpoint[0])
+        if not any(state.get('retained') for state in plan.get('routes', {}).values()):
+            return False
+        selected = (plan.get('context') or {}).get('selected_object') or {}
+        requested_goal = str(body.get('coverage_goal') or body.get('goal') or '').strip()[:1600]
+        requested_scope = str(body.get('extraction_scope') or '').strip()[:1600] or None
+        if (run['poi_key'] != identity.get('candidate_id') or selected.get('candidate_id') != identity.get('candidate_id')
+                or int(run['identity_generation']) != generation
+                or body.get('candidate_id') and body['candidate_id'] != identity.get('candidate_id')
+                or requested_goal and requested_goal not in {str(payload.get('coverage_goal') or ''), run['goal']}
+                or requested_scope and requested_scope != run['extraction_scope']):
+            return False
+        if research.get('input_revision') is not None and research['input_revision'] != payload.get('input_revision'):
+            raise ConflictError('research_input_changed', 'Исходный запрос изменился; обновите историю.')
+        if stopped:
+            return True
+        if run['state'] in {'failed', 'cancelled'}:
+            return False
+        if not retained_plan_scope_matches(db, job, plan, photo_sha256=story['photo_sha256'],
+                generation=generation, control_revision=epoch):
+            raise ConflictError('agent_research_original_binding_invalid', 'Сохранённый запрос относится к другому состоянию объекта.')
+        if job['state'] in {'ready', 'retry', 'running'}:
+            # A second owner key joins the already accepted continuation,
+            # including a live inference; it never queues a cold follow-up.
+            return True
+        if run['state'] != 'partial' or db.execute("SELECT 1 FROM jobs WHERE story_id=? "
+                "AND kind IN ('research','refinement') AND state IN ('ready','retry','running')", (story['id'],)).fetchone():
+            return False
+        waits = retained_retry_waits(db, job, plan, photo_sha256=story['photo_sha256'],
+            generation=generation, control_revision=epoch)
+        if not waits:
+            # Same frozen task has no safe admission retry: ACK its existing
+            # result instead of disguising a resend as a new cold wave.
+            return True
+        now = self.store.now()
+        retry_at = max(now, *(row['retry_at'] for row in waits))
+        archive_attempt(research, now)
+        research.pop('automatic_research_outcome', None)
+        research['input_revision'] = payload['input_revision']
+        research['retained_admission_continuation'] = {'job_id': job['id'], 'run_id': run_id,
+            'control_revision': epoch, 'generation': generation, 'photo_sha256': story['photo_sha256']}
+        research['research_outcome'] = {**(research.get('research_outcome') or {}),
+            'reason': 'research_agent_retained_waiting', 'coverage_complete': False,
+            'retry_at': retry_at, 'retained_waits': waits}
+        db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? "
+            "WHERE id=? AND state='done'", (retry_at, 'research_agent_retained_waiting', now, job['id']))
+        db.execute("UPDATE stories SET research_json=?,state='researching',revision=revision+1,updated_at=? WHERE id=?",
+            (canonical(research), now, story['id']))
+        logging.getLogger(__name__).info('street_story_retained_research_resumed story_id=%s job_id=%s run_id=%s retry_at=%s',
+            story['id'], job['id'], run_id, retry_at)
+        return True
+
     def _schedule_joined_fact_request(self, db, story_id: str) -> bool:
         """Consume one durable joined request after an attempt becomes terminal.
 
         Recovery may call this once no active research job remains. The normal
         worker calls it after its final commit, before marking its job done.
         """
+        from .research_control import research_stopped
         story = self._story_row(db, story_id)
         research = json.loads(story["research_json"] or "{}")
         intent = research.get('pending_fact_request') or {}
@@ -257,7 +350,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         current_generation = int(research.get("identity_generation") or 0)
         valid = (int(pending.get("identity_generation") or 0) == current_generation
                  and pending.get("photo_sha256") == story["photo_sha256"]
-                 and not research.get("fact_research_cancelled")
+                 and not research_stopped(research, 'facts', photo_sha256=story['photo_sha256'],
+                                          identity_generation=current_generation)
                  and (not admitted or admitted.get('control_revision') == int(
                      ((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)))
         if valid:
@@ -316,6 +410,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             story = self._story_row(db, story_id)
             if self._idem(db, key, "facts", req_digest, "story", story_id):
                 return self._story_repr(db, self._story_row(db, story_id))
+            research = json.loads(story["research_json"] or "{}")
+            if (body.get('expected_identity_generation') is not None
+                    and body['expected_identity_generation'] != int(research.get('identity_generation') or 0)):
+                raise ConflictError('fact_selection_stale', 'Объект изменился; выберите факты для текущего дома.')
             facts = list(db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,)))
             valid = {row["fact_id"] for row in facts}
             unknown = selected_set - valid
@@ -1039,6 +1137,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         return await gemini.executor.execute("grounded_research", call)
 
+    def _persist_agent_input_revision(self, job, run_id, input_revision, prior):
+        from .headless_facts import HeadlessFacts
+        epoch = int(((prior.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        # The adapter initializes Live tables using its own connection. Do that
+        # before taking the writer lock, including on a fresh photo-only store.
+        headless = HeadlessFacts(self)
+        with self.store.tx() as db:
+            snapshot = headless._snapshot(job, run_id, epoch)
+            if snapshot is None:
+                raise ConflictError('agent_research_stale', 'Owner selection or Stop changed.')
+            story, research, _ = snapshot
+            research['input_revision'] = input_revision
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+
     async def _run_research(self, job: dict[str, Any]) -> None:
         story_id = job["story_id"]
         payload = json.loads(job["payload_json"] or "{}")
@@ -1073,7 +1185,27 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 or payload.get("identity_generation") is not None
                 and int(payload["identity_generation"]) != int(prior.get("identity_generation") or 0)):
             return
-        if prior.get('fact_research_cancelled'):
+        from .research_control import research_stopped
+        if research_stopped(prior, 'facts', photo_sha256=story['photo_sha256'],
+                            identity_generation=int(prior.get('identity_generation') or 0)):
+            return
+        waiting = prior.get('owner_research_waiting_context') or {}
+        if (waiting.get('photo_sha256') == story['photo_sha256']
+                and waiting.get('generation') == int(prior.get('identity_generation') or 0)
+                and waiting.get('candidate_id') == (prior.get('visual_identity') or {}).get('candidate_id')):
+            with self.store.tx() as db:
+                current = self._story_row(db, story_id)
+                latest = json.loads(current['research_json'] or '{}')
+                if (latest.get('owner_research_waiting_context') == waiting
+                        and current['photo_sha256'] == story['photo_sha256']
+                        and int(latest.get('identity_generation') or 0) == waiting['generation']
+                        and (latest.get('visual_identity') or {}).get('candidate_id') == waiting['candidate_id']):
+                    latest['research_outcome'] = {'outcome': 'awaiting_owner_context',
+                        'reason': 'owner_selected_context_missing', 'coverage_complete': False,
+                        'purpose': 'facts', 'photo_sha256': story['photo_sha256'],
+                        'identity_generation': int(prior.get('identity_generation') or 0)}
+                    db.execute("UPDATE stories SET research_json=?,state='needs_review',updated_at=? WHERE id=?",
+                        (canonical(latest), self.store.now(), story_id))
             return
         if not session_ids and not live_transcript and (prior.get('visual_identity') or {}).get('status') not in {'match','owner_confirmed'}:
             raise PermanentProviderError('Explicit unidentified research requires initial author context')
@@ -1109,83 +1241,113 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             if original_pending:
                 from .errors import RetryableProviderError
                 raise RetryableProviderError('research_original_operation_pending', retry_at=self.store.now()+30)
+            researcher = getattr(self.providers, 'research', None)
+            if self.store.checkpoint_get(job['id'], 'fact_agent_plan:'+resume_run_id):
+                self._persist_agent_input_revision(job, resume_run_id, input_revision, prior)
+                return await researcher.research_agent_facts(job, resume_run_id, run['goal'])
             from .headless_facts import HeadlessFacts
             return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
 
-        lat, lon = story["latitude"], story["longitude"]
-        osm: dict[str, Any] = {"reverse": {}, "nearby": []}
-        wikipedia: list[dict[str, Any]] = []
-        if lat is not None and lon is not None:
-            osm = self.store.checkpoint_get(job["id"], "osm")
-            if osm is None:
-                osm = await self.providers.osm.lookup(float(lat), float(lon))
-                self.store.checkpoint_put(job["id"], "osm", osm)
-            wikipedia = self.store.checkpoint_get(job["id"], "wikipedia")
-            if wikipedia is None:
-                wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
-                self.store.checkpoint_put(job["id"], "wikipedia", wikipedia)
-        excluded = set(prior.get("identity_rejected_ids") or [])
-        candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
-        binding = prior.get("visual_identity") or {}
-        if binding.get("status") in {"match", "owner_confirmed"}:
-            saved_candidate = next((item for item in binding.get("candidates", []) if item.get("candidate_id") == binding.get("candidate_id")), None)
-            if saved_candidate and saved_candidate["candidate_id"] not in {item["candidate_id"] for item in candidates}:
-                candidates.append(saved_candidate)
-
-        confirmed_candidate_id = str(payload.get("confirmed_candidate_id") or "")
-        previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
-        catalog = {item["candidate_id"]: item for item in candidates}
-        if confirmed_candidate_id:
-            chosen = catalog.get(confirmed_candidate_id)
-            if not chosen:
-                raise ConflictError("candidate_id_unknown", "Selected place candidate is not available")
-            identity = {
-                "status": "owner_confirmed",
-                "candidate_id": confirmed_candidate_id,
-                "candidate_name": chosen["name"],
-                "confidence": None,
-                "observations": ["Кандидат выбран владельцем; это подтверждение, а не результат visual match."],
-                "candidates": candidates,
-            }
-        elif (
-            previous_identity
-            and previous_identity.get("status") in {"match", "owner_confirmed"}
-            and previous_identity.get("candidate_id") in catalog
-        ):
-            identity = {**previous_identity, "candidates": candidates}
-        elif not candidates:
-            identity = {
-                "status": "uncertain",
-                "candidate_id": None,
-                "candidate_name": None,
-                "confidence": 0.0,
-                "observations": ["Нет GPS-кандидатов: требуется название/адрес от владельца."],
-                "candidates": [],
-            }
+        previous_identity = prior.get("visual_identity") or {}
+        from .owner_group_identity import selected_group
+        group = selected_group(prior, photo_sha256=story['photo_sha256'],
+                               generation=int(prior.get('identity_generation') or 0))
+        group_resolved = (group and group.get('status') == 'resolved'
+            and previous_identity.get('status') == 'match'
+            and previous_identity.get('selection_basis') == 'automatic_within_owner_group'
+            and previous_identity.get('candidate_id') in group['candidate_ids']
+            and group.get('narrowed_candidate_id') == previous_identity.get('candidate_id'))
+        if group and not group_resolved:
+            raise ConflictError('place_group_identity_required', 'Сначала нужно различить здания выбранной группы.')
+        if previous_identity.get("status") == "owner_confirmed" or group_resolved:
+            from .identity_proof import accepted_identity
+            generation = int(prior.get("identity_generation") or 0)
+            if not accepted_identity(previous_identity, photo_sha256=story['photo_sha256'], generation=generation,
+                    control_revision=int(((prior.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
+                raise ConflictError("owner_place_scope_changed", "Подтверждённый объект изменился; обновите историю.")
+            identity = dict(previous_identity)
+            candidates = [item for item in identity.get('candidates', []) if isinstance(item, dict)]
+            # Author identity stays frozen even with no GPS or catalog entry.
+            osm = prior.get('osm') or {"reverse": {}, "nearby": []}
+            wikipedia = prior.get('wikipedia') or []
+            logging.getLogger(__name__).info(
+                'street_story_owner_fact_identity story_id=%s generation=%s candidate_id=%s lookup_skipped=true',
+                story_id, generation, identity.get('candidate_id'))
         else:
-            raw_identity = self.store.checkpoint_get(job["id"], "visual_identity")
-            if raw_identity is None:
-                raw_identity = await self._identify_photo(story, transcript, candidates)
-                self.store.checkpoint_put(job["id"], "visual_identity", raw_identity)
-            candidate_id = str(raw_identity.get("candidate_id") or "")
-            status = str(raw_identity.get("status") or "uncertain")
-            if candidate_id not in catalog:
-                status = "uncertain"
-                candidate_id = ""
-            chosen = catalog.get(candidate_id)
-            identity = {
-                "status": status,
-                "candidate_id": candidate_id or None,
-                "candidate_name": chosen["name"] if chosen else None,
-                "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
-                "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
-                "alternative_candidate_ids": [
-                    str(value)
-                    for value in raw_identity.get("alternative_candidate_ids", [])[:6]
-                    if str(value) in catalog
-                ],
-                "candidates": candidates,
-            }
+            lat, lon = story["latitude"], story["longitude"]
+            osm: dict[str, Any] = {"reverse": {}, "nearby": []}
+            wikipedia: list[dict[str, Any]] = []
+            if lat is not None and lon is not None:
+                osm = self.store.checkpoint_get(job["id"], "osm")
+                if osm is None:
+                    osm = await self.providers.osm.lookup(float(lat), float(lon))
+                    self.store.checkpoint_put(job["id"], "osm", osm)
+                wikipedia = self.store.checkpoint_get(job["id"], "wikipedia")
+                if wikipedia is None:
+                    wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
+                    self.store.checkpoint_put(job["id"], "wikipedia", wikipedia)
+            excluded = set(prior.get("identity_rejected_ids") or [])
+            candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
+            binding = prior.get("visual_identity") or {}
+            if binding.get("status") in {"match", "owner_confirmed"}:
+                saved_candidate = next((item for item in binding.get("candidates", []) if item.get("candidate_id") == binding.get("candidate_id")), None)
+                if saved_candidate and saved_candidate["candidate_id"] not in {item["candidate_id"] for item in candidates}:
+                    candidates.append(saved_candidate)
+
+            confirmed_candidate_id = str(payload.get("confirmed_candidate_id") or "")
+            previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
+            catalog = {item["candidate_id"]: item for item in candidates}
+            if confirmed_candidate_id:
+                chosen = catalog.get(confirmed_candidate_id)
+                if not chosen:
+                    raise ConflictError("candidate_id_unknown", "Selected place candidate is not available")
+                identity = {
+                    "status": "owner_confirmed",
+                    "candidate_id": confirmed_candidate_id,
+                    "candidate_name": chosen["name"],
+                    "confidence": None,
+                    "observations": ["Кандидат выбран владельцем; это подтверждение, а не результат visual match."],
+                    "candidates": candidates,
+                }
+            elif (
+                previous_identity
+                and previous_identity.get("status") in {"match", "owner_confirmed"}
+                and previous_identity.get("candidate_id") in catalog
+            ):
+                identity = {**previous_identity, "candidates": candidates}
+            elif not candidates:
+                identity = {
+                    "status": "uncertain",
+                    "candidate_id": None,
+                    "candidate_name": None,
+                    "confidence": 0.0,
+                    "observations": ["Нет GPS-кандидатов: требуется название/адрес от владельца."],
+                    "candidates": [],
+                }
+            else:
+                raw_identity = self.store.checkpoint_get(job["id"], "visual_identity")
+                if raw_identity is None:
+                    raw_identity = await self._identify_photo(story, transcript, candidates)
+                    self.store.checkpoint_put(job["id"], "visual_identity", raw_identity)
+                candidate_id = str(raw_identity.get("candidate_id") or "")
+                status = str(raw_identity.get("status") or "uncertain")
+                if candidate_id not in catalog:
+                    status = "uncertain"
+                    candidate_id = ""
+                chosen = catalog.get(candidate_id)
+                identity = {
+                    "status": status,
+                    "candidate_id": candidate_id or None,
+                    "candidate_name": chosen["name"] if chosen else None,
+                    "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
+                    "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
+                    "alternative_candidate_ids": [
+                        str(value)
+                        for value in raw_identity.get("alternative_candidate_ids", [])[:6]
+                        if str(value) in catalog
+                    ],
+                    "candidates": candidates,
+                }
 
         if identity["status"] not in {"match", "owner_confirmed"}:
             research = {
@@ -1243,6 +1405,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 detail="automatic_research",
                 now=self.store.now(),
             )
+
+        researcher = getattr(self.providers, 'research', None)
+        if ((previous_identity or {}).get('status') == 'owner_confirmed' or group_resolved):
+            # Facts remembered for this house are already in the story at intake; they are a starting
+            # point, not the end: the single research session still looks for the building's own history.
+            if callable(getattr(researcher, 'research_agent_facts', None)):
+                self._persist_agent_input_revision(job, run_id, input_revision, prior)
+                return await researcher.research_agent_facts(job, run_id, request_goal or 'source-backed research')
 
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)
@@ -1564,6 +1734,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 concept=str(prior.get("publication_concept") or ""),
                 author_note=author_note,
                 facts=selected_for_draft,
+                photo_capture=self._photo_capture_context(story_id),
             )
             draft = str(composition.get("draft_text") or "").strip()
             if not draft:
@@ -1823,7 +1994,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         if test_alias and body.get("destinations") != [test_alias]:
             raise ConflictError("test_destination_only", "This Street Story deployment only publishes to its configured test group")
         text = body.get("text_override")
-        if text is not None and len(str(text)) > 1024:
+        from .publication_content import visible_text
+        if text is not None and len(visible_text(str(text))) > 1024:
             raise ConflictError(
                 "publish_text_too_long",
                 "Telegram photo caption exceeds the current VibePublish 1024-character limit",

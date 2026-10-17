@@ -62,6 +62,7 @@ android {
 tasks.named("preBuild").configure { dependsOn(prepareSharedLive) }
 
 dependencies {
+    implementation("org.maplibre.gl:android-sdk-opengl:13.5.3")
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.work:work-runtime-ktx:2.10.1")

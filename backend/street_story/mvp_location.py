@@ -58,11 +58,12 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
 
         return await gemini.executor.execute("grounded_research", call)
 
-    async def _resolve_place_query(self, query: str) -> dict[str, Any] | None:
+    async def _resolve_place_query(self, query: str, *, gps_bias=None, all_candidates=False):
         custom = getattr(self.providers.osm, "geocode", None)
         if callable(custom):
             value = await custom(query)
-            return value if isinstance(value, dict) else None
+            rows = value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+            return rows[:5] if all_candidates else next(iter(rows), None)
 
         user_agent = str(getattr(self.providers.osm, "user_agent", "StreetStory/0.1"))
         own = getattr(self.providers.osm, "http", None) is None
@@ -71,21 +72,21 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
             headers={"User-Agent": user_agent},
         )
         try:
+            parameters = {"format": "jsonv2", "q": query, "limit": 5,
+                "addressdetails": 1, "namedetails": 1, "bounded": 0}
+            if gps_bias:
+                lat, lon = gps_bias['latitude'], gps_bias['longitude']
+                parameters['viewbox'] = f'{lon-.05},{lat+.035},{lon+.05},{lat-.035}'
             response = await client.get(
                 "https://nominatim.openstreetmap.org/search",
-                params={
-                    "format": "jsonv2",
-                    "q": query,
-                    "limit": 5,
-                    "addressdetails": 1,
-                    "namedetails": 1,
-                },
+                params=parameters,
                 headers={"User-Agent": user_agent},
             )
             response.raise_for_status()
             rows = response.json()
             if not isinstance(rows, list):
                 raise ValueError("Nominatim search result is not a list")
+            places = []
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -96,14 +97,16 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                     continue
                 if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
                     continue
-                return {
+                places.append({
                     "lat": lat,
                     "lon": lon,
                     "display_name": str(row.get("display_name") or query)[:500],
                     "osm_type": str(row.get("osm_type") or ""),
                     "osm_id": row.get("osm_id"),
-                }
-            return None
+                    "boundingbox": row.get('boundingbox'), "type": str(row.get('type') or '')[:80],
+                    "provenance": 'nominatim.search',
+                })
+            return places[:5] if all_candidates else next(iter(places), None)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
             raise RetryableProviderError(f"Owner place geocoding failed: {exc}") from exc
         finally:
@@ -117,6 +120,16 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
         provenance: dict[str, Any] | None = None
         with self.store.connection() as db:
             story = dict(self._story_row(db, job["story_id"]))
+
+        identity = (json.loads(story.get('research_json') or '{}').get('visual_identity') or {})
+        selection = json.loads(story.get('research_json') or '{}').get('place_selection') or {}
+        resolved_group = (selection.get('mode') == 'rough' and selection.get('status') == 'resolved'
+            and identity.get('status') == 'match' and identity.get('selection_basis') == 'automatic_within_owner_group'
+            and identity.get('candidate_id') in selection.get('candidate_ids', []))
+        if identity.get('status') == 'owner_confirmed' or resolved_group:
+            # A named owner point is a valid target even with no camera GPS.
+            # Voice geocoding must not replace the selected object or camera.
+            return await super()._run_research(job)
 
         if story["latitude"] is None or story["longitude"] is None:
             if live_transcript:
@@ -154,7 +167,7 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                             (lat, lon, canonical(research), self.store.now(), job["story_id"]),
                         )
 
-        await super()._run_research(job)
+        outcome = await super()._run_research(job)
 
         if provenance is not None:
             with self.store.tx() as db:
@@ -165,6 +178,7 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                     "UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
                     (canonical(research), self.store.now(), job["story_id"]),
                 )
+        return outcome
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
         if research is None:

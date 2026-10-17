@@ -27,6 +27,15 @@ on:
         description: 'Approved public SOURCE URL; identity angle tests only unless explicitly approved for a saved story'
         required: false
         type: string
+      owner_map_fixture:
+        description: 'Use private original104 with embedded GPS and one physical owner-map selection'
+        required: false
+        default: false
+        type: boolean
+      backend_sha:
+        description: 'Installed backend SHA for a compatible app/test-only change; runtime tree equality is checked'
+        required: false
+        type: string
       resume_identity_research:
         description: 'identity + saved story only: explicit scoped Resume of stopped research'
         required: false
@@ -126,13 +135,14 @@ jobs:
         working-directory: backend
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
-          STREET_STORY_EXPECTED_BACKEND_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          STREET_STORY_EXPECTED_BACKEND_SHA: ${{ inputs.backend_sha || (github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha) }}
         run: |
           python - <<'PY'
           import json
           import os
           import pathlib
           import re
+          import subprocess
           import urllib.request
 
           base = os.environ.get('STREET_STORY_LIVE_BASE_URL', '').strip().rstrip('/')
@@ -147,6 +157,10 @@ jobs:
                   raise RuntimeError('live_base_url_not_https')
               if not re.fullmatch(r'[0-9a-f]{40}', expected):
                   raise RuntimeError('expected_backend_sha_invalid')
+              subprocess.run(['git', 'fetch', '--no-tags', 'origin', expected], check=True, capture_output=True)
+              subprocess.run(['git', 'diff', '--exit-code', expected, 'HEAD', '--',
+                              'backend/street_story', 'backend/deploy', 'backend/requirements.txt'],
+                             check=True, capture_output=True)
               request = urllib.request.Request(
                   base + '/healthz',
                   headers={'Accept': 'application/json', 'User-Agent': 'StreetStory-Live-E2E/4'},
@@ -183,7 +197,7 @@ jobs:
 
       - name: Install live client dependency
         working-directory: backend
-        run: python -m pip install 'httpx>=0.27,<1'
+        run: python -m pip install 'httpx>=0.27,<1' 'cryptography>=42,<51'
 
       - name: Run backend/provider smoke through HTTPS
         if: >-
@@ -258,6 +272,7 @@ jobs:
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
           LIVE_E2E_SOURCE_URL: ${{ inputs.photo_url }}
           LIVE_E2E_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          LIVE_E2E_OWNER_MAP_FIXTURE: ${{ inputs.owner_map_fixture && 'true' || 'false' }}
         run: |
           set -euo pipefail
           test -n "$STREET_STORY_LIVE_BASE_URL"
@@ -298,6 +313,8 @@ jobs:
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Сделай картинку чуть теплее, а текст оставь без изменений.',
           ]
+          if os.environ.get('LIVE_E2E_OWNER_MAP_FIXTURE') == 'true':
+              texts[3] = 'Оставь три самых надежных подтвержденных факта, остальные не используй в текущем посте.'
           for ordinal, speech in enumerate(texts if os.environ.get('LIVE_E2E_IDENTITY_ONLY') != 'true' else [], 1):
               wav = root / f'voice-{ordinal}.wav'
               pcm = root / f'voice-{ordinal}.pcm'
@@ -331,6 +348,11 @@ jobs:
               json.dumps(public, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
           )
           PY
+
+          if [[ "$LIVE_E2E_OWNER_MAP_FIXTURE" == true ]]; then
+            test -z "$LIVE_E2E_SOURCE_URL"
+            python .github/scripts/prepare-owner-gps-fixture.py
+          fi
 
       - name: Enable KVM for Android live E2E
         if: >-

@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from .fact_ledger import _evidence_rows, merge_source_payloads
+from .fact_ledger import _evidence_rows, merge_source_payloads, subject_reads
 from .model_facts import normalized_claim_key
 from .identity_proof import accepted_identity, verified_physical_identity
 
@@ -561,6 +561,7 @@ def backfill_poi_review_proofs(db) -> int:
     return updated
 
 
+@subject_reads()
 def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
     """Propagate only explicit reviewed story decisions to canonical POI memory."""
     story = db.execute(

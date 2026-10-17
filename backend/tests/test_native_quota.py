@@ -32,29 +32,30 @@ class Client:
 
 
 @pytest.mark.asyncio
-async def test_quota_grant_reused_for_fifteen_minutes_then_refreshed():
+async def test_each_native_send_rechecks_quota_even_before_snapshot_expiry():
     store, client = Store(), Client()
     permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
     first = await permission.ensure(client)
     store.time += 899
-    assert await permission.ensure(client) == first
-    assert client.calls == 1 and first['expires_at'] == 1900
+    second = await permission.ensure(client)
+    assert second['issued_at'] == store.time
+    assert client.calls == 2 and first['expires_at'] == 1900
     store.time += 1
     renewed = await permission.ensure(client)
-    assert client.calls == 2 and renewed['expires_at'] == 2800
+    assert client.calls == 3 and renewed['expires_at'] == 2800
     assert 'test-account' not in str(store.cache)
 
 
 @pytest.mark.asyncio
-async def test_concurrent_calls_share_one_grant_and_account_change_refreshes():
+async def test_concurrent_calls_each_check_shared_account_and_credential_change_refreshes():
     store, client, stamp = Store(), Client(), ['first']
     permission = NativeQuotaPermission(store, binding_stamp=lambda: stamp[0])
     await asyncio.gather(permission.ensure(client), permission.ensure(client))
-    assert client.calls == 1
+    assert client.calls == 2
     stamp[0] = 'second'
     client.reply['accountId'] = 'other-account'
     second = await permission.ensure(client)
-    assert client.calls == 2 and second['binding_stamp'] == 'second'
+    assert client.calls == 3 and second['binding_stamp'] == 'second'
 
 
 @pytest.mark.asyncio
@@ -135,3 +136,67 @@ async def test_account_changed_while_quota_rpc_pending_does_not_grant():
     with pytest.raises(RetryableProviderError, match='binding_changed'):
         await permission.ensure(client)
     assert not store.cache
+
+
+@pytest.mark.asyncio
+async def test_luna_and_sol_check_one_shared_account_before_each_send():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    luna = await permission.ensure(client)
+    sol = await permission.ensure(client, model='gpt-6.1-sol')
+    assert client.calls == 2 and len(store.cache) == 1
+    assert luna['model'] == 'gpt-6-luna' and sol['model'] == 'gpt-6.1-sol'
+    assert {k: v for k, v in luna.items() if k != 'model'} == {
+        k: v for k, v in sol.items() if k != 'model'}
+    assert next(iter(store.cache.values()))['model'] == 'gpt-6.1-sol'
+
+
+@pytest.mark.asyncio
+async def test_external_account_usage_below_reserve_blocks_next_turn_without_invalidation():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'same-account')
+    healthy = await permission.ensure(client)
+    assert healthy['remaining_percent'] == 50
+    # Another product consumes the common account one second later; no product
+    # invalidation callback has happened and the old snapshot has not expired.
+    store.time += 1
+    client.reply['rateLimits']['primary']['usedPercent'] = 99
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await permission.ensure(client)
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_sol_quota_failure_blocks_luna_and_sol_on_the_same_binding():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    grant = await permission.ensure(client, model='gpt-6.1-sol')
+    permission.invalidate(grant, 'provider_quota')
+    client.reply['rateLimits']['primary']['usedPercent'] = 100
+    for model in ('gpt-6-luna', 'gpt-6.1-sol'):
+        with pytest.raises(RetryableProviderError, match='below_reserve'):
+            await permission.ensure(client, model=model)
+    assert len(store.cache) == 1
+
+
+@pytest.mark.asyncio
+async def test_sol_grant_rechecks_a_changed_credential_and_all_quota_windows():
+    store, client, binding = Store(), Client(), ['first']
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: binding[0])
+    await permission.ensure(client, model='gpt-6.1-sol')
+    binding[0] = 'second'
+    client.reply['rateLimits']['secondary'] = {'usedPercent': 100, 'resetsAt': 3000}
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await permission.ensure(client, model='gpt-6-luna')
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_cannot_reuse_an_account_grant():
+    store, client = Store(), Client()
+    permission = NativeQuotaPermission(store, binding_stamp=lambda: 'binding')
+    await permission.ensure(client)
+    before = copy.deepcopy(store.cache)
+    with pytest.raises(ValueError, match='model_not_permitted'):
+        await permission.ensure(client, model='unapproved')
+    assert client.calls == 1 and store.cache == before

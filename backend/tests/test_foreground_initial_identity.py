@@ -6,6 +6,7 @@ import pytest
 
 from street_story import app as app_module
 from street_story.headless_identity import HeadlessIdentity
+from street_story.service import StreetStoryService
 from test_identity_lifecycle import create, make_service
 
 
@@ -96,7 +97,11 @@ async def test_initial_identity_claim_does_not_consume_visual_publish_or_researc
     story = create(svc)
     with svc.store.tx() as db:
         for kind in ['identity_visual', 'research', 'visual', 'publish']:
-            svc._enqueue_job(db, story['id'], kind, kind, {})
+            if kind == 'publish':
+                # Inert row tests worker selection, not a valid publish intent.
+                StreetStoryService._enqueue_job(svc, db, story['id'], kind, kind, {})
+            else:
+                svc._enqueue_job(db, story['id'], kind, kind, {})
     assert not await svc.run_once(claim_kind='identity')
     with svc.store.connection() as db:
         rows = [dict(row) for row in db.execute('SELECT kind,state,attempts FROM jobs')]

@@ -193,6 +193,10 @@ def test_editorial_setup_preserves_selected_content_without_discovery_inventory(
         'known_fact_inventory_truncated': False, 'facts_instruction': 'Research policy',
         'research_run': {'run_id': 'old-run'}, 'jobs': [{'state': 'completed'}],
         'identity_research_context': {'candidates': ['old-candidate']},
+        # A real selected-house session retained 12.6 KiB of nearby map rows
+        # in editor setup, delaying even exact-text revalidation admission.
+        'owner_map_candidates': [{'candidate_id': str(index), 'address': 'Nearby street ' * 20}
+                                 for index in range(64)],
     }
     original = copy.deepcopy(context)
     result = StreetStoryLiveAdapter._capability_context(context, capability)
@@ -220,6 +224,7 @@ async def shared_editor_session(adapter, previous, intent):
         sent = json.loads(await asyncio.wait_for(session.reader.readline(), 1))
         assert sent['type'] == 'reconfigure' and sent['capability'] == 'editor'
         assert sent['continuation'] == intent
+        assert sent['context']['pending_owner_request']['text'] == intent
         assert len(sent['configuration']['functions']) <= 9
         session.pending_transition.set_result(True)
         await asyncio.wait_for(task, 1)

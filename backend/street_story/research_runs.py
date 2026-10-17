@@ -380,6 +380,7 @@ def persist_source_version(
     target_chars: int = 6000,
     overlap_chars: int = 400,
     access_scope: str = 'story',
+    source_bytes_sha256: str | None = None,
 ) -> dict[str, Any]:
     if access_scope not in {'story', 'public'}:
         raise ValueError('research_source_access_scope_invalid')
@@ -395,6 +396,7 @@ def persist_source_version(
                 "content_type": str(content_type or ""),
                 "read_status": str(read_status or 'complete'),
                 "access_scope": access_scope,
+                **({'source_bytes_sha256': source_bytes_sha256} if source_bytes_sha256 else {}),
             }
         ),
         24,

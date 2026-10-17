@@ -10,7 +10,7 @@ def test_publish_rejects_native_schedule_with_insufficient_lead(tmp_path):
     svc, _, _ = service(tmp_path)
     story = create(svc)
     seed_ready_visual(svc, story["id"])
-    too_soon = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    too_soon = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec='seconds')
     with pytest.raises(ConflictError) as exc:
         svc.mutate_publish(
             story["id"],

@@ -5,6 +5,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FactPresentationTest {
+    @Test fun reader_failure_does_not_describe_successfully_found_sources_as_unavailable() {
+        val outcome = ResearchOutcomeWire().apply {
+            this.outcome = "resource_blocked"; reason = "research_output_exhausted"
+            purpose = "facts"; photoSha256 = "source"; identityGeneration = 3; coverageComplete = false
+        }
+        val projection = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(),
+            0, null, emptyList(), photoSha256 = "source", identityGeneration = 3, researchOutcome = outcome)
+        val expected = "Не удалось обработать найденные источники · исследование не завершено"
+        assertEquals(expected, FactPresentation.researchOutcomeNotice(projection, "source"))
+        outcome.reason = "research_empty_response"
+        outcome.outcome = "useful_partial"
+        assertEquals(expected, FactPresentation.researchOutcomeNotice(projection, "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection.copy(identityGeneration = 4), "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "other-source"))
+    }
+
+    @Test fun unfinished_outcome_requires_current_photo_generation_and_facts_purpose() {
+        val wire = com.google.gson.Gson().fromJson("""{"photo_sha256":"source","identity_generation":3,
+            "research_outcome":{"outcome":"resource_blocked","reason":"source_selection_unavailable",
+            "coverage_complete":false,"eligible_count":0,"purpose":"facts",
+            "photo_sha256":"source","identity_generation":3}}""", StoryWire::class.java)
+        val projection = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(),
+            0, null, emptyList(), photoSha256 = wire.photoSha256, identityGeneration = wire.identityGeneration,
+            researchOutcome = wire.researchOutcome)
+        assertEquals("Исследование не завершено · временная проблема с выбором источников",
+            FactPresentation.researchOutcomeNotice(projection, "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "other-source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection.copy(identityGeneration = 4), "source"))
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection.copy(researchPending = mapOf("facts" to true)), "source"))
+        wire.researchOutcome!!.purpose = "identity"
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+        wire.researchOutcome!!.purpose = "facts"
+        wire.researchOutcome!!.photoSha256 = "other-source"
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+        wire.researchOutcome!!.photoSha256 = "source"
+        wire.researchOutcome!!.coverageComplete = true
+        assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "source"))
+    }
+
     @Test fun provenance_preserves_same_url_versions_and_does_not_infer_rkb_truth() {
         val gson = com.google.gson.Gson()
         val wire = gson.fromJson("""{"type":"web","url":"https://archive.example/article","title":"Архив",

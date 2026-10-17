@@ -11,6 +11,7 @@ import httpx
 
 from .config import Settings, reveal
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
+from .publication_content import publication_content
 from .service import (
     ConflictError,
     InvalidStateError,
@@ -22,6 +23,20 @@ from .service import (
 
 
 LOG = logging.getLogger(__name__)
+
+POST_4_5_FRAME_INSTRUCTION = (
+    "\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350); "
+    "no white bars, blank padding or borders. Fit the complete original photograph "
+    "with uniform scaling only. Keep its camera angle, perspective, roofline, entrances "
+    "and every architectural proportion. Never outpaint or invent surrounding streets, "
+    "trees or buildings. Fill any remaining space with deliberate flat editorial graphic "
+    "areas and legible fact annotations, not reconstructed scenery. "
+    "Do not crop the subject, stretch it, correct perspective or clip labels. "
+    "Verify the final image is 4:5 and the complete original camera frame is preserved."
+)
+POST_4_5_FRAME_CONTRACT = "post_4_5_v1"
+ORIGINAL_PHOTO_FRAME_CONTRACT = 'source-original-frame-v1'
+ORIGINAL_ART_FRAME_CONTRACT = 'original-art-aspect-v1'
 
 _VOCAL_FILLERS = re.compile(
     r"(?iu)(?<!\w)(?:э(?:[-–—]?э)+|ээ+|эм+|м(?:[-–—]?м)+|а(?:[-–—]?а)+)(?!\w)[,;:\s]*"
@@ -223,6 +238,176 @@ class ProductStreetStoryService(StreetStoryService):
             self.providers.vibepublish = VibePublishBoundary(settings)
         self._migrate_product_projection()
 
+    def _enqueue_job(self, db, story_id, kind, semantic_key, payload):
+        # Freeze the contract in the same transaction as the new durable intent.
+        # Observation/recomposition of existing operations must keep its contract.
+        row = self._story_row(db, story_id)
+        context = json.loads(row["visual_context_json"] or "{}")
+        if kind == 'visual' and not any(context.get(k) for k in (
+                'output_frame_contract', 'operation_id', 'visual_command', 'recompose_source')):
+            from .fact_ledger import fact_revision_bundle
+            research = json.loads(row['research_json'] or '{}')
+            ids = [item['fact_id'] for item in context.get('selected_facts', [])]
+            context.update(output_frame_contract=POST_4_5_FRAME_CONTRACT,
+                           source_photo_sha256=row['photo_sha256'],
+                           identity_generation=int(research.get('identity_generation') or 0),
+                           fact_revision_bundle=fact_revision_bundle(db, story_id, ids))
+            context.setdefault('content_revision', digest(context))
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), story_id))
+        elif kind == 'publish' and context.get('output_frame_contract'):
+            intent = db.execute('SELECT * FROM publish_intents WHERE id=?', (payload['intent_id'],)).fetchone()
+            request = json.loads(intent['request_json'])
+            request['output_frame_contract'] = context['output_frame_contract']
+            request['visual_content_revision'] = context.get('content_revision')
+            try:
+                self._guard_publish_frame(db, story_id, request, possibly_sent=False)
+            except PermanentProviderError as exc:
+                raise InvalidStateError('visual_format_unverified', str(exc)) from exc
+            db.execute('UPDATE publish_intents SET request_json=? WHERE id=?',
+                       (canonical(request), intent['id']))
+        return super()._enqueue_job(db, story_id, kind, semantic_key, payload)
+
+    def _frame_inputs_current(self, db, row, context):
+        from .fact_ledger import eligibility_issues_for_ids, fact_revision_bundle
+        research = json.loads(row['research_json'] or '{}')
+        ids = [item['fact_id'] for item in context.get('selected_facts', [])]
+        return (context.get('source_photo_sha256') == row['photo_sha256']
+                and context.get('identity_generation') == int(research.get('identity_generation') or 0)
+                and context.get('fact_revision_bundle') == fact_revision_bundle(db, row['id'], ids)
+                and not eligibility_issues_for_ids(db, row['id'], ids))
+
+    def _frame_work_current(self, db, row, context, job):
+        latest = json.loads(row['visual_context_json'] or '{}')
+        active = db.execute('SELECT state,attempts FROM jobs WHERE id=?', (job['id'],)).fetchone() if job else None
+        return (latest.get('content_revision') == context.get('content_revision')
+                and self._frame_inputs_current(db, row, context)
+                and self._photo_format_current(row, context)
+                and not (active and (active['state'] == 'cancelled' or active['attempts'] != job['attempts'])))
+
+    def _photo_format_current(self, row, context):
+        from .photo_format import choice
+        current = choice(json.loads(row['research_json'] or '{}'))
+        transform = context.get('source_image_transform')
+        if transform is None:
+            return current['revision'] == 0  # Historical frozen work is never rewritten.
+        return (context.get('photo_format_revision') == current['revision']
+            and transform.get('mode') == current['mode']
+            and (current['mode'] == 'original' or transform.get('crop_rect') == current.get('crop_rect')))
+
+    @staticmethod
+    def _frame_dimensions_match(context, width, height):
+        if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+            return False
+        if context.get('output_frame_contract') == POST_4_5_FRAME_CONTRACT:
+            return 5*width == 4*height
+        if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
+            return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
+        if context.get('output_frame_contract') == ORIGINAL_ART_FRAME_CONTRACT:
+            # Same proportion up to one output pixel on each side: an original with
+            # coprime sides has no exact smaller frame, and the generator may round
+            # both sides (1087x1447 for 3:4). Some exact-proportion frame w'xh' must
+            # satisfy |width-w'| <= 1 and |height-h'| <= 1.
+            size = (context.get('source_image_transform') or {}).get('output_size')
+            return bool(size) and any(abs(height * size[0] - near * size[1]) <= size[0]
+                                      for near in (width - 1, width, width + 1))
+        return False
+
+    def _record_visual_frame(self, story_id, context, receipt, *, candidate=None, job=None):
+        if not context.get('output_frame_contract'):
+            return context
+        selected_asset = receipt.get('selected_asset_ref')
+        selected_sha = receipt.get('selected_sha256')
+        if candidate is None:
+            candidates = receipt.get('candidates')
+            matches = [item for item in (candidates if isinstance(candidates, list) else []) if isinstance(item, dict)
+                       and item.get('asset_ref') == selected_asset and item.get('sha256') == selected_sha]
+            if len(matches) == 1:
+                candidate = matches[0]
+            else:
+                # A select response may omit candidates. Reuse only evidence from
+                # the exact candidate checked before that same selection.
+                candidate = context.get('output_frame_evidence') or (
+                    candidates[0] if isinstance(candidates, list) and len(candidates) == 1
+                    and isinstance(candidates[0], dict) else {})
+        width, height = candidate.get('width'), candidate.get('height')
+        reason = None
+        if receipt.get('operation_id') != context.get('operation_id'):
+            reason = 'visual_format_operation_mismatch'
+        elif (context.get('output_frame_contract') not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT}
+                or not candidate.get('candidate_id', candidate.get('id'))
+                or not candidate.get('asset_ref')
+                or not re.fullmatch(r'[a-f0-9]{64}', str(candidate.get('sha256') or ''))):
+            reason = 'visual_format_candidate_missing'
+        elif selected_asset and (candidate.get('asset_ref') != selected_asset
+                                 or candidate.get('sha256') != selected_sha):
+            reason = 'visual_format_asset_mismatch'
+        elif type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+            reason = 'visual_format_dimensions_missing'
+        elif not self._frame_dimensions_match(context, width, height):
+            reason = 'visual_format_mismatch'
+        proof = {
+            'contract': context['output_frame_contract'], 'state': 'rejected' if reason else 'verified',
+            'reason': reason, 'operation_id': str(context.get('operation_id') or receipt.get('operation_id') or '')[:160],
+            'observed_operation_id': str(receipt.get('operation_id') or '')[:160],
+            'candidate_id': str(candidate.get('candidate_id', candidate.get('id')) or '')[:160],
+            'asset_ref': str(candidate.get('asset_ref') or '')[:160],
+            'sha256': str(candidate.get('sha256') or '')[:64],
+            'width': width if type(width) is int else None, 'height': height if type(height) is int else None,
+            'observed_format': str(candidate.get('format') or candidate.get('observed_format') or '')[:40],
+            'source_photo_sha256': context.get('source_photo_sha256'),
+            'identity_generation': context.get('identity_generation'),
+            'content_revision': context.get('content_revision'),
+            'fact_revision_bundle': context.get('fact_revision_bundle'),
+        }
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            latest = json.loads(row['visual_context_json'] or '{}')
+            if not self._frame_work_current(db, row, context, job):
+                return None
+            latest['output_frame_evidence'] = proof
+            if reason:
+                db.execute("UPDATE stories SET visual_context_json=?,state='needs_review',error_code=?,"
+                           "error_message=?,processed_image_url=NULL,vibepublish_asset_ref=NULL,"
+                           'revision=revision+1,updated_at=? WHERE id=?',
+                           (canonical(latest), reason, 'Изображение отклонено: его формат не совпал с выбранным. '
+                            'Можно создать изображение заново.' if reason == 'visual_format_mismatch'
+                            else 'Визуал не соответствует выбранному формату. Нужна проверка.',
+                            self.store.now(), story_id))
+            else:
+                db.execute('UPDATE stories SET visual_context_json=?,updated_at=? WHERE id=?',
+                           (canonical(latest), self.store.now(), story_id))
+        LOG.info('street_story_visual_frame story_id=%s operation_id=%s state=%s reason=%s width=%s height=%s',
+                 story_id, proof['operation_id'], proof['state'], reason, width, height)
+        return None if reason else latest
+
+    def _guard_publish_frame(self, db, story_id, request, *, possibly_sent):
+        if possibly_sent:
+            return  # Preserve the original uncertain dispatch/readback contract.
+        row = self._story_row(db, story_id)
+        context = json.loads(row['visual_context_json'] or '{}')
+        contract = request.get('output_frame_contract')
+        if not contract:
+            return
+        proof = context.get('output_frame_evidence') or {}
+        if (contract not in {POST_4_5_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT} or context.get('output_frame_contract') != contract
+                or proof.get('state') != 'verified' or proof.get('contract') != contract
+                or proof.get('content_revision') != context.get('content_revision')
+                or request.get('visual_content_revision', context.get('content_revision')) != context.get('content_revision')
+                or proof.get('source_photo_sha256') != context.get('source_photo_sha256')
+                or proof.get('identity_generation') != context.get('identity_generation')
+                or proof.get('fact_revision_bundle') != context.get('fact_revision_bundle')
+                or proof.get('operation_id') != context.get('operation_id')
+                or proof.get('candidate_id') != context.get('candidate_id')
+                or proof.get('asset_ref') != context.get('selected_asset_ref')
+                or proof.get('sha256') != context.get('selected_sha256')
+                or proof.get('asset_ref') != request.get('asset_ref')
+                or proof.get('asset_ref') != row['vibepublish_asset_ref']
+                or type(proof.get('width')) is not int or type(proof.get('height')) is not int
+                or not self._frame_dimensions_match(context, proof['width'], proof['height'])
+                or not self._frame_inputs_current(db, row, context) or not self._photo_format_current(row, context)):
+            LOG.warning('street_story_publish_frame_blocked story_id=%s', story_id)
+            raise PermanentProviderError('visual_format_unverified: Сначала нужен проверенный визуал выбранного формата.')
+
     def _migrate_product_projection(self) -> None:
         additions = {
             "voice_sessions": [("display_text", "TEXT")],
@@ -304,6 +489,9 @@ class ProductStreetStoryService(StreetStoryService):
             "candidate_id",
             "selected_asset_ref",
             "selected_sha256",
+            "output_frame_contract",
+            "output_frame_evidence",
+            "source_frame",
         )
         result["visual"] = {key: visual.get(key) for key in safe_visual_keys if visual.get(key) is not None}
         if result["visual"]:
@@ -493,6 +681,7 @@ class ProductStreetStoryService(StreetStoryService):
             f"Place: {story.get('place_name') or 'unknown'}\n"
             f"Owner intent: {context.get('user_voice_intent') or ''}\n"
             f"Evidence-backed facts:\n{facts}"
+            + POST_4_5_FRAME_INSTRUCTION
         )
 
     async def _run_visual(self, job: dict[str, Any]) -> None:
@@ -527,10 +716,24 @@ class ProductStreetStoryService(StreetStoryService):
             visual_key = "ss-vp-visual-" + hashlib.sha256(
                 canonical([story_id, source_asset, command]).encode()
             ).hexdigest()[:48]
-            receipt = await self.providers.vibepublish.visual(command, visual_key)
+            if context.get('output_frame_contract'):
+                with self.store.tx() as db:
+                    if not self._frame_work_current(db, self._story_row(db, story_id), context, job):
+                        return
+                    context.update(visual_command=command, visual_request_key=visual_key, source_asset_ref=source_asset)
+                    db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), story_id))
+            operation_id = context.get('operation_id')
+            receipt = (await self.providers.vibepublish.status(operation_id) if operation_id
+                       else await self.providers.vibepublish.visual(command, visual_key))
             operation_id = str(receipt.get("operation_id") or context.get("operation_id") or "")
             if not operation_id:
                 raise RetryableProviderError("VibePublish visual accepted no recoverable operation_id")
+            if context.get('output_frame_contract'):
+                with self.store.tx() as db:
+                    if not self._frame_work_current(db, self._story_row(db, story_id), context, job):
+                        return
+                    context['operation_id'] = operation_id
+                    db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), story_id))
             current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
             state = str(current.get("state") or receipt.get("state") or "")
             if state in {"accepted", "running", "queued", "processing"}:
@@ -554,6 +757,9 @@ class ProductStreetStoryService(StreetStoryService):
                 candidate_id = str(candidate.get("id") or "")
                 if not visual_job_id or not candidate_id or not isinstance(revision, int) or not isinstance(token, str):
                     raise PermanentProviderError("VibePublish visual selection receipt is incomplete")
+                context = self._record_visual_frame(story_id, context, current, candidate=candidate, job=job)
+                if context is None:
+                    return
                 select_command = {
                     "command": {
                         "kind": "select",
@@ -579,6 +785,10 @@ class ProductStreetStoryService(StreetStoryService):
             selected_sha = str(selected.get("selected_sha256") or "").lower()
             if not selected_asset:
                 raise PermanentProviderError("VibePublish verified visual lacks immutable asset identity")
+            context = self._record_visual_frame(story_id, context, selected, job=job)
+            if context is None:
+                return
+            candidate_id = candidate_id or (context.get('output_frame_evidence') or {}).get('candidate_id')
             context.update(
                 {
                     "source_asset_ref": source_asset,
@@ -590,6 +800,9 @@ class ProductStreetStoryService(StreetStoryService):
                 }
             )
             with self.store.tx() as db:
+                if context.get('output_frame_contract') and not self._frame_work_current(
+                        db, self._story_row(db, story_id), context, job):
+                    return
                 db.execute(
                     "UPDATE stories SET state='ready_to_publish',processed_image_path=?,processed_image_url=?,"
                     "vibepublish_asset_ref=?,visual_context_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
@@ -640,6 +853,8 @@ class ProductStreetStoryService(StreetStoryService):
             if not operation_id:
                 self._guard_publish_identity(db, job['story_id'], possibly_sent=(dispatch.get('phase') == 'possibly_sent'
                     or not dispatch and int(job.get('attempts') or 0) > 1))
+                self._guard_publish_frame(db, job['story_id'], json.loads(intent['request_json']),
+                    possibly_sent=(dispatch.get('phase') == 'possibly_sent'))
         request = json.loads(intent["request_json"])
         if not operation_id:
             if dispatch.get('phase') == 'possibly_sent':
@@ -662,7 +877,7 @@ class ProductStreetStoryService(StreetStoryService):
                                    (canonical(request), self.store.now(), intent_id))
                 payload = {
                     "to": requested_aliases,
-                    "content": {"text": request.get("text") or "", "format": "plain"},
+                    "content": publication_content(request.get("text") or ""),
                     "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
                     "surface": "post",
                     "delivery": {"kind": "at", "at": request["scheduled_for"]},
@@ -679,6 +894,8 @@ class ProductStreetStoryService(StreetStoryService):
                     existing = prior.get('_publish_dispatch') or {}
                     self._guard_publish_identity(db, job['story_id'], possibly_sent=(existing.get('phase') == 'possibly_sent'
                         or not existing and int(job.get('attempts') or 0) > 1))
+                    self._guard_publish_frame(db, job['story_id'], json.loads(fresh['request_json']),
+                        possibly_sent=(existing.get('phase') == 'possibly_sent'))
                     if existing.get('phase') == 'possibly_sent':
                         if existing.get('request_key') != intent['vibepublish_request_key'] or not isinstance(existing.get('payload'), dict):
                             raise RetryableProviderError('publication_dispatch_binding_unknown', retry_at=self.store.now()+300)

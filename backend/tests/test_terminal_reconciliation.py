@@ -105,6 +105,59 @@ async def test_due_original_readback_is_not_hidden_by_expired_observer_backlog(t
 
 
 @pytest.mark.asyncio
+async def test_due_original_readback_is_not_hidden_by_acknowledged_abort_backlog(tmp_path):
+    svc, story, now, receipt = pending(tmp_path)
+    with svc.store.tx() as db:
+        for index in range(65):
+            settled = {**receipt, 'phase': 'aborted', 'abort_acknowledged': True}
+            settled.pop('provider_send_state')
+            db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+                (f'aborted-{index}', f'aborted-logical-{index}', story['id'], 'facts_opencode',
+                 canonical(settled), now[0] - 10, now[0] - 10))
+    calls = []
+    async def request(client, method, path, **kwargs):
+        calls.append((method, path))
+        return original_messages(completed=True)
+    adapter(svc, request)
+    assert await reconcile_terminal_attempts(svc) == {'observed': 1, 'closed': 1}
+    assert calls == [('GET', '/session/ses_original/message')]
+    with svc.store.connection() as db:
+        settled = [json.loads(row[0]) for row in db.execute(
+            "SELECT receipt_json FROM research_provider_attempts WHERE attempt_id LIKE 'aborted-%'")]
+    assert len(settled) == 65 and all('terminal_reconciliation' not in item for item in settled)
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_unknown_never_opens_claim_transaction(tmp_path, monkeypatch):
+    from street_story import research_reconciliation
+    svc, story, _now, original = pending(tmp_path)
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, story['id'])['research_json'])
+        research['identity_generation'] = 1
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Out-of-scope original cannot be observed')
+    adapter(svc, forbidden)
+    claims = []
+    monkeypatch.setattr(research_reconciliation, '_claim', lambda *args: claims.append(args))
+    assert await reconcile_terminal_attempts(svc) == {'observed': 0, 'closed': 0}
+    assert claims == [] and saved(svc) == original
+
+
+def test_candidate_and_accounting_scans_use_partial_indexes(tmp_path):
+    from street_story.research_adapter import PENDING_ACCOUNTING_SQL
+    from street_story.research_reconciliation import PENDING, _candidate_query
+    svc, _story, _now, _receipt = pending(tmp_path)
+    assert all(f"'{phase}'" in _candidate_query(0)[0] for phase in PENDING)
+    with svc.store.connection() as db:
+        sql, params = _candidate_query(1000.0)
+        plan = ' '.join(row[3] for row in db.execute('EXPLAIN QUERY PLAN ' + sql, params))
+        assert 'idx_research_provider_terminal_pending' in plan
+        plan = ' '.join(row[3] for row in db.execute('EXPLAIN QUERY PLAN ' + PENDING_ACCOUNTING_SQL, (1000.0, 'x', 2)))
+        assert 'idx_research_provider_accounting_pending' in plan
+
+
+@pytest.mark.asyncio
 async def test_unknown_original_remains_bounded_and_never_resends(tmp_path):
     svc, story, now, original = pending(tmp_path)
     calls = []

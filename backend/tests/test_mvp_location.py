@@ -101,7 +101,7 @@ class FakeGemini:
             }],
         }
 
-    async def compose_publication(self, *, place_name, concept, author_note, facts):
+    async def compose_publication(self, *, place_name, concept, author_note, facts, photo_capture=None):
         return {
             "concept": concept or "История Бранденбургских ворот",
             "draft_text": "\n\n".join(str(item["text"]) for item in facts) or author_note,

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .product import ProductStreetStoryService, _receipt
+from .product import ORIGINAL_ART_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, POST_4_5_FRAME_CONTRACT, ProductStreetStoryService, _receipt
 from .providers import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, InvalidStateError, canonical, digest
 
@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v2"
+    PROMPT_VERSION = "street-story-image-v11"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v2.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v11.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -55,13 +55,15 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             for item in selected
             if isinstance(item, dict) and str(item.get("text") or "").strip()
         ]
+        written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()][:3]
+        if written:
+            notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
         if facts:
-            notes.append("Проверенные факты: " + "\n".join(f"• {fact}" for fact in facts))
+            notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
-                "Обязательное содержание инфографики: каждый выбранный факт должен быть "
-                "передан читаемой подписью. Сохрани смысл, даты и существенные уточнения "
-                "каждого факта; одни даты без пояснения или общий эпитет не заменяют факт. "
-                "Перед завершением проверь подписи по всему списку фактов."
+                "Факты — заметками в 3–8 слов своими словами; даты и модальность сохрани. "
+                "Невидимое на фото пропусти. "
+                "Без заглушек, вопросов, источников, документов, аббревиатур. Прежнее — «Прежде: …»."
             )
         concept = str(context.get("publication_concept") or "").strip()
         if concept:
@@ -83,7 +85,20 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
 
         base = template.replace(self.PROMPT_TOKEN, "")
-        dynamic_budget = self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+        transform = context.get('source_image_transform') or {}
+        size = transform.get('output_size')
+        frame_instruction = (
+            f'\n\nOUTPUT FRAME: preserve original aspect {size[0]}:{size[1]} from the supplied oriented photo.'
+            if transform.get('mode') == 'original' and size else
+            '\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350) composed by you from the whole supplied photo: '
+            'keep the complete building uniformly scaled, never crop it; give extra height to sky, notes or graphic areas.'
+            if transform.get('composition') == 'model_4_5_from_whole_frame' else
+            '\n\nOUTPUT FRAME: exact portrait 4:5 (1080x1350); the supplied photo is already cropped.')
+        frame_instruction += (' Never outpaint, stretch, correct perspective or invent architecture. '
+            'No hidden contain fields, blank padding or borders. Keep all supplied frame boundaries. '
+            'Artistic sketch surroundings within this frame are allowed.')
+        dynamic_budget = (self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+                          - len(frame_instruction))
         if dynamic_budget <= 0:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -97,13 +112,15 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
         # Editorial context may be shortened. Selected evidence and the current
         # author correction must reach the model intact, including late qualifiers.
-        for note in optional_notes:
+        for index, note in enumerate(optional_notes):
+            if index == 0:
+                note = "COMPOSITION CONTEXT — NOT LETTERING:\n" + note
             remaining = dynamic_budget - len(themes) - (1 if themes else 0)
             if remaining <= 0:
                 break
             themes += ("\n" if themes else "") + note[:remaining]
 
-        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule
+        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule + frame_instruction
         if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
             raise InvalidStateError(
                 "visual_prompt_too_long",
@@ -124,6 +141,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     async def request_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         if body.get('observe_existing_visual') is True:
+            if any(body.get(field) is not None for field in ('visual_copy', 'visual_layout', 'preserve_source_frame')):
+                raise ConflictError('visual_observation_input_changed', 'Observation cannot create a new layout.')
             return await self._observe_existing_visual(story_id, key, body)
         # Observe the original operation before replacing its frozen context.
         # A new key expresses a new author request, never an unknown-outcome retry.
@@ -138,15 +157,50 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         if operation:
             observed = _receipt(await self.providers.vibepublish.status(operation), operation)
             if observed.get('operation_id') == operation and observed.get('state') == 'needs_selection':
-                raise ConflictError('visual_observation_required',
-                    'Import and review the existing result before requesting another generation.')
+                with self.store.connection() as db:
+                    current = self._story_row(db, story_id)
+                    rejected = self._closed_rejected_frame(db, current, previous, observed)
+                if not rejected:
+                    raise ConflictError('visual_observation_required',
+                        'Import and review the existing result before requesting another generation.')
+            # A closed operation that produced no image (a failed image task) allows
+            # a new explicit author request; it is a new operation, not a resend.
+            closed_without_image = (observed.get('state') in {'failed', 'cancelled', 'blocked'}
+                and observed.get('operation_complete') is True
+                and not observed.get('candidates') and not observed.get('selected_asset_ref'))
             if observed.get('operation_id') != operation or not (
                 observed.get('state') in {'verified', 'needs_selection'}
                 or (observed.get('state') in {'failed', 'cancelled'} and observed.get('retry_safe') is True)
+                or closed_without_image
             ):
                 raise ConflictError('visual_outcome_unresolved',
                                     'Observe the original generation outcome before requesting another visual.')
         return self.mutate_visual(story_id, key, body, expected_revision=revision, previous_receipt=observed)
+
+    def _closed_rejected_frame(self, db, row, context, observed):
+        """Fresh explicit composition after this exact closed, unpublishable result."""
+        proof = context.get('output_frame_evidence') or {}
+        candidates = observed.get('candidates')
+        candidate = candidates[0] if isinstance(candidates, list) and len(candidates) == 1 else {}
+        if not isinstance(candidate, dict):
+            return False
+        return (observed.get('operation_complete') is True
+            and observed.get('operation_id') == context.get('operation_id') == proof.get('operation_id')
+            and proof.get('observed_operation_id') == observed.get('operation_id')
+            and observed.get('visual_job_id') == context.get('visual_job_id')
+            and context.get('output_frame_contract') == proof.get('contract')
+            and proof.get('contract') in {POST_4_5_FRAME_CONTRACT, ORIGINAL_ART_FRAME_CONTRACT}
+            and proof.get('state') == 'rejected' and proof.get('reason') == 'visual_format_mismatch'
+            and proof.get('content_revision') == context.get('content_revision')
+            and all(proof.get(key) == context.get(key) for key in
+                ('source_photo_sha256', 'identity_generation', 'fact_revision_bundle'))
+            and self._frame_inputs_current(db, row, context)
+            and all(proof.get(key) == candidate.get(source_key) for key, source_key in
+                [('candidate_id', 'id'), ('asset_ref', 'asset_ref'), ('sha256', 'sha256'),
+                 ('width', 'width'), ('height', 'height')])
+            and type(proof.get('width')) is int and type(proof.get('height')) is int
+            and proof['width'] > 0 and proof['height'] > 0
+            and not self._frame_dimensions_match(context, proof['width'], proof['height']))
 
     async def _observe_existing_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         """Resume the normal importer for the saved operation; never generate."""
@@ -222,6 +276,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     def mutate_visual(self, story_id: str, key: str, body: dict[str, Any], *,
                       expected_revision: int | None = None, previous_receipt: dict | None = None) -> dict[str, Any]:
+        from .visual_source import source_frame_input
+        source_frame = source_frame_input(body)
         req_digest = digest({"story_id": story_id, **body})
         _, template_sha = self._prompt_template()
         with self.store.tx() as db:
@@ -273,6 +329,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 )
 
             research = json.loads(story["research_json"] or "{}")
+            from .photo_format import choice
+            photo_choice = choice(research)
             voice_ids = [
                 row["session_id"]
                 for row in db.execute(
@@ -299,11 +357,30 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "visual_instruction": str(body.get("visual_instruction") or "").strip()[:600],
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,
+                "source_orientation_contract": 'visual-source-exif-orientation-v1',
             }
+            if source_frame is not None:
+                frozen['source_frame'] = source_frame
+            from .visual_source import photo_transform
+            # photo_sha256 is an opaque upload token, never a content checksum. The
+            # frozen transform carries the content hash that generation re-verifies.
+            _pixels, _mime, transform = photo_transform(self._source_photo_for_job(story_id),
+                story['photo_mime_type'], photo_choice['mode'], photo_choice.get('crop_rect'))
+            if source_frame is not None and transform.get('composition') == 'model_4_5_from_whole_frame':
+                # Text over unaltered pixels cannot become 4:5 without a cut; never cut silently.
+                raise ConflictError('visual_source_frame_crop_required',
+                    'Для текста поверх неизменённого фото в 4:5 нужен явно выбранный кадр. Выберите оригинал или кадр.')
+            frozen.update(source_image_transform=transform, photo_format_revision=photo_choice['revision'])
             if body.get('reuse_generated_art') is True:
                 observed = previous_receipt or {}
+                for field in ('prompt_version', 'prompt_sha256', 'source_orientation_contract'):
+                    if field in previous:
+                        frozen[field] = previous[field]
+                    else:
+                        frozen.pop(field, None)
                 same_inputs = ('source_photo_sha256', 'fact_revision_bundle', 'publication_concept',
-                               'prompt_version', 'prompt_sha256', 'visual_instruction')
+                               'prompt_version', 'prompt_sha256', 'visual_instruction', 'source_frame',
+                               'source_image_transform', 'photo_format_revision')
                 if (observed.get('state') != 'verified'
                         or observed.get('visual_job_id') != previous.get('visual_job_id')
                         or observed.get('selected_asset_ref') != previous.get('selected_asset_ref')
@@ -315,10 +392,18 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 frozen['recompose_source'] = {
                     'job_id': previous['visual_job_id'], 'candidate_id': previous['candidate_id'],
                     'expected_visual_revision': observed['visual_revision'],
-                    'expected_sha256': previous['selected_sha256'], 'format': 'post_4_5',
+                    'expected_sha256': previous['selected_sha256'],
+                    'format': 'original' if photo_choice['mode'] == 'original' else 'post_4_5',
                 }
             if previous.get('operation_id'):
                 frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
+            if not frozen.get('recompose_source') or previous.get('output_frame_contract'):
+                frozen['output_frame_contract'] = ((ORIGINAL_PHOTO_FRAME_CONTRACT if source_frame is not None
+                    else ORIGINAL_ART_FRAME_CONTRACT) if photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
+                frozen['identity_generation'] = int(research.get('identity_generation') or 0)
+            notes = [str(note) for note in ((research.get('caption_image_notes') or {}).get('notes') or [])][:3]
+            if notes:
+                frozen['caption_image_notes'] = notes
             content_revision = digest(frozen)
             context = {
                 **frozen,
@@ -330,10 +415,11 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if previous.get('operation_id'):
                 history = list(previous.get('attempt_history') or [])
                 history.append({k: previous.get(k) for k in ('operation_id', 'visual_job_id', 'content_revision',
-                                                            'visual_request_key', 'candidate_id', 'asset_ref')})
+                                                            'visual_request_key', 'candidate_id', 'asset_ref',
+                                                            'output_frame_evidence')})
                 history[-1]['outcome'] = previous_receipt
                 context['attempt_history'] = history
-            context["brief"] = self._visual_brief(dict(story), context)
+            context["brief"] = previous['brief'] if frozen.get('recompose_source') else self._visual_brief(dict(story), context)
             if frozen.get('recompose_source'):
                 context['source_asset_ref'] = previous.get('source_asset_ref')
             now = self.store.now()
@@ -385,11 +471,36 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             source_asset = str(context.get("source_asset_ref") or "")
             if not source_asset:
                 photo = self._source_photo_for_job(story_id)
-                ingress_key = "ss-vp-asset-" + hashlib.sha256(
-                    f"{story_id}:{story['photo_sha256']}".encode()
-                ).hexdigest()[:48]
+                source_mime = story['photo_mime_type']
+                orientation = None
+                if context.get('source_image_transform'):
+                    from .visual_source import photo_transform
+                    frozen_transform = context['source_image_transform']
+                    photo, source_mime, transform = photo_transform(photo, source_mime,
+                        frozen_transform['mode'], frozen_transform['crop_rect'] if frozen_transform['mode'] == 'crop_4_5' else None,
+                        contract=frozen_transform['contract'])
+                    if transform != frozen_transform:
+                        logging.getLogger(__name__).warning(
+                            'street_story_visual_source_rejected story_id=%s reason=frozen_transform_changed contract=%s',
+                            story_id, frozen_transform.get('contract'))
+                        raise PermanentProviderError('visual_source_transform_changed')
+                    orientation = transform['orientation']
+                elif context.get('source_orientation_contract'):
+                    from .visual_source import CONTRACT, oriented_visual_source
+                    if context['source_orientation_contract'] != CONTRACT:
+                        raise PermanentProviderError('visual_source_orientation_contract_unknown')
+                    photo, source_mime, orientation = oriented_visual_source(photo, source_mime)
+                    if orientation['original_sha256'] != context['source_photo_sha256']:
+                        raise PermanentProviderError('visual_source_original_changed')
+                ingress_binding = (canonical([story_id, context['source_image_transform']]) if context.get('source_image_transform')
+                    else canonical([story_id, orientation]) if orientation
+                    else f"{story_id}:{story['photo_sha256']}")
+                ingress_key = "ss-vp-asset-" + hashlib.sha256(ingress_binding.encode()).hexdigest()[:48]
+                logging.getLogger(__name__).info(
+                    'street_story_visual_source_ready story_id=%s contract=%s bytes=%s',
+                    story_id, (context.get('source_image_transform') or {}).get('contract'), len(photo))
                 ingress = await self.providers.vibepublish.ingress_asset(
-                    photo, story["photo_mime_type"], ingress_key
+                    photo, source_mime, ingress_key
                 )
                 source_asset = str(ingress.get("asset_id") or "")
                 if not source_asset:
@@ -397,11 +508,18 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 merged = self._merge_visual_context(
                     story_id,
                     content_revision,
-                    {"source_asset_ref": source_asset, "source_ingress_key": ingress_key},
+                    {"source_asset_ref": source_asset, "source_ingress_key": ingress_key,
+                     **({'source_orientation': orientation} if orientation else {})},
                 )
                 if merged is None:
                     return
                 context = merged
+                if orientation:
+                    logging.getLogger(__name__).info(
+                        'street_story_visual_source story_id=%s content_revision=%s contract=%s '
+                        'orientation=%s original_size=%s oriented_size=%s source_asset_ref=%s',
+                        story_id, content_revision, orientation['contract'], orientation['exif_orientation'],
+                        orientation['original_size'], orientation['oriented_size'], source_asset)
 
             command = context.get("visual_command")
             visual_key = str(context.get("visual_request_key") or "")
@@ -412,13 +530,19 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                         "source": {"source": {"kind": "asset", "id": source_asset}},
                         "brief": brief,
                         "candidates": 1,
-                        "formats": ["post_4_5"],
+                        "formats": ["original" if (context.get('source_image_transform') or {}).get('mode') == 'original' else "post_4_5"],
                         "selection": "human",
                         "copy": {},
                     }
                 }
                 if context.get('recompose_source'):
                     command = {'command': {'kind': 'recompose', **context['recompose_source']}}
+                elif context.get('source_frame'):
+                    frame = context['source_frame']
+                    command = {'command': {'kind': 'frame_source',
+                        'source': {'source': {'kind': 'asset', 'id': source_asset}},
+                        'copy': frame['copy'], 'layout': frame['layout'],
+                        'format': 'original' if context['source_image_transform']['mode'] == 'original' else 'post_4_5'}}
                 visual_key = "ss-vp-visual-" + hashlib.sha256(
                     canonical([story_id, content_revision, source_asset, command]).encode()
                 ).hexdigest()[:48]
@@ -435,6 +559,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if operation_id:
                 receipt = await self.providers.vibepublish.status(operation_id)
             else:
+                if context.get('output_frame_contract'):
+                    with self.store.connection() as db:
+                        if not self._frame_work_current(db, self._story_row(db, story_id), context, job):
+                            return
                 receipt = await self.providers.vibepublish.visual(command, visual_key)
                 operation_id = str(receipt.get("operation_id") or "")
                 if not operation_id:
@@ -488,6 +616,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     raise PermanentProviderError(
                         "VibePublish visual selection receipt is incomplete"
                     )
+                context = self._record_visual_frame(story_id, context, current, candidate=candidate, job=job)
+                if context is None:
+                    return
                 select_key = str(context.get("select_request_key") or "") or (
                     "ss-vp-select-"
                     + hashlib.sha256(
@@ -505,6 +636,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 )
                 if merged is None:
                     return
+                context = merged
                 select_command = {
                     "command": {
                         "kind": "select",
@@ -538,6 +670,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 raise PermanentProviderError(
                     "VibePublish verified visual lacks immutable asset identity"
                 )
+            context = self._record_visual_frame(story_id, context, selected, job=job)
+            if context is None:
+                return
+            candidate_id = candidate_id or (context.get('output_frame_evidence') or {}).get('candidate_id')
             merged = self._merge_visual_context(
                 story_id,
                 content_revision,

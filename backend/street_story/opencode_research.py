@@ -112,6 +112,11 @@ def _public_article_url(value: Any) -> str | None:
     return None
 
 
+def _native_tool_completed_at(part):
+    value = ((part.get('state') or {}).get('time') or {}).get('end')
+    return value / 1000 if type(value) in {int, float} and value > 0 else None
+
+
 def _completed_search_result_prefix(output: str) -> list[dict]:
     """Recover closed result objects from a truncated JSON tool response.
 
@@ -607,7 +612,7 @@ class OpenCodeResearch:
                     messages = await self._request(client, 'GET', f'/session/{sid}/message', params={'limit': 100})
                     related = [message for message in messages if message.get('info', {}).get('parentID') == message_id]
                     forbidden = [part for message in related for part in message.get('parts', [])
-                        if part.get('type') == 'tool' and part.get('tool') not in ({'websearch', 'StructuredOutput'} if role == 'search' else {'StructuredOutput'})]
+                        if part.get('type') == 'tool' and part.get('tool') not in ({'websearch', 'webfetch', 'StructuredOutput'} if role == 'agent_research' else {'websearch', 'StructuredOutput'} if role == 'search' else {'StructuredOutput'})]
                     blocked = [part for part in forbidden if (receipt.get('isolation') or {}).get('permission_authority') == 'attested_pre_execution_guard'
                                and (part.get('state') or {}).get('status') == 'error'
                                and 'research_tool_denied' in str((part.get('state') or {}).get('error') or '')]
@@ -730,6 +735,25 @@ class OpenCodeResearch:
                                 receipt['image_attachment_readback_verified'] = True
                                 if not submitted or binding.get('image_transport') == 'inline_data_uri_v1':
                                     receipt['image_delivery_verification'] = 'original_server_inline_parts_labels_mime'
+                            if role == 'agent_research':
+                                completed_tools = {part.get('tool') for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and (part.get('state') or {}).get('status') == 'completed'}
+                                receipt['completed_agent_tools'] = sorted(completed_tools)
+                                receipt['tool_receipts'] = [{'name': part.get('tool'), 'call_id': part.get('callID'),
+                                    'arguments': {key: ((part.get('state') or {}).get('input') or {}).get(key)
+                                        for key in (['query'] if part.get('tool') == 'websearch' else ['url'])},
+                                    'completed_at': _native_tool_completed_at(part),
+                                    'result_sha256': hashlib.sha256(json.dumps((part.get('state') or {}).get('output'),
+                                        ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+                                    for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and part.get('tool') in {'websearch', 'webfetch'}
+                                    and (part.get('state') or {}).get('status') == 'completed']
+                                receipt['native_tool_receipts'] = [part for message in related for part in message.get('parts', [])
+                                    if part.get('type') == 'tool' and part.get('tool') in {'websearch', 'webfetch'}
+                                    and (part.get('state') or {}).get('status') == 'completed']
+                                receipt['model_attempts'] = receipt['assistants']
+                                if not {'websearch', 'webfetch'} <= completed_tools:
+                                    raise ResearchUnavailable('research_agent_tools_not_performed', receipt)
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
                             # The contract bounds JSON characters, not the
@@ -743,19 +767,27 @@ class OpenCodeResearch:
                                 if 'selected_sources' in result:
                                     sources, rejected = selected_search_sources(discovered, result)
                                     selection_status = 'model_selected'
-                                elif binding.get('purpose') == 'identity':
+                                elif (binding.get('purpose') == 'identity'
+                                      or binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1'):
                                     sources, rejected, selection_status = [], 0, 'selection_unavailable'
                                 else:
                                     sources, rejected, selection_status = discovered, 0, 'legacy_discovery'
                                 receipt.update(discovered_sources=discovered, sources=sources,
                                     source_selection={'status': selection_status, 'discovered_count': len(discovered),
                                         'selected_count': len(sources), 'unobserved_count': rejected})
+                                if binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1':
+                                    receipt.update(provider_send_state='response_closed', response_finish=info.get('finish'))
+                                    receipt['source_selection']['reason'] = (
+                                        'final_selection_json_unavailable' if selection_status == 'selection_unavailable'
+                                        else str(result.get('summary') or '')[:1200])
                                 LOG.info('street_story_search_selection story_id=%s attempt_id=%s purpose=%s '
                                          'status=%s discovered=%s selected=%s unobserved=%s',
                                          binding.get('story_id'), binding.get('attempt_id'), binding.get('purpose'),
                                          selection_status, len(discovered), len(sources), rejected)
                             receipt.update({'phase': 'completed', 'elapsed_ms': round((time.monotonic() - started) * 1000),
                                             'assistant_message_id': info.get('id'), 'result': result})
+                            if role == 'agent_research':
+                                receipt['provider_send_state'] = 'response_closed'
                             await self._checkpoint(binding, receipt)
                             return {'result': result, 'sources': sources, 'receipt': receipt}
                     if time.monotonic() >= deadline:
@@ -775,12 +807,15 @@ class OpenCodeResearch:
             raise
         except ResearchUnavailable as exc:
             if receipt.get('session_id') and receipt.get('phase') in {'prompt_intent', 'submitted'}:
-                await self._abort(client, receipt, 'research_guard_failed')
+                if exc.code == 'research_shared_http_error':
+                    await self._retain_pending(receipt, 'transport_read_failed')
+                else:
+                    await self._abort(client, receipt, 'research_guard_failed')
             if receipt['phase'] == 'response_completed':
                 receipt['phase'] = 'failed'
                 if exc.code in {'research_json_invalid', 'research_schema_invalid'}:
                     receipt['provider_send_state'] = 'response_closed'
-            exc.receipt = exc.receipt or receipt
+            exc.receipt = {**receipt, **exc.receipt}
             exc.receipt['error_code'] = exc.code
             exc.receipt['elapsed_ms'] = round((time.monotonic() - started) * 1000)
             await self._checkpoint(binding, exc.receipt)
@@ -823,6 +858,19 @@ class OpenCodeResearch:
                   'using the supplied alternatives, or return an empty selection. '
                   'For facts, choose relevant source-backed articles about the confirmed subject, including historical material. '
                   'This choice is acquisition guidance only, never proof of identity or facts. Hypotheses/query:\n' + str(query))
+        if binding.get('search_selection_contract') == 'owner-exact-selected-urls-v1':
+            prompt = ('Use websearch for the confirmed owner-selected physical object. '
+                      'Use ONE websearch round only: one query, or at most two queries issued together in that round. '
+                      'Reserve the next assistant turn for final JSON. After that first round, do not refine with '
+                      'another tool call: return the specified summary and selected_sources JSON immediately. '
+                      'Preserve the supplied city, street and full house number/range. Reuse saved research history. '
+                      'Select only exact URLs observed in completed websearch output whose title/snippet supports '
+                      'substantive reading about this specific building. Omit broad directories, nearby objects, '
+                      'and rental-only or interior-only pages. An address match alone is not substantive building evidence. '
+                      'Return every relevant observed source in useful reading order; there is no source-count cap. '
+                      'If no source is suitable, return selected_sources: [] and explain why in summary. '
+                      'Do not fetch pages, run commands, code, file tools, tasks or validation. '
+                      'Selection is acquisition guidance, never proof of identity or facts. Context:\n' + str(query))
         return await self._run('search', prompt, binding, SEARCH_SCHEMA)
 
     async def compare_image(self, snapshot, binding, jsonschema, context=''):
@@ -885,6 +933,20 @@ class OpenCodeResearch:
             from .source_assessment import CONTRACT as ASSESSMENT_CONTRACT, VALUE_CONTRACT
             if binding.get('semantic_contract') in {ASSESSMENT_CONTRACT, VALUE_CONTRACT}:
                 editorial = (checks_for_contract(binding['semantic_contract']) + ' ' + SUFFICIENCY_CHECKS
+                    + ' Use the frozen review_as_of_date_utc as the review date, not as a source date. '
+                    'A dated article describes its own time: mutable states such as repair progress, '
+                    'condition, ownership, registration or use require the source publication/event '
+                    'date explicitly in fact.text unless own evidence verifies that state as of the '
+                    'review date. Keep supported historical states as dated facts; do not discard '
+                    'useful history because its source is old. Resolve relative dates such as now, '
+                    'last summer or this year against the source publication date, never the review '
+                    'or retrieval date. A past dated plan remains a plan reported at that date, not '
+                    'a current plan or completed work. If the source date or relative-date antecedent '
+                    'is unavailable, preserve the ambiguity with a nonpositive assessment; do not '
+                    'invent a date. For an existing unqualified current-state claim, return its '
+                    'unchanged text and ID as nonpositive; a supported dated replacement is a new '
+                    'claim with existing_fact_id="". Preserve independently supported historical '
+                    'events and their dates, including approximate dates. '
                     + ' Write fact.text in Russian, preserve exact own passage IDs and existing host IDs. '
                     'For text with passage_spans, unchanged passages are text[start:end] with zero-based '
                     'Unicode character offsets, end exclusive. Read the whole text including references. '

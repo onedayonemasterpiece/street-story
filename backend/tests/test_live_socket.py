@@ -111,7 +111,7 @@ def test_wss_push_binary_pcm_and_original_auth_boundary(client):
             pytest.fail('WSS Stop did not close the socket')
     c.post(f"/v1/stories/{story}/live-sessions/{value['session_id']}/stop")
     assert host.size() == 0
-    assert [v['type'] for v in provider.inputs][:5] == ['start', 'activity_start', 'audio', 'activity_end', 'text']
+    assert [v['type'] for v in provider.inputs][:6] == ['start', 'snapshot', 'activity_start', 'audio', 'activity_end', 'text']
 
 
 def test_origin_query_and_resource_rejected_before_ticket_is_used(client):

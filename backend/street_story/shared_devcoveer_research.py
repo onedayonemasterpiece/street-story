@@ -22,18 +22,23 @@ import httpx
 from .opencode_research import OpenCodeResearch, ResearchLimits, ResearchUnavailable
 
 GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'research_guard.mjs'
+AGENT_GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'fact_agent_guard.mjs'
 NATIVE_TOOL_IDS = {'invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write',
                    'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch'}
+AGENT_TOOL_PERMISSIONS = {'*': 'deny', 'websearch': 'allow', 'webfetch': 'allow'}
 
 
-def guard_profile(directory: Path, limits: ResearchLimits):
-    digest = hashlib.sha256(GUARD_SOURCE.read_bytes()).hexdigest()
+def guard_profile(directory: Path, limits: ResearchLimits, *, agent_research=False):
+    source = AGENT_GUARD_SOURCE if agent_research else GUARD_SOURCE
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     guard = directory / ('research-guard-' + digest + '.mjs')
     return [guard.as_uri(), {'marker': 'street-story-research-guard:' + digest}]
 
 
 def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
-                           limits: ResearchLimits | None = None, directory: Path | None = None) -> dict:
+                           limits: ResearchLimits | None = None, directory: Path | None = None,
+                           agent_research: bool = False, model_context: int | None = None,
+                           disabled_mcp: list[str] | tuple[str, ...] | None = None) -> dict:
     """Data-only profile for a dedicated directory on the SAME existing server.
 
     Do not install at a repository root or in global config. Existing provider
@@ -43,15 +48,27 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
     limits = limits or ResearchLimits()
     config = {'$schema': 'https://opencode.ai/config.json', 'share': 'disabled', 'snapshot': False,
             'tool_output': {'max_bytes': limits.max_search_context_chars, 'max_lines': 300},
-            'agent': {'plan': {'steps': min(3, limits.max_steps)},
+            'agent': {'plan': {'steps': limits.max_steps if agent_research else min(3, limits.max_steps)},
                       **{name: {'disable': True} for name in ('title', 'summary', 'compaction')}}}
+    if agent_research:
+        # PermissionNext.disabled uses the LAST matching permission-name rule.
+        # Catch-all first keeps the two allowed native tools declared to the SDK.
+        config['agent']['plan']['permission'] = dict(AGENT_TOOL_PERMISSIONS)
     # Inherit real model context/output limits. Explicit per-request profiles
     # can retain a smaller envelope, but no model-name-specific default caps.
     if limits.max_output_tokens is not None:
+        if type(model_context) is not int or model_context < 1:
+            raise ValueError('research_catalog_context_required')
         config['provider'] = {provider_id: {'models': {model_id: {
-            'limit': {'output': limits.max_output_tokens}}}}}
+            'limit': {'context': model_context, 'output': limits.max_output_tokens}}}}}
     if directory is not None:
-        config['plugin'] = [guard_profile(directory, limits)]
+        config['plugin'] = [guard_profile(directory, limits, agent_research=agent_research)]
+    if disabled_mcp is not None:
+        if (not isinstance(disabled_mcp, (list, tuple)) or any(not isinstance(name, str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,149}', name) for name in disabled_mcp)):
+            raise ValueError('research_disabled_mcp_names_invalid')
+        if disabled_mcp:
+            config['mcp'] = {name: {'enabled': False} for name in sorted(set(disabled_mcp))}
     return config
 
 
@@ -67,7 +84,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     input_json_ensure_ascii = True
 
     def __init__(self, directory: str, *, backend=None, abort_timeout_seconds: float = 10,
-                 require_guard: bool = True, **kwargs):
+                 require_guard: bool = True, agent_research: bool = False, model_context: int | None = None, **kwargs):
         path = Path(directory)
         if not path.is_absolute() or '..' in path.parts or path.resolve() != path or not path.is_dir():
             raise ValueError('research_capsule_directory_invalid')
@@ -77,14 +94,24 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ValueError('research_abort_timeout_invalid')
         if 'client' in kwargs or 'agent_names' in kwargs:
             raise ValueError('research_shared_transport_required')
-        super().__init__('http://127.0.0.1:4097', agent_names={role: 'plan' for role in ('search', 'vision', 'facts')},
+        super().__init__('http://127.0.0.1:4097', agent_names={role: 'plan' for role in ('search', 'vision', 'facts', 'agent_research')},
                          **kwargs)
-        if (not 0 < self.limits.timeout_seconds <= 120 or not 0 < self.limits.max_steps <= 3
+        if (not 0 < self.limits.timeout_seconds <= (720 if agent_research else 120) or not 0 < self.limits.max_steps <= (4 if agent_research else 3)
                 or self.limits.max_output_tokens is not None
                 and (type(self.limits.max_output_tokens) is not int or self.limits.max_output_tokens < 1)):
             raise ValueError('research_shared_limits_invalid')
         self.directory = str(path)
         self.require_guard = require_guard
+        self.agent_research = agent_research
+        config_path = path / 'opencode.json'
+        local = json.loads(config_path.read_text()) if config_path.is_file() and not config_path.is_symlink() else {}
+        if model_context is None and self.limits.max_output_tokens is not None:
+            model_context = (local.get('provider', {}).get(self.provider_id, {}).get('models', {})
+                .get(self.model_id, {}).get('limit') or {}).get('context')
+        self.model_context = model_context
+        local_mcp = local.get('mcp') or {}
+        self.disabled_mcp = tuple(sorted(name for name, value in local_mcp.items()
+            if isinstance(value, dict) and value.get('enabled') is False)) if isinstance(local_mcp, dict) else ()
         self.shared_backend = backend
         self.abort_timeout_seconds = abort_timeout_seconds
         self._deadline: ContextVar[float | None] = ContextVar('research_deadline', default=None)
@@ -92,8 +119,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
 
     def fact_extractor(self, model_id):
         """One extra model on the existing scoped server; no profile writes."""
-        if model_id != 'nemotron-3-ultra-free':
-            raise ValueError('research_fact_extractor_not_approved')
+        if not isinstance(model_id, str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,150}', model_id):
+            raise ValueError('research_fact_extractor_model_invalid')
         return SharedDevCoveerResearch(self.directory, model_id=model_id, provider_id='opencode',
             admission=self.admission, checkpoint=self.checkpoint, backend=self.shared_backend,
             abort_timeout_seconds=self.abort_timeout_seconds, require_guard=self.require_guard,
@@ -102,7 +129,9 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     @property
     def profile_fingerprint(self):
         return hashlib.sha256(json.dumps(scoped_research_config(self.model_id, provider_id=self.provider_id,
-            limits=self.limits, directory=Path(self.directory) if self.require_guard else None), sort_keys=True).encode()).hexdigest()
+            limits=self.limits, directory=Path(self.directory) if self.require_guard else None,
+            agent_research=self.agent_research, model_context=self.model_context,
+            disabled_mcp=self.disabled_mcp if self.agent_research else None), sort_keys=True).encode()).hexdigest()
 
     async def _request(self, client, method, path, **kwargs):
         allowed = ((method == 'GET' and path in {'/global/health', '/config', '/config/providers', '/agent', '/experimental/tool/ids'})
@@ -136,10 +165,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             path += '?' + urlencode(kwargs['params'])
         return await self._invoke(method, path, payload=payload, timeout=timeout)
 
-    async def _invoke(self, method, path, *, timeout, payload=None):
+    async def _invoke(self, method, path, *, timeout, payload=None, unscoped_catalog=False):
+        if unscoped_catalog and (method != 'GET' or path != '/config/providers' or payload is not None):
+            raise ResearchUnavailable('research_api_operation_denied')
         try:
             result = await asyncio.wait_for(self.shared_backend.request(
-                method, path, directory=self.directory, payload=payload, timeout=timeout), timeout=timeout)
+                method, path, directory=None if unscoped_catalog else self.directory,
+                payload=payload, timeout=timeout), timeout=timeout)
             if len(json.dumps(result, ensure_ascii=False).encode()) > self.limits.max_response_bytes:
                 raise ResearchUnavailable('research_response_too_large')
             return result
@@ -150,12 +182,19 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             # only that boundary so the existing durable recovery handles it.
             if type(exc).__name__ != 'OpenCodeError':
                 raise
+            status, category = getattr(exc, 'status', None), getattr(exc, 'category', None)
+            if type(status) is int:
+                safe_category = category if category in {'validation', 'configuration', 'unavailable',
+                    'unauthorized', 'forbidden', 'invalid_response', 'oversized_response'} else 'http_error'
+                raise ResearchUnavailable('research_shared_http_error', {
+                    'transport_status': status, 'transport_category': safe_category,
+                    'transport_response_closed': True}) from exc
             raise httpx.TransportError('Shared OpenCode transport failed') from exc
 
     def _session_permissions(self, role):
         if self.require_guard:
             return [{'permission': name, 'pattern': '*', 'action': 'deny'}
-                    for name in ('question', 'plan_enter', 'plan_exit', *(() if role == 'search' else ('websearch',)))]
+                    for name in ('question', 'plan_enter', 'plan_exit', *(() if role in {'search', 'agent_research'} else ('websearch',)))]
         return [{'permission': '*', 'pattern': '*', 'action': 'deny'},
                 *([{'permission': 'websearch', 'pattern': '*', 'action': 'allow'}] if role == 'search' else [])]
 
@@ -165,11 +204,11 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_shared_unhealthy')
         guard_verified = False
         if self.require_guard:
-            if role not in {'search', 'facts', 'vision'}:
+            if role not in {'search', 'facts', 'vision'} and not (role == 'agent_research' and self.agent_research):
                 raise ResearchUnavailable('research_shared_role_unverified')
-            profile = guard_profile(Path(self.directory), self.limits)
+            profile = guard_profile(Path(self.directory), self.limits, agent_research=self.agent_research)
             guard = Path(self.directory) / Path(profile[0]).name
-            if not guard.is_file() or guard.is_symlink() or guard.read_bytes() != GUARD_SOURCE.read_bytes():
+            if not guard.is_file() or guard.is_symlink() or guard.read_bytes() != (AGENT_GUARD_SOURCE if self.agent_research else GUARD_SOURCE).read_bytes():
                 raise ResearchUnavailable('research_guard_file_unverified')
             local = json.loads((Path(self.directory) / 'opencode.json').read_text())
             if local.get('username') == profile[1]['marker'] or local.get('plugin') != [profile]:
@@ -197,18 +236,43 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         selected = next((agent for agent in agents if agent.get('name') == 'plan'), {})
         if selected.get('native') is not True or selected.get('mode') != 'primary':
             raise ResearchUnavailable('research_native_plan_unverified')
+        if self.agent_research:
+            expected_tail = [{'permission': name, 'pattern': '*', 'action': action}
+                             for name, action in AGENT_TOOL_PERMISSIONS.items()]
+            permissions = selected.get('permission')
+            # OpenCode appends the non-tool external_directory category after
+            # configured rules. No other unknown name or glob can be ignored.
+            # JSON key sorting may reverse the two independent exact web allows.
+            if not isinstance(permissions, list) or any(not isinstance(row, dict) for row in permissions):
+                raise ResearchUnavailable('research_agent_tool_permissions_unverified')
+            tool_rules = [row for row in permissions if row.get('permission') != 'external_directory']
+            actual_tail = tool_rules[-3:]
+            if (len(actual_tail) != 3 or actual_tail[0] != expected_tail[0]
+                    or actual_tail[1:] not in [expected_tail[1:], expected_tail[:0:-1]]):
+                raise ResearchUnavailable('research_agent_tool_permissions_unverified')
         steps = selected.get('steps')
         if type(steps) is not int or not 1 <= steps <= self.limits.max_steps:
             raise ResearchUnavailable('research_controller_steps_unverified')
         output = (config.get('provider', {}).get(self.provider_id, {}).get('models', {})
                   .get(self.model_id, {}).get('limit') or {}).get('output')
-        catalog = await self._request(client, 'GET', '/config/providers')
+        deadline = self._deadline.get()
+        catalog = await self._invoke('GET', '/config/providers', unscoped_catalog=True,
+            timeout=min(30, max(.001, deadline - time.monotonic())) if deadline is not None else 30)
         provider = next((p for p in catalog.get('providers', []) if p.get('id') == self.provider_id), {})
         model = provider.get('models', {}).get(self.model_id, {})
+        catalog_context = (model.get('limit') or {}).get('context')
+        configured_context = (config.get('provider', {}).get(self.provider_id, {}).get('models', {})
+            .get(self.model_id, {}).get('limit') or {}).get('context')
+        if self.limits.max_output_tokens is not None and (
+                type(catalog_context) is not int or catalog_context < 1
+                or configured_context != catalog_context or self.model_context != catalog_context):
+            raise ResearchUnavailable('research_model_context_unverified')
         if output is None:
             output = (model.get('limit') or {}).get('output')
         tool_bytes = (config.get('tool_output') or {}).get('max_bytes')
         if (type(output) is not int or output < 1
+                or type((model.get('limit') or {}).get('output')) is not int
+                or output > model['limit']['output']
                 or self.limits.max_output_tokens is not None and output > self.limits.max_output_tokens):
             raise ResearchUnavailable('research_model_output_not_bounded')
         if type(tool_bytes) is not int or not 1 <= tool_bytes <= self.limits.max_search_context_chars:
@@ -220,11 +284,14 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         return {'agent': 'plan', 'directory': self.directory, 'runtime_version': health.get('version'),
                 'steps': steps, 'steps_enforcement': 'controller_observed_abort', 'atomic_tool_call_cap': False,
                 'tool_boundary_enforced': guard_verified, 'search_call_limit': None,
-                'allowed_tools': ['websearch'] if role == 'search' else [], 'deny_default': True,
-                'permission_authority': (('attested_pre_execution_guard' if role == 'search' else
+                'allowed_tools': ['websearch', 'webfetch'] if role == 'agent_research' else ['websearch'] if role == 'search' else [], 'deny_default': True,
+                'permission_authority': (('attested_pre_execution_guard' if role in {'search', 'agent_research'} else
                                           'attested_guard_and_session_readback') if guard_verified else 'session_readback'),
                 'guard_sha256': profile[1]['marker'].split(':')[-1] if guard_verified else None,
                 'max_output_tokens': output,
+                'model_context': catalog_context,
+                **({'resolved_agent_tool_permission_tail': copy.deepcopy(actual_tail)}
+                   if self.agent_research else {}),
                 'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds,
                 '_system_prompt': selected.get('prompt') or
                     (config.get('agent', {}).get('plan') or {}).get('prompt') or ''}

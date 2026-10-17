@@ -11,6 +11,13 @@ import androidx.core.content.IntentCompat
 
 /** Intake is list-shaped for a future multi-photo story; today's story uses one image. */
 internal object PhotoIntake {
+    const val GPS_REQUIRED_MESSAGE = "В фото нет координат GPS — выберите снимок с геолокацией"
+
+    fun requireGps(photo: ImportedPhoto) {
+        require(photo.latitude != null && photo.longitude != null && photo.latitude.isFinite() && photo.longitude.isFinite() &&
+            photo.latitude in -90.0..90.0 && photo.longitude in -180.0..180.0) { GPS_REQUIRED_MESSAGE }
+    }
+
     const val CURRENT_LIMIT = 1
     const val FUTURE_LIMIT = 9
 

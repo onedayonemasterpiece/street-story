@@ -48,12 +48,31 @@ class PublicationWire {
     @SerializedName("scheduled_for") var scheduledFor: String? = null
 }
 
+class PhotoFormatWire {
+    var mode: String = "original"
+    var revision: Int = 0
+    @SerializedName("crop_rect") var cropRect: List<Int>? = null
+    @SerializedName("oriented_size") var orientedSize: List<Int>? = null
+    @SerializedName("current_visual") var currentVisual: Boolean = false
+}
+
 class StoryWire {
+    @SerializedName("visual_photo_format") var visualPhotoFormat: PhotoFormatWire? = null
+    @SerializedName("identity_mode") var identityMode: String? = null
+    @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
+    @SerializedName("place_navigation_active") var placeNavigationActive: Boolean = false
+    @SerializedName("place_map") var placeMap: PlaceMapWire? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
+    @SerializedName("place_selection") var placeSelection: com.google.gson.JsonObject? = null
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
+    @SerializedName("identity_clarification") var identityClarification: com.google.gson.JsonObject? = null
+    @SerializedName("camera_point") var cameraPoint: PlaceCameraWire? = null
     @SerializedName("photo_sha256") var photoSha256: String? = null
     @SerializedName("source_available") var sourceAvailable: Boolean? = null
     @SerializedName("identity_generation") var identityGeneration: Int? = null
     @SerializedName("research_controls") var researchControls: Map<String, ResearchControlWire> = emptyMap()
     @SerializedName("research_pending") var researchPending: Map<String, Boolean> = emptyMap()
+    @SerializedName("research_outcome") var researchOutcome: ResearchOutcomeWire? = null
     @SerializedName("identity_progress") var identityProgress: IdentityProgressWire? = null
     @SerializedName("publication_concept") var publicationConcept: String? = null
     var publication: PublicationWire? = null
@@ -77,6 +96,16 @@ class StoryWire {
     @SerializedName("source_count") var sourceCount: Int = 0
     @SerializedName("research_revision") var researchRevision: String? = null
     @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
+}
+
+class ResearchOutcomeWire {
+    var outcome: String? = null
+    var reason: String? = null
+    var purpose: String? = null
+    @SerializedName("coverage_complete") var coverageComplete: Boolean? = null
+    @SerializedName("eligible_count") var eligibleCount: Int? = null
+    @SerializedName("photo_sha256") var photoSha256: String? = null
+    @SerializedName("identity_generation") var identityGeneration: Int? = null
 }
 
 class ResearchControlWire {
@@ -264,6 +293,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
             field("client_story_id", story.clientStoryId)
             field("photo_sha256", story.photoSha256)
             field("voice_protocol", "voice-chunks-v2")
+            field("identity_mode", "manual")
             story.latitude?.let { field("lat", it.toString()) }
             story.longitude?.let { field("lon", it.toString()) }
             out.writeBytes("--$boundary\r\n")
@@ -280,6 +310,11 @@ class ApiClient(private val baseUrl: String, private val token: String,
     fun conflictJournal(serverStoryId: String, cursor: Long? = null): ConflictJournalWire = requestJson(
         "GET", "/v1/stories/${segment(serverStoryId)}/fact-conflicts" + (cursor?.let { "?cursor=$it" } ?: ""),
         null, null, ConflictJournalWire::class.java)
+
+    fun placeMap(serverStoryId: String, latitude: Double? = null, longitude: Double? = null, zoom: Double? = null): PlaceMapWire {
+        val query = if (latitude != null && longitude != null) "?latitude=$latitude&longitude=$longitude&radius_m=350" + (zoom?.let { "&zoom=$it" } ?: "") else ""
+        return requestJson("GET", "/v1/stories/${segment(serverStoryId)}/place-map$query", null, null, PlaceMapWire::class.java)
+    }
 
     fun ensureIdentity(serverStoryId: String): StoryWire =
         requestJson("POST", "/v1/stories/${segment(serverStoryId)}/identity", "{}", null, StoryWire::class.java)
@@ -376,7 +411,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control", "place", "draft", "identity", "place-navigation", "place-unknown", "photo-format"))
         if (endpoint == "research-control") {
             val receipt = requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey,
                 ResearchControlReceiptWire::class.java)

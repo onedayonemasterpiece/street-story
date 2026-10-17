@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from street_story.config import Settings
 from street_story.mvp import MvpProductStreetStoryService
-from street_story.service import ProviderBundle
+from street_story.product import ProductStreetStoryService
+from street_story.service import InvalidStateError, ProviderBundle
+from street_story.providers import PermanentProviderError, RetryableProviderError
+from test_product_checkpoint import ProductFakeVibePublish
 
 
-PHOTO = b"mvp-photo"
+_photo_stream = io.BytesIO()
+Image.new('RGB', (40, 30), 'blue').save(_photo_stream, format='JPEG')
+PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
+PROMPT_SHA = 'd3cf096cec2569198f74fb1b6e2b49612248dd541f45df7ea637afccafc3bd7a'
 
 
 class NoopOSM:
@@ -46,6 +53,9 @@ class RecoverableVisualVibePublish:
     async def visual(self, payload: dict, request_key: str):
         assert payload["command"]["kind"] == "tune"
         assert len(payload["command"]["brief"]) <= 5000
+        assert payload["command"]["formats"] == ["post_4_5"]
+        assert payload["command"]["copy"] == {}
+        assert "exact portrait 4:5" in payload["command"]["brief"]
         self.tune_calls += 1
         return {"operation_id": "visual-op", "state": "accepted", "visual_job_id": "job-1"}
 
@@ -62,6 +72,8 @@ class RecoverableVisualVibePublish:
                     "visual_job_id": "job-1",
                     "selected_asset_ref": "processed-asset",
                     "selected_sha256": PROCESSED_SHA,
+                    "candidates": [{"id": "candidate-1", "asset_ref": "processed-asset", "sha256": PROCESSED_SHA,
+                                    "width": 1080, "height": 1350}],
                 }
             ]
         }
@@ -91,8 +103,8 @@ def service(tmp_path: Path, vp=None) -> MvpProductStreetStoryService:
     )
 
 
-def create_story(svc: MvpProductStreetStoryService):
-    return svc.create_story(
+def create_story(svc: MvpProductStreetStoryService, *, portrait=True):
+    story = svc.create_story(
         key="create-mvp",
         client_story_id="story-mvp",
         photo_sha256=PHOTO_SHA,
@@ -102,13 +114,26 @@ def create_story(svc: MvpProductStreetStoryService):
         lat=54.7104,
         lon=20.4522,
     )
+    if not portrait:
+        return story
+    # These existing worker fixtures exercise the explicit portrait crop flow.
+    import io
+    from PIL import Image
+    from street_story.photo_format import set_photo_format
+    with Image.open(io.BytesIO(svc._source_photo_bytes(story['id']))) as image:
+        width, height = image.size
+    unit = min(width // 4, height // 5)
+    return set_photo_format(svc, story['id'], 'fixture-owner-portrait', {
+        'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'crop_rect': [(width - 4 * unit) // 2, (height - 5 * unit) // 2, 4 * unit, 5 * unit],
+        'expected_identity_generation': story['identity_generation']})
 
 
 def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     prompt = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v2.txt"
     data = prompt.read_bytes()
     assert len(data) == 3369
-    assert hashlib.sha256(data).hexdigest() == PROMPT_SHA
+    assert hashlib.sha256(data).hexdigest() == '92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424'
 
     svc = service(tmp_path)
     brief = svc._visual_brief(
@@ -123,7 +148,11 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "all visible handwritten city notes and annotations" in brief
     assert "without adding text" not in brief
     assert "safe area about 8%" in brief
-    assert "Nothing important may touch, cross or be clipped" in brief
+    assert "Nothing important may touch or cross an edge" in brief
+    assert "exact portrait 4:5" in brief
+    assert "blank padding or borders" in brief
+    assert "Extend peripheral background" not in brief
+    assert "Never outpaint" in brief
     assert len(brief) <= 5000
 
 
@@ -161,7 +190,8 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
         "publication_concept": "Редакционный контекст. " * 100,
     })
     assert all(fact in brief for fact in facts)
-    assert "каждый выбранный факт" in brief
+    assert "Невидимое на фото пропусти" in brief
+    assert "skip claims about parts unseen in this photo" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
@@ -182,7 +212,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v2"
+    assert result["visual"]["prompt_version"] == "street-story-image-v11"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:
@@ -191,6 +221,364 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     assert context["source_photo_sha256"] == PHOTO_SHA
     assert context["ordered_voice_ids"] == []
     assert context["brief"].startswith("Use the uploaded street photo as the main visual reference")
+    assert "exact portrait 4:5" in context["brief"]
+
+
+def test_product_visual_brief_requests_portrait_without_losing_fact_context():
+    fact = "Дом восстановили в конце 1950-х годов."
+    brief = ProductStreetStoryService._visual_brief(
+        {"place_name": "Житомирская, 22–24"},
+        {"selected_facts": [{"text": fact}]},
+    )
+    assert fact in brief
+    assert "exact portrait 4:5" in brief
+    assert "no white bars, blank padding or borders" in brief
+    assert "Do not crop the subject" in brief
+    assert "Never outpaint" in brief and "correct perspective" in brief
+
+
+class FrameBoundary(ProductFakeVibePublish):
+    """Controlled receipt metadata, without an image provider or generated PNG."""
+    def __init__(self, dimensions=None, *, verified=False, selected_asset='processed-asset'):
+        super().__init__()
+        self.dimensions = {'width': 1080, 'height': 1350} if dimensions is None else dimensions
+        self.verified = verified
+        self.selected_asset = selected_asset
+        self.tune_calls = self.select_calls = 0
+        self.on_status = None
+
+    async def visual(self, payload, request_key):
+        if payload['command']['kind'] == 'tune':
+            self.tune_calls += 1
+            return {'operation_id': 'frame-op', 'state': 'accepted', 'visual_job_id': 'frame-job'}
+        assert payload['command']['kind'] == 'select'
+        self.select_calls += 1
+        self.verified = True
+        return await self.status('frame-op')
+
+    async def status(self, operation_id):
+        if operation_id != 'frame-op':
+            return await super().status(operation_id)
+        if self.on_status:
+            callback, self.on_status = self.on_status, None
+            callback()
+        candidate = {'id': 'candidate-1', 'asset_ref': 'processed-asset', 'sha256': PROCESSED_SHA,
+                     'selection_token': 'private-token', **self.dimensions}
+        receipt = {'operation_id': 'frame-op', 'state': 'verified' if self.verified else 'needs_selection',
+                   'visual_job_id': 'frame-job', 'visual_revision': 1, 'candidates': [candidate]}
+        if self.verified:
+            receipt.update(selected_asset_ref=self.selected_asset, selected_sha256=PROCESSED_SHA)
+        return receipt
+
+
+def frame_job(svc):
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'frame-intent', {'selected_fact_ids': []})
+    with svc.store.connection() as db:
+        return sid, dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+
+
+def visual_context(svc, sid):
+    with svc.store.connection() as db:
+        return json.loads(svc._story_row(db, sid)['visual_context_json'])
+
+
+@pytest.mark.asyncio
+async def test_source_frame_request_preserves_layout_and_uses_existing_visual_worker_without_tune(tmp_path):
+    class SourceFrameVibe(FrameBoundary):
+        def __init__(self):
+            super().__init__()
+            self.frame_commands = []
+
+        async def visual(self, payload, request_key):
+            if payload['command']['kind'] == 'frame_source':
+                self.frame_commands.append(payload['command'])
+                return {'operation_id': 'frame-op', 'state': 'accepted', 'visual_job_id': 'frame-job'}
+            return await super().visual(payload, request_key)
+
+    vp = SourceFrameVibe()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    body = {'selected_fact_ids': [], 'preserve_source_frame': True,
+        'visual_copy': {'title': 'Исходное фото'},
+        'visual_layout': {'text_box': [.05, .02, .9, .14], 'title_size': 42, 'body_size': 28}}
+    from street_story.photo_format import set_photo_format
+    set_photo_format(svc, sid, 'choose-crop', {'mode': 'crop_4_5', 'expected_photo_sha256': PHOTO_SHA,
+        'crop_rect': [8, 0, 24, 30], 'expected_identity_generation': svc.story(sid)['identity_generation']})
+    svc.mutate_visual(sid, 'source-frame', body)
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    context = visual_context(svc, sid)
+    assert context['source_photo_sha256'] == PHOTO_SHA
+    assert context['source_frame']['copy'] == body['visual_copy']
+    assert context['source_frame']['layout'] == body['visual_layout']
+    await svc._run_visual(job)
+    assert vp.tune_calls == 0 and vp.select_calls == 1 and len(vp.frame_commands) == 1
+    assert vp.frame_commands[0] == {'kind': 'frame_source',
+        'source': {'source': {'kind': 'asset', 'id': 'asset_source_1'}},
+        'copy': body['visual_copy'], 'layout': body['visual_layout'], 'format': 'post_4_5'}
+    assert visual_context(svc, sid)['source_frame'] == context['source_frame']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', [None, 'running', 'unknown', 'other_candidate', 'changed_hash', 'stale_photo', 'unrejected'])
+async def test_new_source_frame_requires_this_exact_closed_rejected_candidate(tmp_path, mutation):
+    from street_story.service import ConflictError
+    vp = FrameBoundary({'width': 1024, 'height': 1350})
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    original = visual_context(svc, sid)
+    status = await vp.status('frame-op')
+    status['operation_complete'] = True
+    if mutation in {'running', 'unknown'}:
+        status['state'] = 'running' if mutation == 'running' else 'outcome_unknown'
+        status['operation_complete'] = False
+    elif mutation == 'other_candidate':
+        status['candidates'][0]['id'] = 'different'
+    elif mutation == 'changed_hash':
+        status['candidates'][0]['sha256'] = 'f'*64
+    elif mutation in {'stale_photo', 'unrejected'}:
+        with svc.store.tx() as db:
+            changed = json.loads(svc._story_row(db, sid)['visual_context_json'])
+            if mutation == 'stale_photo':
+                changed['output_frame_evidence']['source_photo_sha256'] = 'other-photo'
+            else:
+                changed['output_frame_evidence']['state'] = 'verified'
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(changed), sid))
+    async def closed_status(operation):
+        assert operation == 'frame-op'
+        return status
+    vp.status = closed_status
+    body = {'selected_fact_ids': [], 'preserve_source_frame': True, 'visual_copy': {'title': 'Исходное фото'},
+        'visual_layout': {'text_box': [.05, .02, .9, .14]}}
+    if mutation:
+        with pytest.raises(ConflictError):
+            await svc.request_visual(sid, 'distinct-source-composition', body)
+        assert visual_context(svc, sid)['content_revision'] == original['content_revision']
+    else:
+        await svc.request_visual(sid, 'distinct-source-composition', body)
+        next_context = visual_context(svc, sid)
+        assert next_context['source_frame']['copy'] == body['visual_copy']
+        assert next_context['attempt_history'][-1]['output_frame_evidence'] == original['output_frame_evidence']
+    assert vp.tune_calls == 1 and vp.select_calls == 0 and not vp.publish_effects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dimensions,reason', [
+    ({'width': 1080, 'height': 810}, 'visual_format_mismatch'),
+    ({'width': 1080}, 'visual_format_dimensions_missing'),
+    ({'width': True, 'height': 1350}, 'visual_format_dimensions_missing'),
+    ({'width': 0, 'height': 1350}, 'visual_format_dimensions_missing'),
+])
+async def test_new_frame_mismatch_retains_candidate_without_select_or_generation_retry(tmp_path, dimensions, reason):
+    vp = FrameBoundary(dimensions)
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    context = visual_context(svc, sid)
+    proof = context['output_frame_evidence']
+    assert proof['state'] == 'rejected' and proof['reason'] == reason
+    assert proof['asset_ref'] == 'processed-asset' and proof['sha256'] == PROCESSED_SHA
+    assert proof['content_revision'] == context['content_revision']
+    assert 'private-token' not in json.dumps(proof)
+    assert svc.story(sid)['state'] == 'needs_review'
+    assert svc.story(sid)['error']['code'] == reason
+    with pytest.raises(InvalidStateError, match='verified visual'):
+        svc.mutate_publish(sid, 'blocked-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    await svc._run_visual(job)  # Same persisted operation can only be observed.
+    assert vp.tune_calls == 1 and vp.select_calls == 0 and not vp.publish_effects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('verified', [False, True])
+async def test_new_frame_passes_selection_or_verified_recovery_and_publishes_bound_asset(tmp_path, verified):
+    vp = FrameBoundary(verified=verified)
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    assert svc.story(sid)['state'] == 'ready_to_publish'
+    assert vp.tune_calls == 1 and vp.select_calls == int(not verified)
+    svc.mutate_publish(sid, 'valid-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    with svc.store.connection() as db:
+        publish_job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish'", (sid,)).fetchone())
+    await svc._run_publish(publish_job)
+    assert len(vp.publish_effects) == 1
+
+
+@pytest.mark.asyncio
+async def test_verified_recovery_rejects_dimensions_from_a_different_selected_asset(tmp_path):
+    vp = FrameBoundary(verified=True, selected_asset='another-asset')
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    assert svc.story(sid)['state'] == 'needs_review'
+    assert visual_context(svc, sid)['output_frame_evidence']['reason'] == 'visual_format_asset_mismatch'
+    assert vp.select_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['new_object', 'cancelled_job'])
+async def test_stale_frame_cannot_select_or_promote_after_object_change_or_job_stop(tmp_path, change):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    def interrupt():
+        with svc.store.tx() as db:
+            if change == 'new_object':
+                db.execute("UPDATE stories SET visual_context_json='{}',state='place_selected' WHERE id=?", (sid,))
+            else:
+                db.execute("UPDATE jobs SET state='cancelled',attempts=attempts+1 WHERE id=?", (job['id'],))
+    vp.on_status = interrupt
+    await svc._run_visual(job)
+    assert 'output_frame_evidence' not in visual_context(svc, sid)
+    assert svc.story(sid)['state'] != 'ready_to_publish'
+    assert vp.select_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('attempts', [1, 2])
+@pytest.mark.parametrize('change', ['missing_proof', 'asset_sha', 'source_photo', 'fact_revision', 'new_object'])
+async def test_marked_pending_publication_requires_current_bound_frame_before_post(tmp_path, change, attempts):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    svc.mutate_publish(sid, 'frozen-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    with svc.store.tx() as db:
+        context = visual_context(svc, sid)
+        if change == 'missing_proof':
+            context.pop('output_frame_evidence')
+        elif change == 'asset_sha':
+            context['selected_sha256'] = '0' * 64
+        elif change == 'source_photo':
+            db.execute("UPDATE stories SET photo_sha256=? WHERE id=?", ('1' * 64, sid))
+        elif change == 'fact_revision':
+            context['fact_revision_bundle'] = {'changed-binding': '2' * 64}
+        elif change == 'new_object':
+            context = {}  # Pending intent retains its new-contract marker.
+        db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(context), sid))
+        publish_job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish'", (sid,)).fetchone())
+        publish_job['attempts'] = attempts
+    with pytest.raises(PermanentProviderError, match='visual_format_unverified'):
+        await svc._run_publish(publish_job)
+    assert not vp.publish_effects
+
+
+@pytest.mark.asyncio
+async def test_marked_existing_publication_remains_readable_after_frame_context_changes(tmp_path):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    svc.mutate_publish(sid, 'existing-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    with svc.store.connection() as db:
+        publish_job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish'", (sid,)).fetchone())
+    await svc._run_publish(publish_job)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET visual_context_json='{}' WHERE id=?", (sid,))
+    async def no_post(*args):
+        pytest.fail('accepted original publication must only be observed')
+    vp.publish = no_post
+    await svc._run_publish(publish_job)
+    assert len(vp.publish_effects) == 1
+
+
+@pytest.mark.asyncio
+async def test_format_change_during_publication_bootstrap_blocks_final_post(tmp_path):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    svc.mutate_publish(sid, 'racing-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    original_bootstrap = vp.bootstrap
+    async def invalidate():
+        result = await original_bootstrap()
+        context = visual_context(svc, sid)
+        context.pop('output_frame_evidence')
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(context), sid))
+        return result
+    vp.bootstrap = invalidate
+    with svc.store.connection() as db:
+        publish_job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish'", (sid,)).fetchone())
+    with pytest.raises(PermanentProviderError, match='visual_format_unverified'):
+        await svc._run_publish(publish_job)
+    assert not vp.publish_effects
+
+
+@pytest.mark.asyncio
+async def test_legacy_unknown_operation_is_observed_without_retrofitting_or_generation(tmp_path):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    before = previous_visual(svc, sid)
+    before.update(source_asset_ref='legacy-source',
+                  visual_command={'command': {'kind': 'tune', 'brief': 'Legacy frozen artwork'}})
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(before), sid))
+    async def unknown(operation):
+        assert operation == before['operation_id']
+        return {'operation_id': operation, 'state': 'outcome_unknown', 'retry_safe': False}
+    vp.status = unknown
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    await svc._run_visual(job)
+    assert visual_context(svc, sid) == before
+    assert 'output_frame_contract' not in visual_context(svc, sid)
+    assert vp.tune_calls == vp.select_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_frame_proof_rolls_back_new_publication_intent_atomically(tmp_path):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    context = visual_context(svc, sid)
+    context.pop('output_frame_evidence')
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(context), sid))
+    with pytest.raises(InvalidStateError) as failure:
+        svc.mutate_publish(sid, 'unverified-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    assert failure.value.code == 'visual_format_unverified'
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM publish_intents').fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE kind='publish'").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM idempotency WHERE key='unverified-post'").fetchone()[0] == 0
+    assert not vp.publish_effects
+
+
+@pytest.mark.asyncio
+async def test_marked_uncertain_dispatch_keeps_original_payload_and_same_key_recovery(tmp_path):
+    vp = FrameBoundary()
+    svc = service(tmp_path, vp)
+    sid, job = frame_job(svc)
+    await svc._run_visual(job)
+    svc.mutate_publish(sid, 'uncertain-post', {'destinations': ['love-kld-main'], 'delay_minutes': 60})
+    with svc.store.connection() as db:
+        publish_job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='publish'", (sid,)).fetchone())
+    original_publish, calls = vp.publish, []
+    async def lose(payload, key):
+        calls.append((json.dumps(payload, sort_keys=True), key))
+        await original_publish(payload, key)
+        raise RetryableProviderError('lost response')
+    vp.publish = lose
+    with pytest.raises(RetryableProviderError, match='lost response'):
+        await svc._run_publish(publish_job)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET visual_context_json='{}' WHERE id=?", (sid,))
+    async def recover(payload, key):
+        calls.append((json.dumps(payload, sort_keys=True), key))
+        return await original_publish(payload, key)
+    vp.publish = recover
+    await svc._run_publish(publish_job)
+    assert calls[0] == calls[1]  # Existing idempotent dispatch, not a new intent.
+    assert len(vp.publish_effects) == 1
 
 
 @pytest.mark.asyncio
@@ -223,6 +611,9 @@ def previous_visual(svc, story_id):
     with svc.store.tx() as db:
         row = db.execute('SELECT visual_context_json FROM stories WHERE id=?', (story_id,)).fetchone()
         context = json.loads(row[0])
+        # This fixture represents an operation frozen before the frame contract.
+        context.pop('output_frame_contract', None)
+        context.pop('identity_generation', None)
         context.update(operation_id='visual-op', visual_job_id='original-job', visual_request_key='original-key')
         db.execute("UPDATE stories SET visual_context_json=?,state='needs_review',draft_text='Original draft' WHERE id=?",
                    (json.dumps(context), story_id))

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from street_story.config import Settings
 from street_story.errors import RetryableProviderError
@@ -132,7 +133,9 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "start_research" not in names
 
 
-PHOTO = b"live-photo"
+_photo_stream = io.BytesIO()
+Image.new('RGB', (40, 30), 'blue').save(_photo_stream, format='JPEG')
+PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 
 
@@ -1610,7 +1613,13 @@ async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
+@pytest.mark.parametrize('owner_request', [
+    'Выбери самые интересные факты для аудитории. Пока только выбор, текст не меняй.',
+    'Выбери самые интересные факты и затем напиши по ним текст.',
+])
+async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path, owner_request):
+    from street_story.live_author_intent import begin_turn
+
     svc, adapter, session, _events = make_service(tmp_path)
     story_id = session.resource_id
     with svc.store.tx() as db:
@@ -1619,10 +1628,22 @@ async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
             (story_id, "f1", "Проверенный факт", 0.9, 1, 1, "[]"),
         )
         db.execute("UPDATE stories SET draft_text='Авторский текст' WHERE id=?", (story_id,))
+    begin_turn(session, owner_request, origin='text')
     result = await adapter.execute_tool(
         session, {"name": "select_facts", "id": "facts-1", "args": {"fact_ids": ["f1"]}}
     )
-    assert result["story"]["draft_text"] == "Авторский текст"
+    assert svc.story(story_id)['draft_text'] == 'Авторский текст'
+    assert result['selection_saved'] is True
+    assert result['draft_text_changed'] is False
+    assert 'draft_text' not in result['story']
+    assert result['current_owner_request'] == {'text': owner_request, 'origin': 'text', 'serial': 1}
+    # The canonical result stays complete; only the model receipt omits duplicate
+    # old prose. The same acknowledgement does not classify or block a subsequent
+    # explicitly requested edit.
+    with svc.store.connection() as db:
+        saved = json.loads(db.execute('SELECT result_json FROM live_commands WHERE command_id=?',
+                                     ('facts-1',)).fetchone()[0])
+    assert saved['story']['draft_text'] == 'Авторский текст'
 
 
 @pytest.mark.asyncio
@@ -1683,6 +1704,43 @@ async def test_publication_is_blocked_when_owner_selected_fact_is_unreviewed(tmp
             },
         )
     assert getattr(blocked.value, "code", None) == "fact_review_required"
+
+
+@pytest.mark.asyncio
+async def test_saved_text_and_publication_card_carry_verified_building_map_links(tmp_path):
+    from test_map_links import tower
+    from street_story.map_links import building_links
+    from street_story.publication_content import publication_content
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    selection = tower()['place_selection']
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, story_id)["research_json"] or "{}")
+        research["place_selection"] = selection
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
+        db.execute(
+            "INSERT OR IGNORE INTO live_editor_state(story_id,text_revision,literal_json,history_json,updated_at) VALUES(?,0,'[]','[]',?)",
+            (story_id, svc.store.now()),
+        )
+    links = building_links({"place_selection": selection})
+    footer = f"[ЯндексКарты]({links['ЯндексКарты']}) · [2ГИС]({links['2ГИС']})"
+    edited = await adapter.execute_tool(session, {"name": "edit_text", "id": "edit-links", "args": {
+        "expected_text_revision": 0, "change_summary": "Текст",
+        "new_text": "Башня. #Калининград\n\n[ЯндексКарты](https://yandex.ru/maps/invented)"}})
+    assert edited["draft_text"] == "Башня. #Калининград\n\n" + footer
+    with svc.store.tx() as db:
+        db.execute(
+            "UPDATE stories SET state='ready_to_publish',vibepublish_asset_ref='asset-1',processed_image_url='/v1/assets/x',"
+            "visual_context_json=? WHERE id=?", ('{"content_revision":"visual-r1","stale":false}', story_id))
+    scheduled_for = (datetime.now(timezone.utc) + timedelta(days=1)).astimezone(
+        timezone(timedelta(hours=2))).isoformat(timespec="seconds")
+    card = (await adapter.execute_tool(session, {"name": "prepare_publication", "id": "prepare-links", "args": {
+        "destinations": ["street_story_e2e_test"], "scheduled_for": scheduled_for,
+        "timezone": "Europe/Kaliningrad"}}))["confirmation"]
+    assert card["text"] == edited["draft_text"]
+    assert [run["label"] for run in publication_content(card["text"])["paragraphs"][0]
+            if run["kind"] == "link"] == ["ЯндексКарты", "2ГИС"]
 
 
 @pytest.mark.asyncio

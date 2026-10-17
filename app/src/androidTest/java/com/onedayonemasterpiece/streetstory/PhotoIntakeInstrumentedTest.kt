@@ -52,6 +52,34 @@ class PhotoIntakeInstrumentedTest {
         error("Shared photo did not create a story; visible=$visible")
     }
 
+    @Test fun importAndShareWithoutExifGpsShowReasonAndCreateNoStory() {
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val before = store.stories().map { it.clientStoryId }.toSet()
+        val noGps = Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/without-gps")
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        try {
+            // Exercise the selected URI through the normal activity-result entry point.
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    MainActivity::class.java.getDeclaredMethod("onActivityResult", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java)
+                        .apply { isAccessible = true }.invoke(activity, 710, android.app.Activity.RESULT_OK, Intent().setData(noGps))
+                }
+                assertNotNull(device.wait(Until.findObject(By.text(PhotoIntake.GPS_REQUIRED_MESSAGE)), 5000))
+                assertEquals(before, store.stories().map { it.clientStoryId }.toSet())
+                requireNotNull(device.findObject(By.res("android", "button1"))).click()
+            }
+            ActivityScenario.launch<MainActivity>(share().apply { putExtra(Intent.EXTRA_STREAM, noGps) }).use {
+                allowExistingMetadata()
+                assertNotNull(device.wait(Until.findObject(By.text(PhotoIntake.GPS_REQUIRED_MESSAGE)), 5000))
+                assertEquals(before, store.stories().map { it.clientStoryId }.toSet())
+                assertTrue("retain actual rejection view", device.takeScreenshot(File(context.getExternalFilesDir(null), "owner-photo-gps-rejected.png")))
+            }
+        } finally { config.backendUrl = previousBackend }
+    }
+
     @Test fun temporaryGalleryGrantPreservesGpsAndDoesNotDeduplicate() {
         val first = PhotoImporter.import(context, photo)
         val second = PhotoImporter.import(context, photo)

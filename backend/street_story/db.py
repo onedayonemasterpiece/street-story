@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS jobs(
   updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(state, available_at, lease_until, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_story_kind ON jobs(story_id,kind);
+CREATE INDEX IF NOT EXISTS idx_stories_pending_identity_visual
+ ON stories(created_at,id)
+ WHERE state IN ('needs_review','identifying','photo_ready')
+ AND json_extract(research_json,'$.automatic_research_outcome') IS NULL
+ AND coalesce(json_extract(research_json,'$.visual_identity.status'),'') NOT IN ('match','owner_confirmed')
+ AND json_array_length(research_json,'$.visual_identity.candidates')>0;
 CREATE TABLE IF NOT EXISTS cache(
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
@@ -354,6 +361,16 @@ CREATE INDEX IF NOT EXISTS idx_research_provider_story_role ON research_provider
 CREATE INDEX IF NOT EXISTS idx_research_provider_fact_binding ON research_provider_attempts(
  story_id,role,json_extract(receipt_json,'$.binding.fact_unit_id'),
  json_extract(receipt_json,'$.binding.photo_sha256'),json_extract(receipt_json,'$.binding.generation'));
+CREATE INDEX IF NOT EXISTS idx_research_provider_terminal_pending ON research_provider_attempts(updated_at)
+ WHERE json_extract(receipt_json,'$.phase') NOT IN ('created','completed','response_completed','failed')
+ AND coalesce(json_extract(receipt_json,'$.terminal_reconciliation.status'),'')
+ NOT IN ('completed','failed','unaddressable','expired','exhausted')
+ AND (json_extract(receipt_json,'$.phase') IN
+ ('prompt_intent','submitted','unknown','abort_intent','abort_outcome_unknown')
+ OR json_extract(receipt_json,'$.phase')='aborted' AND json_extract(receipt_json,'$.abort_acknowledged') IS NOT 1
+ OR json_extract(receipt_json,'$.provider_send_state')='possibly_sent');
+CREATE INDEX IF NOT EXISTS idx_research_provider_accounting_pending ON research_provider_attempts(updated_at,attempt_id)
+ WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending';
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,

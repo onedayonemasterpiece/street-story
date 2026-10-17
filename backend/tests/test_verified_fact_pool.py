@@ -164,6 +164,27 @@ async def test_unknown_opencode_reads_original_route_after_proof_removed(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('cache_state', ['empty', 'expired', 'removed_model'])
+async def test_unknown_cached_extra_reads_same_address_after_admission_proof_loss(tmp_path, cache_state):
+    adapter, extra, story, entries = setup(tmp_path)
+    extra.mode = 'submitted'
+    with pytest.raises(RetryableProviderError, match='unit_outcome_unknown'):
+        await adapter.extract_fact_page(page(2), story, {'coverage_goal': 'Original'})
+    original = extra.calls[0]
+    adapter.service.store.cache_put('research-text-verification-v1', {'extractors': entries if cache_state == 'expired'
+        else [entry for entry in entries if entry['model_id'] != extra.model_id] if cache_state == 'removed_model' else []},
+        ttl_seconds=-1 if cache_state == 'expired' else 3600)
+    cached = next(row for row in adapter._fact_pool_routes() if row['model_id'] == extra.model_id)
+    assert cached['client'] is extra and not cached['qualified'] and not cached['available']
+    extra.mode = 'completed'
+    result = await adapter.extract_fact_page(page(2), story, {'coverage_goal': 'Original'})
+    assert result['receipt']['readback_only']
+    assert len(extra.calls) == 2 and extra.calls[-1]['attempt_id'] == original['attempt_id']
+    assert extra.calls[-1]['session_id'] == 'ses_existing' and extra.calls[-1]['message_id'] == 'msg_existing'
+    assert not adapter.giga.calls and not adapter.client.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['malformed', 'quota', 'invalid_payload'])
 async def test_closed_opencode_response_falls_through_without_unchanged_repeat(tmp_path, mode):
     adapter, extra, story, _ = setup(tmp_path)
@@ -206,7 +227,7 @@ async def test_unaddressable_unknown_cannot_use_an_available_other_route(tmp_pat
     assert not adapter.giga.calls and not adapter.client.calls and not extra.calls
 
 
-def test_nemotron_transport_clones_same_server_without_any_request_or_profile_write(tmp_path):
+def test_configured_model_transport_clones_same_server_without_request_or_qualification(tmp_path):
     from street_story.shared_devcoveer_research import SharedDevCoveerResearch
     backend, admission, checkpoint = object(), object(), object()
     primary = SharedDevCoveerResearch(str(tmp_path), model_id='mimo-v2.6-flash-free',
@@ -217,8 +238,13 @@ def test_nemotron_transport_clones_same_server_without_any_request_or_profile_wr
     assert extra.limits.max_output_tokens is None
     assert primary.limits.max_output_tokens is None
     assert not list(tmp_path.iterdir())
-    with pytest.raises(ValueError, match='not_approved'):
-        primary.fact_extractor('unqualified-model')
+    unqualified = primary.fact_extractor('another-configured-model')
+    assert unqualified.model_id == 'another-configured-model'
+    assert unqualified.shared_backend is backend and unqualified.directory == primary.directory
+    assert primary.model_id == 'mimo-v2.6-flash-free'
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(ValueError, match='model_invalid'):
+        primary.fact_extractor('invalid model/../../outside')
 
 
 @pytest.mark.asyncio

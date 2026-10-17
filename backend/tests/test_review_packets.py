@@ -7,6 +7,37 @@ from street_story.service import ConflictError
 from street_story.research_budget import PAGE_UNITS, response_units
 
 
+def test_long_author_address_review_preserves_all_own_passages_within_existing_page_limit():
+    from street_story.review_packets import bounded_review_slices, REVIEW_CHECKS
+
+    page = {'packet_ref': 'own-packet', 'run_id': 'own-run', 'review_checks': REVIEW_CHECKS,
+        'confirmed_identity': {'candidate_id': 'osm:way:105',
+            'owner_address': 'Калининград, улица Профессора Севастьянова, 3',
+            'observations': 'Наблюдения выбранного физического контура. ' * 17},
+        'total_facts': 1, 'items': [], 'has_more': False, 'next_cursor': None,
+        'next_tool': 'finalize_fact_review', 'nearby_existing_claims': []}
+    claim = 'Самостоятельное утверждение с датой, субъектом и сохранённой атрибуцией. ' * 4
+    sources = ['Полный собственный источник с кириллицей и датированными сведениями. ' * 25,
+               'Второй источник не теряет отдельный хвост и принадлежность. ' * 20]
+    slices = [{'fact': 0, 'text': claim, 'evidence': e, 'passage': text[start:start+900],
+        'offset': start, 'passage_complete': start+900 >= len(text), 'source_url': f'https://example.com/{e}',
+        'saved_verdict': None} for e, text in enumerate(sources) for start in range(0, len(text), 900)]
+    bounded = bounded_review_slices(page, slices)
+    assert len(bounded) > len(slices)
+    assert bounded_review_slices(page, slices) == bounded  # Cursor readback is stable.
+    for evidence, text in enumerate(sources):
+        parts = [item for item in bounded if item['evidence'] == evidence]
+        assert ''.join(item['passage'] for item in parts) == text
+        assert [item['offset'] for item in parts] == [sum(len(p['passage']) for p in parts[:i])
+                                                     for i in range(len(parts))]
+        assert [item['passage_complete'] for item in parts] == [False] * (len(parts)-1) + [True]
+    for cursor, item in enumerate(bounded, 1):
+        candidate = {**page, 'items': [item], 'next_cursor': cursor, 'has_more': True,
+            'next_tool': 'get_review_packet', 'next_args': {'packet_ref': page['packet_ref'], 'cursor': cursor}}
+        assert response_units('get_review_packet', candidate) <= PAGE_UNITS
+        assert item['text'] == claim
+
+
 @pytest.mark.asyncio
 async def test_real_negative_review_after_canonical_growth_and_new_reassessment(tmp_path):
     from street_story.poi_memory import persist_research_memory

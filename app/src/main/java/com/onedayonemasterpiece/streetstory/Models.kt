@@ -8,6 +8,7 @@ import java.util.UUID
 
 object StoryStage {
     const val PHOTO_READY = "photo_ready"
+    const val PLACE_UNKNOWN = "place_unknown"
     const val IDENTIFYING = "identifying"
     const val IDENTITY_READY = "identity_ready"
     const val RECORDING = "recording"

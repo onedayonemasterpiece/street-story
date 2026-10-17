@@ -182,7 +182,7 @@ def fact_review_subject(identity, **scope):
     compact = compact_physical_identity(identity, **scope)
     result = {key: value for key, value in compact.items() if key in {
         'candidate_id', 'candidate_name', 'canonical_name', 'locality', 'country',
-        'physical_scope', 'physical_identity_accepted',
+        'physical_scope', 'physical_identity_accepted', 'search_anchor', 'candidate_name_provenance',
     }}
     selected = next((item for item in (identity.get('candidates') or [])
                      if isinstance(item, dict) and item.get('candidate_id') == identity.get('candidate_id')), {})
@@ -200,7 +200,8 @@ def compact_physical_identity(identity, *, photo_sha256=None, generation=None, c
         identity, photo_sha256=photo_sha256, generation=generation, control_revision=control_revision)
     result = {}
     for key in ('status', 'candidate_id', 'candidate_name', 'canonical_name', 'locality', 'country',
-            'proof_kind', 'photo_sha256', 'wikipedia_url', 'wikidata', 'osm_id', 'candidate_url'):
+            'proof_kind', 'photo_sha256', 'wikipedia_url', 'wikidata', 'osm_id', 'candidate_url',
+            'candidate_name_provenance'):
         value = identity.get(key)
         limit = 2000 if key.endswith('_url') else 300
         if isinstance(value, str) and len(value) <= limit:
@@ -212,6 +213,21 @@ def compact_physical_identity(identity, *, photo_sha256=None, generation=None, c
     if isinstance(scope, str) and scope:
         result['physical_scope'] = scope[:600]  # Preserve either proof contract's bounded literal physical scope.
     result['physical_identity_accepted'] = accepted
+    # The exact author selection's literal address is source-reading context,
+    # not a machine proof. Keep its provenance through repeated DTO compaction.
+    anchor = identity.get('search_anchor')
+    if isinstance(anchor, dict):
+        import json
+        # Map search hints (nearby streets, neighbouring addresses) are discovery
+        # context for research only; a source verifier must not read them as
+        # describing the selected building.
+        anchor = {key: value for key, value in anchor.items() if key != 'map_surroundings'}
+        encoded = json.dumps(anchor, ensure_ascii=False)
+        if len(encoded) <= 8000:
+            result['search_anchor'] = json.loads(encoded)
+    for key in ('selection_basis', 'owner_selected'):
+        if key in identity:
+            result[key] = identity[key]
     result['observations'] = [str(value)[:300] for value in (identity.get('observations') or [])[:3]]
     if projected:
         aliases = identity.get('subject_alias_candidate_ids') or [identity.get('candidate_id')]

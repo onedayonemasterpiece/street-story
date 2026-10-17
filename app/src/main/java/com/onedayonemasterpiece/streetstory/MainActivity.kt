@@ -34,6 +34,8 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -50,6 +52,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class MainActivity : Activity() {
+    private val PHOTO_ORIGINAL = View.generateViewId()
+    private val PHOTO_CROP = View.generateViewId()
     private val store by lazy { AppGraph.store(this) }
     private val config by lazy { AppGraph.config(this) }
     private val live by lazy { AppGraph.live(this) }
@@ -61,8 +65,13 @@ class MainActivity : Activity() {
     private lateinit var contentHost: FrameLayout
     private lateinit var dock: LinearLayout
 
+    private var placeMapPanel: PlaceMapPanel? = null
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
+    private var ownerConversation: OwnerConversationScope? = null
+    private var ownerConversationText: String? = null
+    private var ownerConversationGuard: (() -> Boolean)? = null
+    private var ownerConversationNeedsNavigation = false
     private var pendingPhotoRecoveryStoryId: String? = null
     private var pendingSharedPhotos: ArrayList<Uri>? = null
     private var photoLocationRequestInFlight = false
@@ -76,6 +85,8 @@ class MainActivity : Activity() {
 
     private var topicTitleView: TextView? = null
     private var topicStatusView: TextView? = null
+    private var photoFormatChoices: RadioGroup? = null
+    private var updatingPhotoFormat = false
     private var previewImage: ImageView? = null
     private var previewText: TextView? = null
     private var literalBanner: TextView? = null
@@ -86,6 +97,9 @@ class MainActivity : Activity() {
     private var sourceButton: Button? = null
     private var undoButton: Button? = null
     private var publishButton: Button? = null
+    private var ownerVisualButton: Button? = null
+    private var ownerVisualRequest: OwnerVisualRequest? = null
+    private var ownerVisualSent = false
     private var confirmationBox: LinearLayout? = null
     private var dockTopic: TextView? = null
     private var dockStatus: TextView? = null
@@ -180,13 +194,36 @@ class MainActivity : Activity() {
         }
         ContextCompat.registerReceiver(this, changedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
+        placeMapPanel?.start()
         live.addListener(liveListener)
         SyncScheduler.enqueue(this)
         resumeUpdateAfterPermission()
         maybeCheckForUpdate()
     }
 
+    override fun onResume() {
+        super.onResume()
+        placeMapPanel?.resume()
+    }
+
+    override fun onPause() {
+        placeMapPanel?.pause()
+        super.onPause()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        placeMapPanel?.lowMemory()
+    }
+
+    override fun onDestroy() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
+        super.onDestroy()
+    }
+
     override fun onStop() {
+        placeMapPanel?.stop()
         live.removeListener(liveListener)
         if (receiverRegistered) {
             unregisterReceiver(changedReceiver)
@@ -344,6 +381,8 @@ class MainActivity : Activity() {
     private fun showTopic(storyId: String) {
         val story = store.story(storyId) ?: run { showTopics(); return }
         setActiveStory(storyId)
+        placeMapPanel?.dispose()
+        placeMapPanel = null
         contentHost.removeAllViews()
         shownImagePath = null
         previewExpanded = true
@@ -412,7 +451,23 @@ class MainActivity : Activity() {
             contentDescription = "publication-image"
             setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
         }
-        column.addView(previewImage, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
+        val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
+        column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(photoHeight)))
+        photoFormatChoices = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            contentDescription = "photo-format-choice"
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_ORIGINAL; text = "Оригинал" })
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_CROP; text = "4:5" })
+            setOnCheckedChangeListener { _, selected ->
+                if (!updatingPhotoFormat) selectPhotoFormat(storyId, if (selected == PHOTO_CROP) "crop_4_5" else "original")
+            }
+        }
+        column.addView(photoFormatChoices, blockMargins(top = 4))
+        placeMapPanel = PlaceMapPanel(this, storyId, store, research, config, { navigateOwnerPlace(storyId) }, { markOwnerPlaceUnknown(storyId) }, {
+            requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.")
+        })
+        column.addView(placeMapPanel, blockMargins(top = 8))
         column.addView(identityLinkView, blockMargins(top = 8))
         column.addView(topicStatusView)
         identityProgressView = label("", 13, INK, Typeface.DEFAULT).apply {
@@ -466,6 +521,14 @@ class MainActivity : Activity() {
         chatBox?.addView(conceptBlock, blockMargins(top = 10))
 
         column.addView(chatBox, blockMargins(top = 12))
+        column.addView(secondaryButton("Черновик с Мирой") { editOwnerDraft(storyId) }.apply {
+            contentDescription = "owner-save-draft"
+        }, blockMargins(top = 8))
+        ownerVisualButton = secondaryButton("Создать визуал") { createOwnerVisual(storyId) }.apply {
+            contentDescription = "owner-create-visual"
+            visibility = View.GONE
+        }
+        column.addView(ownerVisualButton, blockMargins(top = 8))
 
         literalBanner = label(
             "Дословная диктовка · ещё не применено",
@@ -570,6 +633,8 @@ class MainActivity : Activity() {
 
     private fun refreshTopicDetail() {
         val id = activeStoryId ?: return
+        placeMapPanel?.refresh()
+        continueOwnerConversation()
         live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
 
@@ -594,25 +659,40 @@ class MainActivity : Activity() {
             visibility = if (meaningful) View.VISIBLE else View.GONE
         }
 
-        val imagePath = story.processedImagePath?.takeIf(PhotoAssets::available) ?: story.photoPath
-        if (shownImagePath != imagePath) {
-            shownImagePath = imagePath
-            previewImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 1200, 1000))
-            stickyImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 240, 320))
+        val pendingFormat = store.pendingOperations(id).lastOrNull { it.kind == "photo-format" }
+        val selectedFormat = pendingFormat?.let {
+            runCatching { gson.fromJson(it.payloadJson, PhotoFormatWire::class.java) }.getOrNull()
+        } ?: research.get(id)?.visualPhotoFormat
+        updatingPhotoFormat = true
+        photoFormatChoices?.check(if (selectedFormat?.mode == "crop_4_5") PHOTO_CROP else PHOTO_ORIGINAL)
+        photoFormatChoices?.isEnabled = pendingFormat == null
+        for (index in 0 until (photoFormatChoices?.childCount ?: 0)) photoFormatChoices?.getChildAt(index)?.isEnabled = pendingFormat == null
+        updatingPhotoFormat = false
+        val processed = pendingFormat == null && (selectedFormat == null || selectedFormat.currentVisual)
+        val imagePath = story.processedImagePath?.takeIf { processed && PhotoAssets.available(it) } ?: story.photoPath
+        val imageKey = imagePath + ":" + gson.toJson(selectedFormat)
+        if (shownImagePath != imageKey) {
+            shownImagePath = imageKey
+            val format = if (imagePath == story.photoPath) selectedFormat else null
+            previewImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 1200, 1000, format))
+            stickyImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 240, 320, format))
         }
 
         previewText?.apply {
             val draft = story.draftText?.takeIf { it.isNotBlank() }
-            text = draft.orEmpty()
+            // Named map links show as their labels, as in the published post.
+            text = draft?.let(MarkdownLite::render) ?: ""
+            movementMethod = LinkMovementMethod.getInstance()
             visibility = if (draft == null) View.GONE else View.VISIBLE
         }
 
+        val projection = research.get(id)
         photoRecoveryButton?.apply {
-            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE
+            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE ||
+                (projection?.photoSha256 == story.photoSha256 && projection?.sourceAvailable == false && !PhotoAssets.available(story.photoPath))
             text = if (sourceMissing) "Повторно открыть исходное фото" else "Выбрать оригинал с геометкой"
             visibility = if (sourceMissing || ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW)) View.VISIBLE else View.GONE
         }
-        val projection = research.get(id)
         renderResearchControls(id, projection)
         renderFactsIsland(id)
         conceptBlock?.apply {
@@ -661,6 +741,15 @@ class MainActivity : Activity() {
         }
         updateStickyPhoto()
 
+        val visualScope = OwnerVisualRequest.capture(story, projection, facts, PhotoAssets.available(story.photoPath))
+        if (ownerVisualRequest != visualScope) ownerVisualRequest = null
+        ownerVisualButton?.apply {
+            visibility = if (visualScope != null) View.VISIBLE else View.GONE
+            isEnabled = visualScope != null && ownerVisualRequest == null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+            text = if (ownerVisualRequest != null) "Визуал запрошен" else "Создать визуал"
+        }
+
         publishButton?.apply {
             val hasResult = !story.draftText.isNullOrBlank() &&
                 (!story.processedImagePath.isNullOrBlank() || story.stage == StoryStage.SCHEDULED)
@@ -671,6 +760,16 @@ class MainActivity : Activity() {
     }
 
     private fun renderIdentityProgress(progress: IdentityProgressWire?, waiting: Boolean) {
+        val storyId = activeStoryId
+        val projection = storyId?.let(research::get)
+        val ownerMapMode = projection?.identityMode == "manual" || (projection == null && placeMapPanel != null)
+        val explicitRecognition = projection?.researchPending?.get("identity") == true ||
+            storyId?.let { store.pendingOperations(it).any { operation -> operation.kind == "identity" } } == true
+        if (ownerMapMode && !explicitRecognition) {
+            identityProgressView?.visibility = View.GONE
+            stickyComparison?.visibility = View.GONE
+            return
+        }
         stickyComparison?.apply {
             text = progress?.let {
                 "${if (it.visualComparisonVerified) "☑" else "☐"} Визуальное сравнение\nПросмотрено иллюстраций: ${it.imagesReviewedCount}"
@@ -699,6 +798,14 @@ class MainActivity : Activity() {
 
     private fun applyLiveState(state: LiveUiState) {
         val id = activeStoryId ?: return
+        if (ownerVisualSent && !state.active && !state.connecting) {
+            ownerVisualSent = false
+            ownerVisualRequest = null
+            ownerVisualButton?.text = "Создать визуал"
+            ownerVisualButton?.isEnabled = OwnerVisualRequest.capture(store.story(id), research.get(id), store.facts(id),
+                store.story(id)?.let { PhotoAssets.available(it.photoPath) } == true) != null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        }
         if (state.storyId != null && state.storyId != id) {
             dockStatus?.text = "Live идёт в другой теме"
             chatStatus?.text = "• Live идёт в другой теме"
@@ -816,6 +923,7 @@ class MainActivity : Activity() {
     private fun stopLiveForOwner(storyId: String) {
         // Stop does not depend on an archive, successful handshake or server reply.
         pendingLiveStoryId = null
+        clearOwnerConversation()
         live.stopLocal()
         RecordingService.command(this, RecordingService.ACTION_TRANSPORT_FINISH)
     }
@@ -826,7 +934,9 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (ready && live.isActiveFor(storyId) && !live.snapshot().connecting) {
                     RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
+                    continueOwnerConversation()
                 } else if (!error.isNullOrBlank()) {
+                    clearOwnerConversation()
                     Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 }
             }
@@ -848,9 +958,13 @@ class MainActivity : Activity() {
         val storyId = pendingLiveStoryId
         pendingLiveStoryId = null
         if (storyId == null) return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && storyId != null) {
+        if (ownerConversation?.let { !it.matches(activeStoryId, store.story(it.storyId), research.get(it.storyId)) } == true) {
+            clearOwnerConversation(); return
+        }
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             startLive(storyId)
         } else {
+            clearOwnerConversation()
             Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
         }
     }
@@ -867,7 +981,7 @@ class MainActivity : Activity() {
                 photoLocationRequestInFlight = true
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_PHOTO_LOCATION)
             }
-            .setNegativeButton("Без геометок") { _, _ -> continuePhotoIntake() }
+            .setNegativeButton("Выбрать оригинал") { _, _ -> continuePhotoIntake() }
             .setOnCancelListener { pendingSharedPhotos = null; pendingPhotoRecoveryStoryId = null }
             .show()
     }
@@ -906,6 +1020,7 @@ class MainActivity : Activity() {
             runCatching {
                 val photo = PhotoImporter.import(this, uri)
                 imported = photo
+                PhotoIntake.requireGps(photo)
                 if (recoveryId != null) {
                     val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
                     val sourceMissing = existing.lastError == SOURCE_UNAVAILABLE_MESSAGE
@@ -932,7 +1047,15 @@ class MainActivity : Activity() {
                     showTopic(storyId)
                 }
             }.onFailure { exc ->
-                runOnUiThread { Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show() }
+                imported?.let { photo ->
+                    PhotoAssets.releaseTemporary(photo.path)
+                    PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
+                }
+                runOnUiThread {
+                    if (exc.message == PhotoIntake.GPS_REQUIRED_MESSAGE) {
+                        AlertDialog.Builder(this).setMessage(PhotoIntake.GPS_REQUIRED_MESSAGE).setPositiveButton("Понятно", null).show()
+                    } else Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show()
+                }
             }
             if (recoveryId != null) imported?.let { photo ->
                 PhotoAssets.releaseTemporary(photo.path)
@@ -1100,20 +1223,44 @@ class MainActivity : Activity() {
             research.get(storyId)?.identityGeneration == journal.identityGeneration &&
             research.get(storyId)?.researchControls?.get("facts")?.revision == revision
         if (!current()) { SyncScheduler.enqueue(this); return }
-        val input = EditText(this).apply {
-            hint = "Ваше уточнение (необязательно)"
-            filters = arrayOf(android.text.InputFilter.LengthFilter(3000))
+        val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
+            "Обсуди уточнение с автором голосом. Прочитай источники обеих версий и сохрани обоснованное решение либо оставь противоречие неразрешённым. " +
+            "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование."
+        requestOwnerConversation(storyId, request) { current() }
+    }
+
+    private fun createOwnerVisual(storyId: String) {
+        val story = store.story(storyId) ?: return
+        val request = OwnerVisualRequest.capture(story, research.get(storyId), store.facts(storyId), PhotoAssets.available(story.photoPath)) ?: return
+        fun current(): Boolean = request.matches(activeStoryId, store.story(storyId), research.get(storyId), store.facts(storyId),
+            store.story(storyId)?.let { PhotoAssets.available(it.photoPath) } == true) &&
+            store.pendingOperations(storyId).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        if (!current() || ownerVisualRequest != null) return
+        ownerVisualRequest = request
+        ownerVisualSent = false
+        refreshTopicDetail()
+        fun send() {
+            if (current() && live.isActiveFor(storyId)) {
+                ownerVisualSent = true
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=requested story_id=$storyId generation=${request.generation} selected_fact_count=${request.selectedFacts.size}")
+                live.sendText("Создай визуал для текущего сохранённого черновика из оригинальной фотографии этого сюжета. " +
+                    "Используй только текущие выбранные подтверждённые факты: ${request.selectedFacts.joinToString(", ") { it.first }}. " +
+                    "Сохрани текст черновика и авторский выбор фактов. Покажи результат для проверки. Ничего не публикуй и не планируй публикацию.")
+            } else {
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=not_sent story_id=$storyId reason=scope_or_session_changed")
+                ownerVisualRequest = null
+                refreshTopicDetail()
+            }
         }
-        AlertDialog.Builder(this).setTitle("Уточнение противоречия").setView(input)
-            .setNegativeButton("Отмена", null).setPositiveButton("Обсудить") { _, _ ->
-                val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
-                    "Прочитай собственные источники обеих версий, сохрани обоснованное адресное решение либо оставь его неразрешённым. " +
-                    "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование. " + input.text.toString()
-                fun send() { if (current() && live.isActiveFor(storyId)) live.sendText(request) }
-                if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
-                    runOnUiThread { if (ready) send() else if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show() }
+        if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
+            runOnUiThread {
+                if (ready) send() else {
+                    ownerVisualRequest = null
+                    refreshTopicDetail()
+                    if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 }
-            }.show()
+            }
+        }
     }
 
     private fun maybeCheckForUpdate() {
@@ -1290,6 +1437,8 @@ class MainActivity : Activity() {
     }
 
     private fun clearTopicRefs() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
         previewImage?.apply {
             animate().cancel()
             alpha = 1f
@@ -1309,6 +1458,7 @@ class MainActivity : Activity() {
         stopMicPulse()
         topicTitleView = null
         topicStatusView = null
+        photoFormatChoices = null
         previewImage = null
         previewText = null
         literalBanner = null
@@ -1319,6 +1469,7 @@ class MainActivity : Activity() {
         sourceButton = null
         undoButton = null
         publishButton = null
+        ownerVisualButton = null
         confirmationBox = null
         dockTopic = null
         dockStatus = null
@@ -1368,6 +1519,7 @@ class MainActivity : Activity() {
         if (story.stage == StoryStage.IDENTIFYING && controls["identity"]?.stopped == true) return "Поиск объекта приостановлен"
         if (story.stage == StoryStage.RESEARCHING && controls["facts"]?.stopped == true) return "Поиск фактов приостановлен"
         return when (story.stage) {
+        StoryStage.PLACE_UNKNOWN -> "Место съёмки не определено"
         StoryStage.SCHEDULED -> "Запланировано · ${story.scheduledFor.orEmpty()}"
         StoryStage.PUBLISHED -> "Опубликовано"
         StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED -> "Нужно внимание"
@@ -1686,13 +1838,15 @@ class MainActivity : Activity() {
         val facts = store.facts(storyId)
         val liveState = live.snapshot()
         val projection = research.get(storyId)
-        val durableActive = FactPresentation.researchActive(projection, store.story(storyId)?.photoSha256.orEmpty())
+        val photoSha = store.story(storyId)?.photoSha256.orEmpty()
+        val durableActive = FactPresentation.researchActive(projection, photoSha)
+        val outcomeNotice = FactPresentation.researchOutcomeNotice(projection, photoSha)
         val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId && it.active &&
             projection?.researchControls?.get("facts")?.stopped != true }
             ?: if (durableActive) LiveResearchProgress(true, "", "", projection?.sourceCount ?: 0,
                 facts.size, 0, emptyList()) else liveState.researchProgress?.takeIf { liveState.storyId == storyId }
                     ?.copy(active = false)
-        if (facts.isEmpty() && progress == null) {
+        if (facts.isEmpty() && progress == null && outcomeNotice == null) {
             host.visibility = View.GONE
             return
         }
@@ -1705,6 +1859,12 @@ class MainActivity : Activity() {
         }
         val factsHeading = label(title, 15, INK, Typeface.DEFAULT_BOLD)
         host.addView(factsHeading)
+        if (outcomeNotice != null) {
+            host.addView(label(outcomeNotice, 13, INK, Typeface.DEFAULT).apply {
+                contentDescription = "facts-research-outcome"
+                setPadding(0, dp(7), 0, dp(7))
+            })
+        }
         host.addView(secondaryButton("Противоречия и решения") { showConflictJournal(storyId) })
         if (progress != null) {
             val row = LinearLayout(this).apply {
@@ -1846,6 +2006,109 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun selectPhotoFormat(storyId: String, mode: String) {
+        val story = store.story(storyId) ?: return
+        if (store.pendingOperations(storyId).any { it.kind == "photo-format" }) return
+        val command = "ss-photo-format-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "photo-format", command, gson.toJson(mapOf(
+            "mode" to mode, "expected_photo_sha256" to story.photoSha256,
+            "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))))
+        shownImagePath = null
+        refreshTopicDetail()
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun navigationPayload(storyId: String, commandId: String): String {
+        val state = research.get(storyId)
+        return PlaceCommandJson.encode(mapOf("command_id" to commandId,
+            "expected_photo_sha256" to store.story(storyId)?.photoSha256,
+            "expected_identity_generation" to (state?.identityGeneration ?: 0),
+            "expected_candidate_id" to state?.candidateId))
+    }
+
+    private fun navigateOwnerPlace(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        val command = "ss-place-navigation-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-navigation", command, navigationPayload(storyId, command))
+        requestOwnerConversation(storyId,
+            "Продолжи текущую историю в режиме поиска места: continue_story stage=place_map. Дом не здесь. " +
+                "Спроси голосом, что я помню о месте съёмки. Используй find_place_area и focus_owner_map, чтобы перенести карту. " +
+                "Дом я выберу сам касанием или назову показанный контур. Не выбирай дом за меня, не используй resolve_place и не запускай распознавание по GPS.",
+            navigation = true)
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun markOwnerPlaceUnknown(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        clearOwnerConversation()
+        val command = "ss-place-unknown-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-unknown", command, navigationPayload(storyId, command))
+        SyncScheduler.enqueue(this)
+        Toast.makeText(this, "Сохраняем: место съёмки не определено", Toast.LENGTH_SHORT).show()
+        placeMapPanel?.refresh()
+    }
+
+    private fun requestOwnerConversation(storyId: String, text: String, navigation: Boolean = false, guard: () -> Boolean = { true }) {
+        val scope = OwnerConversationScope.capture(store.story(storyId), research.get(storyId)) ?: return
+        ownerConversation = scope
+        ownerConversationText = text
+        ownerConversationGuard = guard
+        ownerConversationNeedsNavigation = navigation
+        android.util.Log.i("StreetStoryOwnerVoice", "stage=queued story_id=$storyId generation=${scope.generation} place_navigation=$navigation")
+        continueOwnerConversation()
+    }
+
+    private fun clearOwnerConversation() {
+        ownerConversation = null; ownerConversationText = null; ownerConversationGuard = null
+        ownerConversationNeedsNavigation = false
+    }
+
+    private fun continueOwnerConversation() {
+        val scope = ownerConversation ?: return
+        if (!scope.matches(activeStoryId, store.story(scope.storyId), research.get(scope.storyId)) || ownerConversationGuard?.invoke() != true) {
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=dropped story_id=${scope.storyId} generation=${scope.generation} reason=scope_changed")
+            clearOwnerConversation(); return
+        }
+        val operations = store.pendingOperations(scope.storyId)
+        if (operations.any { it.kind in setOf("place", "place-navigation", "place-unknown", "facts") }) return
+        if (ownerConversationNeedsNavigation && research.get(scope.storyId)?.placeNavigationActive != true) {
+            clearOwnerConversation(); return
+        }
+        if (live.isActiveFor(scope.storyId)) {
+            val text = ownerConversationText ?: return
+            clearOwnerConversation()
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=sent story_id=${scope.storyId} generation=${scope.generation}")
+            live.sendText(text)
+            return
+        }
+        if (live.snapshot().connecting || live.snapshot().active) return
+        if (!config.configured) { clearOwnerConversation(); showSettings(); return }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (pendingLiveStoryId != scope.storyId) {
+                pendingLiveStoryId = scope.storyId
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            }
+            return
+        }
+        startLive(scope.storyId)
+    }
+
+    private fun editOwnerDraft(storyId: String) {
+        val selected = store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text }
+        if (selected.isEmpty()) {
+            Toast.makeText(this, "Выберите хотя бы один подтверждённый факт", Toast.LENGTH_LONG).show()
+            return
+        }
+        val draft = store.story(storyId)?.draftText
+        requestOwnerConversation(storyId,
+            "Составь или поправь черновик текущего выбранного дома с помощью существующих инструментов редактора edit_text. " +
+                "Используй только текущие выбранные подтверждённые факты: ${selected.joinToString(", ") { it.first }}. " +
+                "Обсуди пожелания с автором голосом, сохрани черновик. Ничего не публикуй.") {
+            store.story(storyId)?.draftText == draft &&
+                store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text } == selected
+        }
+    }
+
     private fun enqueueFactSelection(storyId: String) {
         val selected = store.facts(storyId)
             .filter { it.selected && it.evidenceSupported }
@@ -1854,7 +2117,8 @@ class MainActivity : Activity() {
             storyId,
             "facts",
             newRequestKey("facts-ui", "$storyId-${java.util.UUID.randomUUID()}"),
-            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true)),
+            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true,
+                "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))),
         )
         SyncScheduler.enqueue(this)
     }

@@ -50,8 +50,14 @@ async def test_missing_location_preserves_ready_reference_work_in_original_wave(
     assert research['visual_identity']['status'] == 'uncertain'
     assert not research['visual_identity']['identity_verified']
     assert not service.story(topic['id'])['facts']
-    if pending and vision_available and not model_question:
-        assert 'identity_clarification' not in research
+    if pending and vision_available:
+        question = research['identity_clarification']
+        assert question['background_continuation_pending'] is True
+        assert question['photo_sha256'] == topic['photo_sha256']
+        assert question['generation'] == 0 and question['control_revision'] == 0
+        assert question['reason'] == 'geographic_context_missing'
+        assert question['question'] == ('На какой улице снято здание?' if model_question else
+            'В каком городе и на какой улице снято это здание? Можно указать ближайший ориентир.')
         assert 'automatic_research_outcome' not in research
         with service.store.connection() as db:
             visual = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='identity_visual'",

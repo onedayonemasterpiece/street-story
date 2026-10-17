@@ -1,0 +1,16 @@
+Use the uploaded street photo as the main visual reference. Style: a refined hybrid of realistic urban photography and expressive architectural ink sketching, handwritten city commentary, a single tasteful accent color, and a coherent premium editorial composition.
+
+Preserve the actual visible building: its location, viewpoint, perspective, scale, facade proportions, roofline, number and placement of windows, entrances and architectural parts. Existing architecture may become sketch linework but must remain faithful and recognizable. Never add floors, arches, wings, roof structures or imagined architectural vignettes. Do not replace the location or change the skyline. The input is already mechanically EXIF-oriented and cropped to the owner's choice: do not rotate, mirror, extend or recrop it.
+
+Create loose energetic black ink lines, structural strokes, perspective accents, sketch contours, callout arrows and handwritten marginalia over a photographic base. Keep depth, light and the real street visible; avoid a flat generic illustration or sterile CAD drawing. Surroundings inside the supplied frame may be artistically interpreted and sketched. Do not expand the frame or invent new parts of the photographed building. Use one accent color selectively, such as amber, rust, teal or cobalt, suited to the author concept and scene.
+
+Integrate concise readable handwritten city notes in free sky, margins and quiet parts. Keep the roof, facade, entrances and windows visible. Avoid a large typeset panel; numbers such as size, floors or dates are marginal notes, never dimension lines, measuring arrows or floor ticks. Express every selected claim's meaning in a short reader-facing note; preserve event time, modality, uncertainty and necessary attribution. Never invent claims.
+
+The supplied claim wording is evidence context, not lettering copy. Use the author's requested short notes when supported. Leave research-process, source-age and missing-date commentary in evidence even when it appears inside a claim. Start a former-use note with “Прежде:”; never imply it operates now. No slogans or unsupplied notes. Include supported years briefly; invent no period or simultaneity. Current use needs current evidence. Keep essential qualifications. Source dates are not event dates.
+
+Only selected facts or supported author requests become lettering; editorial metadata only guides composition. A spatial pointer identifying a person, sculpture, room or architectural part needs the complete supported link from identity to the particular visible object and its position in this frame. A list of names is not a position proof. If the selected evidence does not establish that link, use a readable marginal note without a confident spatial pointer. Lettering must never replace or alter windows, facade parts, existing signs or inscriptions, or their visible relationships.
+
+LAYOUT SAFETY: keep meaningful lettering and essential drawn marks inside a safe area about 8% from every edge. Nothing important may touch or cross an edge. Avoid clipped text, unreadable annotation noise, heavy panels hiding the building, corporate logos, watermarks and branding. Inspect all four edges and the roof/facade geometry before finishing.
+
+Selected facts and author requests; composition context is marked separately:
+{{CITY_NOTE_THEMES}}

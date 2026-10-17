@@ -376,6 +376,11 @@ class LiveVisualComparisonMixin:
                         if key in {'name', 'building', 'addr:street', 'addr:housenumber'}}}
             physical_packet.append(row)
         return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
+            **({'owner_selected_group': identity['owner_selected_group'],
+                'group_instruction': 'Автор выбрал приблизительную группу. Определи физический объект только '
+                    'среди candidate_ids этой группы. REF и поиск не расширяют группу. Если привязка '
+                    'к конкретному члену не доказана, верни uncertain; не выбирай ближайший внешний объект.'}
+               if identity.get('owner_selected_group') else {}),
             'camera_hints': identity.get('camera_hints') or {},
             'camera_position_verified': identity.get('camera_position_verified') is True,
             'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
@@ -385,6 +390,8 @@ class LiveVisualComparisonMixin:
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': physical_packet,
+            **({'observed_address_context': identity['_owner_group_address_context']}
+               if identity.get('_owner_group_address_context') else {}),
             'research_priority': {key: priority[key] for key in ('active_candidate_ids',
                 'reason', 'next_question', 'next_step', 'contradictions') if key in priority},
             'reserve_candidate_count': len(priority.get('reserve_candidate_ids') or []),
@@ -431,9 +438,18 @@ class LiveVisualComparisonMixin:
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
+        from .owner_group_identity import selected_group, physical_members, reference_allowed, group_input_context
+        group = selected_group(research, photo_sha256=story['photo_sha256'], generation=generation)
+        if group:
+            story = group_input_context(story, research)
+            identity = {**identity, '_owner_group_address_context': story['_owner_group_address_context'], 'candidates': [*physical_members(research, identity.get('candidates') or []),
+                *[c for c in identity.get('candidates') or [] if str(c.get('candidate_id') or '').startswith('web:')]],
+                'owner_selected_group': story['_owner_selected_group']}
         catalog = {c.get('candidate_id'): c for c in identity.get('candidates', [])}
         collection_pages = {}
         def reference_eligible(candidate):
+            if not reference_allowed(research, candidate):
+                return False
             from .article_media import collection_reference
             url = candidate.get('url')
             if url not in collection_pages:
@@ -1023,6 +1039,20 @@ class LiveVisualComparisonMixin:
                     'instruction': 'Current query completed; continue with the saved alternative/view query in this same operation. Identity remains unproved.'}
             record_identity_event(self.service, story['id'], 'identity_finished', {
                 'generation': generation, 'status': 'uncertain', 'candidate_id': identity.get('candidate_id'), 'reference_verified': False})
+            if group:
+                with self.service.store.tx() as db:
+                    current = self.service._story_row(db, story['id'])
+                    latest = json.loads(current['research_json'] or '{}')
+                    self._assert_visual_current(current, latest, state, session=session)
+                    from .owner_group_identity import project_group_resolution
+                    project_group_resolution(latest, latest.get('visual_identity') or {}, self.service.store.now())
+                    latest['identity_clarification'] = {'question': 'Какие видимые детали или адрес помогут различить выбранные здания?',
+                        'reason': 'selected_group_ambiguous', 'photo_sha256': current['photo_sha256'],
+                        'generation': generation, 'control_revision': expected['control_revision']}
+                    db.execute("UPDATE stories SET state='needs_review',research_json=?,error_code='selected_group_ambiguous',"
+                               "error_message=?,revision=revision+1,updated_at=? WHERE id=?",
+                               (canonical(latest), 'Пока недостаточно данных для различения выбранных зданий.',
+                                self.service.store.now(), story['id']))
             return {'exhausted': True, 'instruction': 'Available illustrations reviewed for this query. A new query or article URLs can continue the same queue.'}
         if not isinstance(source_bytes, bytes) or not source_bytes:
             from .errors import RetryableProviderError
@@ -1044,6 +1074,11 @@ class LiveVisualComparisonMixin:
             **({key: hints[key] for key in ('direction_degrees', 'direction_ref') if key in hints}
                if identity.get('camera_position_verified') is True
                and hints.get('direction_status') == 'true_north' and hints.get('direction_ref') == 'T' else {})}
+        if (research.get('place_selection') or {}).get('location_basis') == 'owner_relocated':
+            reply['camera_hints'] = {}
+            reply['camera_position_verified'] = False
+            reply['location_instruction'] = ('Камера GPS смещена относительно выбранной автором группы. '
+                'Не используй GPS-позицию или направление камеры для выбора её участника.')
         reply['camera_hints_instruction'] = (
             'focal_length_35mm уже является эквивалентным фокусным расстоянием. '
             'Не умножай его автоматически на digital_zoom_ratio: поля могут описывать один и тот же зум. '
@@ -1114,12 +1149,20 @@ class LiveVisualComparisonMixin:
             shortlist = list({c['candidate_id']: c for c in [
                 *(received_identity.get('observed_candidates') or []),
                 *(received_identity.get('candidates') or [])]}.values())
+            from .owner_group_identity import selected_group, physical_members, project_group_resolution
+            group = selected_group(research, photo_sha256=row['photo_sha256'], generation=state['generation'])
+            if group:
+                shortlist = [*physical_members(research, shortlist),
+                    *[c for c in shortlist if str(c.get('candidate_id') or '').startswith('web:')]]
             bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'],
-                observed_candidates=(research.get('visual_identity') or {}).get('observed_candidates') or [])
+                observed_candidates=group['candidates'] if group else received_identity.get('observed_candidates') or [])
             raw = bound['result']
             aliases = {r['normalized_value']: r['poi_id'] for r in db.execute(
                 "SELECT normalized_value,poi_id FROM poi_aliases WHERE namespace='street_story_candidate'")}
             proved = visual_match(raw, pending['candidates'], shortlist, poi_aliases=aliases)
+            outside_group = bool(group and raw.get('candidate_id') and raw.get('candidate_id') not in group['candidate_ids'])
+            if outside_group:
+                proved = False
             # A facade match can nominate a complex without resolving its body.
             # The same model's outstanding binding question cannot authorize
             # an identity commit to an arbitrary member of that complex.
@@ -1145,7 +1188,7 @@ class LiveVisualComparisonMixin:
                 'shared_distinctive_geometry': raw.get('shared_distinctive_geometry'),
                 'observable_correspondences': raw.get('observable_correspondences'),
                 'uncertain_reason': ('parallel_peer_physical_conflict' if conflicting_peer or conflict_before else
-                    bound.get('reason') or ('common_visual_acceptance_not_proved'
+                    'outside_owner_selected_group' if outside_group else bound.get('reason') or ('common_visual_acceptance_not_proved'
                     if args.get('status') == 'match' and not proved else None)),
                 'references': [{'candidate_id': candidate['candidate_id'], 'url': candidate.get('url'),
                     'image_urls': candidate.get('reference_image_urls') or []} for candidate in pending['candidates']],
@@ -1224,6 +1267,8 @@ class LiveVisualComparisonMixin:
                     'visual_reference_verified': False, 'confidence': None,
                     'conflicting_comparison_ids': [previous_identity.get('comparison_id'), pending['id']],
                     'observations': ['Независимые сравнения подтвердили разные физические объекты; identity требует разрешения противоречия.']}
+                if group:
+                    project_group_resolution(research, research['visual_identity'], self.service.store.now())
                 db.execute("UPDATE stories SET state='needs_review',research_json=?,error_code='visual_identity_conflict',"
                            "error_message=?,revision=revision+1,updated_at=? WHERE id=?",
                            (canonical(research), 'Сравнения дали противоречащие определения объекта. Публикация приостановлена.',
@@ -1231,6 +1276,8 @@ class LiveVisualComparisonMixin:
                 verdict_summary['conflicts_with_comparison_id'] = previous_identity.get('comparison_id')
             if matched:
                 selected = bound['candidate']
+                if group:
+                    selected = physical_members(research, [selected])[0]
                 evidence = bound.get('reference_evidence') or pending['evidence']
                 identity = {**(research.get('visual_identity') or {}), 'status': 'match',
                     'candidate_id': selected['candidate_id'], 'candidate_name': selected['name'][:180],
@@ -1245,9 +1292,15 @@ class LiveVisualComparisonMixin:
                     'resolved_at': self.service.store.now(), 'policy': 'live_article_media_v1',
                     'candidates': list({c['candidate_id']: c for c in [selected, *(research.get('visual_identity') or {}).get('candidates', [])]}.values())[:32]}
                 research['visual_identity'] = identity
+                if group:
+                    identity['candidates'] = physical_members(research, identity['candidates'])
+                    identity['observed_candidates'] = group['candidates']
+                    project_group_resolution(research, identity, self.service.store.now())
                 from .poi_memory import ensure_poi_identity, hydrate_story_facts
-                research['poi_id'] = ensure_poi_identity(db, identity, latitude=row['latitude'],
-                    longitude=row['longitude'], now=self.service.store.now())
+                coordinates = (selected.get('map_coordinates') or {}) if group else {
+                    'latitude': row['latitude'], 'longitude': row['longitude']}
+                research['poi_id'] = ensure_poi_identity(db, identity, latitude=coordinates.get('latitude'),
+                    longitude=coordinates.get('longitude'), now=self.service.store.now())
                 research['poi_reused_fact_count'] = hydrate_story_facts(db, identity, row['id'])
                 db.execute("UPDATE stories SET state='identity_ready',place_name=?,research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                     (identity['candidate_name'], canonical(research), self.service.store.now(), row['id']))

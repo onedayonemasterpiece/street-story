@@ -28,7 +28,7 @@ def literal_basis_quote(quote, passages):
                      lambda match: {'n': '\n', 'r': '\r', 't': '\t'}[match[1]], quote)
     return decoded if decoded != quote and contained(decoded) else quote
 
-ATOMIC_CLAIM_CHECKS = (
+ATOMIC_PROPOSITION_CHECKS = (
     'Atomic means one independently selectable proposition, not one sentence. '
     'Enumerate what the reader could independently include or omit BEFORE choosing a verdict; '
     'copying an entire compound sentence as one claims entry is not decomposition. '
@@ -41,7 +41,11 @@ ATOMIC_CLAIM_CHECKS = (
     'approximation, affected part or essential condition qualifies that SAME proposition '
     'and must stay with it; do not split a qualifier into an unsupported standalone fact. '
     'A known subject name identifies the subject, but additional descriptive assertions '
-    'must not be hidden in that name. For a compound ORIGINAL candidate enumerate all '
+    'must not be hidden in that name.'
+)
+
+ATOMIC_CLAIM_CHECKS = (ATOMIC_PROPOSITION_CHECKS + ' '
+    'For a compound ORIGINAL candidate enumerate all '
     'its propositions, set atomic=false and use repair_needed before accepting any '
     'narrowed replacement. The model decides this from meaning, never punctuation.'
 )
@@ -280,12 +284,118 @@ def load(adapter, session, db, ref):
     return row, payload
 
 
+REVIEW_SLICE_CONTRACT = 'byte-bounded-own-passages-v2'
+
+
+def bounded_review_slices(page, slices, *, quote_refs=False):
+    """Fit each own passage beside the complete claim and selected identity.
+
+    Split text at character boundaries, preserving every offset and final-tail
+    marker. The frozen packet and existing public response limit stay intact.
+    """
+    result = []
+
+    def append(item):
+        if quote_refs:
+            from .headless_review_quotes import with_quote_ref
+            item = with_quote_ref(page, item)
+        cursor = len(result) + 1
+        probe = {**page, 'items': [item], 'next_cursor': cursor, 'has_more': True,
+            'next_tool': 'get_review_packet',
+            'next_args': {'packet_ref': page['packet_ref'], 'cursor': cursor}}
+        if 'nearby_existing_claims' in probe:
+            probe['nearby_existing_claims'] = []  # Existing pagination trims context separately.
+        if response_units('get_review_packet', probe) <= PAGE_UNITS:
+            result.append(item)
+            return
+        passage = item['passage']
+        if len(passage) <= 1:
+            raise ConflictError('live_review_item_oversize',
+                'Assertion text exceeds a bounded review operation; all data preserved.')
+        midpoint = len(passage) // 2
+        append({**item, 'passage': passage[:midpoint], 'passage_complete': False})
+        append({**item, 'passage': passage[midpoint:], 'offset': item['offset'] + midpoint})
+
+    for item in slices:
+        append(item)
+    return result
+
+
+def topic_run_binding(context):
+    """Remember only the exact run and owner fences exposed by read_topic."""
+    run = context.get('research_run') or {}
+    if (not run.get('run_id') or not context.get('photo_sha256')
+            or context.get('identity_generation') is None):
+        return None
+    controls = context.get('research_controls') or {}
+    return {'story_id': context.get('story_id'), 'run_id': run['run_id'],
+            'photo_sha256': context.get('photo_sha256'),
+            'identity_generation': context.get('identity_generation'),
+            'run_generation': run.get('identity_generation'),
+            'subject': (context.get('visual_identity') or {}).get('candidate_id'),
+            'facts_revision': int((controls.get('facts') or {}).get('revision') or 0),
+            'identity_revision': int((controls.get('identity') or {}).get('revision') or 0)}
+
+
+def bound_topic_run(adapter, session, db):
+    bound = session.state.get('review_topic_binding')
+    if not bound:
+        raise ConflictError('live_review_run_required',
+                            'Call read_topic in this review session before omitting run_id.')
+    story, research = adapter._fact_research_control_guard(db, session)
+    current_run = db.execute('SELECT run_id,identity_generation FROM research_runs WHERE story_id=? '
+                             'ORDER BY created_at DESC LIMIT 1', (session.resource_id,)).fetchone()
+    current = topic_run_binding({'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+        'identity_generation': int(research.get('identity_generation') or 0),
+        'visual_identity': research.get('visual_identity'), 'research_controls': research.get('research_controls'),
+        'research_run': dict(current_run) if current_run else None})
+    scope = session.state.get('research_control_scope') or {}
+    if (bound != current or bound['identity_generation'] != bound['run_generation']
+            or scope.get('expected_photo_sha256', bound['photo_sha256']) != bound['photo_sha256']
+            or scope.get('expected_identity_generation', bound['identity_generation']) != bound['identity_generation']):
+        raise ConflictError('live_review_run_stale',
+                            'The run or owner scope shown by read_topic changed. Read the topic again; do not guess a run.')
+    LOG.info('street_story_review_topic_run_bound story_id=%s session_id=%s run_id=%s generation=%s',
+             session.resource_id, getattr(session, 'id', ''), bound['run_id'], bound['identity_generation'])
+    return bound['run_id']
+
+
+def prior_excerpt_navigation(db, story_id, fact_id, evidence):
+    """Locate an unchanged prior model excerpt; this is never a support verdict."""
+    rows = db.execute('WITH RECURSIVE lineage(fact_id) AS (SELECT ? UNION '
+        'SELECT r.parent_id FROM live_fact_repairs r JOIN lineage l ON r.child_id=l.fact_id '
+        'WHERE r.story_id=?) SELECT f.fact_id,f.sources_json FROM facts f JOIN lineage l '
+        'ON f.fact_id=l.fact_id WHERE f.story_id=? '
+        'ORDER BY CASE WHEN f.fact_id=? THEN 0 ELSE 1 END,f.fact_id',
+        (fact_id, story_id, story_id, fact_id))
+    for row in rows:
+        sources = json.loads(row['sources_json'] or '[]')
+        for source in sources if isinstance(sources, list) else []:
+            if not isinstance(source, dict) or source.get('source_version_id') != evidence['source_version_id']:
+                continue
+            fragment = source.get('confirmed_fragment')
+            if (not isinstance(fragment, str) or not fragment or source.get('confirmed_fragment_truncated')
+                    or source.get('confirmed_fragment_original_sha256') != hashlib.sha256(fragment.encode()).hexdigest()):
+                continue
+            offset = evidence['text'].find(fragment)
+            if offset >= 0:
+                return {'offset': offset, 'length': len(fragment), 'origin_fact_id': row['fact_id'],
+                        'fragment_sha256': hashlib.sha256(fragment.encode()).hexdigest(),
+                        'navigation_only': True}
+    return None
+
+
 def read(adapter, session, args):
     with adapter.service.store.tx() as db:
         ref = str(args.get('packet_ref') or '')
         if not ref:
             run_id = str(args.get('run_id') or '')
             supersedes = str(args.get('supersedes_packet_ref') or '')
+            if 'run_id' not in args and 'packet_ref' not in args and not supersedes:
+                # Reference convenience only: no new run, semantic decision or
+                # fallback from an explicit bad reference. Resolve in this tx,
+                # before any packet/reopen writes; all existing guards follow.
+                run_id = bound_topic_run(adapter, session, db)
             affected = set()
             if supersedes:
                 prior, old = load(adapter, session, db, supersedes)
@@ -316,7 +426,21 @@ def read(adapter, session, args):
                 if any(fid not in available or db.execute('SELECT review_status FROM fact_assertions '
                         'WHERE story_id=? AND assertion_id=?', (session.resource_id, fid)).fetchone()[0] == 'quarantined'
                        for fid in requested_scope):
-                    raise ConflictError('live_review_decisions_invalid', 'Review only current own assertions with attached evidence; quarantine requires arbitration.')
+                    replacements = {fid: [r[0] for r in db.execute(
+                        'SELECT DISTINCT r.child_id FROM live_fact_repairs r JOIN fact_assertions a '
+                        'ON a.story_id=r.story_id AND a.assertion_id=r.child_id '
+                        "WHERE r.story_id=? AND r.parent_id=? AND r.child_id<>r.parent_id "
+                        "AND a.review_status<>'quarantined' ORDER BY r.child_id", (session.resource_id, fid))
+                        if r[0] in available] for fid in requested_scope if fid not in available}
+                    shown = []
+                    for child in sorted({child for children in replacements.values() for child in children}):
+                        if len(', '.join([*shown, child])) > 220:
+                            break  # Keep complete IDs within the existing provider error envelope.
+                        shown.append(child)
+                    raise ConflictError('live_review_decisions_invalid',
+                        ('Current own replacement IDs: ' + ', '.join(shown) + '. ' if shown else '') +
+                        'This mixed request was not opened. Review current own assertions via get_facts in a separate scope. '
+                        'Replaced originals are retired, not necessarily quarantined; quarantine requires arbitration.')
                 # An explicit reconsideration must produce new semantic evidence,
                 # rather than reuse the old decision the owner is questioning.
                 affected.update(requested_scope)
@@ -390,6 +514,10 @@ def read(adapter, session, args):
                 evidence = list(spans.values())
                 if not evidence:
                     raise ConflictError('live_fact_review_evidence_required', 'Accepted evidence is required for every assertion.')
+                for ev in evidence:
+                    navigation = prior_excerpt_navigation(db, session.resource_id, fact_id, ev)
+                    if navigation is not None:
+                        ev['prior_excerpt_navigation'] = navigation
                 items.append({'id': fact_id, 'text': text, 'evidence': evidence})
             reused = {}
             indexes = {item['id']: f for f, item in enumerate(items)}
@@ -470,6 +598,16 @@ def read(adapter, session, args):
             'the new candidate pending later arbitration. Require explicit atomic, support_complete '
             'and qualifiers_preserved checks plus own literal basis_quotes. This is partial candidate '
             'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
+    slices = bounded_review_slices(page, slices, quote_refs=args.get('_live_quote_refs') is True)
+    if args.get('_live_quote_refs') is True:
+        # Present an exact prior excerpt match before menu/footer slices. Keep
+        # every original byte/address available; the model still owns meaning.
+        def navigation_order(part):
+            hint = payload['items'][part['fact']]['evidence'][part['evidence']].get('prior_excerpt_navigation')
+            matches = bool(hint and part['offset'] < hint['offset'] + hint['length']
+                           and hint['offset'] < part['offset'] + len(part['passage']))
+            return part['fact'], not matches, part['evidence'], part['offset']
+        slices.sort(key=navigation_order)
     if page.get('nearby_existing_claims') and cursor < len(slices):
         while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
             page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
@@ -498,11 +636,13 @@ def fact_cursor(payload, number):
 
 
 
-def validate_decision(decision, payload, ref):
+def validate_decision(decision, payload, ref, *, quote_refs=False):
     if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
         raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
     if decision.get('_row_error'):
-        raise ConflictError('live_fact_review_evidence_invalid', 'The original own-quote/check row failed validation.')
+        raise ConflictError('live_fact_review_evidence_invalid',
+            'The original own-quote/check row failed validation. Read get_review_packet with packet_ref=' + ref
+            + '; use only its received quote_ref for this fact and selected evidence.')
     verdict = decision.get('verdict')
     if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch', 'insufficient', 'repair_needed'}:
         raise ConflictError('live_review_decisions_invalid', 'Return supported/not_supported/contradicted/role_mismatch for EVERY fact, including the canonical one. Equivalence alone is not support; use optional equivalent_to only for duplicates.')
@@ -549,9 +689,10 @@ def validate_decision(decision, payload, ref):
         # Presentation whitespace may vary; original snapshots/spans remain literal.
         if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
             next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
+            instruction = 'choose its received quote_ref' if quote_refs else 'copy a short literal quote'
             raise ConflictError('live_fact_review_evidence_invalid',
                 'next_tool=get_review_packet; next_args=' + canonical(next_args) +
-                f". Fact {decision['fact']}: reread own evidence and copy a short literal quote. "
+                f". Fact {decision['fact']}: reread own evidence and {instruction}. "
                 'Do not repeat finalize with the invalid quote or borrow another fact.')
         if verdict == 'supported' and not quotes:
             raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
@@ -573,7 +714,8 @@ def prepare(adapter, session, args):
                 raise ConflictError('live_review_decision_replay_mismatch', 'Final packet decisions are immutable.')
             return json.loads(row['result_json']), None, None
         decisions = json.loads(row['decisions_json'])
-        incoming = args.get('decisions')
+        from .headless_review_quotes import resolve_live_rows
+        incoming = resolve_live_rows(session, args)
         if not isinstance(incoming, list) or len(incoming) > 240:
             raise ConflictError('live_review_decisions_invalid', 'Return at most 240 explicit decisions per operation.')
         from .fact_page_boundary import partition_rows
@@ -606,8 +748,19 @@ def prepare(adapter, session, args):
                     return None
                 links.add(('existing', duplicate))
             return links
+        quote_refs = bool(session.state.get('review_quote_packets', {}).get(ref))
         accepted, isolation = partition_rows(incoming,
-            lambda decision: validate_decision(decision, payload, ref), dependencies)
+            lambda decision: validate_decision(decision, payload, ref, quote_refs=quote_refs), dependencies)
+        incoming_by_fact = {}
+        for index, decision in zip(isolation['accepted_indices'], accepted):
+            number = decision['fact']
+            if number in incoming_by_fact and incoming_by_fact[number][1] != decision:
+                previous = incoming_by_fact[number][0]
+                raise ConflictError('live_review_decisions_invalid',
+                    f'Conflicting decisions for fact {number} in incoming rows {previous} and {index}. '
+                    'No decision from this request was saved. Return one decision per fact number; '
+                    'multiple source slices belong in its evidence/basis arrays, not separate decisions.')
+            incoming_by_fact[number] = (index, decision)
         for decision in accepted:
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:

@@ -22,6 +22,64 @@ A POI is keyed by the stable accepted object identity. Each topic keeps
 evidence-backed atomic facts for that POI. Facts accumulate instead of being
 discarded on each research pass.
 
+The optional native research route is configured as
+`STREET_STORY_FACT_AGENT_ROUTES=[{"provider_id":"codex_native","model_id":"gpt-6-luna"}]`.
+It remains unavailable until its current profile has actual search/read
+qualification. Luna owns research and decides whether to call a scoped native
+`gpt-6.1-sol` child. Both models share native account admission and quota; a
+quota grant is not proof of which model ran. Existing native thread/turn IDs,
+execution-context readback, source versions and model usage are retained.
+
+A complete original researcher assessment may enter the existing fact ledger
+without a second model call. It must address its own actually received frozen
+chunks and establish physical subject, relationship to the selected house,
+scope, time/modality and semantic justification. Such sources explicitly retain
+`verification_level=one_model`; this is not independent verification. Incomplete
+assessments stay unverified. Each complete source assessment supplies the exact
+claim it assessed; an incorrect outer grouping cannot replace that claim with
+its summary or discard other complete assessments. The original container and
+all assessments remain in the native receipt. Caller changes to the assessed
+claim, unread versions, another POI/generation/control or foreign chunks fail
+admission. An explicit write-only recovery may reuse a closed original packet
+in a current leased job for the same story and POI, recording the original run;
+it neither repeats inference nor alters original accounting. Confirmation IDs
+include the current job/run so recovery preserves earlier confirmation history.
+Whole-turn usage comes from cumulative deltas in authenticated native journals;
+the SDK's last-response usage is retained separately, and money remains unknown.
+
+The existing conflict journal, arbitration history,
+revision staleness and eligibility rules still apply. A fact keeps all source
+supports, including different frozen versions of the same URL.
+
+Native assessments use the same semantic instructions as the existing verifier,
+including undated mutable states and physical subject boundaries. Public HTML
+reads expose bounded literal discovery links from the same acquired bytes;
+these links are not evidence. Reused documents gain this metadata only when
+the cached raw page reproduces the frozen text hash, without another fetch.
+Native read responses carry the full text once in immutable chunks, with a
+versioned read contract; admission checks each delivered chunk against its
+frozen bytes as well as version/hash/run ownership. Navigation links carry
+their own literal labels, while a single-location container may add context.
+New native responses also carry a model completion decision and concrete
+remaining gaps, including an explanation for empty results. Positive fact counts
+do not override reported gaps. Original closed facts-only packets retain their
+schema for exact write recovery; new operations require the current full schema.
+Native search delivers discovery titles and URLs; the original indexed snippets
+remain in the audit receipt. Frozen fetched chunks supply the supporting prose.
+The model also sees the remaining existing tool/observation allowance, with no
+increase in bounds or quota and no forced Sol delegation.
+Own completed source reviews accompany known claims with their reasons, packet
+references and current/stale revision markers. Other photos/generations and
+pending reviews are excluded; this history remains context rather than evidence.
+
+`backend/tools/native_facts_acceptance.py` measures an unqualified native route
+on an isolated managed Store through normal EXIF intake, exact mapped selection,
+research jobs and ledger admission. It neither installs qualification nor proves
+Android/Live/publication acceptance. The incremental P0→P1 instruction at
+[af501586](https://github.com/onedayonemasterpiece/street-story/blob/af5015868036d66385f5ec9ac19cb07d3b8a9a55/docs/prompts/street-story-p0-codex-facts-incremental-20261013.md)
+requires real102 initial+two additions and105/131 evidence before full P0 E2E;
+P1 qualification and E2E follow successful P0 acceptance. These gates are pending.
+
 An atomic fact is a short concrete statement: a date or period, architect or
 founder, reconstruction, change of use, ownership event, demolition attempt,
 documented visit, or another specific event. The target presentation length is

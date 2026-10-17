@@ -10,6 +10,22 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ResearchProjectionInstrumentedTest {
     @Test
+    fun formatChoiceSurvivesReopeningProjectionStore() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val wire = StoryWire().apply {
+            photoSha256 = "bound-source"; revision = 3
+            visualPhotoFormat = PhotoFormatWire().apply {
+                mode = "crop_4_5"; revision = 2; cropRect = listOf(16, 0, 48, 60); orientedSize = listOf(80, 60)
+            }
+        }
+        ResearchProjectionStore(context).replace("format-persist", wire)
+        val reopened = ResearchProjectionStore(context).get("format-persist")!!
+        assertEquals("crop_4_5", reopened.visualPhotoFormat?.mode)
+        assertEquals(listOf(16, 0, 48, 60), reopened.visualPhotoFormat?.cropRect)
+        ResearchProjectionStore(context).clear("format-persist")
+    }
+
+    @Test
     fun persistsIdentitySourcesAndResearchVoiceRevision() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val store = ResearchProjectionStore(context)
