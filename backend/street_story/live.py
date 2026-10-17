@@ -5726,6 +5726,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         context = self._compact_context(state)
         facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])
                  if str(item.get("fact_id")) in ids and str(item.get("text") or "").strip()]
+        # Other verified facts only date and qualify the selection (2008, 2014, 2017 -> "at least since 2008").
+        context_facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])
+                         if str(item.get("fact_id")) not in ids and item.get("eligibility") == "eligible"
+                         and str(item.get("text") or "").strip()][:40]
         place = {key: (context.get("confirmed_place") or {}).get(key) for key in ("street", "house_number", "city")}
         if not place.get("city"):
             from .map_links import city_hashtag
@@ -5739,7 +5743,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             written = await writer(owner_request=request, current_text=str(story["draft_text"] or ""),
                 concept=str(json.loads(story["research_json"] or "{}").get("publication_concept") or ""),
                 facts=facts, place=place, literal_fragments=literals,
-                photo_jpeg=snapshot[0] if snapshot else None)
+                photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts)
         except GeminiUnavailable:
             logger.warning("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
             raise InvalidStateError("caption_writer_unavailable",

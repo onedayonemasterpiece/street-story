@@ -398,6 +398,10 @@ def agent_context(identity, goal, run_id, now):
     # Explicit allowlist prevents prior facts, URLs and camera context entering discovery.
     selected = {key: identity[key] for key in ('candidate_id', 'name', 'names', 'address',
         'city', 'search_anchor', 'owner_context', 'building_polygon') if key in identity}
+    osm = str(selected.get('candidate_id') or '').split(':')
+    if len(osm) == 3 and osm[0] == 'osm' and osm[1] in {'node', 'way', 'relation'} and osm[2].isdigit():
+        # The building's own map record: its current tags say what occupies the house now.
+        selected['map_record_url'] = f'https://api.openstreetmap.org/api/0.6/{osm[1]}/{osm[2]}.json'
     anchor = selected.get('search_anchor')
     if isinstance(anchor, dict) and 'map_surroundings' in anchor:
         # Kept apart so "search_anchor describes the selected building" stays true.
@@ -409,6 +413,10 @@ def agent_context(identity, goal, run_id, now):
         'building. An institution housed in it matters as part of the building\'s history (what was here and when), '
         'never instead of it; do not spend the run on an institution\'s own news. Report each of these building '
         'aspects you could not establish as an unresolved gap.\n'
+        'An institution occupies a building for a period, not at a single date. Read selected_object.map_record_url, '
+        'the OpenStreetMap record of this building: its current tags (name, amenity, shop, office, healthcare, '
+        'check_date or timestamp) tell what occupies the house now; save that as a current-use fact dated by the '
+        'record. Dated mentions of an institution in older sources show it was there at least then.\n'
         'Extract distinct useful knowledge supported by the available sources. '
         'Use already read pages first; investigate remaining gaps with another concise query or article when '
         'resources permit. '

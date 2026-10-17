@@ -22,7 +22,7 @@ PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = '5a61ac9b92bad3a05bb67b3c89efa2a0579b2460781189a94322f79fa0ed9517'
+PROMPT_SHA = 'd3cf096cec2569198f74fb1b6e2b49612248dd541f45df7ea637afccafc3bd7a'
 
 
 class NoopOSM:
@@ -212,7 +212,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v10"
+    assert result["visual"]["prompt_version"] == "street-story-image-v11"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:
