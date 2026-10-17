@@ -1013,6 +1013,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'writing_request carrying the author\'s request and angle, check the returned draft_text against '
                 'these rules and the author\'s request, and if it breaks one call edit_text again with a precise '
                 'writing_request. Use new_text only for exact author wording or after caption_writer_unavailable. '
+                'A writer note that a named part is not visible in this photo is intended; keep it. '
                 'For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
                 'prose, usually 2–5 short paragraphs, without unsupported narrative assertions. '
