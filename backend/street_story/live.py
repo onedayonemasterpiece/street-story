@@ -5728,10 +5728,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                   **({"from_visitor_reviews": True} if item.get("from_visitor_reviews") else {})}
                  for item in state["story"].get("facts", [])
                  if str(item.get("fact_id")) in ids and str(item.get("text") or "").strip()]
-        # Other verified facts only date and qualify the selection (2008, 2014, 2017 -> "at least since 2008").
+        # Other verified facts only date the selection (2008, 2014, 2017 -> "at least since 2008"): pass just the
+        # dated ones about the same subject, so an unrelated fact ("a spire was planned") cannot become a topic.
+        stems = {word[:6] for fact in facts for word in re.findall(r"[а-яёa-z]{6,}", fact["text"].casefold())}
         context_facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])
                          if str(item.get("fact_id")) not in ids and item.get("eligibility") == "eligible"
-                         and str(item.get("text") or "").strip()][:40]
+                         and re.search(r"\b(1[5-9]|20)\d\d\b", str(item.get("text") or ""))
+                         and len(stems & {word[:6] for word in re.findall(r"[а-яёa-z]{6,}",
+                                                                           str(item.get("text") or "").casefold())}) >= 2][:20]
         place = {key: (context.get("confirmed_place") or {}).get(key) for key in ("street", "house_number", "city")}
         if not place.get("city"):
             from .map_links import city_hashtag
