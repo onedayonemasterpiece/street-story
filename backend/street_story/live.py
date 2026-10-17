@@ -671,17 +671,22 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "edit_text",
-        "Replace the current publication text after an author editing request. Preserve literal spans unless the author explicitly allowed changing them.",
+        "Write or change the publication text after an author request: pass writing_request and the caption writer composes the text "
+        "from the selected facts, the photo and the publication rules. Preserve literal spans unless the author explicitly allowed changing them.",
         {
             "expected_text_revision": {"type": "integer", "description":
                 "Copy text_revision from read_topic or the last editor tool receipt. "
                 "This is not the story revision: set_concept changes story revision without changing text_revision. "
                 "On conflict read_topic and retry once with its current text_revision."},
-            "new_text": {"type": "string"},
+            "writing_request": {"type": "string", "description":
+                "The author's request and the intended angle in one or two sentences, e.g. 'rewrite the caption', "
+                "'shorter, start with the former almshouse'. The writer applies all caption rules."},
+            "new_text": {"type": "string", "description":
+                "Only for an exact wording the author dictated, or when the result says caption_writer_unavailable."},
             "change_summary": {"type": "string"},
             "allow_literal_changes": {"type": "boolean"},
         },
-        ["expected_text_revision", "new_text", "change_summary"],
+        ["expected_text_revision", "change_summary"],
     ),
     _tool_schema(
         "literal_begin",
@@ -1004,7 +1009,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'city story does not override a later explicit instruction to save only the choice first. '
                 'When the owner requests saving or changing an angle, use set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
-                'change selection. For a requested draft use edit_text and only selected '
+                'change selection. The caption writer composes publication text: call edit_text with '
+                'writing_request carrying the author\'s request and angle, check the returned draft_text against '
+                'these rules and the author\'s request, and if it breaks one call edit_text again with a precise '
+                'writing_request. Use new_text only for exact author wording or after caption_writer_unavailable. '
+                'For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
                 'prose, usually 2–5 short paragraphs, without unsupported narrative assertions. '
                 'Every factual attribute must follow from the exact selected claims. Extra '
@@ -1985,7 +1994,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         elif name == "set_concept":
             result = self._set_concept(story_id, command_id, args)
         elif name == "edit_text":
-            result = self._edit_text(story_id, command_id, args)
+            if str(args.get("new_text") or "").strip():
+                result = self._edit_text(story_id, command_id, args)
+            else:
+                written = await self._write_caption(story_id, args)
+                result = self._edit_text(story_id, command_id, {**args, "new_text": written["text"]},
+                                         composed_by="writer:" + written["model"])
         elif name == "literal_finish":
             result = self._literal_finish(session, command_id)
         elif name == "undo":
@@ -5697,7 +5711,44 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         value = json.loads(raw or "[]")
         return value if isinstance(value, list) else []
 
-    def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _write_caption(self, story_id: str, args: dict[str, Any]) -> dict[str, str]:
+        """The caption writer (a lite text model) composes the text; Mira conducts and keeps the voice."""
+        request = _bounded_text(args.get("writing_request"), 800, required=True)
+        with self.service.store.connection() as db:
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise ConflictError("fact_review_required", "Review selected facts before composing a draft: " + canonical(issues[:12]))
+            ids = set(eligible_selected_fact_ids(db, story_id))
+            story, editor = self._editor_row(db, story_id)
+            literals = [str(item.get("text") or "") for item in self._literal_spans(editor["literal_json"]) if item.get("text")]
+        state = self._topic_state(story_id)
+        context = self._compact_context(state)
+        facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])
+                 if str(item.get("fact_id")) in ids and str(item.get("text") or "").strip()]
+        place = {key: (context.get("confirmed_place") or {}).get(key) for key in ("street", "house_number", "city")}
+        if not place.get("city"):
+            from .map_links import city_hashtag
+            place["city"] = (city_hashtag(json.loads(story["research_json"] or "{}")) or "").lstrip("#") or None
+        snapshot = self._visual_snapshot(story_id, selected_format=False)
+        writer = getattr(self.service.providers.gemini, "write_caption", None)
+        if not callable(writer):
+            raise InvalidStateError("caption_writer_unavailable",
+                "The caption writer is unavailable: write the text yourself in new_text by the same rules.")
+        try:
+            written = await writer(owner_request=request, current_text=str(story["draft_text"] or ""),
+                concept=str(json.loads(story["research_json"] or "{}").get("publication_concept") or ""),
+                facts=facts, place=place, literal_fragments=literals,
+                photo_jpeg=snapshot[0] if snapshot else None)
+        except GeminiUnavailable:
+            logger.warning("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
+            raise InvalidStateError("caption_writer_unavailable",
+                "The caption writer is unavailable right now: write the text yourself in new_text by the same rules.") from None
+        logger.info("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "written",
+            "model": written.get("model"), "chars": len(written.get("text") or ""), "facts": len(facts)}))
+        return written
+
+    def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,
+                   composed_by: str = "mira_live") -> dict[str, Any]:
         expected = int(args.get("expected_text_revision", -1))
         new_text = _bounded_text(args.get("new_text"), 5000, required=True)
         summary = _bounded_text(args.get("change_summary"), 240, required=True)
@@ -5733,7 +5784,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 research["content_identity_changed"] = False
             research["draft_needs_refresh"] = False
             research["draft_stale_reason"] = None
-            research["draft_composed_by"] = "mira_live"
+            research["draft_composed_by"] = composed_by
             current_fact_ids = eligible_selected_fact_ids(db, story_id)
             research["draft_fact_revisions"] = fact_revision_bundle(
                 db,

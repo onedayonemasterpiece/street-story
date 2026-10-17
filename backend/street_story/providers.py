@@ -1071,13 +1071,19 @@ class GeminiClient:
             model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
             model_quota = SharedQuotaGate(settings, model_pool)
             self.web_search_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+        self.writer_routes = []
+        for model in tuple(dict.fromkeys(getattr(settings, 'gemini_writer_models', ()) or research_models)):
+            model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+            model_quota = SharedQuotaGate(settings, model_pool)
+            self.writer_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
         self.pool = self.research_routes[0][1]
         self.quota = self.research_routes[0][2]
         self.executor = self.research_routes[0][3]
 
     async def close(self):
         gates = {id(route[2]): route[2] for route in (
-            *self.transcription_routes, *self.research_routes, *self.web_search_routes)}
+            *self.transcription_routes, *self.research_routes, *self.web_search_routes,
+            *getattr(self, 'writer_routes', ()))}
         for gate in gates.values():
             await gate.close()
 
@@ -3551,6 +3557,114 @@ class GeminiClient:
         if retry_at:
             raise GeminiUnavailable(min(retry_at), "all_publication_composition_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
+
+    WRITER_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "parts_on_photo": {"type": "array", "items": {"type": "object", "properties": {
+                "part": {"type": "string"},
+                "visible": {"type": "boolean"},
+            }, "required": ["part", "visible"]}},
+            "draft": {"type": "string"},
+            "check": {"type": "array", "items": {"type": "object", "properties": {
+                "sentence": {"type": "string"},
+                "supported_by": {"type": "string"},
+                "problem": {"type": "string"},
+            }, "required": ["sentence", "supported_by", "problem"]}},
+            "text": {"type": "string"},
+        },
+        "required": ["parts_on_photo", "draft", "check", "text"],
+    }
+    WRITER_RULES = (
+        "Ты пишешь подпись к посту Street Story о конкретном доме на фотографии. Пиши для читателя, по-русски, "
+        "естественно и связно: обычно 2–4 коротких абзаца, а не список фактов. Начни с самой сильной конкретной "
+        "подробности, без пустых обещаний вроде «интересная история».\n"
+        "Факты. Используй только переданные факты, сохраняя их даты, оговорки и модальность. Не добавляй новых "
+        "сведений, дат, имён, мотивов, превосходных степеней («главный», «самый эффектный») и оценок, которых нет "
+        "в фактах. Связки — тоже утверждения: «с тех пор», «стало домом», «продолжает», «изначально», «поэтому» "
+        "допустимы, только если это прямо следует из фактов. «В 2014 году здесь размещалась поликлиника» значит "
+        "состояние в 2014 году, а не год переезда. Учреждение называй так, как оно называлось в дату события. "
+        "Прежнее назначение — в прошедшем времени.\n"
+        "Фото. Если на фото ясно видно то, что факт описывает расплывчато (например, сюжеты декора фасада), опиши "
+        "видимое. Ничего не выдумывай. Часть дома, которой на фото не видно (утрачена, скрыта или вне кадра), "
+        "упоминай только как сведение о доме, никогда как то, что читатель видит на этом снимке.\n"
+        "Язык. Публичный текст излагает факты: без «в источниках указан», «по данным», «согласно паспорту/перечню», "
+        "«в отзыве» и других ссылок на источники и документы. Простые слова, без канцелярских аббревиатур (ОКН, "
+        "ЕГРОКН и т. п.): пиши «объект культурного наследия».\n"
+        "Концовка. Последние строки: самый короткий адрес — название улицы и номер дома, без города и без запятых "
+        "(например «Комсомольская улица 53–61»); затем отдельной строкой хештег города, один раз, и других хештегов "
+        "нет. Город больше нигде в концовке не повторяй. Ссылки на карты не пиши: их добавит приложение.\n"
+        "Дословные фрагменты автора из literal_fragments сохрани в точности. Просьба автора (owner_request) задаёт "
+        "угол и стиль, но не разрешает добавлять неподтверждённые сведения. Без Markdown. Не длиннее 900 символов.\n"
+        "Разметка: абзацы разделяй пустой строкой; адрес — отдельной строкой после пустой строки; хештег — "
+        "следующей строкой. Не начинай текст с части дома, которой нет на фото.\n"
+        "Порядок работы: parts_on_photo — каждая конкретная часть дома, названная в фактах (башенка, шпиль, "
+        "скульптура, эркер, вывеска и т. п.), и видна ли она на этом фото; невидимую часть упомяни не в начале и "
+        "честно: «у дома есть …, на этом снимке её не видно»; draft — черновик; check — для каждого предложения черновика укажи факт, на который оно "
+        "опирается (supported_by), и проблему (problem: неподтверждённая связка или дата, превосходная степень, "
+        "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе; пусто, если проблем нет); "
+        "text — итоговый текст, где все найденные проблемы исправлены."
+    )
+
+    async def write_caption(
+        self,
+        *,
+        owner_request: str,
+        current_text: str,
+        concept: str,
+        facts: list[dict[str, Any]],
+        place: dict[str, Any],
+        literal_fragments: list[str],
+        photo_jpeg: bytes | None,
+    ) -> dict[str, str]:
+        """Write the publication caption with a lite text model; any answering model in the chain will do."""
+        from google.genai import types
+
+        payload = json.dumps({
+            "owner_request": owner_request,
+            "current_text": current_text,
+            "publication_concept": concept,
+            "place": place,
+            "facts": facts,
+            "literal_fragments": literal_fragments,
+        }, ensure_ascii=False)
+        contents = [self.WRITER_RULES + "\n\n" + payload]
+        if photo_jpeg:
+            contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.WRITER_SCHEMA,
+            max_output_tokens=2048,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(key, timeout, list(contents), config,
+                                            operation="grounded_research", model=model, quota=quota)
+            try:
+                text = str(json.loads(response.text or "{}").get("text") or "").strip()
+                if not text or len(text) > 1100:
+                    raise ValueError
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_caption") from None
+            return {"text": text, "model": str(model or "")}
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.writer_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except MalformedProviderResponse:
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_caption_writer_models_unavailable")
 
     async def _semantic_complete_discovery_best_effort(
         self,
