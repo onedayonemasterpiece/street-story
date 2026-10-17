@@ -20,12 +20,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
     owner-controlled prompt/reconciliation semantics explicit.
     """
 
-    PROMPT_VERSION = "street-story-image-v9"
+    PROMPT_VERSION = "street-story-image-v10"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
     VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
-        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v9.txt"
+        path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v10.txt"
         try:
             template = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -58,9 +58,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         if facts:
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
-                "Передай каждый выбранный факт заметкой в 3–8 слов, не копией; даты и модальность сохрани. "
-                "Без заглушек, вопросов и стрелок к невидимому. "
-                "Служебные сведения — в evidence. Прежнее помечай «Прежде: …»."
+                "Факты — заметками в 3–8 слов своими словами; даты и модальность сохрани. "
+                "Факт о том, чего нет на фото, пропусти. Без заглушек и вопросов. "
+                "Служебное — в evidence. Прежнее — «Прежде: …»."
             )
         concept = str(context.get("publication_concept") or "").strip()
         if concept:

@@ -22,7 +22,7 @@ PHOTO = _photo_stream.getvalue()
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = '00f1fa2e292527a5a3ae87bc9e0aa7b10e63a9e07b46b5a6b69819ca7192362f'
+PROMPT_SHA = '5a61ac9b92bad3a05bb67b3c89efa2a0579b2460781189a94322f79fa0ed9517'
 
 
 class NoopOSM:
@@ -190,8 +190,8 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
         "publication_concept": "Редакционный контекст. " * 100,
     })
     assert all(fact in brief for fact in facts)
-    assert "каждый выбранный факт" in brief
-    assert "Express every selected claim's meaning" in brief
+    assert "Факт о том, чего нет на фото, пропусти" in brief
+    assert "skip claims about parts unseen in this photo" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
@@ -212,7 +212,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v9"
+    assert result["visual"]["prompt_version"] == "street-story-image-v10"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:
