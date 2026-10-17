@@ -85,7 +85,8 @@ class Route:
 @pytest.mark.parametrize("first", ["unavailable", "unsupported", "malformed"])
 async def test_writer_uses_the_next_lite_model_when_one_does_not_answer(first):
     from street_story.errors import PermanentProviderError
-    answers = {"gemini-3.5-flash-lite": json.dumps({"text": "Подпись.\n\nУлица 1\n#Калининград"}),
+    answers = {"gemini-3.5-flash-lite": json.dumps({"text": "Подпись.\n\nУлица 1\n#Калининград",
+                                                    "image_notes": ["Построен в 1905 году"]}),
                "gemini-3.1-flash-lite": "not json" if first == "malformed" else "{}"}
 
     async def generate(_key, _timeout, contents, _config, *, operation, model, quota):
@@ -103,7 +104,8 @@ async def test_writer_uses_the_next_lite_model_when_one_does_not_answer(first):
     result = await GeminiClient.write_caption(client, owner_request="Перепиши", current_text="", concept="",
         facts=[{"text": "Дом построен в 1905 году."}], place={"city": "Калининград"},
         literal_fragments=[], photo_jpeg=None)
-    assert result == {"text": "Подпись.\n\nУлица 1\n#Калининград", "model": "gemini-3.5-flash-lite"}
+    assert result == {"text": "Подпись.\n\nУлица 1\n#Калининград", "model": "gemini-3.5-flash-lite",
+                      "image_notes": ["Построен в 1905 году"]}
 
 
 @pytest.mark.asyncio
@@ -119,3 +121,13 @@ async def test_writer_reports_unavailable_when_no_model_answers():
     with pytest.raises(GeminiUnavailable):
         await GeminiClient.write_caption(client, owner_request="Перепиши", current_text="", concept="",
             facts=[], place={}, literal_fragments=[], photo_jpeg=None)
+
+
+def test_writer_image_notes_are_lettered_verbatim_by_the_image_brief(tmp_path):
+    from test_mvp_visual import service
+    svc = service(tmp_path)
+    brief = svc._visual_brief({"place_name": "Калининград"}, {
+        "selected_facts": [{"fact_id": "f1", "text": "Здание включено в реестр объектов культурного наследия местного значения."}],
+        "caption_image_notes": ["Объект культурного наследия", "Построен в 1901–1907 годах"]})
+    assert "Надписи на картинке — ровно эти, дословно: «Объект культурного наследия»; «Построен в 1901–1907 годах»" in brief
+    assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT

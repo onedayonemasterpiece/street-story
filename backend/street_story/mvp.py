@@ -55,6 +55,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             for item in selected
             if isinstance(item, dict) and str(item.get("text") or "").strip()
         ]
+        written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()][:3]
+        if written:
+            notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
         if facts:
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
@@ -398,6 +401,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 frozen['output_frame_contract'] = ((ORIGINAL_PHOTO_FRAME_CONTRACT if source_frame is not None
                     else ORIGINAL_ART_FRAME_CONTRACT) if photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
                 frozen['identity_generation'] = int(research.get('identity_generation') or 0)
+            notes = [str(note) for note in ((research.get('caption_image_notes') or {}).get('notes') or [])][:3]
+            if notes:
+                frozen['caption_image_notes'] = notes
             content_revision = digest(frozen)
             context = {
                 **frozen,

@@ -3572,13 +3572,18 @@ class GeminiClient:
                 "problem": {"type": "string"},
             }, "required": ["sentence", "supported_by", "problem"]}},
             "text": {"type": "string"},
+            "image_notes": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["parts_on_photo", "draft", "check", "text"],
+        "required": ["parts_on_photo", "draft", "check", "text", "image_notes"],
     }
     WRITER_RULES = (
         "Ты пишешь подпись к посту Street Story о конкретном доме на фотографии. Пиши для читателя, по-русски, "
         "естественно и связно: обычно 2–4 коротких абзаца, а не список фактов. Начни с самой сильной конкретной "
         "подробности, без пустых обещаний вроде «интересная история».\n"
+        "Используй все выбранные факты, связывая их в историю дома; не сокращай текст без нужды. Назови нынешнее "
+        "назначение дома (жилой дом, поликлиника, школа…), если оно есть среди facts или context_facts. "
+        "Вневременное свойство, данное в факте с годом источника («в 2017 году здание имело четыре этажа»), пиши "
+        "без года («четырёхэтажное здание»): год источника не год события.\n"
         "Герой — здание. Пост читают те, кто гуляет по улице и смотрит на дом: начинай с самого дома (облик, время "
         "постройки, история), а не с учреждения. Учреждения, компании и организации — сведения о том, что "
         "находится или находилось в этом здании («в этом доме разместилась поликлиника»), а не подлежащее первой "
@@ -3625,7 +3630,10 @@ class GeminiClient:
         "(оборудование, подъёмники, вывески, внутренние помещения) никогда не пиши, видно ли оно на снимке; каждую дату бери только из её собственного факта; draft — черновик; check — для каждого предложения черновика укажи факт, на который оно "
         "опирается (supported_by), и проблему (problem: неподтверждённая связка или дата, превосходная степень, "
         "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе; пусто, если проблем нет); "
-        "text — итоговый текст, где все найденные проблемы исправлены."
+        "text — итоговый текст, где все найденные проблемы исправлены; image_notes — 2–3 надписи для картинки по "
+        "выбранным фактам, каждая 3–8 слов и понятна сама по себе (не обрывок вроде «Местного значения», а "
+        "«Объект культурного наследия»), без года источника и названий реестров, «Прежде: …» для прежнего "
+        "назначения; надписи дополняют подпись, а не повторяют её."
     )
 
     async def write_caption(
@@ -3665,12 +3673,14 @@ class GeminiClient:
             response = await self._generate(key, timeout, list(contents), config,
                                             operation="grounded_research", model=model, quota=quota)
             try:
-                text = str(json.loads(response.text or "{}").get("text") or "").strip()
+                payload = json.loads(response.text or "{}")
+                text = str(payload.get("text") or "").strip()
                 if not text or len(text) > 1100:
                     raise ValueError
-            except (TypeError, ValueError, json.JSONDecodeError):
+                notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
+            except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
                 raise MalformedProviderResponse("gemini:malformed_caption") from None
-            return {"text": text, "model": str(model or "")}
+            return {"text": text, "model": str(model or ""), "image_notes": notes}
 
         retry_at: list[float] = []
         for model, _pool, quota, executor in self.writer_routes:
