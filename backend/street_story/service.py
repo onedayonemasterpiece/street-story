@@ -18,6 +18,7 @@ from typing import Any
 from .config import Settings, reveal
 from .db import Store
 from .errors import research_retry_at
+from .map_pages import from_visitor_reviews
 from .publication_content import publication_content
 from .providers import (
     GeminiClient,
@@ -389,6 +390,10 @@ class StreetStoryService:
                 "eligibility": str(assertion.get("eligibility") or "unreviewed"),
                 "eligibility_reason": assertion.get("eligibility_reason"),
                 "revision_digest": str(assertion.get("revision_digest") or ""),
+                # A fact resting on visitor reviews from the house's map card is marked as such.
+                "from_visitor_reviews": any(from_visitor_reviews(str(item[0])) for item in db.execute(
+                    "SELECT e.source_url FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+                    "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (row['id'], fact['fact_id']))),
                 "supporting_evidence_keys": sorted({digest(list(evidence)) for evidence in db.execute(
                     "SELECT e.source_url,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256 "
                     "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "

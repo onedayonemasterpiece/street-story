@@ -5724,7 +5724,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             literals = [str(item.get("text") or "") for item in self._literal_spans(editor["literal_json"]) if item.get("text")]
         state = self._topic_state(story_id)
         context = self._compact_context(state)
-        facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])
+        facts = [{"text": str(item.get("text") or ""),
+                  **({"from_visitor_reviews": True} if item.get("from_visitor_reviews") else {})}
+                 for item in state["story"].get("facts", [])
                  if str(item.get("fact_id")) in ids and str(item.get("text") or "").strip()]
         # Other verified facts only date and qualify the selection (2008, 2014, 2017 -> "at least since 2008").
         context_facts = [{"text": str(item.get("text") or "")} for item in state["story"].get("facts", [])

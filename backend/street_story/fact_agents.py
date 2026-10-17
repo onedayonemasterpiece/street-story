@@ -417,6 +417,15 @@ def agent_context(identity, goal, run_id, now):
         'the OpenStreetMap record of this building: its current tags (name, amenity, shop, office, healthcare, '
         'check_date or timestamp) tell what occupies the house now; save that as a current-use fact dated by the '
         'record. Dated mentions of an institution in older sources show it was there at least then.\n'
+        'selected_object.map_pages, when present, are this house\'s 2GIS card pages read for you in a real browser: '
+        '"organizations" lists what is in the building now; "reviews" holds visitors\' reviews, often many. Read '
+        'both with webfetch and follow next_cursor through all review pages. Reviews are people\'s opinions, not '
+        'verified history: keep only what they say about the house itself (that it is old or German-built, its '
+        'interior, stairs, lift, notable details, how it is used now), word every such fact as what visitors write '
+        '(«посетители пишут…», with the review year), and never about doctors, staff or service quality. '
+        'On these pages ignore advertising and the «Организации рядом» block: only what is in this building counts. '
+        'Map card data can be wrong or self-contradictory (two construction years); record a contradiction with '
+        'other sources as a conflict instead of choosing.\n'
         'Extract distinct useful knowledge supported by the available sources. '
         'Use already read pages first; investigate remaining gaps with another concise query or article when '
         'resources permit. '
@@ -471,6 +480,11 @@ def native_agent_context(service, story, identity, goal, run_id):
     source = selected.get('retained_map_source') or {}
     context['retained_map_sources'] = [source] if source else []
     with service.store.connection() as db:
+        from .map_pages import page_urls
+        row = db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()
+        pages = page_urls(json.loads((row['research_json'] if row else None) or '{}'))
+        if pages:
+            context['selected_object']['map_pages'] = pages
         context['known'] = [{**dict(row), 'sources': json.loads(row['sources_json'] or '[]')}
             for row in db.execute('SELECT a.assertion_id AS fact_id,a.display_text AS text,'
                 'a.semantic_key AS claim_key,a.eligibility,a.review_status,a.eligibility_reason,'

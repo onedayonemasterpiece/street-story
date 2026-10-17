@@ -613,6 +613,10 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                 retained_map = next((source for source in context.get('retained_map_sources') or []
                     if source.get('source_url') == args['url']
                     and source.get('selected_candidate_id') == context['selected_object'].get('candidate_id')), None)
+                if retained_map is None and args['url'] in ((context.get('selected_object') or {}).get('map_pages') or {}).values():
+                    # The house's own map card page: read now in a real mobile browser (see map_pages).
+                    from .map_pages import capture
+                    retained_map = await capture(args['url'])
                 if retained_map:
                     from .research_runs import persist_source_version
                     with adapter.service.store.tx() as db:
