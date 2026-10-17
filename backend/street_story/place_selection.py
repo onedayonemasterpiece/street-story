@@ -1012,7 +1012,7 @@ def enqueue_owner_research(service, db, row, research, command, cid):
         'photo_sha256': row['photo_sha256'], 'identity_generation': generation, 'voice_session_ids': [],
         'mode': 'initial', 'confirmed_candidate_id': cid, 'owner_research_wave': True,
         'queue_priority': 'interactive', 'minimum_useful_facts': 3,
-        'coverage_goal': 'Найди проверенные факты о доме, явно выбранном автором. Сохраняй ссылки и полезные результаты постепенно.',
+        'coverage_goal': 'Собери проверенную историю самого дома, явно выбранного автором: постройка, назначение, прежние владельцы и использования, архитектура. Сохраняй ссылки и полезные результаты постепенно.',
         'extraction_scope': 'initial-confirmed-poi-v1'})
     return job
 

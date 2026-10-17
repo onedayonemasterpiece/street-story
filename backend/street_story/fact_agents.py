@@ -403,9 +403,15 @@ def agent_context(identity, goal, run_id, now):
         # Kept apart so "search_anchor describes the selected building" stays true.
         selected['search_anchor'] = {key: value for key, value in anchor.items() if key != 'map_surroundings'}
         selected['map_search_hints'] = anchor['map_surroundings']
-    task_goal = (goal + '\nExtract distinct useful knowledge supported by the available sources. '
-        'Use already read pages first; investigate remaining historical, architectural, people, '
-        'organization and event gaps with another concise query or article when resources permit. '
+    task_goal = (goal + '\nThe subject is the building itself, told to people walking past it. Research its own '
+        'history first: when and by whom it was built, its original purpose and owners, former names and uses '
+        'before and after 1945, its architecture and notable details, protection status and events tied to this '
+        'building. An institution housed in it matters as part of the building\'s history (what was here and when), '
+        'never instead of it; do not spend the run on an institution\'s own news. Report each of these building '
+        'aspects you could not establish as an unresolved gap.\n'
+        'Extract distinct useful knowledge supported by the available sources. '
+        'Use already read pages first; investigate remaining gaps with another concise query or article when '
+        'resources permit. '
         'Vary street-type suffixes and quoted versus unquoted address queries when needed. '
         'The owner chose this house by place on the map; its map address tag can be stale or one of '
         'several. selected_object.map_search_hints lists named streets near the contour and nearby '

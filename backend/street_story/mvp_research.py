@@ -1137,46 +1137,6 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         return await gemini.executor.execute("grounded_research", call)
 
-    def _reuse_initial_poi_facts(self, job, run_id, input_revision):
-        """Complete only this initial intake using already admitted POI evidence."""
-        from .fact_ledger import accepted_basis_valid
-        from .headless_facts import HeadlessFacts
-        from .poi_memory import _canonical_admission_valid, memory_keys
-        headless = HeadlessFacts(self)
-        with self.store.tx() as db:
-            snapshot = headless._snapshot(job, run_id)
-            if snapshot is None:
-                return None
-            story, research, _run = snapshot
-            keys = memory_keys(db, research['visual_identity'])
-            placeholders = ','.join('?' for _ in keys)
-            reused = []
-            for row in db.execute("SELECT * FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (story['id'],)):
-                if not accepted_basis_valid(db, story['id'], row):
-                    continue
-                proof = (json.loads(row['accepted_basis_json'])['operation'] or {}).get('canonical_admission')
-                if not _canonical_admission_valid(db, proof, row['display_text'], keys[0]):
-                    continue
-                memory = db.execute(f"SELECT eligibility FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? "
-                    "ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
-                if memory and memory['eligibility'] == 'eligible':
-                    reused.append(row['assertion_id'])
-            if not reused:
-                return None
-            value = {'outcome': 'useful_partial', 'reason': 'validated_poi_memory_reuse',
-                'eligible_count': len(reused), 'reused_fact_ids': reused, 'coverage_complete': False,
-                'pipeline': 'poi_memory', 'purpose': 'facts', 'run_id': run_id,
-                'photo_sha256': story['photo_sha256'], 'identity_generation': story['_identity_generation']}
-            research.update(input_revision=input_revision, research_outcome=value, poi_reused_fact_count=len(reused))
-            set_run_state(db, run_id, 'completed', detail='validated_poi_memory_reuse', now=self.store.now(), completed=True)
-            db.execute("UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN 'facts_ready' ELSE state END,updated_at=? WHERE id=?",
-                (canonical(research), self.store.now(), story['id']))
-            db.execute('INSERT OR IGNORE INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)',
-                (job['id'], 'headless_fact_outcome:'+run_id, canonical(value), self.store.now()))
-            logging.getLogger(__name__).info('street_story_poi_reuse story_id=%s run_id=%s reused=%s coverage_complete=false',
-                story['id'], run_id, len(reused))
-            return value
-
     def _persist_agent_input_revision(self, job, run_id, input_revision, prior):
         from .headless_facts import HeadlessFacts
         epoch = int(((prior.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
@@ -1448,12 +1408,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         researcher = getattr(self.providers, 'research', None)
         if ((previous_identity or {}).get('status') == 'owner_confirmed' or group_resolved):
-            if (payload.get('mode') == 'initial' and not session_ids and not live_transcript
-                    and int(prior.get('poi_reused_fact_count') or 0) > 0
-                    and not self.store.checkpoint_get(job['id'], 'fact_agent_plan:'+run_id)):
-                reused = self._reuse_initial_poi_facts(job, run_id, input_revision)
-                if reused is not None:
-                    return reused
+            # Facts remembered for this house are already in the story at intake; they are a starting
+            # point, not the end: the single research session still looks for the building's own history.
             if callable(getattr(researcher, 'research_agent_facts', None)):
                 self._persist_agent_input_revision(job, run_id, input_revision, prior)
                 return await researcher.research_agent_facts(job, run_id, request_goal or 'source-backed research')

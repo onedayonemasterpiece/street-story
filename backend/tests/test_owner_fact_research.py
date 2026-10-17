@@ -128,7 +128,7 @@ async def test_empty_first_discovery_continues_with_short_address_query(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_initial_warm_poi_uses_canonical_basis_without_network_and_followup_still_runs(tmp_path):
+async def test_initial_warm_poi_facts_are_ready_at_once_and_the_building_research_still_runs(tmp_path):
     import hashlib
     from street_story.fact_ledger import accept_fact_basis, refresh_review_status
     from street_story.poi_memory import hydrate_story_facts, persist_research_memory, sync_poi_review_from_story
@@ -161,31 +161,16 @@ async def test_initial_warm_poi_uses_canonical_basis_without_network_and_followu
         jid = service._enqueue_job(db, sid, 'research', 'warm-initial', payload)
         db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (jid,))
         job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
-    async def forbidden(*_args, **_kwargs):
-        pytest.fail('Warm admitted POI initial intake must not use the network')
-    service.providers.osm.lookup = forbidden
-    service.providers.wikipedia.nearby = forbidden
-    service.providers.gemini._fetch_page_documents = forbidden
-    service.providers.research = SimpleNamespace(research_agent_facts=forbidden)
-    await service._run_research(job)
-    with service.store.connection() as db:
-        outcome = json.loads(service._story_row(db, sid)['research_json'])['research_outcome']
-    assert outcome['reason'] == 'validated_poi_memory_reuse'
-    assert outcome['coverage_complete'] is False and outcome['reused_fact_ids'] == [fact_id]
+    # Remembered facts are ready at once; they are a starting point, not the end of research:
+    # the single session still looks for the building's own history (owner decision 2026-10-17).
     assert service.story(sid)['facts'][0]['eligibility'] == 'eligible'
-    with service.store.connection() as db:
-        assert db.execute('SELECT COUNT(*) FROM research_provider_attempts WHERE story_id=?', (sid,)).fetchone()[0] == 0
     calls = []
-    async def explicit(*args):
+    async def research(*args):
         calls.append(args)
-    service.providers.research.research_agent_facts = explicit
-    job['payload_json'] = json.dumps({**payload, 'mode': 'followup', 'input_revision': 'explicit-followup'})
+    service.providers.research = SimpleNamespace(research_agent_facts=research)
     await service._run_research(job)
     assert len(calls) == 1
-    with service.store.tx() as db:
-        # A technical count cannot turn missing own accepted evidence into reuse.
-        db.execute("UPDATE fact_assertions SET accepted_basis_json=NULL WHERE story_id=?", (sid,))
-    job['payload_json'] = json.dumps({**payload, 'input_revision': 'invalidated-basis'})
+    job['payload_json'] = json.dumps({**payload, 'mode': 'followup', 'input_revision': 'explicit-followup'})
     await service._run_research(job)
     assert len(calls) == 2
     with service.store.tx() as db:
