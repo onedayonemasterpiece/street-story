@@ -59,8 +59,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
                 "Факты — заметками в 3–8 слов своими словами; даты и модальность сохрани. "
-                "Факт о том, чего нет на фото, пропусти. Без заглушек и вопросов. "
-                "Служебное — в evidence. Прежнее — «Прежде: …»."
+                "Невидимое на фото пропусти. "
+                "Без заглушек, вопросов, источников, документов, аббревиатур. Прежнее — «Прежде: …»."
             )
         concept = str(context.get("publication_concept") or "").strip()
         if concept:

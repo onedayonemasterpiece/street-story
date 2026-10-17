@@ -190,7 +190,7 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
         "publication_concept": "Редакционный контекст. " * 100,
     })
     assert all(fact in brief for fact in facts)
-    assert "Факт о том, чего нет на фото, пропусти" in brief
+    assert "Невидимое на фото пропусти" in brief
     assert "skip claims about parts unseen in this photo" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
