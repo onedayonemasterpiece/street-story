@@ -242,6 +242,11 @@ def test_artistic_original_rejects_wrong_aspect_instead_of_stretching():
     assert ProductStreetStoryService._frame_dimensions_match(coprime, 1448, 1086)
     assert not ProductStreetStoryService._frame_dimensions_match(coprime, 1448, 1088)
     assert not ProductStreetStoryService._frame_dimensions_match(coprime, 1086, 1448)
+    three_four = {**ctx, 'source_image_transform': {'output_size': [1536, 2048]}}
+    assert ProductStreetStoryService._frame_dimensions_match(three_four, 1087, 1447)  # both sides rounded
+    assert ProductStreetStoryService._frame_dimensions_match(three_four, 1086, 1448)
+    assert not ProductStreetStoryService._frame_dimensions_match(three_four, 1080, 1350)  # 4:5 is another format
+    assert not ProductStreetStoryService._frame_dimensions_match(three_four, 1089, 1447)
 
 
 @pytest.mark.asyncio

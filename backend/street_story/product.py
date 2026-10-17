@@ -303,10 +303,13 @@ class ProductStreetStoryService(StreetStoryService):
         if context.get('output_frame_contract') == ORIGINAL_PHOTO_FRAME_CONTRACT:
             return [width, height] == (context.get('source_image_transform') or {}).get('output_size')
         if context.get('output_frame_contract') == ORIGINAL_ART_FRAME_CONTRACT:
-            # Same proportion up to one output pixel: an original with coprime
-            # sides has no exact smaller frame, so exact equality never passes.
+            # Same proportion up to one output pixel on each side: an original with
+            # coprime sides has no exact smaller frame, and the generator may round
+            # both sides (1087x1447 for 3:4). Some exact-proportion frame w'xh' must
+            # satisfy |width-w'| <= 1 and |height-h'| <= 1.
             size = (context.get('source_image_transform') or {}).get('output_size')
-            return bool(size and abs(width * size[1] - height * size[0]) <= max(size))
+            return bool(size) and any(abs(height * size[0] - near * size[1]) <= size[0]
+                                      for near in (width - 1, width, width + 1))
         return False
 
     def _record_visual_frame(self, story_id, context, receipt, *, candidate=None, job=None):
