@@ -1,0 +1,292 @@
+{
+ "schema_version": 1,
+ "purpose": "Per-photo fact saturation: verified facts found, used in the post and taken from visitor reviews, against the best count for the house.",
+ "baseline_sources": [
+  {
+   "name": "отчёт восстановления 10.10.2026 (15 холодных входов)",
+   "path": "/home/dev/artifacts/street-story/20261010T213047Z-universal-recovery-20261010/recovery-report.md"
+  }
+ ],
+ "photos": [
+  {
+   "telegram_id": 8,
+   "registry_id": "ss-tg-2-008",
+   "candidate_id": "osm:way:1085593396",
+   "house": "Багратионовск, Калининградская 10",
+   "baseline_facts": null,
+   "db_max_eligible": 1,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "186b82b",
+     "story_id": "story_4a285da1d526026c30f974f3",
+     "eligible": 1,
+     "selected": 1,
+     "from_visitor_reviews": 0,
+     "status": "ready",
+     "note": "один факт; подпись спорит с OSM; не опубликован"
+    }
+   ]
+  },
+  {
+   "telegram_id": 14,
+   "registry_id": "ss-tg-2-014",
+   "candidate_id": "osm:way:91256978",
+   "house": "Калининград, пер. Желябова 7–9",
+   "baseline_facts": null,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 102,
+   "registry_id": "ss-tg-2-102",
+   "candidate_id": "osm:way:133035113",
+   "house": "Калининград, Житомирская 22–24",
+   "baseline_facts": 14,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 104,
+   "registry_id": "ss-tg-2-104",
+   "candidate_id": "osm:relation:3665416",
+   "house": "Калининград, башня Врангеля",
+   "baseline_facts": 8,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 105,
+   "registry_id": "ss-tg-2-105",
+   "candidate_id": "osm:way:105154961",
+   "house": "Калининград, Университетская 3",
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 106,
+   "registry_id": "ss-tg-2-106",
+   "candidate_id": "osm:way:150596899",
+   "house": "Калининград, Комсомольская 88",
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 107,
+   "registry_id": "ss-tg-2-107",
+   "candidate_id": "osm:way:135507463",
+   "house": null,
+   "baseline_facts": 6,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 108,
+   "registry_id": "ss-tg-2-108",
+   "candidate_id": "osm:relation:1383564",
+   "house": "Калининград, Генделя 6",
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 109,
+   "registry_id": "ss-tg-2-109",
+   "candidate_id": "osm:way:903713161",
+   "house": "Калининград, Клиническая 19А",
+   "baseline_facts": null,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 111,
+   "registry_id": "ss-tg-2-111",
+   "candidate_id": "osm:way:95290265",
+   "house": "Калининград, Дмитрия Донского 15",
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 119,
+   "registry_id": "ss-tg-2-119",
+   "candidate_id": null,
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 120,
+   "registry_id": "ss-tg-2-120",
+   "candidate_id": "osm:way:133035135",
+   "house": "Калининград, Барнаульская 8",
+   "baseline_facts": 7,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 121,
+   "registry_id": "ss-tg-2-121",
+   "candidate_id": "osm:way:313504456",
+   "house": "Светлогорск, Октябрьская 14",
+   "baseline_facts": null,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 124,
+   "registry_id": "ss-tg-2-124",
+   "candidate_id": null,
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 125,
+   "registry_id": "ss-tg-2-125",
+   "candidate_id": "osm:way:152315116",
+   "house": null,
+   "baseline_facts": 10,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 126,
+   "registry_id": "ss-tg-2-126",
+   "candidate_id": null,
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 129,
+   "registry_id": "ss-tg-2-129",
+   "candidate_id": null,
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 130,
+   "registry_id": "ss-tg-2-130",
+   "candidate_id": "osm:way:193106188",
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 131,
+   "registry_id": "ss-tg-2-131",
+   "candidate_id": "osm:way:193085155",
+   "house": "Советск, 9-го Января 13",
+   "baseline_facts": null,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 132,
+   "registry_id": "ss-tg-2-132",
+   "candidate_id": null,
+   "house": null,
+   "baseline_facts": 0,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 133,
+   "registry_id": "ss-tg-2-133",
+   "candidate_id": "osm:way:210946099",
+   "house": "Черняховск, Суворова 11 (гимназия № 2, корпус 2)",
+   "baseline_facts": null,
+   "db_max_eligible": 22,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "186b82b",
+     "story_id": "story_54eef55cd7523077c7616a1d",
+     "eligible": 22,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "ready",
+     "note": "1929 и «новая вещественность» — другой корпус гимназии; не опубликован"
+    }
+   ]
+  },
+  {
+   "telegram_id": 144,
+   "registry_id": "ss-tg-2-144",
+   "candidate_id": "osm:way:175185525",
+   "house": "Калининград, Шмидта 4",
+   "baseline_facts": null,
+   "db_max_eligible": 12,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "186b82b",
+     "story_id": "story_695bfa0048d33296713fa13f",
+     "eligible": 12,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "ready",
+     "note": "публикация сорвалась на перегрузке хоста, повтор"
+    }
+   ]
+  },
+  {
+   "telegram_id": 146,
+   "registry_id": null,
+   "candidate_id": null,
+   "house": "Калининград, Комсомольская 53–61",
+   "baseline_facts": null,
+   "db_max_eligible": null,
+   "runs": []
+  },
+  {
+   "telegram_id": 147,
+   "registry_id": null,
+   "candidate_id": "osm:way:259692425",
+   "house": "Калининград, Зоологическая 47",
+   "baseline_facts": null,
+   "db_max_eligible": 48,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "186b82b",
+     "story_id": "story_a478f2844a85ee81b4b307d3",
+     "eligible": 48,
+     "selected": 4,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37883"
+    }
+   ]
+  },
+  {
+   "telegram_id": 148,
+   "registry_id": null,
+   "candidate_id": "osm:way:259873021",
+   "house": "Калининград, Зоологическая 46–48",
+   "baseline_facts": null,
+   "db_max_eligible": 33,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "186b82b",
+     "story_id": "story_3b6426e30841f54997a44944",
+     "eligible": 33,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37884"
+    }
+   ]
+  }
+ ]
+}
