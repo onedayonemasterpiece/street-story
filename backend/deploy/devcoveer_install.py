@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 REPOSITORY = "onedayonemasterpiece/street-story"
-BRANCH = "work/street-story-mvp-20260908"
+BRANCH = "main"  # production deploys only from main (2026-10-18)
 SERVICE = "street-story.service"
 PORT = 8188
 VIBE_ALIAS = "lovekenig_tg"
