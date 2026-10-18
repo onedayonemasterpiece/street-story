@@ -106,3 +106,36 @@ async def test_legacy_adapter_fallback_allows_first_request_and_blocks_unobserve
     assert error.value.code == 'visual_outcome_unresolved'
     assert visual_snapshot(service, session.resource_id) == before
 
+
+
+def test_mira_carries_out_every_action_of_one_owner_request(tmp_path):
+    # Story 102: "перепиши подпись и сделай картинку" produced only the image while Mira said the
+    # caption was being rewritten.
+    service, adapter, session, _events = make_service(tmp_path)
+    configuration = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled',
+                                       full_configuration=True)['configuration']
+    instruction = adapter._capability_configuration(configuration, 'editor')['system_instruction']
+    assert 'means edit_text, then generate_visual on the new text' in instruction
+    assert 'unless its tool was called and accepted' in instruction
+
+
+@pytest.mark.asyncio
+async def test_find_more_facts_queues_one_researcher_run_without_a_stage_switch(tmp_path):
+    # Story 131: "найди ещё факты" switched Mira to the old live search stage and stalled.
+    import time
+    service, adapter, session, _events = make_service(tmp_path)
+    mark_identity_ready(service, session.resource_id)
+    session.state['author_turn'] = {'text': 'Найди ещё факты об этом доме', 'at': time.monotonic()}
+    call = {'name': 'continue_story', 'id': 'more-1', 'args': {
+        'stage': 'editor', 'intent': 'Найди ещё факты об этом доме',
+        'research_action': 'more', 'research_purpose': 'facts'}}
+    result = await adapter.execute_tool(session, call)
+    assert result['research_requested'] is True
+    with service.store.connection() as db:
+        jobs = db.execute("SELECT payload_json FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
+                          (session.resource_id,)).fetchall()
+    assert len(jobs) == 1 and 'Найди ещё факты об этом доме' in json.loads(jobs[0][0])['coverage_goal']
+    await adapter.execute_tool(session, call)  # a replayed call queues nothing new
+    with service.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
+                          (session.resource_id,)).fetchone()[0] == 1

@@ -140,7 +140,7 @@ def test_every_bundle_exposes_controls_through_one_router(tmp_path):
         router = next(f for f in bundle['functions'] if f['name'] == 'continue_story')
         properties = router['parameters']['properties']
         assert properties['research_purpose']['enum'] == ['identity', 'facts', 'all']
-        assert properties['research_action']['enum'] == ['stop', 'resume']
+        assert properties['research_action']['enum'] == ['stop', 'resume', 'more']
 
 
 def test_review_setup_keeps_subject_and_run_without_resending_whole_inventory():
