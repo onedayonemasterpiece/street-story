@@ -3667,7 +3667,9 @@ class GeminiClient:
         "Слабые зачины, оценивай их низко: статус памятника и реестры, справки об учреждениях и ремонтах, "
         "голые даты постройки, материал и этажность без истории, отзывы посетителей. Факт должен быть о самом "
         "доме, а не о соседнем. Верни ranked — индексы фактов (из входного списка, с нуля) от сильнейшего к "
-        "слабейшему, не больше трёх, с короткой причиной."
+        "слабейшему, не больше трёх, с короткой причиной. Если передан researcher_candidate — это выбор "
+        "исследователя, читавшего источники: поставь его первым, если он действительно сильнейший, иначе первым "
+        "поставь более сильный факт и объясни в причине, чем он сильнее."
     )
 
     async def _lite_chain(self, contents, config, parse):
@@ -3695,10 +3697,18 @@ class GeminiClient:
                 raise
         raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_lite_models_unavailable")
 
-    async def strongest_hook(self, *, facts: list[str], photo_jpeg: bytes | None) -> dict[str, Any]:
-        """Rank the house's verified facts as an opening for a street post; the first is the lead."""
+    async def strongest_hook(self, *, facts: list[str], photo_jpeg: bytes | None,
+                             researcher_choice: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Rank the house's verified facts as an opening for a street post; the first is the decision.
+
+        researcher_choice is the candidate of the researcher who read the sources: confirm it or name a
+        stronger fact; the first ranked entry is the single decision for the whole run.
+        """
         from google.genai import types
-        contents = [self.HOOK_RULES + "\n\n" + json.dumps({"facts": facts}, ensure_ascii=False)]
+        payload = {"facts": facts}
+        if researcher_choice and researcher_choice.get("index") is not None:
+            payload["researcher_candidate"] = researcher_choice
+        contents = [self.HOOK_RULES + "\n\n" + json.dumps(payload, ensure_ascii=False)]
         if photo_jpeg:
             contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
         config = types.GenerateContentConfig(response_mime_type="application/json",

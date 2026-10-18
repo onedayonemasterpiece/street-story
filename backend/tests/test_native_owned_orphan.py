@@ -338,7 +338,7 @@ async def test_real_atomic_commit_survives_orphan_and_continues_same_job_thread_
     calls, sends, admitted = [], [], []
     new_turn = 'recovered-new-turn'
     final = {'facts': [], 'completion': {'research_sufficient': True, 'reason': 'Synthetic completed continuation',
-        'remaining_gaps': [], 'stop_basis': 'material_exhausted', 'next_action': None}}
+        'remaining_gaps': [], 'stop_basis': 'material_exhausted', 'next_action': None, 'strongest_candidate': None}}
     class Client:
         def _reader_loop(self, *args):
             pass

@@ -142,7 +142,7 @@ def native_fixture(tmp_path):
         raw_result={'facts': [{**claim, 'sources': [{'url': 'https://test.example/source',
             'source_version_id': 'version', 'content_sha256': 'content', 'assessment': assessment}]}],
             'completion': {'research_sufficient': False, 'reason': 'More history remains',
-                'remaining_gaps': ['History'], 'stop_basis': 'unresolved_gap', 'next_action': None}})
+                'remaining_gaps': ['History'], 'stop_basis': 'unresolved_gap', 'next_action': None, 'strongest_candidate': None}})
     receipt['tool_receipts'] = receipt['tool_receipts'][1:]
     return path, routes[:1], proof, evidence, receipt_path, receipt
 

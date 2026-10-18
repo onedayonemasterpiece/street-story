@@ -95,7 +95,7 @@ async def test_map_webfetch_delivers_owned_chunks_without_another_network_read(t
             reads.append(document)
             return {'receipt': kwargs['receipt'], 'text': json.dumps({'facts': [], 'completion': {
                 'research_sufficient': False, 'reason': 'Read component only; no semantic assessment.',
-                'remaining_gaps': ['Model assessment'], 'stop_basis': 'unresolved_gap', 'next_action': None}})}
+                'remaining_gaps': ['Model assessment'], 'stop_basis': 'unresolved_gap', 'next_action': None, 'strongest_candidate': None}})}
 
     route = AgentRoute('codex_native', 'gpt-6-luna', 'native', Native())
     adapter = SimpleNamespace(service=service, _checkpoint_receipt=lambda *_: None)

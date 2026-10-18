@@ -413,6 +413,9 @@ def agent_context(identity, goal, run_id, now):
         'building. An institution housed in it matters as part of the building\'s history (what was here and when), '
         'never instead of it; do not spend the run on an institution\'s own news. Report each of these building '
         'aspects you could not establish as an unresolved gap.\n'
+        'Look actively for the strongest material about the house: events, incidents, people who lived or worked '
+        'there, striking former uses, contrasts between then and now. The post opens with the strongest fact, so '
+        'name your candidate in completion.strongest_candidate and keep it current as you find more.\n'
         'Always establish the house\'s current use (residential house, hospital, school, offices, shops...) from '
         'its map record and map card. Write timeless attributes (number of floors, wall material, style, '
         'construction period, protection status) without the year of the source that mentions them: «здание '
@@ -992,6 +995,17 @@ async def run_fact_agents(adapter, job, run_id, goal):
             else 'research_agent_content_gaps' if gaps else 'research_agent_completed',
         pending=pending or failed or bool(gaps), content_gaps=gaps,
         provider_availability=saved.get('provider_availability'), retained_waits=waits)
+    if outcome is not None and not future_waits and not pending:
+        # End of the run: one lite decision on the strongest fact, with the researcher's own candidate.
+        candidate = next((completion['strongest_candidate'] for completion in
+                          ((result.get('native_completion') or {}) for result in reversed(assessments))
+                          if isinstance(completion.get('strongest_candidate'), dict)), None)
+        from .strongest_fact import decide
+        try:
+            await decide(adapter.service, job['story_id'], luna_candidate=candidate, run_id=run_id)
+        except Exception as exc:  # the facts stand; the opening is decided again before writing
+            LOG.warning('street_story_strongest_fact outcome=failed story_id=%s error_type=%s',
+                                                job['story_id'], type(exc).__name__)
     if future_waits:
         # The existing worker keeps the same job/run at the last outstanding
         # refusal deadline; provider admission remains mandatory after waking.

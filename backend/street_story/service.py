@@ -390,6 +390,9 @@ class StreetStoryService:
                 "eligibility": str(assertion.get("eligibility") or "unreviewed"),
                 "eligibility_reason": assertion.get("eligibility_reason"),
                 "revision_digest": str(assertion.get("revision_digest") or ""),
+                # The strongest fact (the post's opening) is shown to the owner above all facts.
+                "strongest": str(fact["fact_id"]) == str((research.get("strongest_fact") or {}).get("fact_id"))
+                    and str(assertion.get("eligibility") or "") == "eligible",
                 # A fact resting on visitor reviews from the house's map card is marked as such.
                 "from_visitor_reviews": any(from_visitor_reviews(str(item[0])) for item in db.execute(
                     "SELECT e.source_url FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
@@ -472,6 +475,9 @@ class StreetStoryService:
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
             "facts": facts, "destinations": [],
+            "strongest_fact": ({key: (research.get("strongest_fact") or {}).get(key) for key in
+                ("fact_id", "reason", "source", "agrees_with_researcher", "researcher")}
+                if any(f.get("strongest") for f in facts) else None),
         }
 
     def create_story(

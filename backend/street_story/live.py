@@ -647,9 +647,15 @@ FUNCTIONS = [
         "A concept, draft or visual request does not authorize changing the saved selection. "
         "When the author asks to preserve the selection, do not call this tool.",
         {
-            "fact_ids": {"type": "array", "items": {"type": "string"}},
+            "fact_ids": {"type": "array", "items": {"type": "string"}, "description":
+                "The new selection; omit to keep the selection and only change the strongest fact."},
+            "strongest_fact_id": {"type": "string", "description":
+                "The fact the author names or describes as the strongest; it opens the post."},
+            "strongest_dispute": {"type": "string", "description":
+                "The author's reason for disagreeing with the current strongest fact when no other fact is named; "
+                "the strongest fact is then decided again without the disputed one."},
         },
-        ["fact_ids"],
+        [],
     ),
     _tool_schema(
         "set_concept",
@@ -1013,6 +1019,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'writing_request carrying the author\'s request and angle, check the returned draft_text against '
                 'these rules and the author\'s request, and if it breaks one call edit_text again with a precise '
                 'writing_request. Use new_text only for exact author wording or after caption_writer_unavailable. '
+                'read_topic shows strongest_fact: the post opens with it and the author sees it above all facts. '
+                'When the author disagrees with it, call select_facts with strongest_fact_id when the author names or '
+                'describes another fact, otherwise with strongest_dispute (the reason) to decide again without the '
+                'disputed one; omit fact_ids to keep the selection. '
                 'A writer note that a named part is not visible in this photo is intended; keep it. '
                 'For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
@@ -1981,7 +1991,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         elif name == "resolve_fact_conflict":
             result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
-            result = self._select_facts(story_id, command_id, args)
+            strongest = None
+            if args.get("strongest_fact_id") or args.get("strongest_dispute"):
+                from .strongest_fact import choose, dispute
+                reason = _bounded_text(args.get("strongest_dispute") or "автор назвал этот факт самым сильным", 400, required=True)
+                strongest = (choose(self.service, story_id, str(args["strongest_fact_id"]), reason)
+                             if args.get("strongest_fact_id") else await dispute(self.service, story_id, reason))
+            if args.get("fact_ids") is not None:
+                result = self._select_facts(story_id, command_id, args)
+            elif strongest is None:
+                raise ConflictError("live_fact_selection_invalid", "Pass fact_ids or a strongest-fact change")
+            else:
+                result = {"strongest_fact": strongest}
+                with self.service.store.tx() as db:
+                    self._store_command(db, story_id, command_id, "select_facts", args, result)
+            if strongest is not None:
+                result = {**result, "strongest_fact": strongest}
         elif name == "set_photo_format":
             from .photo_format import set_photo_format
             with self.service.store.connection() as db:
@@ -2737,6 +2762,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
             "confirmed_place": confirmed_place,
+            "strongest_fact": (lambda record: {**record, "text": next((str(item.get("text") or "")[:280]
+                for item in story.get("facts", []) if item.get("strongest")), "")} if record else None)(
+                story.get("strongest_fact")),
             "poi_location": {"latitude": story.get("latitude", story.get("lat")), "longitude": story.get("longitude", story.get("lon"))},
             'camera_point': story.get('camera_point'),
             'identity_mode': story.get('identity_mode'),
@@ -5768,31 +5796,28 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         return written
 
     async def _strongest_hook(self, story_id, state, selected_ids, snapshot):
-        """The strongest opening among all verified facts about the house; it joins the post's selection.
+        """The post opens with the story's strongest fact, which joins the selection.
 
-        A post opens with its most unexpected, human, concrete fact (journalistic lede, Heath's
-        unexpectedness/concreteness, Tilden's relate/provoke). Ranking only Mira's earlier selection let the
-        strongest material (an arson, a confiscation) stay outside the post.
+        The strongest fact is decided once at the end of each research run (researcher candidate plus one
+        lite decision, see strongest_fact) and can be changed by the owner through Mira. A story without
+        a decision yet gets one here, once, and keeps it.
         """
-        ranker = getattr(self.service.providers.gemini, "strongest_hook", None)
-        inventory = [item for item in state["story"].get("facts", [])
-                     if item.get("eligibility") == "eligible" and str(item.get("text") or "").strip()]
-        if not callable(ranker) or not inventory:
+        from .strongest_fact import current, decide
+        inventory = {str(item.get("fact_id")): str(item.get("text") or "") for item in state["story"].get("facts", [])
+                     if item.get("eligibility") == "eligible" and str(item.get("text") or "").strip()}
+        if not inventory:
             return None
-        try:
-            ranked = await ranker(facts=[str(item["text"]) for item in inventory],
-                                  photo_jpeg=snapshot[0] if snapshot else None)
-        except GeminiUnavailable:
-            logger.warning("street_story_strongest_hook %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
+        with self.service.store.connection() as db:
+            research = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
+        record = current(research, set(inventory)) or await decide(self.service, story_id)
+        if not record or record.get("fact_id") not in inventory:
             return None
-        top = inventory[ranked["ranked"][0]["index"]]
-        lead = {"fact_id": str(top.get("fact_id")), "text": str(top["text"])}
+        lead = {"fact_id": record["fact_id"], "text": inventory[record["fact_id"]]}
         if lead["fact_id"] not in selected_ids:
             with self.service.store.tx() as db:
                 set_owner_selection(db, story_id, sorted(set(selected_ids) | {lead["fact_id"]}), self.service.store.now())
-        logger.info("street_story_strongest_hook %s", canonical({"story_id": story_id, "outcome": "ranked",
-            "model": ranked.get("model"), "lead_fact_id": lead["fact_id"], "added_to_selection": lead["fact_id"] not in selected_ids,
-            "reason": str(ranked["ranked"][0].get("reason") or "")[:200]}))
+        logger.info("street_story_strongest_lead %s", canonical({"story_id": story_id, "fact_id": lead["fact_id"],
+            "source": record.get("source"), "added_to_selection": lead["fact_id"] not in selected_ids}))
         return lead
 
     def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,

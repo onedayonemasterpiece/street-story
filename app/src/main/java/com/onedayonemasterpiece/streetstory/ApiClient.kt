@@ -152,6 +152,8 @@ class FactWire {
     val eligibleForSelection: Boolean get() = evidenceSupported && eligibility == "eligible"
     var selected: Boolean = false
     var sources: ArrayList<SourceWire> = arrayListOf()
+    /** The story's strongest fact: the post opens with it; shown above all facts. */
+    var strongest: Boolean = false
 }
 
 class SourceWire {

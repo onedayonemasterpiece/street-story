@@ -68,6 +68,13 @@ RESULT_SCHEMA['properties']['completion']['properties']['next_action'] = {
         'request': {'type': 'string', 'minLength': 1}, 'reason': {'type': 'string', 'minLength': 1}},
     'required': ['kind', 'request', 'reason']}
 RESULT_SCHEMA['properties']['completion']['required'].append('next_action')
+# The researcher's own candidate for the strongest opening fact about the house (owner decision
+# 18 Oct 2026): it read the sources, so it nominates; a lite model decides once at the end of the run.
+RESULT_SCHEMA['properties']['completion']['properties']['strongest_candidate'] = {
+    'type': ['object', 'null'], 'additionalProperties': False,
+    'properties': {'claim_key': {'type': 'string', 'minLength': 1}, 'reason': {'type': 'string', 'minLength': 1}},
+    'required': ['claim_key', 'reason']}
+RESULT_SCHEMA['properties']['completion']['required'].append('strongest_candidate')
 
 # Codex's strict JSON contract requires explicit types for string enums.
 def _strict(node):
@@ -87,6 +94,11 @@ _strict(COMPLETION_V1_SCHEMA)
 
 FINAL_INSTRUCTIONS = (
     'Return facts as distinct semantic claims, with a stable claim_key and Russian text. '
+    'While you research, keep track of the strongest opening fact about this house for people standing in '
+    'front of it: the most unexpected, human or dramatic, concrete supported claim (an arson, a famous '
+    'resident, a striking former use), not a status, registry or institution note or a bare date. Revise it '
+    'as you find more and name it in completion.strongest_candidate with its claim_key among the claims you '
+    'saved and a short reason; null only when you saved no supported claim. '
     + ATOMIC_PROPOSITION_CHECKS + ' '
     'Check temporal support for each proposition and list item separately. '
     'A date or period attached to one occupant/event does not date the others. '

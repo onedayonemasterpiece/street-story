@@ -19,7 +19,7 @@ def packet(action=None, *, sufficient=False, basis='unresolved_gap'):
     return {'facts': [], 'completion': {'research_sufficient': sufficient,
         'reason': 'Controlled researcher decision; not a fact-count test.',
         'remaining_gaps': [] if sufficient else ['Historical linkage remains'],
-        'stop_basis': basis, 'next_action': action}}
+        'stop_basis': basis, 'next_action': action, 'strongest_candidate': None}}
 
 
 def receipt(binding, context, raw, number):
@@ -198,7 +198,7 @@ def test_native_research_profile_still_matches_the_deployed_qualification():
     from types import SimpleNamespace
     from street_story.native_fact_research import NativeFactResearch
     assert NativeFactResearch.profile_fingerprint.fget(SimpleNamespace(timeout=None)) == (
-        '220bef4b0d176d7d3d86d842a0215f8f3bf7d5609bd24340b82e2777c3827414')
+        '57336cd9f0f7dac595f2c65d931fc2a4f0cad2cee686c39d400f991fae0dccec')
 
 
 def test_idle_clients_of_finished_attempts_are_closed_and_others_kept():

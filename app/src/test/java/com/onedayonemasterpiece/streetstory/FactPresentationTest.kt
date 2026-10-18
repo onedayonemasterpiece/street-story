@@ -109,4 +109,12 @@ class FactPresentationTest {
         assertTrue(compact.length <= 161)
         assertTrue(compact.startsWith("Первое короткое утверждение"))
     }
+
+    @Test fun strongest_fact_card_shows_only_a_verified_strongest_fact() {
+        val plain = FactSnapshot("a", "В 1932 году дом горел.", .9, true, true, "[]")
+        val strongest = plain.copy(factId = "b", strongest = true)
+        assertEquals("b", FactPresentation.strongest(listOf(plain, strongest))?.factId)
+        assertEquals(null, FactPresentation.strongest(listOf(plain)))
+        assertEquals(null, FactPresentation.strongest(listOf(strongest.copy(evidenceSupported = false))))
+    }
 }

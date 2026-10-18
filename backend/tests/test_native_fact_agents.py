@@ -134,7 +134,7 @@ async def test_one_turn_adapter_saves_before_final_then_reads_and_returns_same_c
             receipt.update(phase='completed', provider_send_state='response_closed', native_terminal_status='completed')
             return {'receipt': receipt, 'text': json.dumps({'facts': [], 'completion': {
                 'research_sufficient': False, 'reason': 'Controlled component only, not research sufficiency.',
-                'remaining_gaps': ['Independent history remains'], 'stop_basis': 'unresolved_gap', 'next_action': None}})}
+                'remaining_gaps': ['Independent history remains'], 'stop_basis': 'unresolved_gap', 'next_action': None, 'strongest_candidate': None}})}
     route = AgentRoute('codex_native', 'gpt-6-luna', 'native', Native())
     adapter = SimpleNamespace(service=service, _checkpoint_receipt=checkpoint)
     try:

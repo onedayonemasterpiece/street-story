@@ -46,6 +46,9 @@ internal object FactPresentation {
         }
     }
 
+    /** The post's opening fact, shown above all facts; only a verified fact qualifies. */
+    fun strongest(facts: List<FactSnapshot>): FactSnapshot? = facts.firstOrNull { it.strongest && it.evidenceSupported }
+
     fun concise(raw: String): String {
         val text = raw.replace(Regex("\\s+"), " ").trim()
         if (text.length <= MAX_FACT_CHARS) return text

@@ -157,7 +157,7 @@ work after restart. The current target is the adaptive [photo-search contract](p
    story projection; retain owner selection for editorial drafts. Exhausted,
    blocked and deadline states have finite truthful outcomes.
 
-Facts have stable `fact_id`, `evidence_supported`, selection state and source objects. Unsupported facts are always unselected/disabled. Refinement preserves the owner toggle when the stable fact survives. Runtime readback exposes bounded research provenance and durable retry evidence; quota/rate retry is not converted into fabricated facts.
+Facts have stable `fact_id`, `evidence_supported`, selection state and source objects. Each fact also carries `strongest` (true for the one eligible fact that opens the post), and the story carries `strongest_fact` (`fact_id`, `reason`, `source` = `auto` | `owner`, `agrees_with_researcher`, `researcher`) or `null`; see [owner decisions · Самый сильный факт](product/owner-decisions.md#самый-сильный-факт). Unsupported facts are always unselected/disabled. Refinement preserves the owner toggle when the stable fact survives. Runtime readback exposes bounded research provenance and durable retry evidence; quota/rate retry is not converted into fabricated facts.
 
 ## Visual boundary · VibePublish
 

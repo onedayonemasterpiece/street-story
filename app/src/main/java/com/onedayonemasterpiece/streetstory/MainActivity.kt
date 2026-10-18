@@ -1911,6 +1911,19 @@ class MainActivity : Activity() {
                 )
             }
         }
+        FactPresentation.strongest(facts)?.let { strongest ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(SAGE, 12)
+                setPadding(dp(12), dp(9), dp(12), dp(10))
+                contentDescription = "strongest-fact"
+            }
+            card.addView(label("Самый сильный факт", 12, ACCENT, Typeface.DEFAULT_BOLD))
+            card.addView(label(FactPresentation.concise(strongest.text), 14, INK, Typeface.DEFAULT).apply {
+                setPadding(0, dp(3), 0, 0)
+            })
+            host.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); bottomMargin = dp(6) })
+        }
         val shownFacts = facts
         shownFacts.forEachIndexed { index, fact ->
             val item = LinearLayout(this).apply {
