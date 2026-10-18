@@ -5743,6 +5743,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             from .map_links import city_hashtag
             place["city"] = (city_hashtag(json.loads(story["research_json"] or "{}")) or "").lstrip("#") or None
         snapshot = self._visual_snapshot(story_id, selected_format=False)
+        lead = await self._strongest_hook(story_id, state, ids, snapshot)
+        if lead is not None:
+            if lead["fact_id"] not in ids:
+                facts.insert(0, {"text": lead["text"]})
+            else:
+                facts.sort(key=lambda fact: fact["text"] != lead["text"])
         writer = getattr(self.service.providers.gemini, "write_caption", None)
         if not callable(writer):
             raise InvalidStateError("caption_writer_unavailable",
@@ -5751,7 +5757,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             written = await writer(owner_request=request, current_text=str(story["draft_text"] or ""),
                 concept=str(json.loads(story["research_json"] or "{}").get("publication_concept") or ""),
                 facts=facts, place=place, literal_fragments=literals,
-                photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts)
+                photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts,
+                lead_fact=lead["text"] if lead else None)
         except GeminiUnavailable:
             logger.warning("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
             raise InvalidStateError("caption_writer_unavailable",
@@ -5759,6 +5766,34 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         logger.info("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "written",
             "model": written.get("model"), "chars": len(written.get("text") or ""), "facts": len(facts)}))
         return written
+
+    async def _strongest_hook(self, story_id, state, selected_ids, snapshot):
+        """The strongest opening among all verified facts about the house; it joins the post's selection.
+
+        A post opens with its most unexpected, human, concrete fact (journalistic lede, Heath's
+        unexpectedness/concreteness, Tilden's relate/provoke). Ranking only Mira's earlier selection let the
+        strongest material (an arson, a confiscation) stay outside the post.
+        """
+        ranker = getattr(self.service.providers.gemini, "strongest_hook", None)
+        inventory = [item for item in state["story"].get("facts", [])
+                     if item.get("eligibility") == "eligible" and str(item.get("text") or "").strip()]
+        if not callable(ranker) or not inventory:
+            return None
+        try:
+            ranked = await ranker(facts=[str(item["text"]) for item in inventory],
+                                  photo_jpeg=snapshot[0] if snapshot else None)
+        except GeminiUnavailable:
+            logger.warning("street_story_strongest_hook %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
+            return None
+        top = inventory[ranked["ranked"][0]["index"]]
+        lead = {"fact_id": str(top.get("fact_id")), "text": str(top["text"])}
+        if lead["fact_id"] not in selected_ids:
+            with self.service.store.tx() as db:
+                set_owner_selection(db, story_id, sorted(set(selected_ids) | {lead["fact_id"]}), self.service.store.now())
+        logger.info("street_story_strongest_hook %s", canonical({"story_id": story_id, "outcome": "ranked",
+            "model": ranked.get("model"), "lead_fact_id": lead["fact_id"], "added_to_selection": lead["fact_id"] not in selected_ids,
+            "reason": str(ranked["ranked"][0].get("reason") or "")[:200]}))
+        return lead
 
     def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,
                    composed_by: str = "mira_live", image_notes: list[str] | None = None) -> dict[str, Any]:

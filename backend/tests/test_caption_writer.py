@@ -131,3 +131,40 @@ def test_writer_image_notes_are_lettered_verbatim_by_the_image_brief(tmp_path):
         "caption_image_notes": ["Объект культурного наследия", "Построен в 1901–1907 годах"]})
     assert "Надписи на картинке — ровно эти, дословно: «Объект культурного наследия»; «Построен в 1901–1907 годах»" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_strongest_hook_ranks_the_whole_inventory_and_joins_the_selection(monkeypatch):
+    """A post opens with its strongest fact even when Mira's earlier choice left it out."""
+    import contextlib
+    from street_story import live
+    chosen = []
+    monkeypatch.setattr(live, "set_owner_selection", lambda db, story_id, ids, now: chosen.append(ids))
+
+    async def strongest_hook(*, facts, photo_jpeg):
+        assert len(facts) == 3  # the whole eligible inventory, not only the selection
+        return {"ranked": [{"index": 2, "reason": "arson"}], "model": "gemini-3.1-flash-lite"}
+
+    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(strongest_hook=strongest_hook)),
+        store=SimpleNamespace(tx=lambda: contextlib.nullcontext(None), now=lambda: 1.0))
+    adapter = SimpleNamespace(service=service)
+    state = {"story": {"facts": [
+        {"fact_id": "a", "text": "Здание — объект культурного наследия.", "eligibility": "eligible"},
+        {"fact_id": "b", "text": "Построено в 1930 году.", "eligibility": "eligible"},
+        {"fact_id": "c", "text": "1 августа 1932 года дом подожгли.", "eligibility": "eligible"},
+        {"fact_id": "d", "text": "Непроверенное.", "eligibility": "withheld"}]}}
+    lead = await live.StreetStoryLiveAdapter._strongest_hook(adapter, "story_x", state, {"a", "b"}, None)
+    assert lead == {"fact_id": "c", "text": "1 августа 1932 года дом подожгли."}
+    assert chosen == [["a", "b", "c"]]
+
+
+@pytest.mark.asyncio
+async def test_strongest_hook_unavailable_leaves_the_post_to_the_writer():
+    from street_story import live
+
+    async def strongest_hook(**_):
+        raise GeminiUnavailable(0, "busy")
+
+    adapter = SimpleNamespace(service=SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(strongest_hook=strongest_hook))))
+    state = {"story": {"facts": [{"fact_id": "a", "text": "Факт.", "eligibility": "eligible"}]}}
+    assert await live.StreetStoryLiveAdapter._strongest_hook(adapter, "story_x", state, {"a"}, None) is None

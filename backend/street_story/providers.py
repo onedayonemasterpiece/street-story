@@ -3587,8 +3587,11 @@ class GeminiClient:
         "Герой — здание. Пост читают те, кто гуляет по улице и смотрит на дом: начинай с самого дома (облик, время "
         "постройки, история), а не с учреждения. Учреждения, компании и организации — сведения о том, что "
         "находится или находилось в этом здании («в этом доме разместилась поликлиника»), а не подлежащее первой "
-        "фразы и не главная тема. Первая фраза — о том, каким дом виден на снимке, и о его возрасте или истории, "
-        "если они есть в фактах; не начинай с отсутствия чего-либо (лифта, удобств).\n"
+        "фразы и не главная тема.\n"
+        "Зачин. Если передан lead_fact — это самый сильный факт о доме: первая фраза начинается прямо с него, с "
+        "события, имени или детали («1 августа 1932 года в окна этого дома полетели бутылки с горючим…»), а не с "
+        "«Это здание», «Этот дом», «Здание…». Дом входит в эту же фразу как место события. Дальше — смысл и "
+        "контекст, затем остальная история. Не начинай с отсутствия чего-либо (лифта, удобств).\n"
         "Факты. Используй только переданные факты, сохраняя их даты, оговорки и модальность. Не добавляй новых "
         "сведений, дат, имён, мотивов, превосходных степеней («главный», «самый эффектный») и оценок, которых нет "
         "в фактах. Связки — тоже утверждения: «с тех пор», «стало домом», «продолжает», «изначально», «поэтому» "
@@ -3614,6 +3617,8 @@ class GeminiClient:
         "Язык. Публичный текст излагает факты: без «в источниках указан», «по данным», «согласно паспорту/перечню», "
         "«в отзыве» и других ссылок на источники и документы. Простые слова, без канцелярских аббревиатур (ОКН, "
         "ЕГРОКН и т. п.): пиши «объект культурного наследия».\n"
+        "Адрес. place — адрес из тега карты, он бывает устаревшим или неточным: если проверенные факты называют "
+        "этот дом по другому современному адресу, бери адрес из фактов.\n"
         "Концовка. Последние строки: самый короткий адрес — название улицы и номер дома, без города и без запятых "
         "(например «Комсомольская улица 53–61»; несколько номеров дома — через тире, «46–48», никогда через запятую); затем отдельной строкой хештег города, один раз, и других хештегов "
         "нет. Город больше нигде в концовке не повторяй. Ссылки на карты не пиши: их добавит приложение.\n"
@@ -3636,6 +3641,77 @@ class GeminiClient:
         "назначения; надписи дополняют подпись, а не повторяют её."
     )
 
+    HOOK_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "ranked": {"type": "array", "items": {"type": "object", "properties": {
+                "index": {"type": "integer"},
+                "unexpected": {"type": "integer"},
+                "human_drama": {"type": "integer"},
+                "concrete": {"type": "integer"},
+                "relates_to_photo": {"type": "integer"},
+                "reason": {"type": "string"},
+            }, "required": ["index", "unexpected", "human_drama", "concrete", "relates_to_photo", "reason"]}},
+        },
+        "required": ["ranked"],
+    }
+    HOOK_RULES = (
+        "Ты редактор городского канала Street Story: пост о доме читают прохожие, которые стоят перед ним. "
+        "Найди среди проверенных фактов о доме самый сильный зачин — факт, после которого человек остановится "
+        "и посмотрит на дом иначе. Оцени каждый факт по шкале 0–3:\n"
+        "• unexpected — неожиданность, контраст, нарушение ожиданий (издательство, которое подожгли, потом "
+        "маслобаза; глазная клиника, ставшая общежитием; единственный уцелевший дом квартала);\n"
+        "• human_drama — люди, конфликт, судьбы, события (пожар, война, конфискация, знаменитые жильцы);\n"
+        "• concrete — конкретика: имена, предметы, числа, точные детали, а не общие слова;\n"
+        "• relates_to_photo — связь с тем, что прохожий видит на фото (деталь фасада, башня, надпись).\n"
+        "Слабые зачины, оценивай их низко: статус памятника и реестры, справки об учреждениях и ремонтах, "
+        "голые даты постройки, материал и этажность без истории, отзывы посетителей. Факт должен быть о самом "
+        "доме, а не о соседнем. Верни ranked — индексы фактов (из входного списка, с нуля) от сильнейшего к "
+        "слабейшему, не больше трёх, с короткой причиной."
+    )
+
+    async def _lite_chain(self, contents, config, parse):
+        """Any answering lite model in the writer chain; unavailable or malformed answers fall through."""
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.writer_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                response = await self._generate(key, timeout, list(contents), config,
+                                                operation="grounded_research", model=_model, quota=_quota)
+                try:
+                    return parse(response.text, _model)
+                except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
+                    raise MalformedProviderResponse("gemini:malformed_lite_answer") from None
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except MalformedProviderResponse:
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_lite_models_unavailable")
+
+    async def strongest_hook(self, *, facts: list[str], photo_jpeg: bytes | None) -> dict[str, Any]:
+        """Rank the house's verified facts as an opening for a street post; the first is the lead."""
+        from google.genai import types
+        contents = [self.HOOK_RULES + "\n\n" + json.dumps({"facts": facts}, ensure_ascii=False)]
+        if photo_jpeg:
+            contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
+        config = types.GenerateContentConfig(response_mime_type="application/json",
+                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=1024)
+
+        def parse(text, model):
+            ranked = [row for row in json.loads(text or "{}")["ranked"]
+                      if isinstance(row.get("index"), int) and 0 <= row["index"] < len(facts)]
+            if not ranked:
+                raise ValueError
+            return {"ranked": ranked[:3], "model": str(model or "")}
+        return await self._lite_chain(contents, config, parse)
+
     async def write_caption(
         self,
         *,
@@ -3647,6 +3723,7 @@ class GeminiClient:
         literal_fragments: list[str],
         photo_jpeg: bytes | None,
         context_facts: list[dict[str, Any]] | None = None,
+        lead_fact: str | None = None,
     ) -> dict[str, str]:
         """Write the publication caption with a lite text model; any answering model in the chain will do."""
         from google.genai import types
@@ -3658,6 +3735,7 @@ class GeminiClient:
             "place": place,
             "facts": facts,
             "context_facts": context_facts or [],
+            "lead_fact": lead_fact,
             "literal_fragments": literal_fragments,
         }, ensure_ascii=False)
         contents = [self.WRITER_RULES + "\n\n" + payload]
