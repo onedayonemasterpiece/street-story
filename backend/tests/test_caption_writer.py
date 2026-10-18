@@ -131,6 +131,18 @@ def test_writer_image_notes_are_lettered_verbatim_by_the_image_brief(tmp_path):
         "caption_image_notes": ["Объект культурного наследия", "Построен в 1901–1907 годах"]})
     assert "Надписи на картинке — ровно эти, дословно: «Объект культурного наследия»; «Построен в 1901–1907 годах»" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+    assert "Основание для подписей" not in brief  # the written notes already rest on the facts
+
+
+def test_long_selected_facts_do_not_crowd_out_the_written_image_notes(tmp_path):
+    # Story 105: a long arson fact plus the rest exceeded the brief and blocked the new image.
+    from test_mvp_visual import service
+    svc = service(tmp_path)
+    long_fact = "1 августа 1932 года около 6:05 национал-социалисты совершили бомбовый поджог здания. " * 30
+    brief = svc._visual_brief({"place_name": "Калининград"}, {
+        "selected_facts": [{"fact_id": f"f{i}", "text": long_fact} for i in range(4)],
+        "caption_image_notes": ["1932: нацисты подожгли дом", "Прежде: маслобаза"]})
+    assert "«1932: нацисты подожгли дом»" in brief and len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
 def eligible_story(tmp_path):
