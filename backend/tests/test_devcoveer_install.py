@@ -284,7 +284,7 @@ def test_deployed_capability_gate_requires_test_group(monkeypatch, alias_kind, s
     module = _load_installer()
     sha = "a" * 40
     alias = module.TEST_VIBE_ALIAS if alias_kind == "test" else module.VIBE_ALIAS
-    rows = [{"alias": alias, "provider": "telegram", "status": status}]
+    rows = [{"alias": alias, "provider": "telegram", "status": status, "selected": alias_kind == "test"}]
 
     def fake_http(url, **kwargs):
         return {"ok": True, "source_sha": sha} if url.endswith("healthz") else {"destinations": rows}
@@ -1100,3 +1100,16 @@ def test_ensure_changed_lock_creates_own_environment_and_leaves_donor(monkeypatc
     assert (a / 'venv/bin/python').read_text() == 'rebuildable dependency fixture'
     assert any(argv[:3] == ['/fixture/python3.12', '-m', 'venv'] for argv in calls)
     assert all(str(a / 'venv') not in str(argv) for argv in calls)
+
+
+def test_activation_accepts_the_test_chat_beside_real_channels_and_rejects_unsafe_projections():
+    # 2026-10-18: the deploy of «test chat + real channel» was rolled back by the old test-only check.
+    installer = _load_installer()
+    test = {"alias": installer.TEST_VIBE_ALIAS, "provider": "telegram", "status": "supported", "selected": True}
+    real = {"alias": "lovekenig_tg", "provider": "telegram", "status": "supported", "selected": False}
+    installer.check_destination_projection([test, real])
+    installer.check_destination_projection([test])
+    for rows in ([real], [dict(test, selected=False), real], [test, dict(real, selected=True)],
+                 [test, {"alias": "street_story_e2e_other_tg", "provider": "telegram", "status": "supported"}]):
+        with pytest.raises(installer.DeployError):
+            installer.check_destination_projection(rows)
