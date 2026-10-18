@@ -229,6 +229,30 @@ def exact_source(expected_sha: str, *, source_branch: str = BRANCH) -> tuple[str
     return expected_sha, tree_sha
 
 
+
+def check_destination_projection(rows: list) -> list[dict]:
+    """Owner decision 2026-10-18: the configured test group is «Тестовый чат», first and selected;
+    real channels follow and are never preselected; no other internal acceptance alias is shown."""
+    safe_rows = [
+        {
+            "alias": str(row.get("alias") or ""),
+            "provider": str(row.get("provider") or ""),
+            "status": str(row.get("status") or ""),
+            "selected": row.get("selected") is True,
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    if (
+        not safe_rows
+        or safe_rows[0]["alias"] != TEST_VIBE_ALIAS
+        or not safe_rows[0]["selected"]
+        or any(row["provider"] != "telegram" or row["status"] not in {"supported", "needs_review"} for row in safe_rows)
+        or any(row["selected"] or row["alias"].startswith("street_story_e2e") for row in safe_rows[1:])
+    ):
+        raise DeployError(f"unexpected Street Story destination projection: {safe_rows}")
+    return safe_rows
+
 def materialize_release(sha: str, tree_sha: str) -> Path:
     RELEASES_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(RELEASES_ROOT, 0o700)
@@ -1517,22 +1541,7 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
     rows = capabilities.get("destinations")
     if not isinstance(rows, list):
         raise DeployError("Street Story capabilities projection is invalid")
-    safe_rows = [
-        {
-            "alias": str(row.get("alias") or ""),
-            "provider": str(row.get("provider") or ""),
-            "status": str(row.get("status") or ""),
-        }
-        for row in rows
-        if isinstance(row, dict)
-    ]
-    if (
-        len(safe_rows) != 1
-        or safe_rows[0]["alias"] != TEST_VIBE_ALIAS
-        or safe_rows[0]["provider"] != "telegram"
-        or safe_rows[0]["status"] not in {"supported", "needs_review"}
-    ):
-        raise DeployError(f"unexpected Street Story destination projection: {safe_rows}")
+    safe_rows = check_destination_projection(rows)
     return health, {"destinations": safe_rows}
 
 
