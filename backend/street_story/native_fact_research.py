@@ -174,8 +174,42 @@ class NativeFactResearch:
     def original_receipt(self, binding):
         return self.receipts.get(binding['attempt_id'])
 
+    IDLE_CLIENT_SECONDS = 600
+
+    async def _close_idle_clients(self):
+        """A finished attempt keeps its app-server only for a prompt continuation or recovery.
+
+        Without a bound every research attempt left one app-server process behind (14 on a 2.6 GB
+        host overnight). Clients of completed/failed attempts idle for IDLE_CLIENT_SECONDS are
+        closed; an unresolved attempt keeps its client for recovery, and a later continuation
+        simply opens a new one.
+        """
+        now = time.monotonic()
+        for attempt_id, client in list(self.clients.items()):
+            phase = (self.receipts.get(attempt_id) or {}).get('phase')
+            idle = getattr(client, '_street_story_idle_since', None)
+            if phase in {'completed', 'failed'} and idle is not None and now - idle >= self.IDLE_CLIENT_SECONDS:
+                self.clients.pop(attempt_id, None)
+                try:
+                    await client.close()
+                except Exception as exc:
+                    LOG.warning('street_story_native_client_close attempt_id=%s outcome=failed error_type=%s',
+                                attempt_id, type(exc).__name__)
+                else:
+                    LOG.info('street_story_native_client_close attempt_id=%s outcome=closed idle_seconds=%s',
+                             attempt_id, round(now - idle))
+
     async def run(self, *, binding, receipt, prompt, schema, tools, callback, guard):
         """Resume by IDs only; host callbacks inherit the original owner guard."""
+        try:
+            return await self._run(binding=binding, receipt=receipt, prompt=prompt, schema=schema,
+                                   tools=tools, callback=callback, guard=guard)
+        finally:
+            client = self.clients.get(binding['attempt_id'])
+            if client is not None:
+                client._street_story_idle_since = time.monotonic()
+
+    async def _run(self, *, binding, receipt, prompt, schema, tools, callback, guard):
         started = time.monotonic()
         if receipt.get('phase') == 'created' and not receipt.get('thread_id'):
             context = json.loads(prompt.split('\nINPUT=', 1)[1]) if '\nINPUT=' in prompt else {}
@@ -350,6 +384,8 @@ class NativeFactResearch:
             # boundary; do not open another app-server for every model action.
             self.clients[key] = reused
         if key not in self.clients:
+            await self._close_idle_clients()
+
             async def dispatch(params):
                 return await client._street_story_active_tool(params)
             client = attach_research_tools(self.client_factory(), dispatch)

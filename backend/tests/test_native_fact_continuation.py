@@ -199,3 +199,26 @@ def test_native_research_profile_still_matches_the_deployed_qualification():
     from street_story.native_fact_research import NativeFactResearch
     assert NativeFactResearch.profile_fingerprint.fget(SimpleNamespace(timeout=None)) == (
         '220bef4b0d176d7d3d86d842a0215f8f3bf7d5609bd24340b82e2777c3827414')
+
+
+def test_idle_clients_of_finished_attempts_are_closed_and_others_kept():
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from street_story.native_fact_research import NativeFactResearch
+
+    closed = []
+
+    def client(name, idle_for):
+        async def close():
+            closed.append(name)
+        return SimpleNamespace(close=close, _street_story_idle_since=time.monotonic() - idle_for)
+
+    research = SimpleNamespace(IDLE_CLIENT_SECONDS=600, clients={
+        'done-old': client('done-old', 900), 'done-recent': client('done-recent', 30),
+        'unknown-old': client('unknown-old', 900), 'failed-old': client('failed-old', 700)},
+        receipts={'done-old': {'phase': 'completed'}, 'done-recent': {'phase': 'completed'},
+                  'unknown-old': {'phase': 'unknown'}, 'failed-old': {'phase': 'failed'}})
+    asyncio.run(NativeFactResearch._close_idle_clients(research))
+    assert sorted(closed) == ['done-old', 'failed-old']
+    assert set(research.clients) == {'done-recent', 'unknown-old'}
