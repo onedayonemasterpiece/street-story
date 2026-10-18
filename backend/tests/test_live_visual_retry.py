@@ -135,7 +135,7 @@ async def test_find_more_facts_queues_one_researcher_run_without_a_stage_switch(
         jobs = db.execute("SELECT payload_json FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
                           (session.resource_id,)).fetchall()
     assert len(jobs) == 1 and 'Найди ещё факты об этом доме' in json.loads(jobs[0][0])['coverage_goal']
-    again = await adapter.execute_tool(session, call)  # a replayed call queues nothing new
+    await adapter.execute_tool(session, call)  # a replayed call queues nothing new
     with service.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
                           (session.resource_id,)).fetchone()[0] == 1
