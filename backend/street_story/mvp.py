@@ -59,6 +59,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()][:3]
         if written:
             notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
+            notes.append("Каждая надпись — на светлой бумажной подложке или плашке, контрастно и читаемо на любом фоне "
+                         "(небо, кирпич, листва); целиком внутри кадра с отступом от края, ни одна не обрезана.")
         if facts and not written:  # written notes already rest on these facts; the brief keeps room for them
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
