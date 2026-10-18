@@ -999,6 +999,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
         elif capability == 'editor':
             overlay = (
+                'Carry out every action one owner request asks for, in order, before answering: '
+                '"перепиши подпись и сделай картинку" means edit_text, then generate_visual on the new text. '
+                'Never say an action is under way or done unless its tool was called and accepted in this turn. '
                 'Reuse eligible facts without automatic independent re-review; pending unrelated '
                 'candidates do not block the requested edit. An explicit request to recheck a '
                 'claim, date or source belongs to review: continue_story(stage=review) before '

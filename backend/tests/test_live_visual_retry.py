@@ -106,3 +106,14 @@ async def test_legacy_adapter_fallback_allows_first_request_and_blocks_unobserve
     assert error.value.code == 'visual_outcome_unresolved'
     assert visual_snapshot(service, session.resource_id) == before
 
+
+
+def test_mira_carries_out_every_action_of_one_owner_request(tmp_path):
+    # Story 102: "перепиши подпись и сделай картинку" produced only the image while Mira said the
+    # caption was being rewritten.
+    service, adapter, session, _events = make_service(tmp_path)
+    configuration = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled',
+                                       full_configuration=True)['configuration']
+    instruction = adapter._capability_configuration(configuration, 'editor')['system_instruction']
+    assert 'means edit_text, then generate_visual on the new text' in instruction
+    assert 'unless its tool was called and accepted' in instruction
