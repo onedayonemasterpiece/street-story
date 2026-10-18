@@ -213,6 +213,49 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise HTTPException(status_code=422, detail="Invalid bounded POI command") from exc
 
+    @app.post("/v1/internal/rkb-poi-evidence", dependencies=[Depends(rkb_poi_auth)])
+    async def rkb_poi_evidence(request: Request):
+        """RKB delivers one poi.fact_evidence.v1 event after a book import (same-host, RKB service key).
+
+        Idempotent by event_id/idempotency_key: a replay returns the stored receipt. Unknown external
+        identities create a candidate POI; name-only ambiguity stays unresolved. The fact enters stories
+        only after review; a newer revision of the same book supersedes the older one's evidence.
+        """
+        from .poi_external import PoiEvidenceConflict, PoiEvidenceError
+        from .poi_reviews import ingest_poi_evidence_with_reviews
+        length = int(request.headers.get("content-length") or 0)
+        body = await request.body()
+        if length > 65536 or len(body) > 65536:
+            raise HTTPException(status_code=413, detail="POI evidence event too large")
+        try:
+            receipt = ingest_poi_evidence_with_reviews(service.store, json.loads(body))
+        except PoiEvidenceConflict as exc:
+            logging.getLogger("uvicorn.error").warning("street_story_rkb_poi_evidence %s", json.dumps({"outcome": "conflict", "code": str(exc)}))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (PoiEvidenceError, ValueError) as exc:
+            logging.getLogger("uvicorn.error").warning("street_story_rkb_poi_evidence %s", json.dumps({"outcome": "rejected", "code": str(exc)[:80]}))
+            raise HTTPException(status_code=422, detail=str(exc)[:200] or "invalid POI evidence event") from exc
+        logging.getLogger("uvicorn.error").info("street_story_rkb_poi_evidence %s", json.dumps({
+            "outcome": "replayed" if receipt.get("replayed") else "accepted", "event_id": receipt.get("event_id"),
+            "state": receipt.get("state"), "poi_id": receipt.get("poi_id"), "claim_id": receipt.get("claim_id")}))
+        return receipt
+
+    @app.get("/v1/internal/rkb-poi-evidence/{event_id}", dependencies=[Depends(rkb_poi_auth)])
+    async def rkb_poi_evidence_receipt(event_id: str):
+        """The three confirmations for RKB: object resolved, evidence delivered, fact accounted with review state."""
+        with service.store.connection() as db:
+            row = db.execute("SELECT e.event_id,e.state,e.poi_id,e.claim_id,e.source_ref,e.source_revision,c.status "
+                             "FROM poi_external_events e LEFT JOIN poi_claims c ON c.id=e.claim_id WHERE e.event_id=?",
+                             (event_id,)).fetchone()
+            latest = row and db.execute("SELECT MAX(source_revision) FROM poi_external_events WHERE source_ref=?",
+                                        (row["source_ref"],)).fetchone()[0]
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown event")
+        return {"event_id": row["event_id"], "delivered": True, "poi_resolved": row["poi_id"] is not None,
+                "poi_id": row["poi_id"], "state": row["state"], "claim_id": row["claim_id"],
+                "claim_status": row["status"], "source_revision": row["source_revision"],
+                "superseded": bool(latest and row["source_revision"] < latest)}
+
     @app.post("/v1/stories", dependencies=[Depends(auth)])
     async def create_story(
         request: Request,
