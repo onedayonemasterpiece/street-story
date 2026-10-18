@@ -145,7 +145,7 @@ def test_long_selected_facts_do_not_crowd_out_the_written_image_notes(tmp_path):
     assert "«1932: нацисты подожгли дом»" in brief and len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
-def eligible_story(tmp_path):
+def eligible_story(tmp_path, c_source='https://source.example/c'):
     """A story with three verified facts about the house (claim keys a, b, c)."""
     from street_story.fact_ledger import accept_fact_basis, refresh_review_status
     from test_fact_ledger import fact, persist
@@ -154,7 +154,7 @@ def eligible_story(tmp_path):
     mark_identity_ready(svc, sid)
     items = [fact('a', 'Здание — объект культурного наследия.', 'https://source.example/a', 'Heritage object.'),
              fact('b', 'Построено в 1930 году.', 'https://source.example/b', 'Built 1930.'),
-             fact('c', '1 августа 1932 года дом подожгли.', 'https://source.example/c', 'Arson 1932.')]
+             fact('c', '1 августа 1932 года дом подожгли.', c_source, 'Arson 1932.')]
     ids = persist(svc.store, sid, items, 'run', 'batch')
     with svc.store.tx() as db:
         for fact_id in ids:
@@ -211,3 +211,27 @@ async def test_the_writer_opens_with_the_stored_strongest_fact_which_joins_the_s
     lead = await adapter._strongest_hook(sid, state, {ids[0]}, None)
     assert lead == {"fact_id": ids[2], "text": "1 августа 1932 года дом подожгли."}
     assert sorted(f["fact_id"] for f in svc.story(sid)["facts"] if f.get("selected")) == sorted([ids[0], ids[2]])
+
+
+@pytest.mark.asyncio
+async def test_a_fact_resting_only_on_visitor_reviews_does_not_open_the_post_when_documented_facts_exist(tmp_path):
+    # Story 102: the lite model chose a visitor review ("дом пережил бомбардировку") as the opening.
+    from street_story import strongest_fact
+    svc, adapter, session, ids = eligible_story(tmp_path, c_source='https://2gis.ru/geo/20.5%2C54.7?m=20.5%2C54.7%2F18#reviews')
+    sid = session.resource_id
+    seen = []
+
+    async def strongest_hook(*, facts, photo_jpeg, researcher_choice=None):
+        seen.append(list(facts))
+        return {"ranked": [{"index": len(facts) - 1, "reason": "последний"}], "model": "lite"}
+
+    svc.providers.gemini.strongest_hook = strongest_hook
+    record = await strongest_fact.decide(svc, sid)
+    assert seen[-1] == ['Здание — объект культурного наследия.', 'Построено в 1930 году.']
+    assert record["fact_id"] == ids[1]
+    with svc.store.tx() as db:  # an earlier automatic choice of the review fact is decided again by the writer
+        research = json.loads(svc._story_row(db, sid)["research_json"])
+        research["strongest_fact"] = {**research["strongest_fact"], "fact_id": ids[2]}
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (json.dumps(research), sid))
+    lead = await adapter._strongest_hook(sid, adapter._topic_state(sid), set(), None)
+    assert lead["fact_id"] == ids[1]
