@@ -61,6 +61,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
             notes.append("Каждая надпись — на светлой бумажной подложке или плашке, контрастно и читаемо на любом фоне "
                          "(небо, кирпич, листва); целиком внутри кадра с отступом от края, ни одна не обрезана.")
+            notes.append("Стрелка — только от надписи к части дома, которая ясно видна на фото и о которой надпись. "
+                         "Надпись о том, чего на фасаде не видно (найдено внутри, утрачено, люди, события, даты), — "
+                         "без стрелки, в небе или на поле; ничего к ней не дорисовывай.")
         if facts and not written:  # written notes already rest on these facts; the brief keeps room for them
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(

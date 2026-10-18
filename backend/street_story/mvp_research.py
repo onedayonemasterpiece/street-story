@@ -1971,28 +1971,37 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         return result
 
     async def capabilities(self) -> dict[str, Any]:
+        """Owner decision 18.10.2026: the owner publishes first to the test chat, then to the real channel.
+
+        The configured test group is shown as «Тестовый чат» and selected by default; real channels are
+        listed beside it and chosen explicitly. Other internal acceptance aliases stay hidden.
+        """
         result = await super().capabilities()
         test_alias = self.settings.publication_test_alias
-        telegram = [
-            item
-            for item in result.get("destinations", [])
-            if item.get("provider") == "telegram"
-            and item.get("status") in {"supported", "needs_review"}
-            and (
-                item.get("alias") == test_alias if test_alias
-                else not _is_internal_acceptance_destination(item.get("alias"))
-            )
-        ]
-        for item in telegram:
-            item["selected"] = True
-        result["destinations"] = telegram
+        live = [item for item in result.get("destinations", [])
+                if item.get("provider") == "telegram" and item.get("status") in {"supported", "needs_review"}]
+        test = [dict(item, label="Тестовый чат", test=True, selected=True)
+                for item in live if test_alias and item.get("alias") == test_alias]
+        real = [dict(item, test=False, selected=not test_alias)
+                for item in live if not _is_internal_acceptance_destination(item.get("alias"))]
+        result["destinations"] = test + real
         result["mvp_providers"] = {"telegram": "active", "vk": "deferred", "max": "deferred"}
         return result
 
-    def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _check_publish_destinations(self, destinations: Any) -> None:
         test_alias = self.settings.publication_test_alias
-        if test_alias and body.get("destinations") != [test_alias]:
-            raise ConflictError("test_destination_only", "This Street Story deployment only publishes to its configured test group")
+        aliases = [str(a) for a in destinations] if isinstance(destinations, list) else []
+        if not aliases:
+            raise ConflictError("publish_destination_required", "Choose where to publish")
+        internal = [a for a in aliases if _is_internal_acceptance_destination(a)]
+        if any(a != test_alias for a in internal):
+            raise ConflictError("test_destination_only", "Only the configured test group is available among test chats")
+        if internal and len(aliases) > len(internal):
+            raise ConflictError("test_and_production_mixed",
+                                "Publish to the test chat and to the real channel as two separate publications")
+
+    def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        self._check_publish_destinations(body.get("destinations"))
         text = body.get("text_override")
         from .publication_content import visible_text
         if text is not None and len(visible_text(str(text))) > 1024:

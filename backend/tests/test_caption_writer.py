@@ -133,6 +133,7 @@ def test_writer_image_notes_are_lettered_verbatim_by_the_image_brief(tmp_path):
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
     assert "Основание для подписей" not in brief  # the written notes already rest on the facts
     assert "на светлой бумажной подложке" in brief
+    assert "Стрелка — только от надписи к части дома, которая ясно видна на фото" in brief
 
 
 def test_long_selected_facts_do_not_crowd_out_the_written_image_notes(tmp_path):

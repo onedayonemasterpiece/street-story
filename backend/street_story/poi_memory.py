@@ -665,7 +665,8 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
     )
     remaining = max(0, limit - len(candidates)) if limit is not None else None
     if remaining is None or remaining:
-        candidates.extend(_public_regional_knowledge_facts(db, identity, remaining))
+        # Only reviewed book facts enter the story as verified facts; candidates stay research hints.
+        candidates.extend(_public_regional_knowledge_facts(db, identity, remaining, statuses=("accepted",)))
 
     inserted = 0
     seen: set[str] = set()
@@ -1062,7 +1063,8 @@ def persist_research_memory(
                 ),
             )
 
-def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
+def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | None, *,
+                                     statuses: tuple[str, ...] = ("candidate", "accepted", "contested")) -> list[dict[str, Any]]:
     aliases = _identity_alias_values(identity)
     if not aliases:
         return []
@@ -1089,10 +1091,13 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
         JOIN poi_claim_evidence e ON e.claim_id=c.id
         JOIN poi_external_events x ON x.event_id=e.event_id
         WHERE c.poi_id IN ({owner_placeholders}) AND x.visibility='public'
-          AND c.status IN ('candidate','accepted','contested')
+          AND c.status IN ({','.join('?' for _ in statuses)})
+          -- A corrected book revision supersedes evidence from its earlier revisions.
+          AND x.source_revision = (SELECT MAX(y.source_revision) FROM poi_external_events y
+                                   WHERE y.source_ref = x.source_ref)
         ORDER BY x.updated_at DESC
         """ + (' LIMIT ?' if limit is not None else ''),
-        (*family, max(1, int(limit))) if limit is not None else tuple(family),
+        (*family, *statuses, max(1, int(limit))) if limit is not None else (*family, *statuses),
     )
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
