@@ -11,3 +11,37 @@ Only `search` suggests matches. `select` checks the owner ID exists, `create` re
 Street Story can read historical material from a POI using its device-authenticated `GET /v1/pois/{poi_id}/knowledge`. Backend then requests RKB bounded source context with a dedicated loopback grant, never forwarding the Android bearer or an end-user RKB OAuth token. RKB checks its actor's source ACL and returns entity ID, evidence pointers, directly linked stories and one-hop persons/events. Details are fetched using RKB evidence tools when necessary.
 
 The service bridge is disabled unless privately configured. Existing Street Story `STREET_STORY_DEVICE_TOKEN` remains unchanged. Current source-ingestion contract: [RKB location registry](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/location-registry.md).
+
+## Book facts into the POI registry (2026-10-18)
+
+Owner decision: when RKB imports a book it adds the book's POI facts to Street Story,
+creating a POI when the place is new. Until this date no event had ever arrived
+(`poi_external_events` was empty): Street Story could parse `poi.fact_evidence.v1`
+but exposed no intake.
+
+**Intake.** `POST /v1/internal/rkb-poi-evidence` on Street Story's loopback listener
+(`http://127.0.0.1:8188`), one `poi.fact_evidence.v1` event per request (≤ 64 KiB),
+`Authorization: Bearer <STREET_STORY_RKB_POI_SERVICE_TOKEN>` — the dedicated RKB service
+key, never a device token or a user's OAuth bearer. Idempotent by `event_id` and
+`idempotency_key`: a replay of the same payload returns the stored receipt with
+`replayed: true`; a different payload under the same keys is `409`. Invalid events are
+`422` with the normalizer code. RKB keeps the event in its outbox until it holds a 2xx
+receipt; a timeout is retried with the same event.
+
+**Identity.** Known external ids (wikidata, osm, wikipedia) attach to the existing POI;
+unknown external ids create a `candidate` POI with those aliases; a name-only locator that
+matches zero or several POIs stays `unresolved_identity` (no POI is created by name).
+
+**Readback.** `GET /v1/internal/rkb-poi-evidence/{event_id}` returns the three
+confirmations: `delivered`, `poi_resolved` (+ `poi_id`, `state`) and the fact accounted
+(`claim_id`, `claim_status`: candidate / accepted / contested / rejected), plus
+`superseded` when a newer revision of the same book exists.
+
+**Use in stories.** A book claim enters a story's fact list only when `accepted`
+(review state), and only from the newest revision of its book: a corrected import
+(higher `source.revision` for the same `document_ref`) supersedes the earlier revision's
+evidence. Candidates remain research hints for the house's researcher.
+
+**Not yet provisioned.** `STREET_STORY_RKB_POI_SERVICE_TOKEN` is not set on the server;
+the RKB side needs the same key in its delivery worker. Street Story → RKB search during
+photo research is a later step (owner, 18.10.2026).
