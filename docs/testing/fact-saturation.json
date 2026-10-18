@@ -43,8 +43,19 @@
    "candidate_id": "osm:way:133035113",
    "house": "Калининград, Житомирская 22–24",
    "baseline_facts": 14,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 20,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "21e07fe",
+     "story_id": "story_db302bb10bae451e8a691372",
+     "eligible": 20,
+     "selected": 4,
+     "from_visitor_reviews": 1,
+     "status": "ready",
+     "note": "зачин из отзыва — исправляется (PR #267)"
+    }
+   ]
   },
   {
    "telegram_id": 104,
@@ -61,8 +72,20 @@
    "candidate_id": "osm:way:105154961",
    "house": "Калининград, Университетская 3",
    "baseline_facts": 0,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 25,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "21e07fe",
+     "story_id": "story_1b952a21a974da7d06036657",
+     "eligible": 25,
+     "selected": 4,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37894",
+     "note": "зачин с поджога 1932 (самый сильный факт)"
+    }
+   ]
   },
   {
    "telegram_id": 106,
@@ -124,8 +147,19 @@
    "candidate_id": "osm:way:133035135",
    "house": "Калининград, Барнаульская 8",
    "baseline_facts": 7,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 37,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "21e07fe",
+     "story_id": "story_c1fdd284ba994e7442e8efd3",
+     "eligible": 37,
+     "selected": 5,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37895"
+    }
+   ]
   },
   {
    "telegram_id": 121,
@@ -187,8 +221,20 @@
    "candidate_id": "osm:way:193085155",
    "house": "Советск, 9-го Января 13",
    "baseline_facts": null,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 9,
+   "runs": [
+    {
+     "date": "2026-10-18",
+     "release": "21e07fe",
+     "story_id": "story_53d9a7b94327ce71afe372b8",
+     "eligible": 9,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37896",
+     "note": "найди ещё: 5→9 фактов, дом мало описан"
+    }
+   ]
   },
   {
    "telegram_id": 132,
