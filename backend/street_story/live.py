@@ -873,10 +873,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For correction or independent reconsideration of a saved fact choose review: its tools save new evidence-bound verdicts. For discovering additional facts choose research. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
+        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For correction or independent reconsideration of a saved fact choose review: its tools save new evidence-bound verdicts. For an explicit author request to find more facts set research_action=more with research_purpose=facts and intent carrying the author words: the researcher runs in the background, the app shows progress and the strongest fact is decided again at its end; do not switch stage or search yourself. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
             {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
                        'description': 'identity: identify the object; research: discover/save facts and image; review: evidence review; editor: fact selection, concept, text and image; dictation: protected verbatim input; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
-             'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
+             'research_action': {'type': 'string', 'enum': ['stop', 'resume', 'more']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
         configuration['functions'] = [deepcopy(f) for f in configuration['functions']
@@ -2072,6 +2072,31 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             record_live_diagnostic(self.service, story_id, session.id, "backend", "research_reply_size", {"tool": name, "estimated_envelope_units": response_units(name, projected, command_id), "page_ceiling": PAGE_UNITS})
         return projected
 
+    def _request_more_facts(self, session, command_id, args, turn):
+        """The author asks to find more facts: one more durable researcher run for the same house.
+
+        Owner decision 18.10.2026: research runs as one long researcher session; a repeated
+        request is another such run, and the strongest fact is decided again at its end.
+        Mira does not search herself and does not switch stage for this.
+        """
+        with self.service.store.connection() as db:
+            research = json.loads(self.service._story_row(db, session.resource_id)['research_json'] or '{}')
+        goal = _bounded_text(args.get('intent'), 1200) or 'Найди ещё полезные сведения о выбранном здании.'
+        key = 'ss-live-more-' + hashlib.sha256(f'{session.resource_id}:{command_id}'.encode()).hexdigest()[:48]
+        story = self.service.mutate_facts(session.resource_id, key, {
+            'action': 'research', 'expected_identity_generation': int(research.get('identity_generation') or 0),
+            'coverage_goal': 'Найди ещё полезные сведения о выбранном здании. Просьба автора: ' + goal
+                             + ' Сохрани известные факты, исследуй содержательные пробелы, не выдавай перефразирование за новый факт.'})
+        turn['consumed'] = True
+        result = {'research_requested': True, 'story': story, 'changed': ['facts'],
+                  'instruction': 'Исследователь ищет новые факты в фоне; приложение показывает прогресс. '
+                                 'Скажите автору коротко, что поиск начат; новые факты появятся в списке.'}
+        with self.service.store.tx() as db:
+            self._store_command(db, session.resource_id, command_id, 'continue_story', args, result)
+        record_live_diagnostic(self.service, session.resource_id, session.id, 'backend', 'research_more_requested',
+                               {'goal_chars': len(goal), 'state': story.get('state')})
+        return result
+
     def _control_research(self, session, command_id, args):
         """Apply explicit research controls through the normal HTTP domain mutation.
 
@@ -2085,6 +2110,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30):
             raise ConflictError('live_research_control_owner_required', 'Нужна явная команда автора остановить или продолжить исследование.')
         action, purpose = args.get('research_action'), args.get('research_purpose')
+        if action == 'more':
+            return self._request_more_facts(session, command_id, args, turn)
         if purpose not in {'identity', 'facts', 'all'}:
             raise InvalidStateError('research_control_invalid', 'Укажите research_purpose: identity, facts или all.')
         with self.service.store.connection() as db:
