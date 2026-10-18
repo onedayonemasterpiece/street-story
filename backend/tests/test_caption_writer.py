@@ -276,3 +276,23 @@ def test_the_hook_is_never_a_list_of_institutions_while_a_story_about_the_buildi
     assert strong == [{"index": 1, "reason": "клеймо на кирпичах"}]
     only_weak = [dict(facts[0]), dict(facts[2])]
     assert GeminiClient._hook_choice({"facts": only_weak, "choice": {"index": 0, "reason": "больше нечего"}}, 3)[0]["index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_image_notes_come_only_from_documented_facts():
+    # Story 102: "Дом чудом уцелел в 1945 году" (a visitor review) appeared on the image as history.
+    written = {"text": "Текст.\n\nУлица 1\n#Калининград", "model": "writer",
+               "image_notes": ["Дом чудом уцелел в 1945 году", "Построен около 1905 года"]}
+    seen = []
+
+    async def lite_chain(contents, config, parse):
+        seen.append(json.loads(contents[0].split("\n\n", 1)[1]))
+        return parse(json.dumps({"issues": [{"sentence": "Дом чудом уцелел в 1945 году", "kind": "отзыв", "fix": "заменено"}],
+                                 "text": "Текст.", "image_notes": ["2017: немецкие кирпичи с клеймом", "Построен около 1905 года"]}), "lite")
+
+    client = SimpleNamespace(EDITOR_RULES=GeminiClient.EDITOR_RULES, EDITOR_SCHEMA=GeminiClient.EDITOR_SCHEMA, _lite_chain=lite_chain)
+    facts = [{"text": "Дом пережил бомбардировку.", "from_visitor_reviews": True}, {"text": "Построен около 1905 года."},
+             {"text": "При расчистке стен открылись немецкие кирпичи."}]
+    edited = await GeminiClient._edit_caption(client, written, facts=facts, lead_fact=None)
+    assert seen[0]["image_facts"] == ["Построен около 1905 года.", "При расчистке стен открылись немецкие кирпичи."]
+    assert edited["image_notes"] == ["2017: немецкие кирпичи с клеймом", "Построен около 1905 года"]
