@@ -1,0 +1,28 @@
+Use the uploaded street photo as the main visual reference and the factual city-note themes below as editorial context.
+
+Make an art-direction decision that fits this specific photograph. Do not apply a rigid preset. The result should feel like a finished Street Story editorial image: a real city photograph intelligently transformed with a graphic/sketch layer, not a generic filter and not a replacement scene.
+
+Preserve the identity of the photographed place. Keep the important architecture, street geometry, perspective, building placement, entrances, rooflines, trees, signs and other major landmarks consistent with the source. You may simplify minor clutter, rebalance light, extend peripheral background, or slightly recompose for a stronger layout, but do not distort or crop away the key subject. If the output aspect ratio differs from the source, prefer extending/reconstructing the edges over cutting important architecture.
+
+Create a sophisticated hybrid of realistic urban photography and expressive editorial drawing. You choose the amount and placement of sketch contours, loose lines, arrows, underlines, highlights, small illustrative details, graphic accents and handwritten notes. Some areas may remain almost photographic while others can be more interpretive. The graphic layer should feel designed for this place, not mechanically spread over everything.
+
+Handwritten notes should be about the city: history, atmosphere, memory, local character, urban life, contrasts, details worth noticing, or the author's observation. Use only claims supported by the supplied themes. Do not invent dates, names, events or historical assertions. Prefer a few concise, legible phrases over many weak ones.
+
+CRITICAL LAYOUT SAFETY:
+- Keep every meaningful word, label, underline, callout box, arrowhead and essential graphic element fully inside a safe area about 8% in from every edge.
+- Nothing important may touch, cross or be clipped by the top, bottom, left or right edge.
+- Never let a text block continue beyond the frame.
+- Leave breathing room around annotations. If space is tight, use fewer/shorter notes instead of shrinking or clipping them.
+- Keep the defining architectural subject fully readable; do not crop towers, gates or facade edges just to make room for graphics.
+- Before finalizing, inspect all four edges and move or remove anything at risk of clipping.
+
+Choose one restrained accent color that suits the photo and story. Use it selectively to guide attention, not to tint the whole scene.
+
+Aim for a premium editorial balance: recognizable real photograph underneath; expressive but controlled hand-drawn intervention; factual human city notes; clear visual hierarchy; enough quiet space to breathe. The mood may be poetic, documentary, energetic, reflective, rough or elegant depending on the photograph. Preserve photographic depth, light and material texture.
+
+Avoid generic architecture, radical skyline changes, dense annotation noise, tiny unreadable text, clipped graphics, blueprint-style dimensions, invented facts, corporate logos, watermarks, UI chrome or branding.
+
+All visible annotation text should follow the language of the city-note themes. If the themes are in Russian, write the visible notes in Russian.
+
+City-note themes and author context to interpret, compress and distribute naturally:
+{{CITY_NOTE_THEMES}}

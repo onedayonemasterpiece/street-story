@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import copy
+import json
+import logging
+
+from street_story.live import StreetStoryLiveAdapter
+
+
+def test_startup_fact_preview_preserves_selection_and_full_inventory_address():
+    state = {"story": {"id": "story-growing", "facts": [
+        {"fact_id": f"fact-{index}", "text": "Own-evidence finding " * 20,
+         "selected": index in {70, 79}, "evidence_supported": True}
+        for index in range(80)
+    ]}, "editor": {"text_revision": 4}}
+    original = copy.deepcopy(state)
+    preview = StreetStoryLiveAdapter._compact_context(state, fact_preview_limit=8)
+    assert state == original
+    assert len(preview["facts"]) == 8
+    assert preview["fact_count"] == 80
+    assert preview["facts_preview_truncated"] is True
+    assert preview["facts_read_tool"] == "get_facts"
+    assert preview["selected_fact_ids"] == ["fact-70", "fact-79"]
+    assert [fact["fact_id"] for fact in preview["facts"][:2]] == ["fact-70", "fact-79"]
+    # Ordinary product-state projection keeps its established preview capacity.
+    assert len(StreetStoryLiveAdapter._compact_context(state)["facts"]) == 48
+
+
+def test_live_model_reply_omits_duplicate_research_without_mutating_durable_result(caplog):
+    identity = {
+        "status": "owner_confirmed",
+        "candidate_id": "wiki:19",
+        "candidate_name": "Author confirmed gate",
+        "confidence": None,
+        "observations": ["Author explicitly confirmed the object"],
+        "candidates": [
+            {"candidate_id": f"wiki:{i}", "name": f"Gate {i}", "type": "wikipedia",
+             "url": f"https://example.com/gate/{i}", "extract": "large source text " * 5000}
+            for i in range(20)
+        ],
+    }
+    full = {
+        "visual_identity": identity,
+        "story": {"id": "story-1", "state": "draft", "revision": 3,
+                  "place_name": "Author confirmed gate", "source_count": 0,
+                  "draft_text": "The author wording remains intact",
+                  "visual_identity": identity, "research": "full evidence " * 20000},
+    }
+    original = copy.deepcopy(full)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        projected = StreetStoryLiveAdapter._model_result("confirm_place", full)
+    assert full == original
+    assert len(json.dumps(projected)) < 4000
+    assert projected["visual_identity"]["candidate_id"] == "wiki:19"
+    assert projected["visual_identity"]["candidates"][0]["candidate_id"] == "wiki:19"
+    assert projected["visual_identity"]["candidate_count"] == 20
+    assert projected["story"]["draft_text"] == full["story"]["draft_text"]
+    assert "research" not in projected["story"]
+    assert "large source text" not in caplog.text
+    assert "model_chars=" in caplog.text
+
+
+def test_confirmation_and_literal_text_are_never_summarized_by_projection():
+    card = {"confirmation_id": "confirm-1", "text": "Exact author text — do not rewrite.",
+            "destinations": ["street_story_e2e_tg"], "scheduled_for": "2026-10-01T12:00:00Z",
+            "timezone": "UTC", "visual_revision": "v1", "state": "prepared"}
+    full = {"confirmation": card, "text_revision": 8,
+            "literal_spans": [{"text": "Exact author text", "start": 0}],
+            "story": {"id": "s1", "draft_text": card["text"], "research": "bulk" * 10000}}
+    projected = StreetStoryLiveAdapter._model_result("prepare_publication", full)
+    assert projected["confirmation"] == card
+    assert projected["text_revision"] == 8
+    assert projected["literal_spans"] == full["literal_spans"]
+
+
+def test_compact_context_keeps_confirmed_candidate_outside_first_page():
+    candidates = [{"candidate_id": f"osm:{i}", "name": f"Object {i}"} for i in range(30)]
+    identity = {"status": "owner_confirmed", "candidate_id": "osm:29",
+                "candidate_name": "Object 29", "candidates": candidates}
+    result = StreetStoryLiveAdapter._compact_context({
+        "story": {"id": "s1", "visual_identity": identity, "facts": []},
+        "editor": {"text_revision": 4},
+    })
+    assert result["visual_identity"]["status"] == "owner_confirmed"
+    assert result["visual_identity"]["candidates"][0]["candidate_id"] == "osm:29"
+    assert result["text_revision"] == 4
+    assert candidates[0]["candidate_id"] == "osm:0"
+
+
+def test_discovery_search_projection_keeps_source_identity_and_bounds_snippets():
+    sources = [
+        {
+            "source_ref": f"websrc_{i:020x}",
+            "title": "Very long source title " * 10,
+            "url": f"https://example{i}.org/very/long/source/path",
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": f"https://example{i}.org/very/long/source/path",
+                "text": ("Evidence sentence about the gate. " * 8).strip(),
+                "evidence_ref": "evref_" + f"{i:024x}",
+            }],
+        }
+        for i in range(10)
+    ]
+    full = {
+        "query": "gate history",
+        "summary": "Discovery evidence only.",
+        "search_provider": "duckduckgo_html_fallback",
+        "discovery_only": True,
+        "facts": [],
+        "sources": sources,
+        "fact_conflicts": [{"conflict_id": "bulk", "rationale": "x" * 4000}],
+        "story": {"id": "s1", "state": "identity_ready", "revision": 3, "place_name": "Gate",
+                  "source_count": 10, "draft_text": "draft " * 1000},
+    }
+    original = copy.deepcopy(full)
+    projected = StreetStoryLiveAdapter._model_result("search_web", full)
+    assert full == original
+    assert len(projected["sources"]) == 10
+    assert projected["sources"][0]["source_ref"].startswith("websrc_")
+    assert projected["sources"][0]["evidence"]
+    assert projected["sources"][0]["evidence"][0]["evidence_ref"].startswith("evref_")
+    assert projected["sources"][0]['url'] == sources[0]['url']
+    assert projected["sources"][0]['title'] == sources[0]['title'][:100]
+    assert projected["sources"][0]['evidence'][0]['text'] == sources[0]['supports'][0]['text'][:360]
+    assert "fact_conflicts" not in projected
+    assert "summary" not in projected
+    assert "next response must be a function call" in projected["instruction"]
+    assert "before a successful save receipt" in projected["instruction"]
+    assert "draft_text" not in projected["story"]
+    assert len(json.dumps(projected, ensure_ascii=False)) < 7500
+
+
+def test_save_facts_projection_confirms_ids_without_repeating_evidence():
+    full = {
+        "facts": [{
+            "fact_id": "claim_a",
+            "text": "A durable fact",
+            "revision_digest": "v2:exact_revision",
+            "supporting_evidence_ids": ["evidence_a"],
+            "sources": [
+                {"url": "https://one.example/a", "supports": [{"text": "evidence " * 100}]},
+                {"url": "https://two.example/a", "supports": [{"text": "more evidence " * 100}]},
+            ],
+        }],
+        "selected_fact_ids": ["claim_a"],
+        "story": {"id": "s1", "state": "identity_ready", "revision": 4, "source_count": 2,
+                  "draft_text": "draft " * 1000},
+    }
+    original = copy.deepcopy(full)
+    projected = StreetStoryLiveAdapter._model_result("save_research_facts", full)
+    assert full == original
+    assert projected["facts"] == [{"fact_id": "claim_a", "text": "A durable fact", "revision_digest": "v2:exact_revision", "supporting_evidence_ids": ["evidence_a"], "source_count": 2}]
+    assert projected["selected_fact_ids"] == ["claim_a"]
+    assert "draft_text" not in projected["story"]
+    assert len(json.dumps(projected)) < 1000
+
+
+def test_discovery_budget_keeps_source_refs_and_only_omits_whole_snippets():
+    from street_story.research_budget import PAGE_UNITS, response_units
+    sources = [
+        {'source_ref': f'src-{i}', 'url': f'https://museum.example/{i}', 'title': f'Museum {i}',
+         'supports': [{'evidence_ref': f'ev-{i}', 'text': 'Плановая стоимость составит 1,5 млн рублей. ' * 8}]}
+        for i in range(12)
+    ]
+    result = {'discovery_only': True, 'sources': sources, 'instruction': 'Save only exact checked refs.'}
+    projected = StreetStoryLiveAdapter._model_result('search_web', result)
+    assert [s['source_ref'] for s in projected['sources']] == [s['source_ref'] for s in sources]
+    assert projected['snippet_budget_omitted'] > 0
+    assert response_units('search_web', projected) <= PAGE_UNITS
+    for source in projected['sources']:
+        for snippet in source['evidence']:
+            original = sources[int(source['source_ref'].split('-')[1])]['supports'][0]
+            assert snippet['evidence_ref'] == original['evidence_ref']
+            assert snippet['text'].strip() == original['text'][:360].strip()
+            assert 'составит' in snippet['text']
+    assert all(source['supports'] for source in sources)

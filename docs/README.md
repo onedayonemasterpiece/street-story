@@ -1,6 +1,6 @@
 # Documentation authority
 
-`main` is the canonical home for basic documentation, [owner requirements](requirements.md) and the [machine-readable critical manifest](../.devcoveer/requirements.json), [persistent photo registry](testing/photo-registry.md) and [acceptance procedure](testing/street-story-product-acceptance-20261010.md). Working product branches and runtime releases remain separate.
+`main` is the canonical home for basic documentation, [owner requirements](requirements.md) and the [machine-readable critical manifest](../.devcoveer/requirements.json), [persistent photo registry](testing/photo-registry.md) and [acceptance procedure](testing/street-story-product-acceptance-20261010.md). Product code lives in `main` too, and production is deployed only from `main` (since 2026-10-18; see the incident note in [backend-runtime](backend-runtime.md)).
 
 [Test-photo registry](testing/photo-registry.md) is the persistent original-byte, EXIF/provenance and evaluator inventory. The [fact-saturation table](testing/fact-saturation.md) is the living per-photo record of verified facts found, used in the post and taken from visitor reviews, against the best count ever seen for the house; it is updated after every product run with `docs/testing/fact_saturation.py snapshot` and flags a run that finds noticeably fewer facts. It links back to the [acceptance procedure](testing/street-story-product-acceptance-20261010.md); frozen inputs and historical results are unchanged.
 

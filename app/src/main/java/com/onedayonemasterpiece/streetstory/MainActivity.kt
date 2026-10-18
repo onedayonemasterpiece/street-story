@@ -1,0 +1,2299 @@
+package com.onedayonemasterpiece.streetstory
+
+import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.MediaStore
+import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ClickableSpan
+import android.text.method.LinkMovementMethod
+import android.text.util.Linkify
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import com.google.gson.Gson
+import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+class MainActivity : Activity() {
+    private val PHOTO_ORIGINAL = View.generateViewId()
+    private val PHOTO_CROP = View.generateViewId()
+    private val store by lazy { AppGraph.store(this) }
+    private val config by lazy { AppGraph.config(this) }
+    private val live by lazy { AppGraph.live(this) }
+    private val research by lazy { ResearchProjectionStore(this) }
+    private val gson = Gson()
+    private val prefs by lazy { getSharedPreferences("street_story_topics_v1", MODE_PRIVATE) }
+
+    private lateinit var root: FrameLayout
+    private lateinit var contentHost: FrameLayout
+    private lateinit var dock: LinearLayout
+
+    private var placeMapPanel: PlaceMapPanel? = null
+    private var activeStoryId: String? = null
+    private var pendingLiveStoryId: String? = null
+    private var ownerConversation: OwnerConversationScope? = null
+    private var ownerConversationText: String? = null
+    private var ownerConversationGuard: (() -> Boolean)? = null
+    private var ownerConversationNeedsNavigation = false
+    private var pendingPhotoRecoveryStoryId: String? = null
+    private var pendingSharedPhotos: ArrayList<Uri>? = null
+    private var photoLocationRequestInFlight = false
+    private var photoRecoveryButton: Button? = null
+    private var identityLinkView: TextView? = null
+    private var receiverRegistered = false
+    private var pendingUpdate: UpdateInfo? = null
+    private var waitingForInstallPermission = false
+    private var updateCheckInFlight = false
+    private var updateDownloadInFlight = false
+
+    private var topicTitleView: TextView? = null
+    private var topicStatusView: TextView? = null
+    private var photoFormatChoices: RadioGroup? = null
+    private var updatingPhotoFormat = false
+    private var previewImage: ImageView? = null
+    private var previewText: TextView? = null
+    private var literalBanner: TextView? = null
+    private var lastChangeView: TextView? = null
+    private var chatBox: LinearLayout? = null
+    private var chatMessages: LinearLayout? = null
+    private var chatStatus: TextView? = null
+    private var sourceButton: Button? = null
+    private var undoButton: Button? = null
+    private var publishButton: Button? = null
+    private var ownerVisualButton: Button? = null
+    private var ownerVisualRequest: OwnerVisualRequest? = null
+    private var ownerVisualSent = false
+    private var confirmationBox: LinearLayout? = null
+    private var dockTopic: TextView? = null
+    private var dockStatus: TextView? = null
+    private var micButton: ImageButton? = null
+    private var micPulse: ObjectAnimator? = null
+    private var shownImagePath: String? = null
+    private var topicScroll: ScrollView? = null
+    private var previewExpanded = true
+    private var stickyIsland: LinearLayout? = null
+    private var stickyImage: ImageView? = null
+    private var floatingImageProxy: ImageView? = null
+    private var stickyTitle: TextView? = null
+    private var stickyFacts: TextView? = null
+    private var stickyConcept: TextView? = null
+    private var stickyComparison: TextView? = null
+    private var stickyVisible = false
+    private var identityProgressView: TextView? = null
+    private var lastLiveIdentityProgress: IdentityProgressWire? = null
+    private var factsBlock: LinearLayout? = null
+    private var researchControlBlock: LinearLayout? = null
+    private var conceptBlock: TextView? = null
+    private var publicationEventView: TextView? = null
+    private var renderedMessages: List<LiveChatMessage> = emptyList()
+    private var renderedResearchProgress: LiveResearchProgress? = null
+    private var micHalo: View? = null
+    private var micHaloPulse: ObjectAnimator? = null
+    private var lastDialogueMessageCount = 0
+
+    private val liveListener: (LiveUiState) -> Unit = { state ->
+        runOnUiThread { applyLiveState(state) }
+    }
+
+    private val changedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent?.getStringExtra(RecordingService.EXTRA_MESSAGE)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_SHORT).show() }
+            refreshSurface()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        activeStoryId = savedInstanceState?.getString("active_story_id")
+            ?: prefs.getString("active_story_id", null)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = SAGE
+        window.navigationBarColor = SAGE
+        pendingPhotoRecoveryStoryId = savedInstanceState?.getString("photo_recovery_story")
+        @Suppress("DEPRECATION")
+        val restoredPhotos = savedInstanceState?.getParcelableArrayList<Uri>("shared_photos")
+        pendingSharedPhotos = restoredPhotos
+        photoLocationRequestInFlight = savedInstanceState?.getBoolean("photo_location_request") ?: false
+        buildChrome()
+        val active = activeStoryId
+        if (active != null && store.story(active) != null) showTopic(active) else showTopics()
+        if (savedInstanceState == null) receiveSharedPhoto(intent)
+        else if (pendingSharedPhotos != null && !photoLocationRequestInFlight) launchPhotoPicker()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        receiveSharedPhoto(intent)
+    }
+
+    private fun receiveSharedPhoto(sharedIntent: Intent) {
+        if (sharedIntent.action != Intent.ACTION_SEND) return
+        // Consume this delivery, not the photo: recreation must not import again,
+        // but a second explicit share of the same URI must create another story.
+        val intake = runCatching { PhotoIntake.sharedPhotos(sharedIntent) }
+        // Keep action/type/component stable for Android lifecycle observers.
+        // Only consume the payload, after reading it into pending intake state.
+        sharedIntent.removeExtra(Intent.EXTRA_STREAM)
+        sharedIntent.clipData = null
+        setIntent(sharedIntent)
+        intake.onSuccess { photos ->
+            if (photos.isEmpty()) {
+                Toast.makeText(this, "Передайте одно фото из Галереи", Toast.LENGTH_LONG).show()
+                return@onSuccess
+            }
+            pendingPhotoRecoveryStoryId = null
+            pendingSharedPhotos = ArrayList(photos)
+            if (!photoLocationRequestInFlight) launchPhotoPicker()
+        }.onFailure { error -> Toast.makeText(this, error.message, Toast.LENGTH_LONG).show() }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter().apply {
+            addAction(RecordingService.ACTION_STATE_CHANGED)
+            addAction(SyncWorker.ACTION_STATE_CHANGED)
+        }
+        ContextCompat.registerReceiver(this, changedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        receiverRegistered = true
+        placeMapPanel?.start()
+        live.addListener(liveListener)
+        SyncScheduler.enqueue(this)
+        resumeUpdateAfterPermission()
+        maybeCheckForUpdate()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        placeMapPanel?.resume()
+    }
+
+    override fun onPause() {
+        placeMapPanel?.pause()
+        super.onPause()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        placeMapPanel?.lowMemory()
+    }
+
+    override fun onDestroy() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
+        super.onDestroy()
+    }
+
+    override fun onStop() {
+        placeMapPanel?.stop()
+        live.removeListener(liveListener)
+        if (receiverRegistered) {
+            unregisterReceiver(changedReceiver)
+            receiverRegistered = false
+        }
+        super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("active_story_id", activeStoryId)
+        outState.putString("photo_recovery_story", pendingPhotoRecoveryStoryId)
+        pendingSharedPhotos?.let { outState.putParcelableArrayList("shared_photos", it) }
+        outState.putBoolean("photo_location_request", photoLocationRequestInFlight)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Single-activity product navigation")
+    override fun onBackPressed() {
+        if (activeStoryId != null) showTopics() else super.onBackPressed()
+    }
+
+    private fun buildChrome() {
+        root = FrameLayout(this).apply { setBackgroundColor(SAGE); clipChildren = false; clipToPadding = false }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(0, bars.top, 0, bars.bottom)
+            insets
+        }
+        contentHost = FrameLayout(this)
+        root.addView(
+            contentHost,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ).apply { bottomMargin = 0 },
+        )
+        dock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = null
+            elevation = 0f
+            visibility = View.GONE
+            clipChildren = false
+            clipToPadding = false
+        }
+        root.addView(
+            dock,
+            FrameLayout.LayoutParams(dp(120), dp(120)).apply {
+                gravity = Gravity.END or Gravity.BOTTOM
+                rightMargin = dp(6)
+                bottomMargin = dp(16)
+            },
+        )
+        setContentView(root)
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    private fun showTopics() {
+        setActiveStory(null)
+        clearTopicRefs()
+        dock.visibility = View.GONE
+        (contentHost.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.bottomMargin = 0
+            contentHost.layoutParams = it
+        }
+        contentHost.removeAllViews()
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(18), dp(18), dp(150))
+        }
+        scroll.addView(column)
+        contentHost.addView(scroll)
+
+        val heading = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heading.addView(label("Темы", 30, INK, Typeface.DEFAULT_BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+        heading.addView(secondaryButton("Настройки") { showSettings() })
+        column.addView(heading)
+
+        buildNewTopicFab()
+
+        val stories = store.stories()
+        if (stories.isEmpty()) {
+            column.addView(
+                label(
+                    "Выберите фото за любую дату или поделитесь им из Галереи. Расскажите голосом, какой пост хотите получить.",
+                    15,
+                    MUTED,
+                    Typeface.DEFAULT,
+                ).apply { setPadding(0, dp(16), 0, 0) }
+            )
+        } else {
+            stories.forEach { story ->
+                column.addView(topicCard(story), blockMargins(bottom = 12))
+            }
+        }
+    }
+
+    private fun topicCard(story: StorySnapshot): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(PAPER, 20)
+            setPadding(dp(10), dp(10), dp(14), dp(10))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showTopic(story.clientStoryId) }
+        }
+        val image = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            ImagePreviewDecoder.decode(this@MainActivity, story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
+            background = rounded(SAGE_DARK, 14)
+            clipToOutline = true
+        }
+        row.addView(image, LinearLayout.LayoutParams(dp(74), dp(74)))
+
+        val text = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), 0, 0, 0)
+        }
+        text.addView(label(topicTitle(story), 17, INK, Typeface.DEFAULT_BOLD).apply { maxLines = 2 })
+        text.addView(
+            label(topicStatus(story), 13, statusColor(story.stage), Typeface.DEFAULT).apply {
+                setPadding(0, dp(6), 0, 0)
+                maxLines = 1
+            }
+        )
+        publicationLabel(research.get(story.clientStoryId)).takeIf { it.isNotBlank() }?.let { publication ->
+            text.addView(label(publication, 12, MUTED, Typeface.DEFAULT).apply {
+                setPadding(0, dp(4), 0, 0)
+                maxLines = 1
+            })
+        }
+        row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val delete = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_delete)
+            imageTintList = ColorStateList.valueOf(MUTED)
+            background = null
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            contentDescription = "delete-topic"
+            setOnClickListener { confirmDeleteTopic(story) }
+        }
+        row.addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)))
+        return row
+    }
+
+    private fun showTopic(storyId: String) {
+        val story = store.story(storyId) ?: run { showTopics(); return }
+        setActiveStory(storyId)
+        placeMapPanel?.dispose()
+        placeMapPanel = null
+        contentHost.removeAllViews()
+        shownImagePath = null
+        previewExpanded = true
+        lastDialogueMessageCount = 0
+        renderedMessages = emptyList()
+        renderedResearchProgress = null
+        stickyIsland = null; stickyImage = null; stickyTitle = null
+        stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
+        factsBlock = null; researchControlBlock = null; conceptBlock = null; publicationEventView = null
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            contentDescription = "topic-scroll"
+            // Never resize scroll content from a scroll callback: that used to
+            // reverse the scroll direction and repeatedly move the chat away.
+            setOnScrollChangeListener { _, _, _, _, _ -> updateStickyPhoto() }
+        }
+        topicScroll = scroll
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(158))
+        }
+        scroll.addView(column)
+        contentHost.addView(scroll)
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(
+            secondaryButton("‹ Темы") { showTopics() },
+            LinearLayout.LayoutParams(-2, dp(44)).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(8)
+            },
+        )
+        topicTitleView = label("Тема", 20, INK, Typeface.DEFAULT_BOLD).apply {
+            maxLines = 2
+            setPadding(dp(10), 0, 0, 0)
+        }
+        header.addView(topicTitleView, LinearLayout.LayoutParams(0, -2, 1f))
+        column.addView(header, blockMargins(bottom = 4))
+
+        topicStatusView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+            setPadding(0, dp(11), 0, dp(8))
+            visibility = View.GONE
+        }
+        photoRecoveryButton = secondaryButton("Выбрать оригинал с геометкой") {
+            pendingPhotoRecoveryStoryId = story.clientStoryId
+            stopLiveForOwner(story.clientStoryId)
+            launchPhotoPicker()
+        }.apply { visibility = View.GONE; contentDescription = "recover-photo-gps" }
+        column.addView(photoRecoveryButton)
+        identityLinkView = label("", 14, ACCENT, Typeface.DEFAULT).apply {
+            visibility = View.GONE
+            setPadding(0, dp(4), 0, dp(8))
+            contentDescription = "identified-object-source"
+        }
+
+        previewImage = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(SAGE_DARK, 22)
+            clipToOutline = true
+            contentDescription = "publication-image"
+            setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
+        }
+        val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
+        val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
+        column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(photoHeight)))
+        photoFormatChoices = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            contentDescription = "photo-format-choice"
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_ORIGINAL; text = "Оригинал" })
+            addView(RadioButton(this@MainActivity).apply { id = PHOTO_CROP; text = "4:5" })
+            setOnCheckedChangeListener { _, selected ->
+                if (!updatingPhotoFormat) selectPhotoFormat(storyId, if (selected == PHOTO_CROP) "crop_4_5" else "original")
+            }
+        }
+        column.addView(photoFormatChoices, blockMargins(top = 4))
+        placeMapPanel = PlaceMapPanel(this, storyId, store, research, config, { navigateOwnerPlace(storyId) }, { markOwnerPlaceUnknown(storyId) }, {
+            requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.")
+        })
+        column.addView(placeMapPanel, blockMargins(top = 8))
+        column.addView(identityLinkView, blockMargins(top = 8))
+        column.addView(topicStatusView)
+        identityProgressView = label("", 13, INK, Typeface.DEFAULT).apply {
+            contentDescription = "identity-progress"
+            visibility = View.GONE
+            background = rounded(PAPER, 14)
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+        }
+        column.addView(identityProgressView)
+
+        chatBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = null
+            setPadding(0, dp(10), 0, dp(11))
+            contentDescription = "live-chat"
+        }
+        chatBox?.addView(label("Разговор с Мирой", 14, INK, Typeface.DEFAULT_BOLD))
+        chatMessages = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        chatBox?.addView(chatMessages)
+        chatStatus = label("Микрофон выключен", 13, MUTED, Typeface.DEFAULT).apply {
+            setPadding(dp(2), dp(7), dp(2), 0)
+            contentDescription = "live-chat-status"
+        }
+        chatBox?.addView(chatStatus)
+
+        researchControlBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            contentDescription = "research-control"
+            setPadding(dp(4), dp(10), dp(4), dp(8))
+        }
+        chatBox?.addView(researchControlBlock)
+
+        factsBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            contentDescription = "facts-island-expanded"
+            background = rounded(PAPER, 18)
+            setPadding(dp(12), dp(12), dp(12), dp(10))
+        }
+        chatBox?.addView(factsBlock)
+
+        conceptBlock = label("", 15, INK, Typeface.DEFAULT).apply {
+            background = rounded(PAPER, 16)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            visibility = View.GONE
+            contentDescription = "concept-island-expanded"
+        }
+        chatBox?.addView(conceptBlock, blockMargins(top = 10))
+
+        column.addView(chatBox, blockMargins(top = 12))
+        column.addView(secondaryButton("Черновик с Мирой") { editOwnerDraft(storyId) }.apply {
+            contentDescription = "owner-save-draft"
+        }, blockMargins(top = 8))
+        ownerVisualButton = secondaryButton("Создать визуал") { createOwnerVisual(storyId) }.apply {
+            contentDescription = "owner-create-visual"
+            visibility = View.GONE
+        }
+        column.addView(ownerVisualButton, blockMargins(top = 8))
+
+        literalBanner = label(
+            "Дословная диктовка · ещё не применено",
+            13,
+            ACCENT,
+            Typeface.DEFAULT_BOLD,
+        ).apply {
+            background = rounded(0xffffeee8.toInt(), 14)
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+            visibility = View.GONE
+        }
+        column.addView(literalBanner, blockMargins(top = 12))
+
+        previewText = label("", 16, INK, Typeface.DEFAULT).apply {
+            setLineSpacing(dp(3).toFloat(), 1.06f)
+            background = rounded(PAPER, 16)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            contentDescription = "publication-preview-chat"
+            visibility = View.GONE
+        }
+        chatBox?.addView(previewText, blockMargins(top = 10))
+
+        publicationEventView = label("", 14, MUTED, Typeface.DEFAULT_BOLD).apply {
+            background = rounded(0xffe9e6df.toInt(), 14)
+            setPadding(dp(11), dp(9), dp(11), dp(9))
+            visibility = View.GONE
+            contentDescription = "publication-event"
+        }
+        chatBox?.addView(publicationEventView, blockMargins(top = 8))
+
+        lastChangeView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+            setPadding(dp(4), dp(9), dp(4), 0)
+            visibility = View.GONE
+        }
+        column.addView(lastChangeView)
+
+        sourceButton = null
+        undoButton = secondaryButton("Отменить") {
+            if (live.isActiveFor(storyId)) live.sendText("Верни предыдущую правку.")
+        }.apply {
+            contentDescription = "undo"
+            visibility = View.GONE
+        }
+        column.addView(undoButton, blockMargins(top = 10))
+
+        publishButton = primaryButton("Опубликовать") {
+            val current = store.story(storyId) ?: return@primaryButton
+            if (!live.isActiveFor(storyId)) {
+                Toast.makeText(this, "Включите Live, чтобы продолжить голосом", Toast.LENGTH_SHORT).show()
+            } else if (current.stage == StoryStage.SCHEDULED) {
+                live.sendText("Отмени текущую запланированную публикацию.")
+            } else {
+                live.sendText(
+                    "Хочу опубликовать именно этот текущий вариант. " +
+                        "Если не хватает канала, даты или времени — коротко спроси меня."
+                )
+            }
+        }.apply { contentDescription = "publish-action" }
+        column.addView(publishButton, blockMargins(top = 14))
+
+        confirmationBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(0xfff1efe8.toInt(), 18)
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            visibility = View.GONE
+            contentDescription = "publication-confirmation"
+        }
+        chatBox?.addView(confirmationBox, blockMargins(top = 10))
+
+        buildStickyPhoto()
+        buildDock(storyId)
+        refreshTopicDetail()
+        applyLiveState(live.snapshot())
+    }
+
+    private fun buildDock(storyId: String) {
+        dock.removeAllViews()
+        dock.visibility = View.VISIBLE
+        (contentHost.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.bottomMargin = 0
+            contentHost.layoutParams = it
+        }
+        micButton = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_mic)
+            imageTintList = ColorStateList.valueOf(PAPER)
+            background = oval(INK)
+            elevation = dp(8).toFloat()
+            setPadding(dp(21), dp(21), dp(21), dp(21))
+            contentDescription = "live-mic"
+            setOnClickListener { toggleLive(storyId) }
+        }
+        val pulseIsland = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
+        micHalo = View(this).apply { background = oval(ACCENT); alpha = .12f; visibility = View.INVISIBLE }
+        pulseIsland.addView(micHalo, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
+        pulseIsland.addView(micButton, FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER))
+        dock.addView(pulseIsland, LinearLayout.LayoutParams(dp(120), dp(120)))
+    }
+
+    private fun refreshSurface() {
+        if (activeStoryId == null) showTopics() else refreshTopicDetail()
+    }
+
+    private fun refreshTopicDetail() {
+        val id = activeStoryId ?: return
+        placeMapPanel?.refresh()
+        continueOwnerConversation()
+        live.restoreMessages(id)
+        val story = store.story(id) ?: run { showTopics(); return }
+
+        topicTitleView?.text = "Тема"
+        dockTopic?.text = "Тема · ${topicTitle(story)}"
+
+        val meaningful = story.stage in setOf(
+            StoryStage.IDENTIFYING,
+            StoryStage.IDENTITY_READY,
+            StoryStage.RESEARCHING,
+            StoryStage.VISUAL_PROCESSING,
+            StoryStage.SCHEDULING,
+            StoryStage.SCHEDULED,
+            StoryStage.PUBLISHED,
+            StoryStage.NEEDS_REVIEW,
+            StoryStage.VISUAL_BLOCKED,
+        ) || story.previewOutdated || !story.lastError.isNullOrBlank()
+        topicStatusView?.apply {
+            val ownerError = ownerVisibleStoryError(story.lastError)
+            text = ownerError ?: topicStatus(story)
+            setTextColor(if (ownerError != null) ACCENT else statusColor(story.stage))
+            visibility = if (meaningful) View.VISIBLE else View.GONE
+        }
+
+        val pendingFormat = store.pendingOperations(id).lastOrNull { it.kind == "photo-format" }
+        val selectedFormat = pendingFormat?.let {
+            runCatching { gson.fromJson(it.payloadJson, PhotoFormatWire::class.java) }.getOrNull()
+        } ?: research.get(id)?.visualPhotoFormat
+        updatingPhotoFormat = true
+        photoFormatChoices?.check(if (selectedFormat?.mode == "crop_4_5") PHOTO_CROP else PHOTO_ORIGINAL)
+        photoFormatChoices?.isEnabled = pendingFormat == null
+        for (index in 0 until (photoFormatChoices?.childCount ?: 0)) photoFormatChoices?.getChildAt(index)?.isEnabled = pendingFormat == null
+        updatingPhotoFormat = false
+        val processed = pendingFormat == null && (selectedFormat == null || selectedFormat.currentVisual)
+        val imagePath = story.processedImagePath?.takeIf { processed && PhotoAssets.available(it) } ?: story.photoPath
+        val imageKey = imagePath + ":" + gson.toJson(selectedFormat)
+        if (shownImagePath != imageKey) {
+            shownImagePath = imageKey
+            val format = if (imagePath == story.photoPath) selectedFormat else null
+            previewImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 1200, 1000, format))
+            stickyImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 240, 320, format))
+        }
+
+        previewText?.apply {
+            val draft = story.draftText?.takeIf { it.isNotBlank() }
+            // Named map links show as their labels, as in the published post.
+            text = draft?.let(MarkdownLite::render) ?: ""
+            movementMethod = LinkMovementMethod.getInstance()
+            visibility = if (draft == null) View.GONE else View.VISIBLE
+        }
+
+        val projection = research.get(id)
+        photoRecoveryButton?.apply {
+            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE ||
+                (projection?.photoSha256 == story.photoSha256 && projection?.sourceAvailable == false && !PhotoAssets.available(story.photoPath))
+            text = if (sourceMissing) "Повторно открыть исходное фото" else "Выбрать оригинал с геометкой"
+            visibility = if (sourceMissing || ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW)) View.VISIBLE else View.GONE
+        }
+        renderResearchControls(id, projection)
+        renderFactsIsland(id)
+        conceptBlock?.apply {
+            val concept = projection?.publicationConcept.orEmpty()
+            text = if (concept.isBlank()) "" else "Концепция\n$concept"
+            visibility = if (concept.isBlank()) View.GONE else View.VISIBLE
+        }
+        val liveProgress = live.snapshot().takeIf { it.storyId == id }?.identityProgress
+        renderIdentityProgress(newestIdentityProgress(projection?.identityProgress, liveProgress),
+            story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING) &&
+                projection?.researchControls?.get("identity")?.stopped != true)
+        val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
+        identityLinkView?.apply {
+            val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
+            text = if (identified != null) (if(accepted) "${identified.name} ↗" else "Вероятно: ${identified.name} · пока не доказано ↗") else ""
+            visibility = if (text.isNotBlank()) View.VISIBLE else View.GONE
+            setOnClickListener {
+                val uri = identified?.url?.let(Uri::parse)
+                if (uri?.scheme == "https" && (uri.host == "www.openstreetmap.org" || uri.host?.endsWith(".wikipedia.org") == true))
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+            }
+        }
+        sourceButton?.apply {
+            val count = projection?.sourceCount ?: 0
+            text = "Источники · $count"
+            visibility = if (count > 0) View.VISIBLE else View.GONE
+        }
+        stickyTitle?.text = identified?.let { if(projection?.identityStatus in setOf("match", "owner_confirmed")) it.name else "Вероятно: ${it.name}" } ?: topicTitle(story)
+        stickyTitle?.setOnClickListener { identityLinkView?.performClick() }
+        val facts = store.facts(id)
+        stickyFacts?.apply {
+            val selected = facts.count { it.selected && it.evidenceSupported }
+            text = if (facts.isEmpty()) "" else "Факты · $selected/${facts.size}"
+            visibility = if (facts.isEmpty()) View.GONE else View.VISIBLE
+            setOnClickListener { factsBlock?.let(::scrollToSection) }
+        }
+        stickyConcept?.apply {
+            val concept = projection?.publicationConcept.orEmpty()
+            text = if (concept.isBlank()) "" else "Концепция · ${concept.take(70)}"
+            visibility = if (concept.isBlank()) View.GONE else View.VISIBLE
+            setOnClickListener { conceptBlock?.let(::scrollToSection) }
+        }
+        publicationEventView?.apply {
+            text = publicationLabel(projection)
+            visibility = if (text.isBlank()) View.GONE else View.VISIBLE
+        }
+        updateStickyPhoto()
+
+        val visualScope = OwnerVisualRequest.capture(story, projection, facts, PhotoAssets.available(story.photoPath))
+        if (ownerVisualRequest != visualScope) ownerVisualRequest = null
+        ownerVisualButton?.apply {
+            visibility = if (visualScope != null) View.VISIBLE else View.GONE
+            isEnabled = visualScope != null && ownerVisualRequest == null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+            text = if (ownerVisualRequest != null) "Визуал запрошен" else "Создать визуал"
+        }
+
+        publishButton?.apply {
+            val hasResult = !story.draftText.isNullOrBlank() &&
+                (!story.processedImagePath.isNullOrBlank() || story.stage == StoryStage.SCHEDULED)
+            visibility = if (hasResult) View.VISIBLE else View.GONE
+            text = if (story.stage == StoryStage.SCHEDULED) "Отменить публикацию" else "Опубликовать"
+        }
+        applyLiveState(live.snapshot())
+    }
+
+    private fun renderIdentityProgress(progress: IdentityProgressWire?, waiting: Boolean) {
+        val storyId = activeStoryId
+        val projection = storyId?.let(research::get)
+        val ownerMapMode = projection?.identityMode == "manual" || (projection == null && placeMapPanel != null)
+        val explicitRecognition = projection?.researchPending?.get("identity") == true ||
+            storyId?.let { store.pendingOperations(it).any { operation -> operation.kind == "identity" } } == true
+        if (ownerMapMode && !explicitRecognition) {
+            identityProgressView?.visibility = View.GONE
+            stickyComparison?.visibility = View.GONE
+            return
+        }
+        stickyComparison?.apply {
+            text = progress?.let {
+                "${if (it.visualComparisonVerified) "☑" else "☐"} Визуальное сравнение\nПросмотрено иллюстраций: ${it.imagesReviewedCount}"
+            }.orEmpty()
+            visibility = if (progress != null) View.VISIBLE else View.GONE
+        }
+        identityProgressView?.apply {
+            val lines = progress?.steps?.map { step ->
+                val mark = if (step.key == "visual_comparison") {
+                    if (progress.visualComparisonVerified) "☑" else "☐"
+                } else when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
+                "$mark ${step.label}"
+            } ?: emptyList()
+            val visibleLines = if (lines.isNotEmpty()) lines else if (waiting) listOf(
+                "… Проверяю геометки снимка",
+                "○ Ищу объекты рядом",
+                "○ Проверяю статьи и эталонные фото",
+                "○ Сравниваю видимые признаки",
+            ) else emptyList()
+            val summary = visibleLines.joinToString(10.toChar().toString()) +
+                if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
+            if(text.toString() != summary) text = summary
+            visibility = if(summary.isNotBlank()) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun applyLiveState(state: LiveUiState) {
+        val id = activeStoryId ?: return
+        if (ownerVisualSent && !state.active && !state.connecting) {
+            ownerVisualSent = false
+            ownerVisualRequest = null
+            ownerVisualButton?.text = "Создать визуал"
+            ownerVisualButton?.isEnabled = OwnerVisualRequest.capture(store.story(id), research.get(id), store.facts(id),
+                store.story(id)?.let { PhotoAssets.available(it.photoPath) } == true) != null &&
+                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        }
+        if (state.storyId != null && state.storyId != id) {
+            dockStatus?.text = "Live идёт в другой теме"
+            chatStatus?.text = "• Live идёт в другой теме"
+            stopMicPulse()
+            return
+        }
+
+        if (state.identityProgress != null && state.identityProgress !== lastLiveIdentityProgress) {
+            lastLiveIdentityProgress = state.identityProgress
+            renderIdentityProgress(newestIdentityProgress(research.get(id)?.identityProgress, state.identityProgress),
+                store.story(id)?.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING))
+        }
+        chatStatus?.apply {
+            val microphone = state.microphone?.takeIf { state.active && !it.inputSuppressed }
+            val label = microphone?.warning ?: state.status
+            val meter = microphone?.let { "  " + "●".repeat(it.level) + "○".repeat(4 - it.level) }.orEmpty()
+            text = if (state.error.isNullOrBlank()) "• $label$meter" else "⚠ ${state.error}"
+            contentDescription = state.error ?: (label + microphone?.let { ". Уровень микрофона ${it.level} из 4" }.orEmpty())
+            setTextColor(if (state.error.isNullOrBlank() && microphone?.warning == null) MUTED else ACCENT)
+        }
+        if (state.researchProgress != renderedResearchProgress) {
+            renderedResearchProgress = state.researchProgress
+            renderFactsIsland(id)
+        }
+        val scroll = topicScroll
+        val nearEnd = scroll == null || (scroll.getChildAt(0)?.height ?: 0) - scroll.scrollY - scroll.height <= dp(180)
+        val changed = state.messages != renderedMessages
+        val dialogueCount = state.messages.count { it.role == LiveRole.USER || it.role == LiveRole.ASSISTANT }
+        renderLiveMessages(state.messages)
+        if (changed && (nearEnd || lastDialogueMessageCount == 0 && dialogueCount > 0)) {
+            scroll?.post { scroll.smoothScrollTo(0, ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)) }
+        }
+        lastDialogueMessageCount = dialogueCount
+        micButton?.apply {
+            background = oval(if (state.active || state.connecting) ACCENT else INK)
+            contentDescription = if (state.active) "live-stop" else "live-mic"
+        }
+        updateMicPulse(state.inputActive)
+        literalBanner?.visibility = if (state.literalMode) View.VISIBLE else View.GONE
+
+        val change = state.lastChange?.takeIf { it.isNotBlank() }
+        lastChangeView?.apply {
+            text = change.orEmpty()
+            visibility = if (change == null) View.GONE else View.VISIBLE
+        }
+        undoButton?.visibility = if (state.active && change != null) View.VISIBLE else View.GONE
+
+        confirmationBox?.apply {
+            removeAllViews()
+            val confirmation = state.confirmation
+            if (confirmation == null) {
+                visibility = View.GONE
+            } else {
+                visibility = View.VISIBLE
+                addView(label("Проверь публикацию", 16, INK, Typeface.DEFAULT_BOLD))
+                if (confirmation.destinations.isNotEmpty()) {
+                    addView(
+                        label(
+                            confirmation.destinations.joinToString(", "),
+                            13,
+                            MUTED,
+                            Typeface.DEFAULT,
+                        ).apply { setPadding(0, dp(5), 0, 0) }
+                    )
+                }
+                addView(
+                    label(
+                        "${confirmation.scheduledFor.orEmpty()} · ${confirmation.timezone.orEmpty()}",
+                        13,
+                        MUTED,
+                        Typeface.DEFAULT,
+                    ).apply { setPadding(0, dp(3), 0, 0) }
+                )
+                confirmation.text?.takeIf { it.isNotBlank() }?.let {
+                    addView(
+                        label(it, 14, INK, Typeface.DEFAULT).apply {
+                            setPadding(0, dp(10), 0, dp(8))
+                            maxLines = 6
+                        }
+                    )
+                }
+                addView(
+                    primaryButton("Подтвердить") {
+                        if (live.isActiveFor(id)) {
+                            live.sendText("Подтверждаю именно показанную карточку публикации.")
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private fun toggleLive(storyId: String) {
+        val current = live.snapshot()
+        if (current.active || current.connecting || pendingLiveStoryId == storyId) {
+            if (current.storyId == storyId || pendingLiveStoryId == storyId) {
+                stopLiveForOwner(storyId)
+            } else {
+                current.storyId?.let(::showTopic)
+            }
+            return
+        }
+        if (!config.configured) {
+            showSettings()
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pendingLiveStoryId = storyId
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            return
+        }
+        startLive(storyId)
+    }
+
+    private fun stopLiveForOwner(storyId: String) {
+        // Stop does not depend on an archive, successful handshake or server reply.
+        pendingLiveStoryId = null
+        clearOwnerConversation()
+        live.stopLocal()
+        RecordingService.command(this, RecordingService.ACTION_TRANSPORT_FINISH)
+    }
+
+    private fun startLive(storyId: String) {
+        pendingLiveStoryId = null
+        live.start(storyId) { ready, error ->
+            runOnUiThread {
+                if (ready && live.isActiveFor(storyId) && !live.snapshot().connecting) {
+                    RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
+                    continueOwnerConversation()
+                } else if (!error.isNullOrBlank()) {
+                    clearOwnerConversation()
+                    Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_PHOTO_LOCATION) {
+            photoLocationRequestInFlight = false
+            continuePhotoIntake()
+            return
+        }
+        if (requestCode != REQUEST_MIC) return
+        val storyId = pendingLiveStoryId
+        pendingLiveStoryId = null
+        if (storyId == null) return
+        if (ownerConversation?.let { !it.matches(activeStoryId, store.story(it.storyId), research.get(it.storyId)) } == true) {
+            clearOwnerConversation(); return
+        }
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            startLive(storyId)
+        } else {
+            clearOwnerConversation()
+            Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun launchPhotoPicker() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            continuePhotoIntake()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Геометки выбранного фото")
+            .setMessage("Для поиска объекта нужны координаты внутри исходного фото. Разрешение относится к метаданным выбранного файла, не к вашей текущей геопозиции.")
+            .setPositiveButton("Продолжить") { _, _ ->
+                photoLocationRequestInFlight = true
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_PHOTO_LOCATION)
+            }
+            .setNegativeButton("Выбрать оригинал") { _, _ -> continuePhotoIntake() }
+            .setOnCancelListener { pendingSharedPhotos = null; pendingPhotoRecoveryStoryId = null }
+            .show()
+    }
+
+    private fun continuePhotoIntake() {
+        val shared = pendingSharedPhotos
+        pendingSharedPhotos = null
+        if (shared != null) importSelectedPhotos(shared, null) else openOriginalPhotoPicker()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openOriginalPhotoPicker() {
+        val picker = PhotoIntake.documentIntent()
+        startActivityForResult(picker, REQUEST_PHOTO)
+    }
+
+    @Deprecated("Small standalone MVP activity result path")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PHOTO) return
+        val recoveryId = pendingPhotoRecoveryStoryId
+        pendingPhotoRecoveryStoryId = null
+        if (resultCode != RESULT_OK) return
+        runCatching { PhotoIntake.pickedPhotos(data) }
+            .onSuccess { photos -> if (photos.isNotEmpty()) importSelectedPhotos(photos, recoveryId) }
+            .onFailure { error -> Toast.makeText(this, error.message, Toast.LENGTH_LONG).show() }
+    }
+
+    private fun importSelectedPhotos(photos: List<Uri>, recoveryId: String?) {
+        // The intake contract already carries a list (future limit: nine). The
+        // current story/backend has one SOURCE, so do not fan out a multi-photo
+        // selection into unrelated stories or silently drop extra images.
+        val uri = PhotoIntake.checked(photos).single()
+        Thread {
+            var imported: ImportedPhoto? = null
+            runCatching {
+                val photo = PhotoImporter.import(this, uri)
+                imported = photo
+                PhotoIntake.requireGps(photo)
+                if (recoveryId != null) {
+                    val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
+                    val sourceMissing = existing.lastError == SOURCE_UNAVAILABLE_MESSAGE
+                    val server = existing.serverStoryId
+                    val api = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)) { PhotoAssets.open(this, it) }
+                    if (!sourceMissing || !server.isNullOrBlank()) {
+                        val restored = if (sourceMissing) api.createStory(existing.copy(photoPath = photo.path))
+                            else api.recoverPhotoLocation(requireNotNull(server) { "Дождитесь синхронизации темы" }, existing.photoSha256, photo)
+                        check(restored.id == server) { "Backend вернул другую тему" }
+                    }
+                    store.setPhotoSourcePath(recoveryId, photo.path)
+                    store.setStage(recoveryId, existing.stage)
+                    if (!server.isNullOrBlank()) PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { payload ->
+                        runCatching { api.photoDiagnostic(server, payload) }
+                    }
+                    recoveryId
+                } else {
+                    store.createStory(photo)
+                    photo.clientStoryId
+                }
+            }.onSuccess { storyId ->
+                runOnUiThread {
+                    SyncScheduler.enqueue(this)
+                    showTopic(storyId)
+                }
+            }.onFailure { exc ->
+                imported?.let { photo ->
+                    PhotoAssets.releaseTemporary(photo.path)
+                    PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
+                }
+                runOnUiThread {
+                    if (exc.message == PhotoIntake.GPS_REQUIRED_MESSAGE) {
+                        AlertDialog.Builder(this).setMessage(PhotoIntake.GPS_REQUIRED_MESSAGE).setPositiveButton("Понятно", null).show()
+                    } else Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+            if (recoveryId != null) imported?.let { photo ->
+                PhotoAssets.releaseTemporary(photo.path)
+                PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
+            }
+        }.start()
+    }
+
+    private fun showSources(storyId: String) {
+        val facts = store.facts(storyId)
+        val projection = research.get(storyId)
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+        }
+        val boxes = mutableListOf<Pair<FactSnapshot, CheckBox>>()
+
+        facts.forEach { fact ->
+            val box = CheckBox(this).apply {
+                text = fact.text
+                isChecked = fact.selected
+                isEnabled = fact.evidenceSupported
+                setTextColor(if (fact.evidenceSupported) INK else MUTED)
+                textSize = 14f
+            }
+            boxes += fact to box
+            wrap.addView(box)
+        }
+        projection?.sources?.takeIf { it.isNotEmpty() }?.let { sources ->
+            wrap.addView(
+                label("Источники", 15, INK, Typeface.DEFAULT_BOLD).apply {
+                    setPadding(0, dp(14), 0, dp(4))
+                }
+            )
+            sources.forEach { source ->
+                wrap.addView(
+                    label(
+                        "${source.title}\n${source.url}",
+                        12,
+                        MUTED,
+                        Typeface.DEFAULT,
+                    ).apply {
+                        autoLinkMask = Linkify.WEB_URLS
+                        movementMethod = LinkMovementMethod.getInstance()
+                        setPadding(0, dp(5), 0, dp(5))
+                    }
+                )
+            }
+        }
+
+        val scroll = ScrollView(this).apply { addView(wrap) }
+        AlertDialog.Builder(this)
+            .setTitle("Факты и источники")
+            .setView(scroll)
+            .setPositiveButton("Применить") { _, _ ->
+                val selected = boxes
+                    .filter { (fact, box) -> fact.evidenceSupported && box.isChecked }
+                    .map { it.first.factId }
+                boxes.forEach { (fact, box) ->
+                    store.setFactSelected(storyId, fact.factId, fact.evidenceSupported && box.isChecked)
+                }
+                store.enqueueOperation(
+                    storyId,
+                    "facts",
+                    newRequestKey("facts-ui", "$storyId-${System.currentTimeMillis()}"),
+                    gson.toJson(
+                        mapOf(
+                            "selected_fact_ids" to selected,
+                            "preserve_draft" to true,
+                        )
+                    ),
+                )
+                SyncScheduler.enqueue(this)
+                if (live.isActiveFor(storyId)) {
+                    live.sendText(
+                        "Я вручную изменил выбор фактов. Прочитай текущее состояние темы; " +
+                            "не переписывай текст без отдельной просьбы."
+                    )
+                }
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun showConflictJournal(storyId: String, cursor: Long? = null) {
+        val local = store.story(storyId) ?: return
+        val base = config.backendUrl
+        val token = config.deviceToken
+        val server = local.serverStoryId
+        fun displayCached() {
+            val saved = research.conflictJournal(storyId)
+            val generation = research.get(storyId)?.identityGeneration
+            if (saved != null && saved.photoSha256 == local.photoSha256 &&
+                (generation == null || generation == saved.identityGeneration)) drawConflictJournal(storyId, saved, true)
+            else Toast.makeText(this, "Сохранённого журнала пока нет", Toast.LENGTH_LONG).show()
+        }
+        if (base.isNullOrBlank() || token.isNullOrBlank() || server.isNullOrBlank()) { displayCached(); return }
+        Toast.makeText(this, "Читаем журнал противоречий", Toast.LENGTH_SHORT).show()
+        Thread {
+            runCatching { ApiClient(base, token).conflictJournal(server, cursor) }.onSuccess { journal ->
+                runOnUiThread {
+                    val current = store.story(storyId)
+                    val generation = research.get(storyId)?.identityGeneration
+                    if (activeStoryId != storyId || current == null || current.photoSha256 != journal.photoSha256 ||
+                        current.serverStoryId != journal.storyId || (generation != null && generation != journal.identityGeneration)) return@runOnUiThread
+                    research.replaceConflictJournal(storyId, journal, append = cursor != null)
+                    drawConflictJournal(storyId, requireNotNull(research.conflictJournal(storyId)), false)
+                }
+            }.onFailure {
+                runOnUiThread { if (activeStoryId == storyId) displayCached() }
+            }
+        }.start()
+    }
+
+    private fun drawConflictJournal(storyId: String, journal: ConflictJournalWire, saved: Boolean) {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(12)) }
+        if (saved) wrap.addView(label("Сохранённый журнал · текущий серверный статус недоступен", 12, MUTED, Typeface.DEFAULT))
+        if (journal.items.isEmpty()) wrap.addView(label("Сохранённых противоречий нет", 14, INK, Typeface.DEFAULT))
+        journal.items.forEach { conflict ->
+            wrap.addView(label(conflict.reason, 15, INK, Typeface.DEFAULT_BOLD))
+            conflict.poiKey?.let { wrap.addView(label("Объект: $it", 12, MUTED, Typeface.DEFAULT)) }
+            listOf("Первая версия" to conflict.left, "Вторая версия" to conflict.right).forEach { (title, side) ->
+                wrap.addView(label("$title\n${side.text}", 14, INK, Typeface.DEFAULT))
+                val support = FactPresentation.sourceDetails(side.sources)
+                wrap.addView(label(if (support.isBlank()) "Собственные опоры не сохранены" else support, 12, MUTED, Typeface.DEFAULT).apply {
+                    setTextIsSelectable(true); setPadding(0, dp(4), 0, dp(8))
+                })
+                side.recordedRevisionDigest?.takeIf { it.isNotBlank() }?.let {
+                    wrap.addView(label("Редакция при записи: $it", 11, MUTED, Typeface.DEFAULT))
+                }
+                if (side.currentRevisionDigest != side.recordedRevisionDigest) {
+                    wrap.addView(label("Текущая редакция опор: ${side.currentRevisionDigest ?: "не сохранена"}", 11, MUTED, Typeface.DEFAULT))
+                }
+            }
+            wrap.addView(label("Решение: ${conflictResolution(conflict.resolution)}\n${conflict.resolutionReason.orEmpty()}", 14, INK, Typeface.DEFAULT))
+            conflict.arbitrationEvents.forEach { event ->
+                wrap.addView(label("${conflictTime(event.createdAt)} · ${event.arbitratedBy}\n${conflictResolution(event.resolution)} · ${event.state}\n${event.reason}", 12, MUTED, Typeface.DEFAULT))
+            }
+            wrap.addView(label("Записано ${conflictTime(conflict.firstSeenAt)} · обновлено ${conflictTime(conflict.lastSeenAt)}", 11, MUTED, Typeface.DEFAULT))
+            wrap.addView(secondaryButton("Уточнить с Мирой") { discussConflict(storyId, journal, conflict) }.apply { isEnabled = !saved })
+        }
+        lateinit var dialog: AlertDialog
+        if (journal.hasMore && !saved) wrap.addView(secondaryButton("Следующие записи") {
+            dialog.dismiss(); showConflictJournal(storyId, journal.nextCursor)
+        })
+        dialog = AlertDialog.Builder(this).setTitle("Противоречия и решения")
+            .setView(ScrollView(this).apply { addView(wrap) }).setPositiveButton("Закрыть", null).create()
+        dialog.show()
+    }
+
+    private fun conflictResolution(value: String): String = when (value) {
+        "prefer_left" -> "Предпочтена первая версия"
+        "prefer_right" -> "Предпочтена вторая версия"
+        "both_valid" -> "Обе версии действительны в своих границах"
+        else -> "Не разрешено"
+    }
+
+    private fun conflictTime(value: Double): String = if (value > 0) DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+        .withZone(ZoneId.systemDefault()).format(Instant.ofEpochSecond(value.toLong())) else "время не указано"
+
+    private fun discussConflict(storyId: String, journal: ConflictJournalWire, conflict: FactConflictWire) {
+        val scope = research.get(storyId) ?: return
+        val revision = scope.researchControls?.get("facts")?.revision
+        fun current(): Boolean = activeStoryId == storyId && store.story(storyId)?.photoSha256 == journal.photoSha256 &&
+            research.get(storyId)?.identityGeneration == journal.identityGeneration &&
+            research.get(storyId)?.researchControls?.get("facts")?.revision == revision
+        if (!current()) { SyncScheduler.enqueue(this); return }
+        val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
+            "Обсуди уточнение с автором голосом. Прочитай источники обеих версий и сохрани обоснованное решение либо оставь противоречие неразрешённым. " +
+            "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование."
+        requestOwnerConversation(storyId, request) { current() }
+    }
+
+    private fun createOwnerVisual(storyId: String) {
+        val story = store.story(storyId) ?: return
+        val request = OwnerVisualRequest.capture(story, research.get(storyId), store.facts(storyId), PhotoAssets.available(story.photoPath)) ?: return
+        fun current(): Boolean = request.matches(activeStoryId, store.story(storyId), research.get(storyId), store.facts(storyId),
+            store.story(storyId)?.let { PhotoAssets.available(it.photoPath) } == true) &&
+            store.pendingOperations(storyId).none { it.kind in setOf("place", "facts", "draft", "visual") }
+        if (!current() || ownerVisualRequest != null) return
+        ownerVisualRequest = request
+        ownerVisualSent = false
+        refreshTopicDetail()
+        fun send() {
+            if (current() && live.isActiveFor(storyId)) {
+                ownerVisualSent = true
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=requested story_id=$storyId generation=${request.generation} selected_fact_count=${request.selectedFacts.size}")
+                live.sendText("Создай визуал для текущего сохранённого черновика из оригинальной фотографии этого сюжета. " +
+                    "Используй только текущие выбранные подтверждённые факты: ${request.selectedFacts.joinToString(", ") { it.first }}. " +
+                    "Сохрани текст черновика и авторский выбор фактов. Покажи результат для проверки. Ничего не публикуй и не планируй публикацию.")
+            } else {
+                android.util.Log.i("StreetStoryOwnerVisual", "stage=not_sent story_id=$storyId reason=scope_or_session_changed")
+                ownerVisualRequest = null
+                refreshTopicDetail()
+            }
+        }
+        if (live.isActiveFor(storyId)) send() else live.start(storyId) { ready, error ->
+            runOnUiThread {
+                if (ready) send() else {
+                    ownerVisualRequest = null
+                    refreshTopicDetail()
+                    if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun maybeCheckForUpdate() {
+        val now = System.currentTimeMillis()
+        val last = prefs.getLong("update_checked_at", 0L)
+        if (now - last < UPDATE_INTERVAL_MS) return
+        checkForUpdate(showUpToDate = false)
+    }
+
+    private fun checkForUpdate(showUpToDate: Boolean) {
+        if (updateCheckInFlight) return
+        updateCheckInFlight = true
+        prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
+        AppUpdater.checkLatest(BuildConfig.VERSION_CODE) { result ->
+            runOnUiThread {
+                updateCheckInFlight = false
+                result.onSuccess { info ->
+                    if (info == null) {
+                        if (showUpToDate) {
+                            Toast.makeText(
+                                this,
+                                "Установлена актуальная версия ${BuildConfig.VERSION_NAME}",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("Есть новая версия")
+                            .setMessage(
+                                "Street Story ${info.versionName} готова. " +
+                                    "Обновление скачивается из официального GitHub Release проекта."
+                            )
+                            .setPositiveButton("Обновить") { _, _ -> beginUpdate(info) }
+                            .setNegativeButton("Позже", null)
+                            .show()
+                    }
+                }.onFailure { exc ->
+                    if (showUpToDate) {
+                        Toast.makeText(
+                            this,
+                            "Не удалось проверить обновление: ${exc.message ?: "ошибка сети"}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun beginUpdate(info: UpdateInfo) {
+        pendingUpdate = info
+        if (!AppUpdater.canInstallPackages(this)) {
+            waitingForInstallPermission = true
+            Toast.makeText(
+                this,
+                "Разрешите Street Story устанавливать обновления из GitHub",
+                Toast.LENGTH_LONG,
+            ).show()
+            startActivity(AppUpdater.installPermissionIntent(this))
+            return
+        }
+        downloadAndInstall(info)
+    }
+
+    private fun resumeUpdateAfterPermission() {
+        if (!waitingForInstallPermission) return
+        waitingForInstallPermission = false
+        val info = pendingUpdate ?: return
+        if (AppUpdater.canInstallPackages(this)) {
+            downloadAndInstall(info)
+        } else {
+            Toast.makeText(
+                this,
+                "Разрешение не выдано. Обновление можно повторить в Настройках.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    private fun downloadAndInstall(info: UpdateInfo) {
+        if (updateDownloadInFlight) return
+        updateDownloadInFlight = true
+        Toast.makeText(this, "Скачиваю Street Story ${info.versionName}…", Toast.LENGTH_SHORT).show()
+        AppUpdater.download(this, info) { result ->
+            runOnUiThread {
+                updateDownloadInFlight = false
+                result.onSuccess { apk ->
+                    pendingUpdate = null
+                    runCatching { AppUpdater.install(this, apk) }
+                        .onFailure { exc ->
+                            Toast.makeText(
+                                this,
+                                "Не удалось открыть установщик: ${exc.message ?: "ошибка"}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                }.onFailure { exc ->
+                    Toast.makeText(
+                        this,
+                        "Не удалось скачать обновление: ${exc.message ?: "ошибка сети"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun showSettings() {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), 0, dp(20), 0)
+        }
+        wrap.addView(
+            label(
+                "Версия ${BuildConfig.VERSION_NAME} · ${BuildConfig.SOURCE_SHA.take(12)}",
+                13,
+                MUTED,
+                Typeface.DEFAULT,
+            ).apply { setPadding(0, 0, 0, dp(8)) }
+        )
+        wrap.addView(
+            secondaryButton("Проверить обновление") { checkForUpdate(showUpToDate = true) },
+            LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(10) },
+        )
+        val url = EditText(this).apply {
+            hint = "https://street-story…"
+            setText(config.backendUrl.orEmpty())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine()
+        }
+        val token = EditText(this).apply {
+            hint = if (config.deviceToken.isNullOrBlank()) {
+                "Device token"
+            } else {
+                "Device token сохранён · пусто = не менять"
+            }
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine()
+        }
+        wrap.addView(url)
+        wrap.addView(token)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Street Story backend · DevCoveer")
+            .setMessage("Только HTTPS. Provider credentials остаются на сервере.")
+            .setView(wrap)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val value = url.text.toString().trim().trimEnd('/')
+                if (!value.startsWith("https://")) {
+                    Toast.makeText(this, "Нужен HTTPS-адрес backend", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                config.backendUrl = value
+                if (token.text.toString().isNotBlank()) config.deviceToken = token.text.toString()
+                if (!config.configured) {
+                    Toast.makeText(this, "Нужен device token", Toast.LENGTH_LONG).show()
+                } else {
+                    SyncScheduler.enqueue(this)
+                    Toast.makeText(this, "Синхронизация запущена", Toast.LENGTH_SHORT).show()
+                }
+                refreshSurface()
+            }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.show()
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    private fun setActiveStory(id: String?) {
+        activeStoryId = id?.takeIf { store.story(it) != null }
+        prefs.edit().apply {
+            if (activeStoryId == null) remove("active_story_id")
+            else putString("active_story_id", activeStoryId)
+        }.apply()
+    }
+
+    private fun clearTopicRefs() {
+        placeMapPanel?.dispose()
+        placeMapPanel = null
+        previewImage?.apply {
+            animate().cancel()
+            alpha = 1f
+            scaleX = 1f
+            scaleY = 1f
+        }
+        stickyIsland?.animate()?.cancel()
+        floatingImageProxy?.let { contentHost.removeView(it) }
+        floatingImageProxy = null
+        stickyIsland = null; stickyImage = null; stickyTitle = null
+        stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
+        factsBlock = null; researchControlBlock = null; conceptBlock = null; publicationEventView = null
+        identityProgressView = null
+        lastLiveIdentityProgress = null
+        renderedMessages = emptyList()
+        renderedResearchProgress = null
+        stopMicPulse()
+        topicTitleView = null
+        topicStatusView = null
+        photoFormatChoices = null
+        previewImage = null
+        previewText = null
+        literalBanner = null
+        lastChangeView = null
+        chatBox = null
+        chatMessages = null
+        chatStatus = null
+        sourceButton = null
+        undoButton = null
+        publishButton = null
+        ownerVisualButton = null
+        confirmationBox = null
+        dockTopic = null
+        dockStatus = null
+        micButton = null
+        photoRecoveryButton = null
+        identityLinkView = null
+        shownImagePath = null
+        topicScroll = null
+        previewExpanded = true
+        lastDialogueMessageCount = 0
+    }
+
+    private fun topicTitle(story: StorySnapshot?): String {
+        if (story == null) return "Новая тема"
+        story.placeName?.trim()?.takeIf { it.isNotBlank() }?.let { return it.take(80) }
+        story.summary?.trim()?.takeIf { it.isNotBlank() }?.let {
+            return it.lineSequence().first().take(80)
+        }
+        val date = Instant.ofEpochMilli(story.createdAt)
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("d MMM", Locale("ru")))
+        return "Тема · $date"
+    }
+
+    private fun ownerVisibleStoryError(value: String?): String? {
+        val text = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val lower = text.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("resource_token_budget") ->
+                "Голосовой лимит временно исчерпан. Подождите около минуты."
+            lower.contains("429") || lower.contains("503") ||
+                lower.contains("resource_capacity") ||
+                lower.contains("live_busy") || lower.contains("provider_quota") ->
+                "Мира сейчас занята. Результат сохранён — попробуйте ещё раз через несколько секунд."
+            lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection") ||
+                lower.contains("network") || lower.contains("socket") ->
+                "Связь прервалась. Локальные данные сохранены."
+            Regex("^[A-Z0-9_.:-]{4,}$").matches(text) || lower.startsWith("http_") ->
+                "Не удалось завершить действие. Диагностика сохранена."
+            else -> text.take(220)
+        }
+    }
+
+    private fun topicStatus(story: StorySnapshot): String {
+        if (story.previewOutdated) return "Показан прежний визуал"
+        val controls = research.get(story.clientStoryId)?.researchControls.orEmpty()
+        if (story.stage == StoryStage.IDENTIFYING && controls["identity"]?.stopped == true) return "Поиск объекта приостановлен"
+        if (story.stage == StoryStage.RESEARCHING && controls["facts"]?.stopped == true) return "Поиск фактов приостановлен"
+        return when (story.stage) {
+        StoryStage.PLACE_UNKNOWN -> "Место съёмки не определено"
+        StoryStage.SCHEDULED -> "Запланировано · ${story.scheduledFor.orEmpty()}"
+        StoryStage.PUBLISHED -> "Опубликовано"
+        StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED -> "Нужно внимание"
+        StoryStage.IDENTIFYING -> "Определяю объект"
+        StoryStage.IDENTITY_READY -> "Объект определён"
+        StoryStage.RESEARCHING -> "Ищем факты"
+        StoryStage.VISUAL_PROCESSING -> "Готовим изображение"
+        StoryStage.SCHEDULING -> "Планируем публикацию"
+        else -> "В работе"
+        }
+    }
+
+    private fun statusColor(stage: String): Int =
+        if (stage in setOf(StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED)) ACCENT else MUTED
+
+    private fun label(textValue: String, size: Int, color: Int, face: Typeface): TextView =
+        TextView(this).apply {
+            text = textValue
+            textSize = size.toFloat()
+            setTextColor(color)
+            typeface = face
+            setLineSpacing(dp(2).toFloat(), 1.03f)
+        }
+
+    private fun primaryButton(textValue: String, action: () -> Unit): Button =
+        Button(this).apply {
+            text = textValue
+            textSize = 15f
+            isAllCaps = false
+            setTextColor(PAPER)
+            typeface = Typeface.DEFAULT_BOLD
+            background = rounded(INK, 18)
+            minHeight = 0
+            setPadding(dp(16), 0, dp(16), 0)
+            setOnClickListener { action() }
+            layoutParams = LinearLayout.LayoutParams(-1, dp(52))
+        }
+
+    private fun secondaryButton(textValue: String, action: () -> Unit): Button =
+        Button(this).apply {
+            text = textValue
+            textSize = 13f
+            isAllCaps = false
+            setTextColor(INK)
+            background = rounded(0xffe9e6df.toInt(), 16)
+            minHeight = 0
+            minWidth = 0
+            setPadding(dp(12), 0, dp(12), 0)
+            setOnClickListener { action() }
+        }
+
+    private fun rounded(color: Int, radiusDp: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    private fun chatBubble(color: Int, user: Boolean) = GradientDrawable().apply {
+        setColor(color)
+        val round = dp(18).toFloat()
+        val tight = dp(5).toFloat()
+        cornerRadii = if (user) {
+            floatArrayOf(round, round, round, round, tight, tight, round, round)
+        } else {
+            floatArrayOf(round, round, round, round, round, round, tight, tight)
+        }
+    }
+
+    private fun blockMargins(top: Int = 0, bottom: Int = 0) =
+        LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(top)
+            bottomMargin = dp(bottom)
+        }
+
+    private fun renderLiveMessages(messages: List<LiveChatMessage>) {
+        val host = chatMessages ?: return
+        if (messages == renderedMessages && host.childCount == messages.size) return
+        val compatible = host.childCount == messages.size && renderedMessages.map { it.role } == messages.map { it.role }
+        if (!compatible) host.removeAllViews()
+        messages.forEachIndexed { index, message ->
+            val role = when(message.role) { LiveRole.USER -> "Вы"; LiveRole.ASSISTANT -> "Мира"; else -> "Система" }
+            val displayText = if (message.role == LiveRole.ASSISTANT) MarkdownLite.render(message.text) else message.text
+            if (compatible) {
+                val row = host.getChildAt(index) as LinearLayout
+                (row.getChildAt(0) as TextView).apply {
+                    text = displayText
+                    movementMethod = if (message.role == LiveRole.ASSISTANT) LinkMovementMethod.getInstance() else null
+                    contentDescription = "$role: ${message.text}"
+                }
+            } else {
+                val row = LinearLayout(this).apply {
+                    gravity = when (message.role) {
+                        LiveRole.USER -> Gravity.END
+                        LiveRole.ASSISTANT -> Gravity.START
+                        else -> Gravity.CENTER
+                    }
+                }
+                val system = message.role == LiveRole.SYSTEM
+                val bubble = label("", if (system) 12 else 15, if (system) MUTED else INK, Typeface.DEFAULT).apply {
+                    text = displayText
+                    background = when (message.role) {
+                        LiveRole.USER -> chatBubble(0xffe2e8dd.toInt(), user = true)
+                        LiveRole.ASSISTANT -> chatBubble(PAPER, user = false)
+                        else -> rounded(0xffeceae5.toInt(), 12)
+                    }
+                    setPadding(
+                        dp(if (system) 10 else 13),
+                        dp(if (system) 6 else 9),
+                        dp(if (system) 10 else 13),
+                        dp(if (system) 6 else 9),
+                    )
+                    maxWidth = (resources.displayMetrics.widthPixels * if (system) 0.72f else 0.82f).toInt()
+                    movementMethod = if (message.role == LiveRole.ASSISTANT) LinkMovementMethod.getInstance() else null
+                    contentDescription = "$role: ${message.text}"
+                }
+                row.addView(bubble)
+                host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(if (system) 6 else 8) })
+            }
+        }
+        renderedMessages = messages.toList()
+    }
+
+    private fun buildStickyPhoto() {
+        val island = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(PAPER, 20)
+            elevation = dp(5).toFloat()
+            setPadding(dp(8), dp(8), dp(10), dp(8))
+            visibility = View.INVISIBLE
+            alpha = 0f
+            translationY = -dp(8).toFloat()
+            contentDescription = "sticky-topic-bento"
+        }
+        stickyImage = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(SAGE_DARK, 14)
+            clipToOutline = true
+            contentDescription = "expand-topic-photo"
+            setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
+        }
+        island.addView(stickyImage, LinearLayout.LayoutParams(dp(86), dp(114)))
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        stickyTitle = label("", 15, ACCENT, Typeface.DEFAULT_BOLD).apply {
+            maxLines = 3
+            contentDescription = "sticky-object"
+        }
+        right.addView(stickyTitle)
+        stickyComparison = label("", 12, INK, Typeface.DEFAULT).apply {
+            setPadding(0, dp(6), 0, 0)
+            visibility = View.GONE
+            contentDescription = "sticky-visual-comparison"
+        }
+        right.addView(stickyComparison)
+        stickyFacts = label("", 13, INK, Typeface.DEFAULT_BOLD).apply {
+            setPadding(0, dp(7), 0, 0)
+            contentDescription = "sticky-facts"
+        }
+        right.addView(stickyFacts)
+        stickyConcept = label("", 12, MUTED, Typeface.DEFAULT).apply {
+            setPadding(0, dp(6), 0, 0)
+            maxLines = 2
+            contentDescription = "sticky-concept"
+        }
+        right.addView(stickyConcept)
+        island.addView(right, LinearLayout.LayoutParams(0, -2, 1f))
+        stickyIsland = island
+        contentHost.addView(island, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+            leftMargin = dp(18); rightMargin = dp(18); topMargin = dp(10)
+        })
+    }
+
+    private fun updateStickyPhoto() {
+        val scroll = topicScroll ?: return
+        val image = previewImage ?: return
+        val island = stickyIsland ?: return
+        val target = stickyImage ?: return
+        if (image.height <= 0) return
+
+        val state = FloatingIslandTransition.state(scroll.scrollY, image.top, image.height, dp(114))
+        stickyVisible = state.progress > 0f
+
+        if (state.progress <= 0f) {
+            floatingImageProxy?.visibility = View.GONE
+            image.alpha = 1f
+            image.scaleX = 1f
+            image.scaleY = 1f
+            target.alpha = 1f
+            island.visibility = View.INVISIBLE
+            island.alpha = 0f
+            return
+        }
+
+        island.visibility = View.VISIBLE
+        island.alpha = ((state.progress - .18f) / .82f).coerceIn(0f, 1f)
+        island.translationY = -dp(4).toFloat() * (1f - state.progress)
+        island.scaleX = .985f + .015f * state.progress
+        island.scaleY = .985f + .015f * state.progress
+
+        if (target.width <= 0 || target.height <= 0) {
+            island.post { updateStickyPhoto() }
+            return
+        }
+
+        val proxy = floatingImageProxy ?: ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(SAGE_DARK, 18)
+            clipToOutline = true
+            elevation = dp(7).toFloat()
+            contentDescription = "floating-photo-transition"
+            isClickable = false
+            contentHost.addView(this, FrameLayout.LayoutParams(1, 1))
+            floatingImageProxy = this
+        }
+        if (proxy.drawable == null || proxy.tag != shownImagePath) {
+            proxy.setImageDrawable(image.drawable?.constantState?.newDrawable(resources)?.mutate() ?: image.drawable)
+            proxy.tag = shownImagePath
+        }
+
+        val sourceLocation = IntArray(2)
+        val targetLocation = IntArray(2)
+        val hostLocation = IntArray(2)
+        image.getLocationInWindow(sourceLocation)
+        target.getLocationInWindow(targetLocation)
+        contentHost.getLocationInWindow(hostLocation)
+
+        val p = state.progress.coerceIn(0f, 1f)
+        fun lerp(startValue: Int, endValue: Int): Int =
+            (startValue + (endValue - startValue) * p).toInt()
+
+        val sourceLeft = sourceLocation[0] - hostLocation[0]
+        val sourceTop = sourceLocation[1] - hostLocation[1]
+        val targetLeft = targetLocation[0] - hostLocation[0]
+        val targetTop = targetLocation[1] - hostLocation[1]
+        val width = lerp(image.width, target.width).coerceAtLeast(1)
+        val height = lerp(image.height, target.height).coerceAtLeast(1)
+
+        proxy.layoutParams = FrameLayout.LayoutParams(width, height).apply {
+            leftMargin = lerp(sourceLeft, targetLeft)
+            topMargin = lerp(sourceTop, targetTop)
+        }
+        proxy.visibility = if (p < .995f) View.VISIBLE else View.GONE
+        proxy.alpha = 1f
+        image.alpha = 0f
+        image.scaleX = 1f
+        image.scaleY = 1f
+        target.alpha = if (p < .995f) 0f else 1f
+    }
+
+    private fun scrollToSection(view: View) {
+        val scroll = topicScroll ?: return
+        val content = scroll.getChildAt(0) ?: return
+        var top = 0
+        var current: View? = view
+        while (current != null && current !== content) {
+            top += current.top
+            current = current.parent as? View
+        }
+        scroll.smoothScrollTo(0, (top - dp(12)).coerceAtLeast(0))
+    }
+
+    private fun renderResearchControls(storyId: String, projection: ResearchProjectionSnapshot?) {
+        val host = researchControlBlock ?: return
+        host.removeAllViews()
+        host.visibility = View.GONE
+        val story = store.story(storyId) ?: return
+        val controls = projection?.researchControls.orEmpty()
+        val scoped = projection?.photoSha256 == story.photoSha256 && projection?.identityGeneration != null &&
+            controls.keys.containsAll(setOf("identity", "facts")) && controls.values.all {
+                it.photoSha256 == story.photoSha256 && it.identityGeneration == projection.identityGeneration
+            }
+        val pending = store.pendingOperations(storyId).any { it.kind == "research-control" }
+        if (!scoped || story.serverStoryId.isNullOrBlank()) return
+        for ((purpose, title) in listOf("identity" to "поиск объекта", "facts" to "поиск фактов")) {
+            val stopped = controls[purpose]?.stopped == true
+            val running = projection?.researchPending?.get(purpose) == true ||
+                if (purpose == "identity") story.stage == StoryStage.IDENTIFYING && projection?.identityProgress?.finished == false
+                else live.snapshot().takeIf { it.storyId == storyId }?.researchProgress?.active == true
+            if (!stopped && !running) continue
+            host.visibility = View.VISIBLE
+            val action = if (stopped) "resume" else "stop"
+            host.addView(secondaryButton("${if (stopped) "Возобновить" else "Приостановить"} $title") {
+                queueResearchControl(storyId, action, purpose)
+            }.apply {
+                contentDescription = "research-$action-$purpose"
+                isEnabled = !pending
+            })
+        }
+        if (pending) {
+            host.visibility = View.VISIBLE
+            host.addView(label("Применяю команду…", 12, MUTED, Typeface.DEFAULT))
+        }
+    }
+
+    private fun queueResearchControl(storyId: String, action: String, purpose: String) {
+        val story = store.story(storyId) ?: return
+        val projection = research.get(storyId) ?: return
+        val photo = projection.photoSha256 ?: return
+        val generation = projection.identityGeneration ?: return
+        if (photo != story.photoSha256 || story.serverStoryId.isNullOrBlank()) return
+        if (store.pendingOperations(storyId).any { it.kind == "research-control" }) return
+        val payload = researchControlPayload(action, purpose, photo, generation)
+        // Reuse the durable outbox and exact idempotency key after a lost HTTP reply.
+        // No voice input, Live restart or microphone permission is needed.
+        store.enqueueOperation(storyId, "research-control",
+            newRequestKey("research-ui", "$storyId-${java.util.UUID.randomUUID()}"), gson.toJson(payload))
+        SyncScheduler.enqueue(this)
+        renderResearchControls(storyId, projection)
+    }
+
+    private fun renderFactsIsland(storyId: String) {
+        val host = factsBlock ?: return
+        host.removeAllViews()
+        val facts = store.facts(storyId)
+        val liveState = live.snapshot()
+        val projection = research.get(storyId)
+        val photoSha = store.story(storyId)?.photoSha256.orEmpty()
+        val durableActive = FactPresentation.researchActive(projection, photoSha)
+        val outcomeNotice = FactPresentation.researchOutcomeNotice(projection, photoSha)
+        val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId && it.active &&
+            projection?.researchControls?.get("facts")?.stopped != true }
+            ?: if (durableActive) LiveResearchProgress(true, "", "", projection?.sourceCount ?: 0,
+                facts.size, 0, emptyList()) else liveState.researchProgress?.takeIf { liveState.storyId == storyId }
+                    ?.copy(active = false)
+        if (facts.isEmpty() && progress == null && outcomeNotice == null) {
+            host.visibility = View.GONE
+            return
+        }
+        host.visibility = View.VISIBLE
+        val selectedCount = facts.count { it.selected && it.evidenceSupported }
+        val title = when {
+            progress?.active == true -> "Факты · поиск продолжается"
+            facts.isNotEmpty() -> "Факты · выбрано $selectedCount из ${facts.size}"
+            else -> "Факты"
+        }
+        val factsHeading = label(title, 15, INK, Typeface.DEFAULT_BOLD)
+        host.addView(factsHeading)
+        if (outcomeNotice != null) {
+            host.addView(label(outcomeNotice, 13, INK, Typeface.DEFAULT).apply {
+                contentDescription = "facts-research-outcome"
+                setPadding(0, dp(7), 0, dp(7))
+            })
+        }
+        host.addView(secondaryButton("Противоречия и решения") { showConflictJournal(storyId) })
+        if (progress != null) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(7), 0, dp(7))
+            }
+            if (progress.active) {
+                row.addView(
+                    ProgressBar(this).apply {
+                        isIndeterminate = true
+                        contentDescription = "research-loader"
+                    },
+                    LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(8) },
+                )
+            }
+            val stageLabel = when (progress.stage) {
+                "searching" -> "Ищу и проверяю источники"
+                "extracting" -> "Извлекаю и объединяю факты"
+                else -> if (progress.active) "Обрабатываю факты" else "Поиск обновлён"
+            }
+            row.addView(
+                label(
+                    "$stageLabel\nОбработано источников: ${progress.sourceCount} · найдено фактов: ${progress.factCount}",
+                    12,
+                    MUTED,
+                    Typeface.DEFAULT,
+                ),
+                LinearLayout.LayoutParams(0, -2, 1f),
+            )
+            host.addView(row)
+            if (progress.sources.isNotEmpty()) {
+                host.addView(
+                    label(
+                        progress.sources.takeLast(8).joinToString(" · ") {
+                            runCatching { Uri.parse(it.url).host.orEmpty().removePrefix("www.") }
+                                .getOrDefault("")
+                                .ifBlank { it.title.take(48) }
+                        },
+                        11,
+                        MUTED,
+                        Typeface.DEFAULT,
+                    ).apply { setPadding(0, 0, 0, dp(5)) },
+                )
+            }
+        }
+        FactPresentation.strongest(facts)?.let { strongest ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(SAGE, 12)
+                setPadding(dp(12), dp(9), dp(12), dp(10))
+                contentDescription = "strongest-fact"
+            }
+            card.addView(label("Самый сильный факт", 12, ACCENT, Typeface.DEFAULT_BOLD))
+            card.addView(label(FactPresentation.concise(strongest.text), 14, INK, Typeface.DEFAULT).apply {
+                setPadding(0, dp(3), 0, 0)
+            })
+            host.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); bottomMargin = dp(6) })
+        }
+        val shownFacts = facts
+        shownFacts.forEachIndexed { index, fact ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(4), 0, dp(5))
+            }
+            val box = CheckBox(this).apply {
+                text = FactPresentation.concise(fact.text)
+                textSize = 14f
+                isChecked = fact.selected
+                isEnabled = fact.evidenceSupported
+                setTextColor(if (fact.evidenceSupported) INK else MUTED)
+                setOnCheckedChangeListener { _, checked ->
+                    store.setFactSelected(storyId, fact.factId, checked && fact.evidenceSupported)
+                    enqueueFactSelection(storyId)
+                    val updated = store.facts(storyId)
+                    if (progress?.active != true) {
+                        factsHeading.text = "Факты · выбрано ${updated.count { it.selected && it.evidenceSupported }} из ${updated.size}"
+                    }
+                    stickyFacts?.text = "Факты · ${updated.count { it.selected && it.evidenceSupported }}/${updated.size}"
+                }
+            }
+            item.addView(box)
+            item.addView(label(FactPresentation.statusLabel(fact), 11, MUTED, Typeface.DEFAULT).apply {
+                setPadding(dp(48), 0, dp(4), dp(2))
+            })
+            val ownSources = runCatching {
+                gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
+            }.getOrDefault(emptyList())
+                .filter { it.url.startsWith("https://") || (FactPresentation.rkbOrigin(it) &&
+                    it.sourceRef?.startsWith("knowledge://chunks/") == true) }
+            val sources = ownSources
+                .distinctBy { it.url.trimEnd('/') }
+                .sortedWith(
+                    compareByDescending<SourceWire> { it.type == "official" }
+                        .thenBy { FactPresentation.sourceLabel(it) }
+                        .thenBy { it.url },
+                )
+            if (sources.isNotEmpty()) {
+                val sourceText = SpannableStringBuilder()
+                sources.forEachIndexed { sourceIndex, source ->
+                    if (sourceIndex > 0) sourceText.append(" · ")
+                    val versions = ownSources.filter { it.url.trimEnd('/') == source.url.trimEnd('/') }
+                    val rkb = versions.any { FactPresentation.rkbOrigin(it) }
+                    val sourceLabel = FactPresentation.sourceLabel(source) + if (rkb) " · RKB" else ""
+                    val start = sourceText.length
+                    sourceText.append(sourceLabel)
+                    sourceText.setSpan(
+                        object : ClickableSpan() {
+                            override fun onClick(widget: View) {
+                                val details = label(FactPresentation.sourceDetails(versions), 14, INK, Typeface.DEFAULT).apply {
+                                    setPadding(dp(20), dp(12), dp(20), dp(12))
+                                    setTextIsSelectable(true)
+                                }
+                                val dialog = AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Источник утверждения")
+                                    .setView(ScrollView(this@MainActivity).apply { addView(details) })
+                                    .setNegativeButton("Закрыть", null)
+                                if (source.url.startsWith("https://")) dialog.setPositiveButton("Открыть страницу") { _, _ ->
+                                        val uri = Uri.parse(source.url)
+                                        if (uri.scheme == "https") startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                    }
+                                dialog.show()
+                            }
+                            override fun updateDrawState(ds: android.text.TextPaint) {
+                                super.updateDrawState(ds)
+                                ds.color = if (rkb) 0xFF1565C0.toInt() else ACCENT
+                            }
+                        },
+                        start,
+                        sourceText.length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+                item.addView(
+                    label("", 11, MUTED, Typeface.DEFAULT).apply {
+                        text = sourceText
+                        setPadding(dp(48), 0, dp(4), dp(2))
+                        movementMethod = LinkMovementMethod.getInstance()
+                        setLinkTextColor(ACCENT)
+                        linksClickable = true
+                        contentDescription = "Источники факта: " + sources.joinToString(", ") { FactPresentation.sourceLabel(it) }
+                    },
+                )
+            }
+            host.addView(item)
+            if (index < shownFacts.lastIndex) {
+                host.addView(
+                    View(this).apply { setBackgroundColor(0x14242822) },
+                    LinearLayout.LayoutParams(-1, dp(1)),
+                )
+            }
+        }
+    }
+
+    private fun selectPhotoFormat(storyId: String, mode: String) {
+        val story = store.story(storyId) ?: return
+        if (store.pendingOperations(storyId).any { it.kind == "photo-format" }) return
+        val command = "ss-photo-format-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "photo-format", command, gson.toJson(mapOf(
+            "mode" to mode, "expected_photo_sha256" to story.photoSha256,
+            "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))))
+        shownImagePath = null
+        refreshTopicDetail()
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun navigationPayload(storyId: String, commandId: String): String {
+        val state = research.get(storyId)
+        return PlaceCommandJson.encode(mapOf("command_id" to commandId,
+            "expected_photo_sha256" to store.story(storyId)?.photoSha256,
+            "expected_identity_generation" to (state?.identityGeneration ?: 0),
+            "expected_candidate_id" to state?.candidateId))
+    }
+
+    private fun navigateOwnerPlace(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        val command = "ss-place-navigation-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-navigation", command, navigationPayload(storyId, command))
+        requestOwnerConversation(storyId,
+            "Продолжи текущую историю в режиме поиска места: continue_story stage=place_map. Дом не здесь. " +
+                "Спроси голосом, что я помню о месте съёмки. Используй find_place_area и focus_owner_map, чтобы перенести карту. " +
+                "Дом я выберу сам касанием или назову показанный контур. Не выбирай дом за меня, не используй resolve_place и не запускай распознавание по GPS.",
+            navigation = true)
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun markOwnerPlaceUnknown(storyId: String) {
+        if (store.pendingOperations(storyId).any { it.kind in setOf("place", "place-navigation", "place-unknown") }) return
+        clearOwnerConversation()
+        val command = "ss-place-unknown-${java.util.UUID.randomUUID()}"
+        store.enqueueOperation(storyId, "place-unknown", command, navigationPayload(storyId, command))
+        SyncScheduler.enqueue(this)
+        Toast.makeText(this, "Сохраняем: место съёмки не определено", Toast.LENGTH_SHORT).show()
+        placeMapPanel?.refresh()
+    }
+
+    private fun requestOwnerConversation(storyId: String, text: String, navigation: Boolean = false, guard: () -> Boolean = { true }) {
+        val scope = OwnerConversationScope.capture(store.story(storyId), research.get(storyId)) ?: return
+        ownerConversation = scope
+        ownerConversationText = text
+        ownerConversationGuard = guard
+        ownerConversationNeedsNavigation = navigation
+        android.util.Log.i("StreetStoryOwnerVoice", "stage=queued story_id=$storyId generation=${scope.generation} place_navigation=$navigation")
+        continueOwnerConversation()
+    }
+
+    private fun clearOwnerConversation() {
+        ownerConversation = null; ownerConversationText = null; ownerConversationGuard = null
+        ownerConversationNeedsNavigation = false
+    }
+
+    private fun continueOwnerConversation() {
+        val scope = ownerConversation ?: return
+        if (!scope.matches(activeStoryId, store.story(scope.storyId), research.get(scope.storyId)) || ownerConversationGuard?.invoke() != true) {
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=dropped story_id=${scope.storyId} generation=${scope.generation} reason=scope_changed")
+            clearOwnerConversation(); return
+        }
+        val operations = store.pendingOperations(scope.storyId)
+        if (operations.any { it.kind in setOf("place", "place-navigation", "place-unknown", "facts") }) return
+        if (ownerConversationNeedsNavigation && research.get(scope.storyId)?.placeNavigationActive != true) {
+            clearOwnerConversation(); return
+        }
+        if (live.isActiveFor(scope.storyId)) {
+            val text = ownerConversationText ?: return
+            clearOwnerConversation()
+            android.util.Log.i("StreetStoryOwnerVoice", "stage=sent story_id=${scope.storyId} generation=${scope.generation}")
+            live.sendText(text)
+            return
+        }
+        if (live.snapshot().connecting || live.snapshot().active) return
+        if (!config.configured) { clearOwnerConversation(); showSettings(); return }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (pendingLiveStoryId != scope.storyId) {
+                pendingLiveStoryId = scope.storyId
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            }
+            return
+        }
+        startLive(scope.storyId)
+    }
+
+    private fun editOwnerDraft(storyId: String) {
+        val selected = store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text }
+        if (selected.isEmpty()) {
+            Toast.makeText(this, "Выберите хотя бы один подтверждённый факт", Toast.LENGTH_LONG).show()
+            return
+        }
+        val draft = store.story(storyId)?.draftText
+        requestOwnerConversation(storyId,
+            "Составь или поправь черновик текущего выбранного дома с помощью существующих инструментов редактора edit_text. " +
+                "Используй только текущие выбранные подтверждённые факты: ${selected.joinToString(", ") { it.first }}. " +
+                "Обсуди пожелания с автором голосом, сохрани черновик. Ничего не публикуй.") {
+            store.story(storyId)?.draftText == draft &&
+                store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text } == selected
+        }
+    }
+
+    private fun enqueueFactSelection(storyId: String) {
+        val selected = store.facts(storyId)
+            .filter { it.selected && it.evidenceSupported }
+            .map { it.factId }
+        store.enqueueOperation(
+            storyId,
+            "facts",
+            newRequestKey("facts-ui", "$storyId-${java.util.UUID.randomUUID()}"),
+            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true,
+                "expected_identity_generation" to (research.get(storyId)?.identityGeneration ?: 0))),
+        )
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun publicationLabel(projection: ResearchProjectionSnapshot?): String {
+        val state = projection?.publicationState.orEmpty()
+        val channels = projection?.publicationChannels
+            ?.mapNotNull(::shortChannel)
+            ?.distinct()
+            ?.joinToString(" · ")
+            .orEmpty()
+        val prefix = when (state) {
+            "published", "verified" -> "Опубликовано"
+            "scheduled" -> "Запланировано"
+            "scheduling", "accepted", "pending" -> "Публикация готовится"
+            "failed", "blocked", "outcome_unknown" -> "Публикация требует проверки"
+            "cancelled" -> "Публикация отменена"
+            else -> return ""
+        }
+        return listOf(prefix, channels).filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    private fun shortChannel(alias: String): String? {
+        val value = alias.lowercase(Locale.ROOT)
+        return when {
+            "telegram" in value || value.endsWith("_tg") || value.startsWith("tg_") -> "ТГ"
+            value == "vk" || value.startsWith("vk_") || "_vk" in value -> "ВК"
+            value == "max" || value.startsWith("max_") || "_max" in value -> "MAX"
+            else -> null
+        }
+    }
+
+    private fun buildNewTopicFab() {
+        dock.removeAllViews()
+        dock.visibility = View.VISIBLE
+        val fab = TextView(this).apply {
+            text = "+"
+            textSize = 34f
+            gravity = Gravity.CENTER
+            setTextColor(PAPER)
+            background = oval(INK)
+            elevation = dp(8).toFloat()
+            contentDescription = "new-topic"
+            setOnClickListener { launchPhotoPicker() }
+        }
+        dock.addView(fab, LinearLayout.LayoutParams(dp(78), dp(78)))
+    }
+
+    private fun confirmDeleteTopic(story: StorySnapshot) {
+        val activeRecording = store.activeVoiceSession()
+        if (live.isActiveFor(story.clientStoryId) || activeRecording?.storyId == story.clientStoryId) {
+            Toast.makeText(this, "Сначала остановите Live или запись этой темы.", Toast.LENGTH_LONG).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Удалить тему?")
+            .setMessage("Фото, локальная история этой темы и серверная запись будут удалены.")
+            .setPositiveButton("Удалить") { _, _ -> deleteTopic(story) }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun deleteTopic(story: StorySnapshot) {
+        Thread {
+            runCatching {
+                val serverId = story.serverStoryId
+                if (!serverId.isNullOrBlank()) {
+                    val base = config.backendUrl
+                    val token = config.deviceToken
+                    check(!base.isNullOrBlank() && !token.isNullOrBlank()) {
+                        "Backend не настроен — серверную тему нельзя безопасно удалить."
+                    }
+                    try {
+                        val receipt = ApiClient(base, token).deleteStory(serverId)
+                        check(receipt.ok && receipt.storyId == serverId) {
+                            "Backend не подтвердил удаление темы."
+                        }
+                    } catch (exc: ApiException) {
+                        if (exc.status != 404) throw exc
+                    }
+                }
+                store.deleteStory(story.clientStoryId)
+                research.clear(story.clientStoryId)
+                val feed = FeedProjectionStore(this)
+                try {
+                    feed.clear(story.clientStoryId)
+                } finally {
+                    feed.close()
+                }
+            }.onSuccess {
+                runOnUiThread {
+                    if (activeStoryId == story.clientStoryId) setActiveStory(null)
+                    showTopics()
+                    Toast.makeText(this, "Тема удалена", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure { exc ->
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Не удалось удалить тему: ${exc.message ?: "ошибка"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun updateMicPulse(active: Boolean) {
+        val button = micButton ?: return
+        if (!active) {
+            stopMicPulse()
+            button.scaleX = 1f
+            button.scaleY = 1f
+            button.alpha = 1f
+            return
+        }
+        val halo = micHalo ?: return
+        halo.visibility = View.VISIBLE
+        if (micPulse?.isRunning == true) return
+        micHaloPulse = ObjectAnimator.ofPropertyValuesHolder(halo,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.12f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.12f),
+            PropertyValuesHolder.ofFloat(View.ALPHA, .12f, .30f)).apply {
+            duration = 520; repeatMode = ObjectAnimator.REVERSE; repeatCount = ObjectAnimator.INFINITE; start()
+        }
+        micPulse = ObjectAnimator.ofPropertyValuesHolder(
+            button,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.10f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.10f),
+            PropertyValuesHolder.ofFloat(View.ALPHA, 1f, 0.72f),
+        ).apply {
+            duration = 520
+            repeatMode = ObjectAnimator.REVERSE
+            repeatCount = ObjectAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopMicPulse() {
+        micPulse?.cancel()
+        micPulse = null
+        micHaloPulse?.cancel(); micHaloPulse = null
+        micHalo?.visibility = View.INVISIBLE
+    }
+
+    private fun oval(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val REQUEST_PHOTO_LOCATION = 714
+        private const val REQUEST_PHOTO = 710
+        private const val REQUEST_MIC = 711
+        private const val UPDATE_INTERVAL_MS = 6L * 60L * 60L * 1000L
+        private const val SAGE = 0xffe8ece4.toInt()
+        private const val SAGE_DARK = 0xffd7ddd1.toInt()
+        private const val PAPER = 0xfffffdf8.toInt()
+        private const val INK = 0xff242822.toInt()
+        private const val MUTED = 0xff6f746d.toInt()
+        private const val ACCENT = 0xffad4d38.toInt()
+    }
+}

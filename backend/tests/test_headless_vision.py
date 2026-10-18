@@ -1,0 +1,293 @@
+from direct_visual_fixture import visual_args
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from street_story.errors import MalformedProviderResponse, PermanentProviderError
+from street_story.gemini import GeminiUnavailable
+from street_story.headless_identity import VERDICT_SCHEMA
+from street_story.headless_vision import HeadlessVisionProvider
+from test_reference_image_codec import jpeg
+from street_story.reference_image_codec import normalize_reference
+
+
+class Executor:
+    def __init__(self, failure=None):
+        self.failure = failure
+        self.operations = []
+
+    async def execute(self, operation, call):
+        self.operations.append(operation)
+        if self.failure:
+            raise self.failure
+        return await call('unit-test-key', 20)
+
+
+def setup(status='match', usage=None):
+    first, second = Executor(), Executor()
+    calls = []
+    verdict = {'status': status, 'candidate_id': 'web:gallery', 'reference_subject_candidate_id': 'wiki:1',
+               'reference_subject_observations': ['Same arches as physical candidate.'],
+               'confidence': .97, 'observations': ['Distinctive three windows and rear arch.'],
+               'alternative_candidate_ids': [], 'shared_distinctive_geometry': True,
+               'observable_correspondences': [{'source_detail': 'Three windows and rear arch',
+                                              'reference_detail': 'Same three windows and rear arch'}]}
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        assert key == 'unit-test-key' and timeout == 20
+        calls.append({'contents': contents, 'config': config, **kwargs})
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=usage, response_id='provider-test-response')
+
+    client = SimpleNamespace(research_routes=[('gemini-primary', None, 'quota-primary', first),
+                                             ('gemini-fallback', None, 'quota-fallback', second)], _generate=generate)
+    verification = {'models': [{'model': model, 'transport': 'gemini_generate_content',
+                               'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}}
+                              for model in ('gemini-primary', 'gemini-fallback')]}
+    service = SimpleNamespace(providers=SimpleNamespace(gemini=client),
+                              store=SimpleNamespace(now=lambda: 1000, cache_get=lambda _key: verification))
+    context = {'comparison_id': 'comparison-1', 'references': [{'label': 'REF 1', 'reference_id': 'reference-1', 'candidate_id': 'web:gallery'}],
+               'physical_candidates': [{'candidate_id': 'wiki:1', 'name': 'Physical gate',
+                                        'alias_candidate_ids': ['osm:way:1']},
+                                       {'candidate_id': 'wiki:2', 'name': 'Different gate'}],
+               'reference_evidence': [{'candidate_id': 'web:gallery', 'reference_id': 'reference-1'}]}
+    provider = HeadlessVisionProvider(service)
+    async def load_reference(url):
+        assert url.startswith('https://')
+        return 'image/jpeg', jpeg((64, 40))
+    provider._load_public_reference = load_reference
+    return provider, verdict, context, calls, first, second
+
+
+def test_qualified_web_route_is_available_without_duplicate_executor():
+    provider, _verdict, _context, _calls, _first, _second = setup()
+    routes = provider.client.research_routes
+    provider.client.web_search_routes = routes[:]
+    provider.client.research_routes = routes[:1]
+    assert provider._verified_routes() == routes
+
+
+def test_visual_reasoning_preference_preserves_qualification_and_registered_tuple():
+    provider, _verdict, _context, _calls, _first, _second = setup()
+    routes = provider.client.research_routes
+    provider.service.settings = SimpleNamespace(gemini_web_search_tertiary_model='gemini-fallback')
+    assert provider._verified_routes() == [routes[1], routes[0]]
+    provider.service.store.cache_get = lambda _key: {'models': [{
+        'model': 'gemini-primary', 'transport': 'gemini_generate_content',
+        'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}}]}
+    assert provider._verified_routes() == [routes[0]]
+
+
+@pytest.mark.asyncio
+async def test_native_image_transport_schema_admission_full_shortlist_and_receipt():
+    usage = SimpleNamespace(prompt_token_count=800, candidates_token_count=140,
+                            total_token_count=940, cached_content_token_count=0,
+                            prompt_tokens_details=[SimpleNamespace(modality='IMAGE', token_count=258)])
+    provider, _verdict, context, calls, first, second = setup(usage=usage)
+    snapshot = jpeg((1280, 640))
+    result = await provider.compare_visual(*visual_args(snapshot, {'id': 'story', 'photo_sha256': 'b' * 64,
+                                                     '_identity_generation': 4}, VERDICT_SCHEMA, json.dumps(context)))
+    assert first.operations == ['grounded_research'] and not second.operations
+    assert calls[0]['contents'][1].inline_data.data == normalize_reference(snapshot)[1]
+    assert calls[0]['contents'][1].inline_data.mime_type == 'image/jpeg'
+    prompt = calls[0]['contents'][-1]
+    assert 'wiki:2' in prompt and 'osm:way:1' in prompt and 'reference_subject_observations' in prompt
+    native_schema = calls[0]['config'].response_json_schema
+    assert native_schema['properties']['candidate_id']['enum'] == ['', 'web:gallery']
+    assert native_schema['properties']['reference_subject_candidate_id']['enum'] == ['', 'wiki:1', 'wiki:2']
+    assert 'enum' not in VERDICT_SCHEMA['properties']['candidate_id']
+    assert calls[0]['config'].response_mime_type == 'application/json'
+    assert calls[0]['model'] == 'gemini-primary' and calls[0]['quota'] == 'quota-primary'
+    receipt = result['receipt']
+    assert 'sha256' not in json.dumps(receipt)
+    assert receipt['image_attachments'] == 2
+    assert calls[0]['contents'][3].inline_data.data == normalize_reference(jpeg((64, 40)))[1]
+    assert receipt['model_image_bytes'] == len(normalize_reference(snapshot)[1]) + len(normalize_reference(jpeg((64, 40)))[1])
+    assert receipt['reference_evidence'] == context['reference_evidence']
+    assert receipt['generation'] == 4 and receipt['provider_request_id'] == 'provider-test-response'
+    assert receipt['usage'] == {'input_tokens': 800, 'output_tokens': 140, 'total_tokens': 940,
+                                'cached_tokens': 0, 'image_tokens': 258, 'cost': 'unknown'}
+    assert len(receipt['model_attempts']) == 1
+    assert receipt['model_attempts'][0]['usage'] == receipt['usage']
+    assert receipt['model_attempts'][0]['category'] == 'success'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['mismatch', 'uncertain'])
+async def test_valid_semantic_negative_never_shops_other_model(status):
+    provider, _verdict, context, calls, _first, second = setup(status=status)
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert response['result']['status'] == status
+    assert len(calls) == 1 and not second.operations
+    assert response['receipt']['usage']['input_tokens'] == 'unknown'
+    assert response['receipt']['usage']['cached_tokens'] == 'unknown'
+
+
+@pytest.mark.asyncio
+async def test_only_availability_failure_uses_next_configured_admitted_route():
+    provider, _verdict, context, calls, first, second = setup()
+    first.failure = GeminiUnavailable(1200, 'all_keys_unavailable')
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert first.operations == second.operations == ['grounded_research']
+    assert len(calls) == 1 and calls[0]['model'] == 'gemini-fallback'
+    assert calls[0]['quota'] == 'quota-fallback'
+    assert response['receipt']['availability_failures'][0]['retry_at'] == 1200
+
+
+@pytest.mark.asyncio
+async def test_all_routes_blocked_keep_retry_and_failure_receipt():
+    provider, _verdict, context, calls, first, second = setup()
+    first.failure = GeminiUnavailable(1300, 'all_keys_unavailable')
+    second.failure = GeminiUnavailable(1200, 'shared_control_unavailable')
+    with pytest.raises(GeminiUnavailable) as failure:
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert failure.value.retry_at == 1200 and not calls
+    assert failure.value.receipt['status'] == 'waiting'
+    assert len(failure.value.receipt['availability_failures']) == 2
+
+
+@pytest.mark.asyncio
+async def test_native_schema_rejects_fake_observations_without_acceptance():
+    provider, verdict, context, _calls, _first, second = setup()
+    verdict['observations'] = 'A detached text description is not visual proof'
+    with pytest.raises(MalformedProviderResponse):
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert not second.operations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('part', [{}, {'label': 'SOURCE', 'mime_type': 'image/jpeg', 'data': '!!'},
+    {'label': 'SOURCE', 'url': 'file:///disk.jpg'},
+    {'label': 'SOURCE', 'data': 'YWJj', 'url': 'https://example.org/image.jpg'}])
+async def test_missing_or_invalid_attachment_contract_never_reaches_provider(part):
+    provider, _verdict, context, calls, first, second = setup()
+    _, story, schema, context = visual_args(jpeg(), {}, VERDICT_SCHEMA, context)
+    story['_visual_image_parts'][0] = part
+    with pytest.raises(PermanentProviderError):
+        await provider.compare_visual(None, story, schema, context)
+    assert not calls and not first.operations and not second.operations
+
+
+@pytest.mark.asyncio
+async def test_missing_reference_context_never_reaches_provider():
+    provider, _verdict, _context, calls, first, _second = setup()
+    with pytest.raises(PermanentProviderError):
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, {'references': []}))
+    assert not calls and not first.operations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('verification', [None, {}, {'models': [{'model': 'gemini-primary',
+    'transport': 'gemini_generate_content', 'controls': {'positive': 'match', 'negative': 'match', 'pixel_transport_verified': True}}]},
+    {'models': [{'model': 'gemini-primary', 'transport': 'text_only',
+                 'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}}]},
+    {'models': [{'model': 'gemini-primary', 'transport': 'gemini_generate_content',
+                 'controls': {'positive': 'match', 'negative': 'mismatch'}}]}])
+async def test_unverified_or_failed_negative_control_is_never_admitted(verification):
+    provider, _verdict, context, calls, first, second = setup()
+    provider.service.store.cache_get = lambda key: verification
+    assert not provider.available
+    with pytest.raises(GeminiUnavailable) as failure:
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert failure.value.receipt['category'] == 'no_verified_route'
+    assert not calls and not first.operations and not second.operations
+
+
+@pytest.mark.asyncio
+async def test_internal_probe_can_measure_unverified_route_without_marking_verified():
+    provider, _verdict, context, calls, _first, _second = setup()
+    provider.service.store.cache_get = lambda key: None
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context), verification_probe=True)
+    assert response['receipt']['verification_probe']
+    assert calls and not provider.available
+
+
+@pytest.mark.asyncio
+async def test_physical_hypothesis_cannot_be_returned_as_unsent_reference_id():
+    provider, verdict, context, _calls, _first, _second = setup()
+    verdict['candidate_id'] = 'wiki:1'
+    with pytest.raises(MalformedProviderResponse):
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('values', [{'confidence': float('nan')}, {'reference_subject_observations': [' ']}])
+async def test_nonfinite_confidence_or_blank_subject_resolution_is_not_valid(values):
+    provider, verdict, context, _calls, _first, _second = setup()
+    verdict.update(values)
+    with pytest.raises(MalformedProviderResponse):
+        await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure, sent, expected_calls', [
+    ('quota', False, 2), ('timeout', False, 2), ('timeout', True, 1),
+    ('control', False, 1), ('all_quota', False, 2),
+])
+async def test_real_visual_executor_only_fails_over_before_send(tmp_path, failure, sent, expected_calls):
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool
+    from street_story.quota import SharedQuotaDenied
+    provider, verdict, context, _calls, _first, _second = setup()
+    store = Store(tmp_path / 'visual.sqlite3')
+    pool = GeminiKeyPool(store, (SecretStr('key-a'), SecretStr('key-b')), 'gemini-primary')
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    calls = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(key)
+        if len(calls) == 1 or failure == 'all_quota':
+            if sent:
+                kwargs['before_provider_send']()
+            if failure in {'quota', 'all_quota'}:
+                raise SharedQuotaDenied(60)
+            if failure == 'control':
+                raise GeminiUnavailable(2000, 'shared_control_unavailable')
+            raise TimeoutError
+        kwargs['before_provider_send']()
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    if expected_calls == 2 and failure != 'all_quota':
+        response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        assert [a['provider_send_state'] for a in response['receipt']['model_attempts']] == [
+            'not_sent', 'response_closed']
+    else:
+        with pytest.raises(GeminiUnavailable) as failed:
+            await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        if sent:
+            assert failed.value.receipt['category'] == 'visual_outcome_unknown'
+        assert all(a['provider_send_state'] == ('possibly_sent' if sent else 'not_sent')
+                   for a in failed.value.receipt['model_attempts'])
+    assert len(calls) == expected_calls
+    assert pool.snapshot()['in_flight'] == 0
+    if expected_calls == 1:
+        with store.connection() as db:
+            other = db.execute('SELECT consecutive_failures,minute_used FROM gemini_key_health '
+                               'WHERE key_id=? AND operation=?', (pool.ids[1], 'grounded_research')).fetchone()
+        assert tuple(other) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_visual_answer_uses_its_overall_budget_instead_of_short_key_timeout(tmp_path):
+    import asyncio
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
+    provider, verdict, context, _calls, _first, _second = setup()
+    pool = GeminiKeyPool(Store(tmp_path / 'slow-visual.sqlite3'), (SecretStr('key-a'), SecretStr('key-b')),
+        'gemini-primary', policy=GeminiPolicy(call_timeout=.01, attempt_timeout=.3))
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    sent = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        kwargs['before_provider_send']()
+        sent.append(key)
+        await asyncio.sleep(.04)
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert response['receipt']['model_attempts'][0]['provider_send_state'] == 'response_closed'
+    assert sent == ['key-a']

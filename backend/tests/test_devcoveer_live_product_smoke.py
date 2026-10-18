@@ -1,0 +1,506 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import httpx
+import pytest
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "devcoveer_live_product_smoke.py"
+
+
+def load_module():
+    spec = importlib.util.spec_from_file_location("devcoveer_live_product_smoke", MODULE_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class EventClient:
+    def __init__(self, events):
+        self.events = events
+
+    def get(self, path, params=None):
+        request = httpx.Request("GET", "https://street-story.example" + path)
+        return httpx.Response(
+            200,
+            json={"events": self.events, "cursor": len(self.events)},
+            request=request,
+        )
+
+
+class EventBatchesClient:
+    def __init__(self, batches):
+        self.batches = batches
+
+    def get(self, path, params=None):
+        return EventClient(self.batches.pop(0)).get(path, params)
+
+
+class CapabilitiesClient:
+    def __init__(self, destinations):
+        self.destinations = destinations
+
+    def get(self, path, params=None):
+        assert path == "/v1/capabilities"
+        request = httpx.Request("GET", "https://street-story.example" + path)
+        return httpx.Response(
+            200,
+            json={"destinations": self.destinations},
+            request=request,
+        )
+
+
+def test_telegram_destination_keeps_reviewable_configured_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "lovekenig_tg",
+            "provider": "telegram",
+            "status": "needs_review",
+        }
+    ])
+    assert module.telegram_destination(client) == "lovekenig_tg"
+
+
+def test_execute_publication_rejects_main_channel_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "lovekenig_tg",
+            "label": "lovekenig Telegram",
+            "provider": "telegram",
+            "status": "supported",
+        }
+    ])
+    with pytest.raises(module.ProductSmokeError, match="publication_destination_not_test_safe"):
+        module.telegram_destination(
+            client,
+            requested="lovekenig_tg",
+            require_test=True,
+        )
+
+
+def test_execute_publication_requires_explicit_test_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "street_story_test_tg",
+            "label": "Street Story Test Group",
+            "provider": "telegram",
+            "status": "needs_review",
+        }
+    ])
+    with pytest.raises(module.ProductSmokeError, match="publication_destination_required"):
+        module.telegram_destination(client, require_test=True)
+    assert (
+        module.telegram_destination(
+            client,
+            requested="street_story_test_tg",
+            require_test=True,
+        )
+        == "street_story_test_tg"
+    )
+
+
+def test_execute_publication_accepts_hidden_internal_e2e_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([])
+    assert (
+        module.telegram_destination(
+            client,
+            requested="street_story_e2e_20260928_tg",
+            require_test=True,
+        )
+        == "street_story_e2e_20260928_tg"
+    )
+
+
+def test_supported_fact_ids_require_https_evidence() -> None:
+    module = load_module()
+    ids = module.supported_fact_ids({
+        "facts": [
+            {
+                "fact_id": "good",
+                "evidence_supported": True,
+                "sources": [{"url": "https://example.com/source"}],
+            },
+            {
+                "fact_id": "http",
+                "evidence_supported": True,
+                "sources": [{"url": "http://example.com/source"}],
+            },
+            {
+                "fact_id": "unsupported",
+                "evidence_supported": False,
+                "sources": [{"url": "https://example.com/other"}],
+            },
+        ]
+    })
+    assert ids == ["good"]
+
+
+def test_canary_schedule_is_minute_aligned_and_keep_mode_is_bounded() -> None:
+    module = load_module()
+    now = module.datetime(
+        2026, 9, 27, 19, 16, 59, 123456, tzinfo=module.timezone.utc
+    )
+    scheduled = module.publication_schedule(
+        keep_publication=False,
+        delay_minutes=5,
+        now=now,
+    )
+    assert scheduled.second == 0
+    assert scheduled.microsecond == 0
+    assert scheduled - now > module.timedelta(hours=24)
+    visible = module.publication_schedule(
+        keep_publication=True,
+        delay_minutes=5,
+        now=now,
+    )
+    assert module.timedelta(minutes=4) <= visible - now <= module.timedelta(minutes=5)
+    with pytest.raises(module.ProductSmokeError, match="publication_delay_invalid"):
+        module.publication_schedule(keep_publication=True, delay_minutes=1, now=now)
+
+
+def test_heartbeat_events_advances_cursor_without_new_turn() -> None:
+    module = load_module()
+    cursor = module.heartbeat_events(
+        EventClient([
+            {"type": "output_transcript", "text": "Готово."},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+    )
+    assert cursor == 2
+
+
+def test_heartbeat_events_fails_if_provider_session_closed() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match="live_session_closed"):
+        module.heartbeat_events(
+            EventClient([{"type": "closed"}]),
+            "story",
+            "session",
+            0,
+        )
+
+
+def test_poll_events_accepts_tool_result_and_same_turn_continuation() -> None:
+    module = load_module()
+    cursor, result = module.poll_events(
+        EventClient([
+            {"type": "tool_result", "name": "edit_text", "status": "ok"},
+            {"type": "output_transcript", "text": "Готово."},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+        expected_tool="edit_text",
+        timeout_seconds=1,
+    )
+    assert cursor == 3
+    assert result["tool_ok"] is True
+    assert result["post_tool_output"] is True
+    assert result["turn_complete"] is True
+
+
+def test_poll_events_reports_completed_refusal_without_waiting_for_timeout() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='select_facts_turn_completed_without_tool'):
+        module.poll_events(
+            EventClient([
+                {'type': 'output_transcript', 'text': 'На текущем этапе я не могу выбрать факты.'},
+                {'type': 'turn_complete'},
+            ]), 'story', 'session', 0, expected_tool='select_facts', timeout_seconds=1,
+        )
+
+
+def test_sequential_turn_waits_for_spoken_ack_after_function_call_completion(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'select_facts', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'output_transcript', 'text': 'Выбранные факты обновлены.'},
+         {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='select_facts', timeout_seconds=1, require_post_tool_output=True)
+    assert result['post_tool_output'] and not client.batches
+
+
+def test_prior_interrupted_ack_is_not_a_current_concept_refusal(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'output_transcript', 'text': 'Выбранные факты обновлены.'},
+         {'type': 'input_timing', 'text_sent_at': 123},
+         {'type': 'interrupted'}, {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'set_concept', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'output_transcript', 'text': 'Замысел сохранён.'},
+         {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='set_concept', timeout_seconds=1, require_post_tool_output=True)
+    assert result['tool_ok'] and result['post_tool_output'] and not client.batches
+
+
+def test_saved_tool_without_ack_is_reported_as_saved_not_unknown(monkeypatch):
+    module = load_module()
+    clock = iter([0, 0.1, 2])
+    monkeypatch.setattr(module.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    with pytest.raises(module.ProductSmokeError, match='edit_text_saved_acknowledgement_pending'):
+        module.poll_events(
+            EventClient([{'type': 'tool_result', 'name': 'edit_text', 'status': 'ok'},
+                         {'type': 'turn_complete'}]),
+            'story', 'session', 0, expected_tool='edit_text', timeout_seconds=1,
+            require_post_tool_output=True,
+        )
+
+
+def test_poll_events_keeps_waiting_across_capability_transition(monkeypatch) -> None:
+    module = load_module()
+    batches = [
+        [{'type': 'capability_transition_started'},
+         {'type': 'output_transcript', 'text': 'Перехожу к редактору.'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'select_facts', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+    ]
+    class TransitionClient:
+        def get(self, path, params=None):
+            return EventClient(batches.pop(0)).get(path, params)
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(
+        TransitionClient(), 'story', 'session', 0, expected_tool='select_facts', timeout_seconds=1,
+    )
+    assert result['tool_ok'] and not batches
+
+
+def test_poll_events_recovers_revision_conflict_inside_same_turn() -> None:
+    module = load_module()
+    cursor, result = module.poll_events(
+        EventClient([
+            {
+                "type": "tool_result",
+                "name": "edit_text",
+                "status": "error",
+                "code": "live_text_revision_conflict",
+            },
+            {"type": "tool_result", "name": "read_topic", "status": "ok"},
+            {"type": "tool_result", "name": "edit_text", "status": "ok"},
+            {"type": "output_transcript", "text": "Исправил по актуальной версии."},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+        expected_tool="edit_text",
+        timeout_seconds=1,
+    )
+    assert cursor == 5
+    assert result["tool_ok"] is True
+    assert result["recoverable_tool_errors"] == ["live_text_revision_conflict"]
+
+
+def test_poll_events_fails_when_revision_conflict_is_not_recovered() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match="edit_text_recoverable_conflict_unresolved"):
+        module.poll_events(
+            EventClient([
+                {
+                    "type": "tool_result",
+                    "name": "edit_text",
+                    "status": "error",
+                    "code": "live_text_revision_conflict",
+                },
+                {"type": "output_transcript", "text": "Не удалось обновить текст."},
+                {"type": "turn_complete"},
+            ]),
+            "story",
+            "session",
+            0,
+            expected_tool="edit_text",
+            timeout_seconds=1,
+        )
+
+
+def test_text_revision_recovery_waits_across_function_turns_without_new_owner_input(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'set_concept', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'edit_text', 'status': 'error',
+          'code': 'live_text_revision_conflict', 'message': 'Expected text revision96, current is13'},
+         {'type': 'generation_complete'}, {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'read_topic', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'edit_text', 'status': 'ok'},
+         {'type': 'output_transcript', 'text': 'Текст сохранён.'}, {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='edit_text', timeout_seconds=1, require_post_tool_output=True)
+    assert result['tool_ok'] and result['post_tool_output']
+    assert result['recoverable_tool_errors'] == ['live_text_revision_conflict']
+    assert client.batches == []
+
+
+@pytest.mark.parametrize('code', ['live_fact_review_evidence_invalid', 'live_review_decisions_invalid',
+                                  'live_review_canonical_invalid'])
+def test_review_waits_for_model_correction_after_rejected_function_turn(monkeypatch, code):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error', 'code': code},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'get_review_packet', 'status': 'ok'},
+         {'type': 'turn_complete'}],
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'ok'},
+         {'type': 'output_transcript', 'text': 'Решения сохранены после повторного чтения.'},
+         {'type': 'turn_complete'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    _, result = module.poll_events(client, 'story', 'session', 0,
+        expected_tool='finalize_fact_review', timeout_seconds=1)
+    assert result['tool_ok'] and result['recoverable_tool_errors'] == [code] and not client.batches
+
+
+def test_review_rejection_without_saved_correction_is_failure():
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_recoverable_conflict_unresolved'):
+        module.poll_events(EventClient([
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+             'code': 'live_fact_review_evidence_invalid'},
+            {'type': 'output_transcript', 'text': 'Не удалось исправить проверку.'},
+            {'type': 'turn_complete'},
+        ]), 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
+def test_review_contract_budget_exhaustion_remains_terminal(monkeypatch):
+    module = load_module()
+    client = EventBatchesClient([
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+          'code': 'live_fact_review_evidence_invalid'}],
+        [{'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+          'code': 'live_research_partial'}],
+    ])
+    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_failed_live_research_partial'):
+        module.poll_events(client, 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
+def test_review_later_rejection_does_not_reuse_prior_success():
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match='finalize_fact_review_recoverable_conflict_unresolved'):
+        module.poll_events(EventClient([
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'ok'},
+            {'type': 'tool_result', 'name': 'finalize_fact_review', 'status': 'error',
+             'code': 'live_fact_review_evidence_invalid'},
+            {'type': 'output_transcript', 'text': 'Последние решения не сохранены.'},
+            {'type': 'turn_complete'},
+        ]), 'story', 'session', 0, expected_tool='finalize_fact_review', timeout_seconds=1)
+
+
+def test_poll_events_requires_publication_confirmation() -> None:
+    module = load_module()
+    cursor, result = module.poll_events(
+        EventClient([
+            {
+                "type": "publication_confirmation",
+                "confirmation_id": "confirm_1",
+                "destinations": ["lovekenig_tg"],
+                "state": "prepared",
+            },
+            {"type": "tool_result", "name": "prepare_publication", "status": "ok"},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+        expected_tool="prepare_publication",
+        timeout_seconds=1,
+        require_confirmation=True,
+    )
+    assert cursor == 3
+    assert result["confirmation"]["confirmation_id"] == "confirm_1"
+
+
+@pytest.mark.parametrize(
+    ("event", "code"),
+    [
+        ({"type": "resource_fallback"}, "central_authority_fell_back"),
+        ({"type": "error", "code": "LIVE_PROVIDER_ERROR"}, "LIVE_PROVIDER_ERROR"),
+    ],
+)
+def test_event_error_fails_closed(event, code) -> None:
+    module = load_module()
+    assert module.event_error(event) == code
+
+
+def test_fixture_download_uses_raw_ram_without_image_hash_or_database_cache(monkeypatch, tmp_path) -> None:
+    module = load_module()
+    photo = b"updated-approved-source" * 1200
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return httpx.Response(200, content=photo, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(module.httpx, "get", fetch)
+    meta = {"download_url": "https://example.com/source.jpg", "source_sha256": "obsolete"}
+    loaded, provenance = module.load_fixture(meta, tmp_path / "unused-data",
+                                             metadata_path=tmp_path / "fixture.json")
+    assert loaded == photo
+    assert calls == [meta["download_url"]]
+    assert provenance == "wikimedia"
+    assert not list(tmp_path.iterdir())
+
+
+def test_repository_fixture_is_read_to_ram_without_new_image_file(monkeypatch, tmp_path) -> None:
+    module = load_module()
+    photo = b"owner-fixture" * 1200
+    candidate = (tmp_path / "source.png").resolve()
+    # Emulate an already committed fixture without writing an image test artifact.
+    monkeypatch.setattr(Path, "is_file", lambda self: self == candidate)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: photo if self == candidate else b"")
+    loaded, provenance = module.load_fixture(
+        {"source_file": "source.png"}, tmp_path / "unused-data",
+        metadata_path=tmp_path / "fixture.json",
+    )
+    assert loaded == photo
+    assert provenance == "repository_fixture"
+    assert not list(tmp_path.iterdir())
+
+
+def test_visual_review_receipt_uses_lineage_and_never_downloads_image() -> None:
+    module = load_module()
+
+    class MetadataOnlyClient:
+        def get(self, *args, **kwargs):
+            raise AssertionError("Image bytes must not be fetched for a metadata receipt")
+
+    visual = {"source_asset_ref": "source-1", "operation_id": "operation-1",
+              "selected_asset_ref": "asset-1", "prompt_version": "owner",
+              "prompt_sha256": module.OWNER_PROMPT_SHA256, "content_revision": 7}
+    current = {"draft_text": "approved", "visual": visual,
+               "visual_identity": {"identity_generation": 3},
+               "processed_image_url": "https://images.example/asset-1.png"}
+    receipt = module.validate_visual(MetadataOnlyClient(), current, "approved")
+    assert receipt["selected_asset_ref"] == "asset-1"
+    assert receipt["operation_id"] == "operation-1"
+    assert receipt["identity_generation"] == 3
+    assert receipt["image_url"] == current["processed_image_url"]
+    assert "selected_sha256" not in receipt
+    with pytest.raises(module.ProductSmokeError, match="visual_changed_text"):
+        module.validate_visual(MetadataOnlyClient(), current, "stale draft")
+    current["visual"].pop("selected_asset_ref")
+    with pytest.raises(module.ProductSmokeError, match="visual_receipt_incomplete"):
+        module.validate_visual(MetadataOnlyClient(), current, "approved")

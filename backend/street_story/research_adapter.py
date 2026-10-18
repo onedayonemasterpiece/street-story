@@ -1,0 +1,2101 @@
+"""Product bindings for existing DevCoveer OpenCode with shared admission.
+
+Logical attempts persist in the product DB. No coding-agent task endpoint,
+credential hopping or new POI/job system is involved.
+"""
+from __future__ import annotations
+import asyncio
+import copy
+import hashlib
+import json
+import logging
+import math
+import re
+from statistics import median
+from weakref import WeakValueDictionary
+from contextlib import asynccontextmanager, nullcontext
+from contextvars import ContextVar
+from .opencode_research import OpenCodeResearch, ResearchUnavailable
+from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
+from .service import ConflictError, canonical
+from .config import reveal
+from .source_assessment import DISPATCH_CONTRACT as FACT_READING_CONTRACT, response_schema as assessment_schema
+
+LOG = logging.getLogger(__name__)
+
+# A local SOURCE/REF acquisition failure describes this unit, not model health.
+LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
+MAX_RETAINED_ADMISSION_ATTEMPTS = 3
+# Matched by idx_research_provider_accounting_pending: the per-tick recovery
+# reads only pending finalizations instead of every historical receipt.
+PENDING_ACCOUNTING_SQL = (
+    "SELECT attempt_id,receipt_json FROM research_provider_attempts "
+    "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
+    "AND COALESCE(json_extract(receipt_json,'$.accounting_finalization.retry_at'),0)<=? "
+    "AND json_extract(receipt_json,'$.accounting_finalization.authority_sha256')=? "
+    "ORDER BY updated_at,attempt_id LIMIT ?")
+
+
+def retained_admission_count(db, receipt):
+    """Count the immutable refusal chain; malformed links fail closed."""
+    binding = receipt.get('binding') or {}
+    seen = {binding.get('attempt_id')}
+    prior = binding.get('prior_not_sent_attempt_id')
+    while prior:
+        if prior in seen:
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        row = db.execute('SELECT logical_id,receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+            (prior,)).fetchone()
+        if not row or row['logical_id'] != binding.get('request_id'):
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        previous = json.loads(row['receipt_json'])
+        if (previous.get('provider_send_state') != 'not_sent' or previous.get('last_request_sent')
+                or previous.get('model_attempts') or previous.get('source_cohort_sha256') != receipt.get('source_cohort_sha256')):
+            return MAX_RETAINED_ADMISSION_ATTEMPTS
+        seen.add(prior)
+        prior = (previous.get('binding') or {}).get('prior_not_sent_attempt_id')
+    return len(seen)
+
+
+def retained_not_sent_retry_at(db, receipt, *, enforce_limit=True):
+    """A frozen retained unit may re-enter admission only if inference never began."""
+    failure = receipt.get('route_failure') or {}
+    packet = receipt.get('retained_source_packet') or {}
+    deadline = failure.get('retry_at')
+    if (receipt.get('contract') != 'research-agent-owned-source-extraction-v1'
+            or receipt.get('phase') not in {'created', 'failed'}
+            or receipt.get('provider_send_state') != 'not_sent'
+            or receipt.get('last_request_sent') or receipt.get('model_attempts')
+            or failure.get('requires_binding_change') or not failure.get('code')
+            or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
+            or not math.isfinite(deadline)
+            or not re.fullmatch(r'[a-f0-9]{64}', str(receipt.get('source_cohort_sha256') or ''))
+            or packet.get('source_cohort_sha256') != receipt['source_cohort_sha256']):
+        return None
+    attempt_id = (receipt.get('binding') or {}).get('attempt_id')
+    if not attempt_id:
+        return None
+    if enforce_limit and retained_admission_count(db, receipt) >= MAX_RETAINED_ADMISSION_ATTEMPTS:
+        return None
+    # OAuth and admission may create a turn journal before an inference
+    # callback. A possibly sent child defeats the parent's NOT_SENT assertion.
+    for row in db.execute("SELECT receipt_json FROM research_provider_attempts "
+            "WHERE json_extract(receipt_json,'$.parent_attempt_id')=?", (attempt_id,)):
+        child = json.loads(row[0])
+        if (child.get('provider_send_state') != 'not_sent' or child.get('last_request_sent')
+                or child.get('model_attempts') or child.get('phase') not in {'created', 'failed'}):
+            return None
+    return deadline
+
+
+def identity_text_discovery_schema(joint_schema):
+    """The text planner selects research leads; it cannot assert image proof.
+
+    Membership stays in the received context and the host validator, rather
+    than repeated ID enumerations in every output field. The caller must check
+    returned pointers against its frozen canonical inventory before use.
+    """
+    allowed = {'entity_name', 'wikipedia_queries', 'visual_query', 'commons_query',
+        'article_queries', 'observed_candidate_ids', 'selected_wikipedia_page_ids',
+        'subject_article_bindings', 'first_wave_hypotheses', 'regional_lookup',
+        'regional_article_selections', 'clarification_question', 'next_action'}
+    pointers = {'candidate_id', 'subject_id', 'address_entry_id', 'article_id',
+        'physical_candidate_id', 'candidate_ids', 'target_candidate_ids',
+        'observed_candidate_ids', 'selected_wikipedia_page_ids'}
+    properties = {key: copy.deepcopy(value) for key, value in joint_schema.get('properties', {}).items()
+                  if key in allowed}
+
+    def bounded(node, name=''):
+        if not isinstance(node, dict):
+            return
+        if name in pointers and node.get('type') == 'string':
+            node.pop('enum', None)
+            node.update(maxLength=100, description='Exact received ID; host validates frozen inventory membership.')
+        if node.get('type') == 'string' and 'maxLength' not in node:
+            node['maxLength'] = 240
+        if node.get('type') == 'array' and 'maxItems' not in node:
+            node['maxItems'] = 8 if name == 'article_queries' else 2
+        for key, child in node.get('properties', {}).items():
+            bounded(child, key)
+        bounded(node.get('items'), name)
+
+    for key, value in properties.items():
+        bounded(value, key)
+    return {'type': 'object', 'properties': properties,
+        'required': [key for key in joint_schema.get('required', []) if key in properties],
+        'additionalProperties': False}
+
+
+def _failure_code(exc):
+    value = getattr(exc, 'code', None) or str(exc)
+    return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', value) else type(exc).__name__
+
+
+def _fact_route_exhausted(receipt, digest):
+    status = receipt.get('provider_status')
+    code = str((receipt.get('route_failure') or {}).get('code') or receipt.get('error_code') or '')
+    if (status in {401, 403, 429} or isinstance(status, int) and status >= 500
+            or code.startswith('RESOURCE_') or code in {'research_provider_quota', 'research_provider_credential_or_eligibility'}):
+        return False  # A quota/transport rejection is not a completed semantic unit.
+    same_input = (receipt.get('binding') or {}).get('fact_input_sha256') in {None, digest}
+    return same_input and (receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
+        or receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') == 'response_closed'
+                                                or receipt.get('error_type') == 'PermanentProviderError'))
+
+
+def _closed_malformed_visual(receipt):
+    """All sends produced complete responses; malformed content is not timeout."""
+    attempts = receipt.get('model_attempts') if isinstance(receipt, dict) else None
+    if not isinstance(attempts, list) or not attempts:
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or attempt.get('category') != 'malformed_response':
+            return False
+        request_id, usage = attempt.get('provider_request_id'), attempt.get('usage')
+        if not isinstance(request_id, str) or not request_id.strip() or not isinstance(usage, dict):
+            return False
+        total = usage.get('total_tokens')
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            return False
+    return True
+
+
+def _closed_native_input_readback(receipt):
+    """Recover the original completed turn after a local input projection error.
+
+    This is observation, not retry permission for a closed model failure. The
+    native reader still verifies the frozen input, model and complete output.
+    """
+    from .native_fact_research import CONTRACT
+    return (receipt.get('native_contract') == CONTRACT
+        and receipt.get('provider_id') == 'codex_native'
+        and receipt.get('model_id') == 'gpt-6-luna'
+        and receipt.get('phase') == 'failed'
+        and receipt.get('provider_send_state') == 'response_closed'
+        and receipt.get('native_terminal_status') == 'completed'
+        and (receipt.get('route_failure') or {}).get('code') == 'native_research_input_unverified'
+        and isinstance(receipt.get('frozen_prompt'), str)
+        and isinstance(receipt.get('frozen_schema'), dict)
+        and bool(receipt.get('thread_id')) and bool(receipt.get('turn_id')))
+
+
+FACT_PAGE_SCHEMA = {'type':'object','properties':{
+    'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
+    'research_sufficient_basis':{'description':
+        'Optional {candidate_indices:[integer,...], known_fact_ids:[string,...], reason:string}. '
+        'Reference own new candidates and known eligible claims supporting the coverage goal.'},
+    'next_research_query':{'type':'string','maxLength':500},
+    'next_research_goal':{'type':'string','maxLength':1000},
+    'source_matches_poi':{'type':'boolean'},'source_content_valid':{'type':'boolean'},
+    'continuation_needed':{'type':'boolean'},'facts':{'type':'array','maxItems':32,'items':{
+        'type':'object','properties':{
+            'text':{'type':'string','minLength':1,'maxLength':1200},
+            # Headless extraction stores opaque candidates keyed by the frozen
+            # batch/index; semantic equivalence is decided by the reviewer.
+            # An advisory model key must not discard otherwise complete claims.
+            'claim_key':{'type':'string','description':'Optional advisory key; the backend assigns candidate IDs. Semantic equivalence requires review.'},
+            'existing_fact_id':{'type':'string'},
+            'conflicts_with_existing':{'type':'array','items':{'type':'string'}},
+            'confidence':{'type':'number','minimum':0,'maximum':1},
+            'source_refs':{'type':'array','items':{'type':'string'}},
+            'passage_ids':{'type':'array','minItems':1,'items':{'type':'integer'}},
+            'verdict':{'enum':['supported','insufficient','contradicted','possible_conflict']},
+            'atomic':{'type':'boolean'},'support_complete':{'type':'boolean'},'qualifiers_preserved':{'type':'boolean'},
+            'review_reason':{'type':'string','minLength':1,'maxLength':500}},
+        'required':['text','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
+    'required':['facts','source_matches_poi','source_content_valid','continuation_needed']}
+
+
+def fact_page_capsule(page, context):
+    """One semantic index, with intact claims and authorized frozen paging.
+
+    Runtime identity receipts and repeated evidence DTOs stay in the ledger.
+    Their absence from a prompt does not truncate claims or their qualifiers.
+    """
+    public = {key: value for key, value in context.items()
+              if key not in {'_known_fact_inventory', 'known_facts', 'prior_poi_facts'}}
+    identity = public.get('confirmed_identity')
+    if isinstance(identity, dict):
+        from .identity_model_context import compact_physical_identity
+        public['confirmed_identity'] = compact_physical_identity(identity)
+    if isinstance(public.get('previously_processed_sources'), list):
+        history = [{key: source[key] for key in ('url', 'title') if key in source}
+                   for source in public['previously_processed_sources'] if isinstance(source, dict)]
+        bounded, size = [], 0
+        for source in history:
+            item_size = len(canonical(source).encode('utf-8'))
+            if size + item_size > 2000:
+                continue  # Omit whole metadata records; never alter source passages.
+            bounded.append(source)
+            size += item_size
+        omitted = int(context.get('previously_processed_sources_omitted_count') or 0)
+        public.update(previously_processed_sources=bounded,
+                      previously_processed_sources_total=len(history) + omitted,
+                      previously_processed_sources_omitted_count=len(history) - len(bounded) + omitted,
+                      processed_source_coverage_included=False)
+    inventory = context.get('_known_fact_inventory', context.get('known_facts', []))
+    if not isinstance(inventory, list):
+        raise PermanentProviderError('research_fact_inventory_invalid')
+    by_id = {}
+    for fact in [*inventory, *(context.get('prior_poi_facts') or [])]:
+        if not isinstance(fact, dict):
+            continue
+        item = {key: fact[key] for key in ('fact_id', 'text', 'claim_key', 'qualifiers', 'eligibility') if key in fact}
+        by_id.setdefault(str(fact.get('fact_id') or canonical(item)), item)
+    complete = list(by_id.values())
+    first, size = [], 0
+    for item in complete:
+        item_size = len(canonical(item).encode('utf-8'))
+        if size + item_size > 4000:
+            break
+        first.append(item)
+        size += item_size
+    total = max(len(complete), int(context.get('known_inventory_total') or 0))
+    public.update(known_inventory_complete=len(first) == total,
+                  known_inventory_total=total, known_inventory_next_offset=len(first),
+                  known_inventory_omitted_count=total - len(first))
+    # Match the existing review-packet date on the actual one-pass wire. Do not
+    # infer publication time from source acquisition or the provider's clock.
+    review_date = ({'review_as_of_date_utc': context['review_as_of_date_utc']}
+                   if context.get('review_as_of_date_utc') else {})
+    return {**review_date, 'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
+            'semantic_contract': FACT_READING_CONTRACT,
+            'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
+                         'reading_text': page.get('core_text'),
+                         'title': page.get('source_title', ''), 'passages': [
+                             {'passage_id': p['passage_id'], 'text': p['text']} for p in page['evidence_passages']]}]}
+
+
+class ProductResearchAdapter:
+    def __init__(self, service, *, admission=None, client=None):
+        self.service = service
+        self._active_binding = ContextVar('street_story_research_binding', default=None)
+        self.control = None
+        if admission is None:
+            from ai_resource_control.client import Config, Control
+            from ai_resource_control.workload import WorkloadAdmission
+            self.control = Control(Config.from_env('street-story'))
+            admission = WorkloadAdmission(self.control, 'opencode:street-story-research')
+        self.agent_admission = self.fenced_admission(admission)
+        self.client = None
+        self.live_facts = None
+        if service.settings.gemini_keys:
+            from .live_research import LiveSemanticClient
+            self.live_facts = LiveSemanticClient(self)
+        if service.settings.research_endpoint:
+            if client is not None:
+                self.client = OpenCodeResearch(service.settings.research_endpoint,
+                    model_id=service.settings.research_model, admission=self.fenced_admission(admission),
+                    checkpoint=self.checkpoint, client=client, scope_guard=self.transport_scope_guard)
+            elif service.settings.research_directory:
+                from .shared_devcoveer_research import SharedDevCoveerResearch
+                self.client = SharedDevCoveerResearch(str(service.settings.research_directory),
+                    model_id=service.settings.research_model, admission=self.fenced_admission(admission),
+                    checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
+        from .headless_vision import HeadlessVisionProvider
+        self.primary_vision = HeadlessVisionProvider(service)
+        self.native_vision = None
+        if service.settings.native_vision_reserve:
+            from ai_resource_control.workload import WorkloadAdmission
+            from .native_vision import NativeVisionProvider, ACCOUNT_SCOPE
+            self.native_vision = NativeVisionProvider(service, admission=self.fenced_admission(WorkloadAdmission(self.control, ACCOUNT_SCOPE)),
+                checkpoint=self.checkpoint, scope_guard=self.transport_scope_guard)
+        self.giga = None
+        if reveal(service.settings.research_gigachat_key):
+            from ai_resource_control.workload import WorkloadAdmission
+            from .gigachat_research import GigaChatResearchClient, ACCOUNT_SCOPE
+            self.giga = GigaChatResearchClient(reveal(service.settings.research_gigachat_key).removeprefix('Basic '),
+                admission=self.fenced_admission(WorkloadAdmission(self.control,ACCOUNT_SCOPE)), credential_ref='STREET_STORY_GIGACHAT_KEY',
+                ca_bundle_file=service.settings.research_gigachat_ca, scope=service.settings.research_gigachat_scope)
+
+    async def checkpoint(self, binding, receipt):
+        self._checkpoint_receipt(binding, receipt)
+
+    def _checkpoint_receipt(self, binding, receipt):
+        with self.service.store.tx() as db:
+            previous = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                  (binding['attempt_id'],)).fetchone()
+            accounting = json.loads(previous[0]).get('accounting_finalization') if previous else None
+            if accounting:
+                receipt = {**receipt, 'accounting_finalization': accounting}
+            db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            if (receipt.get('phase') == 'completed' and receipt.get('result')
+                    and binding.get('story_id') and binding.get('photo_sha256')):
+                # Preserve technical receipts after supersession, but count
+                # progress only for evidence owned by this current wave.
+                try:
+                    self.guard_binding(binding, db=db)
+                except ConflictError:
+                    return
+                from .research_budget import note_evidence
+                note_evidence(self.service, db, binding['story_id'], binding['attempt_id'],
+                              generation=binding.get('generation'))
+
+    def _accounting_record(self, binding, value=None):
+        """Private exact lease capsule in the existing attempt journal, never telemetry."""
+        if value is not None:
+            path = self.service.store.path
+            for private in (path, path.with_name(path.name+'-wal'), path.with_name(path.name+'-shm')):
+                if private.exists():
+                    private.chmod(0o600)
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding.get('attempt_id'),)).fetchone()
+            if not row:
+                return None, {}
+            receipt = json.loads(row[0])
+            if value is not None:
+                receipt['accounting_finalization'] = value
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            return receipt.get('accounting_finalization'), receipt
+
+    @staticmethod
+    def _accounting_authority(control):
+        config = control.config
+        return hashlib.sha256(canonical([getattr(config, 'url', None), config.consumer,
+            getattr(config, 'expected_ledger_id', None)]).encode()).hexdigest()
+
+    async def recover_accounting(self, *, limit=2):
+        """Reconcile only original finalizations; no reserve, send or product write."""
+        if getattr(self, 'control', None) is None:
+            return
+        from ai_resource_control.workload import WorkloadLease
+        authority = self._accounting_authority(self.control)
+        now = self.service.store.now()
+        with self.service.store.connection() as db:
+            rows = list(db.execute(PENDING_ACCOUNTING_SQL, (now, authority, limit)))
+        for row in rows:
+            record = json.loads(row['receipt_json'])['accounting_finalization']
+            if record.get('retry_at', 0) > self.service.store.now():
+                continue
+            if record['authority_sha256'] != self._accounting_authority(self.control):
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=RESOURCE_BINDING_CHANGED',
+                            row['attempt_id'])
+                continue
+            identity = record['lease']
+            lease = WorkloadLease(self.control, {'request_id': identity['p_request_id'],
+                'fence': identity['p_fence'], 'ttl_ms': 0}, identity['p_owner_token'], self.control.clock())
+            lease.sent = record['sent']
+            try:
+                async with asyncio.timeout(3):
+                    await lease.finalize(record['metadata'], record['terminal_state'])
+            except Exception as exc:
+                if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                    raise
+                record.update(error_code=_failure_code(exc), retry_at=self.service.store.now()+30)
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=%s',
+                            row['attempt_id'], record['error_code'])
+            else:
+                record.update(state='completed', completed_at=self.service.store.now())
+                record.pop('retry_at', None)
+                LOG.info('street_story_accounting attempt_id=%s stage=reconcile state=completed', row['attempt_id'])
+            self._accounting_record({'attempt_id': row['attempt_id']}, record)
+
+    def guard_binding(self, binding, *, db=None):
+        if not binding or not binding.get('story_id'):
+            return
+        from .research_control import research_stopped
+        with self.service.store.connection() if db is None else nullcontext(db) as db:
+            story = self.service._story_row(db, binding['story_id'])
+            research = json.loads(story['research_json'] or '{}')
+            generation = int(research.get('identity_generation') or 0)
+            purpose = binding.get('purpose', 'identity')
+            control = (research.get('research_controls') or {}).get(purpose) or {}
+            visual = binding.get('visual_scope') is True
+            stopped = ((bool(control.get('stopped') and control.get('identity_generation') == generation)
+                        if control else bool(research.get('identity_research_cancelled')))
+                       if visual else research_stopped(research, purpose,
+                            photo_sha256=story['photo_sha256'], identity_generation=generation))
+            if ((not visual and binding.get('photo_sha256') != story['photo_sha256'])
+                    or binding.get('source_map_photo_sha256', story['photo_sha256']) != story['photo_sha256']
+                    or binding.get('generation') != generation
+                    or stopped
+                    or binding.get('control_revision', 0) != int(control.get('revision') or 0)):
+                raise ConflictError('research_scope_superseded', 'Исследование остановлено или относится к предыдущему объекту.')
+            if binding.get('job_id') and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
+                                                       (binding['job_id'], binding.get('job_attempt'))).fetchone():
+                raise ConflictError('research_worker_superseded', 'Этот запуск исследования больше не владеет задачей.')
+
+    def transport_scope_guard(self, binding):
+        # A queued readback belongs to the original SOURCE/control operation,
+        # even though its old worker has yielded. run() separately fences the
+        # current job before and after invocation; that job's turnover is not Stop.
+        self.guard_binding({**binding, 'job_id': None})
+
+    def fenced_admission(self, admission):
+        adapter = self
+
+        @asynccontextmanager
+        async def admitted(binding, workload):
+            owned = binding if binding.get('story_id') else adapter._active_binding.get()
+            async with admission(binding, workload) as lease:
+                raw_finalize = lease.finalize
+                # The installed WorkloadAdmission invokes lease.finalize again on
+                # exit when the first RPC fails. Make that cleanup retry the exact
+                # durable payload, not its generic unknown usage. finalized remains
+                # false until the SDK observes a real successful authority reply.
+                if callable(getattr(lease, 'payload', None)) and binding.get('attempt_id'):
+                    async def durable_finalize(metadata, state):
+                        record, receipt = adapter._accounting_record(binding)
+                        if record is None:
+                            record = {'state': 'pending', 'lease': lease.payload(), 'sent': lease.sent,
+                                'metadata': copy.deepcopy(metadata), 'terminal_state': state,
+                                'authority_sha256': adapter._accounting_authority(lease.control),
+                                'created_at': adapter.service.store.now()}
+                            saved, receipt = adapter._accounting_record(binding, record)
+                            if saved is None:
+                                raise ConflictError('research_accounting_attempt_missing', 'Original attempt receipt required.')
+                        try:
+                            async with asyncio.timeout(3):
+                                await raw_finalize(record['metadata'], record['terminal_state'])
+                        except Exception as exc:
+                            if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                                raise
+                            record.update(error_code=_failure_code(exc), retry_at=adapter.service.store.now()+30)
+                            adapter._accounting_record(binding, record)
+                            LOG.warning('street_story_accounting attempt_id=%s stage=finalize state=pending code=%s result_phase=%s',
+                                        binding['attempt_id'], record['error_code'], receipt.get('phase'))
+                            # Only a durably completed validated result may be
+                            # returned despite accounting unavailability. UNKNOWN,
+                            # unsent and admission failures remain failures.
+                            if receipt.get('phase') != 'completed' or not receipt.get('result') or not record['sent']:
+                                raise
+                        else:
+                            record.update(state='completed', completed_at=adapter.service.store.now())
+                            record.pop('retry_at', None)
+                            adapter._accounting_record(binding, record)
+                            LOG.info('street_story_accounting attempt_id=%s stage=finalize state=completed', binding['attempt_id'])
+                    lease.finalize = durable_finalize
+                class FencedLease:
+                    async def before_send(self, metadata):
+                        adapter.guard_binding(owned)
+                        if owned and owned.get('story_id'):
+                            from .research_budget import require_remaining
+                            require_remaining(adapter.service, owned['story_id'],
+                                              purpose=owned.get('purpose', 'facts'))
+                        return await lease.before_send(metadata)
+                    async def finalize(self, metadata, state):
+                        return await lease.finalize(metadata, state)
+                yield FencedLease()
+        return admitted
+
+    async def close(self):
+        # Runtime shutdown alone cancels these observers. A useful early source
+        # or proved identity does not cancel already-addressed provider work.
+        pending = list(getattr(self, '_search_observers', ()))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self.native_vision is not None:
+            await self.native_vision.close()
+        if getattr(self, 'native_facts', None) is not None:
+            await self.native_facts.close()
+        if getattr(self, 'live_facts', None) is not None:
+            await self.live_facts.close()
+        if getattr(self, 'control', None) is not None:
+            await self.control.close()
+
+    def retain_search_observer(self, task):
+        observers = getattr(self, '_search_observers', None)
+        if observers is None:
+            observers = self._search_observers = set()
+        observers.add(task)
+        def settled(done):
+            observers.discard(done)
+            if not done.cancelled():
+                try:
+                    outcomes = done.result()
+                except asyncio.CancelledError:
+                    return  # gather can carry cancellation without cancelled()=True.
+                except Exception as exc:
+                    LOG.warning('street_story_research_search_observer error_type=%s', type(exc).__name__)
+                    return
+                for outcome in outcomes or ():
+                    if isinstance(outcome, BaseException):
+                        LOG.warning('street_story_research_search_observer error_type=%s', type(outcome).__name__)
+        task.add_done_callback(settled)
+
+    def attempt(self, story, role, unit):
+        visual = role.startswith('vision')
+        identity = [story['id'], story.get('_identity_generation', 0), role, unit] if visual else [
+            story['id'], story['photo_sha256'], story.get('_identity_generation', 0), role, unit]
+        logical = hashlib.sha256(canonical(identity).encode()).hexdigest()
+        with self.service.store.tx() as db:
+            rows = list(db.execute('SELECT * FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC,rowid DESC', (logical,)))
+            old = json.loads(rows[0]['receipt_json']) if rows else {}
+            retained_retry = (retained_not_sent_retry_at(db, old)
+                if role.startswith('facts_agent_retained_') else None)
+            if retained_retry is not None and any((old.get('binding') or {}).get(key) != value
+                    for key, value in {'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                        'generation': story.get('_identity_generation', 0),
+                        'job_id': story.get('_research_job_id'),
+                        'control_revision': story.get('_fact_research_control_revision', 0)}.items()):
+                retained_retry = None
+            if retained_retry is not None and retained_retry > self.service.store.now():
+                raise RetryableProviderError('research_agent_retained_waiting', retry_at=retained_retry)
+            if (role in {'vision_google_group', 'vision_google_pair'} and old.get('phase') == 'failed'
+                    and old.get('fallback_mode') in {'pair', 'native'} and old.get('retry_safe') is True
+                    and (role == 'vision_google_group' or any(
+                        item.get('category') == 'malformed_response'
+                        for item in (old.get('observation') or {}).get('model_attempts', [])))):
+                # This exact group has a closed result/known local refusal. A
+                # smaller pair is a different unit; never repeat this group.
+                if role == 'vision_google_pair':
+                    from .gemini import GeminiUnavailable
+                    raise GeminiUnavailable(self.service.store.now()+300, 'visual_pair_known_failure')
+                raise PermanentProviderError('research_visual_group_pair_required')
+            if rows and old.get('phase') == 'completed':
+                return None, old
+            if (rows and role.startswith('facts_agent') and old.get('phase') in {'failed', 'aborted'}
+                    and retained_retry is None and not _closed_native_input_readback(old)):
+                # A closed agent failure is a fallback signal to a different
+                # configured route, never permission to repeat this task.
+                return None, old
+            resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
+                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema', 'frozen_source_map') if k in old}}
+            if rows and old.get('phase') == 'created' and retained_retry is None:
+                resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
+                               job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
+                return resumed, None
+            # A timeout alone does not authorize another model request. Require
+            # acknowledged abort; unaddressable creation/submit stays waiting.
+            if rows and (old.get('phase') not in {'created', 'aborted', 'failed'}
+                    or _closed_native_input_readback(old)):
+                return resumed, None
+            if rows and old.get('phase') == 'aborted' and not old.get('abort_acknowledged'):
+                raise RetryableProviderError('research_attempt_unknown', retry_at=self.service.store.now()+60)
+            attempt = 'rattempt_' + hashlib.sha256(f'{logical}:{len(rows)}'.encode()).hexdigest()[:24]
+            binding = {'attempt_id': attempt, 'story_id': story['id'], 'request_id': logical,
+                **({'visual_scope': True} if visual else {'photo_sha256': story['photo_sha256']}),
+                'generation': story.get('_identity_generation', 0),
+                'attempt_created_at': self.service.store.now(),
+                'purpose': 'identity' if visual else ('facts' if role.startswith('facts') or '_fact_research_control_revision' in story else 'identity'),
+                'control_revision': story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
+                'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+            if retained_retry is not None:
+                binding['prior_not_sent_attempt_id'] = old['binding']['attempt_id']
+            if (role == 'search' and binding['purpose'] == 'facts'
+                    and self._owner_exact_fact_scope(story)):
+                # Version only a newly admitted operation. Original addressed
+                # requests and completed receipts retain their frozen contract.
+                binding['search_selection_contract'] = 'owner-exact-selected-urls-v1'
+            if story.get('_fact_pool_unit_id'):
+                binding.update(fact_unit_id=story['_fact_pool_unit_id'],
+                               fact_input_sha256=story.get('_fact_pool_input_sha256'),
+                               **({'semantic_contract': story['_fact_semantic_contract']}
+                                  if story.get('_fact_semantic_contract') else {}))
+            now = self.service.store.now()
+            initial = {'binding': binding, 'phase': 'created'}
+            if retained_retry is not None:
+                initial.update({key: copy.deepcopy(old[key]) for key in (
+                    'contract', 'retained_source_packet', 'source_cohort_sha256', 'original_attempt_id',
+                    'frozen_prompt', 'prompt_sha256', 'frozen_schema', 'sources', 'provider_id', 'model_id',
+                    'route_id', 'profile_sha256') if key in old})
+                initial.update(provider_send_state='not_sent', model_attempts=[])
+            db.execute('INSERT OR IGNORE INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
+                (attempt, logical, story['id'], role, canonical(initial), now, now))
+            return binding, None
+
+    async def run(self, story, role, unit, invoke, *, client=None):
+        client = client if client is not None else self.client
+        if client is None:
+            raise RetryableProviderError('research_opencode_unconfigured',retry_at=self.service.store.now()+300)
+        route_key = 'research-route-health:' + hashlib.sha256(canonical([
+            client.endpoint, client.model_id, getattr(client, 'directory', None),
+            getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+        quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
+        binding, saved = self.attempt(story, role, unit)
+        if saved:
+            return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
+        readback = ((binding.get('session_id') and binding.get('message_id')
+                    or binding.get('thread_id') and binding.get('turn_id'))
+                    and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown', 'failed'})
+        # Existing receipt metadata is the durable wait fence. An explicit
+        # Resume changes the owner epoch and permits one new admission probe;
+        # it never authorizes a model send without the shared resource grant.
+        wait_scope = hashlib.sha256(canonical([route_key, story['id'], None if role.startswith('vision') else story['photo_sha256'],
+            story.get('_identity_generation', 0), binding.get('control_revision', 0)]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding['attempt_id'],)).fetchone()
+        prior_failure = (json.loads(row['receipt_json'] or '{}').get('route_failure') or {}) if row else {}
+        if (not readback and prior_failure.get('requires_binding_change')
+                and prior_failure.get('wait_scope') == wait_scope):
+            raise RetryableProviderError(prior_failure['code'], retry_at=research_retry_at(
+                prior_failure['code'], self.service.store.now(), self.service.store.now()+3600))
+        # A reservation that does not fit the remaining local daily budget
+        # says nothing about a smaller independent frozen unit. Provider429
+        # still has model-wide scope; keep unknown-send readback exempt.
+        workload_key = 'research-workload-health:' + route_key + ':' + binding['request_id']
+        for health_key in (() if readback else (route_key, quota_key, workload_key)):
+            health = self.service.store.cache_get(health_key) or {}
+            if health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None:
+                continue  # Older releases incorrectly wrote these as route-wide waits.
+            if health_key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET':
+                continue  # Legacy blanket reservation refusal, not provider quota.
+            if health.get('category') == 'RESOURCE_DAILY_BUDGET':
+                observed = health.get('observed_at')
+                if not isinstance(observed, (int, float)) or observed+300 <= self.service.store.now():
+                    continue  # Re-admit old local waits; never clear actual provider quota.
+            resumed_probe = (health.get('category') == 'RESOURCE_DAILY_BUDGET'
+                and prior_failure.get('wait_scope') != wait_scope
+                and (int(binding.get('control_revision', 0)) > 0
+                     or prior_failure.get('code') == 'RESOURCE_DAILY_BUDGET' and prior_failure.get('wait_scope')))
+            if health.get('retry_at', 0) > self.service.store.now() and not resumed_probe:
+                if role.startswith('facts_agent_retained_') and binding.get('prior_not_sent_attempt_id'):
+                    self._record_route_failure(binding, role, health.get('category', 'research_route_waiting'),
+                        health['retry_at'], wait_scope=wait_scope)
+                raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
+        try:
+            if story.get('_fact_pool_unit_id'):
+                current = {**binding, 'job_id': story.get('_research_job_id'),
+                           'job_attempt': story.get('_research_job_attempt')}
+                self.guard_binding(current)
+                result = await invoke(binding)
+                self.guard_binding(current)
+                return result
+            return await invoke(binding)
+        except ResearchUnavailable as exc:
+            status = exc.receipt.get('provider_status')
+            category = ('research_provider_credential_or_eligibility' if status in {401,403} else
+                        'research_provider_quota' if status == 429 else exc.code)
+            # Credential/eligibility rejection keeps the existing 1h cooldown;
+            # non-status unavailable routes use 5m, with longer provider hints.
+            delay = 3600 if status in {401,403} else 60 if status == 429 else 300
+            try:
+                delay = max(delay,float(exc.receipt.get('provider_retry_after')))
+            except (TypeError,ValueError):
+                pass
+            retry_at = research_retry_at(category, self.service.store.now(), self.service.store.now()+delay)
+            binding_changed = category.endswith('binding_changed')
+            self._record_route_failure(binding, role, category, retry_at,
+                wait_scope=wait_scope, requires_binding_change=binding_changed)
+            route_unavailable = status in {401, 403, 429} or isinstance(status, int) and status >= 500 or category.lower().endswith('_unavailable')
+            if not binding_changed and route_unavailable and category not in LOCAL_IMAGE_FAILURES:
+                self.service.store.cache_put(quota_key if status == 429 else route_key,
+                    {'category':category,'status':status,'retry_at':retry_at},
+                    math.ceil(retry_at-self.service.store.now()))
+            raise RetryableProviderError(category, retry_at=retry_at) from exc
+        except Exception as exc:
+            if getattr(exc, 'resource_failure', False):
+                code = _failure_code(exc)
+                retry_at = research_retry_at(code, self.service.store.now(),
+                    self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000))
+                self._record_route_failure(binding, role, code, retry_at, wait_scope=wait_scope,
+                    requires_binding_change=code.lower().endswith('binding_changed'))
+                # Local budget admission refused this exact logical workload.
+                # Another unit still goes through normal shared admission.
+                health_key = workload_key if code == 'RESOURCE_DAILY_BUDGET' else route_key if code in {
+                    'RESOURCE_CONTROL_UNAVAILABLE', 'RESOURCE_POLICY_UNAVAILABLE', 'RESOURCE_UNAVAILABLE'} else None
+                if health_key:
+                    self.service.store.cache_put(health_key, {'category':code,'retry_at':retry_at,
+                        'observed_at': self.service.store.now()},
+                        math.ceil(retry_at-self.service.store.now()))
+                raise RetryableProviderError(code, retry_at=retry_at) from exc
+            raise
+
+    def _record_route_failure(self, binding, role, code, retry_at, *, wait_scope=None, requires_binding_change=False):
+        # Preserve the dispatch/recovery phase. An admission failure does not
+        # prove that an older submitted request was never sent.
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding['attempt_id'],)).fetchone()
+            if row:
+                receipt = json.loads(row['receipt_json'] or '{}')
+                receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
+                                            'observed_at': self.service.store.now(),
+                                            'wait_scope': wait_scope, 'requires_binding_change': requires_binding_change}
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+        LOG.warning('street_story_research_route story_id=%s role=%s attempt_id=%s code=%s retry_at=%s',
+                    binding.get('story_id'), role, binding['attempt_id'], code, retry_at)
+
+    def identity_search_context(self, story):
+        from .identity_map_context import map_entry_context
+        supplied = story.get('_identity_query_context') or {}
+        nearby = (story.get('_identity_search_context') or {}).get('nearby')
+        if nearby is None:
+            # Initial map context is transient; later turns reuse its durable
+            # OSM observations rather than losing the other address hypotheses.
+            with self.service.store.connection() as db:
+                row = self.service._story_row(db, story['id'])
+                research = json.loads(row['research_json'] or '{}')
+            from .identity_lifecycle import distance
+            nearby = sorted((research.get('osm') or {}).get('nearby') or [], key=distance)[:20]
+        anchors = []
+        for item in nearby:
+            mapped = item if item.get('map_address') else map_entry_context(item)
+            if mapped.get('map_address'):
+                anchors.append({**{key: mapped[key] for key in
+                    ('candidate_id', 'map_address', 'map_coordinates') if key in mapped},
+                    'distance_m': item.get('distance_m')})
+        verdict = supplied.get('last_verdict') or {}
+        context = {key: supplied[key] for key in ('query_seed', 'requested_query') if key in supplied}
+        context.update(nearby_address_hypotheses=anchors,
+            last_verdict={**{key: verdict[key] for key in ('status', 'confidence') if key in verdict},
+                'observations': [str(value)[:400] for value in (verdict.get('observations') or [])[:3]],
+                'alternative_candidate_ids': (verdict.get('alternative_candidate_ids') or [])[:16]})
+        # Search needs compact failed-hypothesis context, not repeated visual
+        # verdicts/large DTOs. Full evidence stays in the existing story ledger.
+        omitted = 0
+        while len(canonical(context)) > 6000 and anchors:
+            anchors.pop()
+            omitted += 1
+        context['omitted_address_hypotheses'] = omitted
+        return context
+
+    def identity_search_observations(self, query, story):
+        """Read completed tool sightings for this exact original query/scope."""
+        unit = canonical([query, story.get('_research_run_id')])
+        logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), 'search', unit]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
+        receipt = json.loads(row[0]) if row else {}
+        if not any(call.get('status') == 'completed' for call in receipt.get('search_calls', [])):
+            return []
+        return receipt.get('discovered_sources') or receipt.get('sources') or []
+
+    async def search_articles(self, query, story):
+        from .identity_source_selection import regional_source_profile
+        unit = canonical([query,story.get('_research_run_id')])
+        history = self.search_history(story)
+        capsule = canonical({'query': query, 'purpose': 'facts' if '_fact_research_control_revision' in story else 'identity',
+                             'coverage_goal': story.get('_fact_research_goal'),
+                             'confirmed_subject': story.get('_confirmed_fact_identity'),
+                             'visual_search_requirement': (None if '_fact_research_control_revision' in story else
+                                 'Find modern photos of the present-day physical object and its address. '
+                                 'A historic building does not call for historic photographs. '
+                                 'Do not use pre-war photo archives as visual references; historic material belongs to fact research.'),
+                             'source_profile': regional_source_profile(story),
+                             'address_query_contract': 'Preserve the observed city, street type and full house number/range. '
+                                 'For facts prefer substantive articles about the confirmed subject; for identity prefer modern exterior views.',
+                             'research_history': history,
+                             'visual_evidence_context': ({} if '_fact_research_control_revision' in story
+                                 else self.identity_search_context(story))})
+        return await self.run(story, 'search', unit, lambda binding: self.client.search_articles(capsule, binding))
+
+    async def select_identity_sources(self, query, observed, story):
+        """Use the existing qualified, fenced, tool-free text operation."""
+        from .opencode_research import SEARCH_SCHEMA
+        from .identity_source_selection import model_selection, IDENTITY_SOURCE_POLICY, model_identity_context
+        inventory = [{'url': source['url'], 'title': str(source.get('title') or '')[:160],
+            'snippet': str(source.get('snippet') or next((support.get('text') for support in source.get('supports', [])
+                if isinstance(support, dict) and support.get('text')), ''))[:160]} for source in observed]
+        if len(canonical(inventory)) > 16000:
+            inventory = [{key: source[key] for key in ('url', 'title')} for source in inventory]
+        # Keep every observed URL reachable in this same bounded operation.
+        # Provider admission accounts for the actual compact input; a local
+        # character threshold must not silently strand its tail or retry the
+        # identical oversized inventory forever.
+        unit = canonical([query, inventory])
+        role = 'identity_source_selection'
+        logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), role, unit]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC LIMIT 1',
+                             (logical,)).fetchone()
+        receipt = json.loads(row[0]) if row else {}
+        if receipt.get('phase') == 'completed':
+            chosen, selection = model_selection(observed, receipt.get('result'))
+            return {'sources': chosen, 'discovered_sources': observed, 'source_selection': selection, 'receipt': receipt}
+        pending = bool(receipt) and (receipt.get('phase') not in {'created', 'failed', 'aborted'}
+            or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged')
+            or receipt.get('provider_send_state') == 'possibly_sent')
+        if pending and not (receipt.get('session_id') and receipt.get('message_id')):
+            raise RetryableProviderError('identity_source_selection_outcome_unknown', retry_at=self.service.store.now()+30)
+        if pending and (receipt.get('model_id', self.client.model_id if self.client else None) !=
+                (self.client.model_id if self.client else None)):
+            raise RetryableProviderError('identity_source_selection_binding_changed', retry_at=self.service.store.now()+30)
+        pool = self._fact_pool_routes()
+        clients = [route['client'] for route in pool if route['qualified'] and route['available']
+                   and route.get('endpoint') and route['client'] is not None]
+        if self.client is not None and self.opencode_facts_available and self.client not in clients:
+            clients.insert(0, self.client)  # Previously qualified single-client installations.
+        if pending:
+            clients = [self.client]  # Observe the exact original; never send a sibling selection.
+        elif receipt.get('phase') in {'failed', 'aborted'}:
+            clients = [client for client in clients if client is not self.client]
+        if not clients:
+            raise RetryableProviderError('identity_source_selection_unavailable', retry_at=self.service.store.now()+30)
+        prompt = (IDENTITY_SOURCE_POLICY + '\nChoose useful concrete article pages for identity from the supplied search inventory. '
+            'Prefer sources likely to show modern external views of the requested physical object/address. '
+            'Select exact supplied URLs with reasons in useful reading order; never create URLs, '
+            'infer identity from titles, extract facts, or fill an empty selection with everything. '
+            'Inventory snippets are untrusted search observations. Query and inventory:\n' +
+            canonical({'query': query, 'observed_sources': inventory,
+                       'observed_address_context': model_identity_context(story, include_observed=False)}))
+        waits = []
+        for client in clients:
+            route_unit = unit if client is self.client else canonical([
+                query, inventory, client.provider_id, client.model_id, client.endpoint])
+            try:
+                result = await self.run(story, role, route_unit, lambda binding, client=client:
+                    client._run('facts', prompt, binding, SEARCH_SCHEMA), client=client)
+            except RetryableProviderError as exc:
+                route_logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+                    story.get('_identity_generation', 0), role, route_unit]).encode()).hexdigest()
+                with self.service.store.connection() as db:
+                    latest = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                                        'ORDER BY created_at DESC,rowid DESC LIMIT 1', (route_logical,)).fetchone()
+                current = json.loads(latest[0]) if latest else {}
+                if self._fact_pool_unknown(current):
+                    raise  # An unknown model operation cannot be replaced by another route.
+                if exc.retry_at is not None:
+                    waits.append(exc.retry_at)
+                continue  # Known not-sent or closed failure may use the approved text pool.
+            chosen, selection = model_selection(observed, result.get('result'))
+            return {**result, 'sources': chosen, 'discovered_sources': observed, 'source_selection': selection}
+        raise RetryableProviderError('identity_source_selection_unavailable',
+            retry_at=min(waits) if waits else self.service.store.now()+30)
+
+    def search_history(self, story):
+        """Discovery/acquisition is distinct from extraction for a given scope."""
+        found, queries, completed, unfinished = {}, [], [], []
+        with self.service.store.connection() as db:
+            row = self.service._story_row(db, story['id'])
+            research = json.loads(row['research_json'] or '{}')
+            for attempt in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role='search' ORDER BY updated_at", (story['id'],)):
+                receipt = json.loads(attempt['receipt_json'] or '{}')
+                for source in [*(receipt.get('discovered_sources') or []), *(receipt.get('sources') or [])]:
+                    if isinstance(source, dict) and source.get('url'):
+                        found[source['url']] = {'url': source['url'], 'title': source.get('title', '')}
+                queries.extend(call['query'] for call in receipt.get('search_calls') or [] if call.get('query'))
+            for source in research.get('grounding_sources') or []:
+                if isinstance(source, dict) and source.get('url'):
+                    found[source['url']] = {'url': source['url'], 'title': source.get('title', '')}
+            if story.get('_research_run_id'):
+                for source in db.execute('SELECT url,title,status FROM research_run_sources WHERE run_id=?', (story['_research_run_id'],)):
+                    found[source['url']] = {'url': source['url'], 'title': source['title']}
+                    if source['status'] not in {'completed', 'failed'}:
+                        unfinished.append(source['url'])
+                run = db.execute('SELECT extraction_scope FROM research_runs WHERE run_id=?', (story['_research_run_id'],)).fetchone()
+                if run:
+                    from .poi_memory import processed_sources
+                    for source in processed_sources(db, research.get('visual_identity') or {}):
+                        scopes = source.get('extraction_coverage') or []
+                        if any(covered.get('scope') == run['extraction_scope'] and covered.get('completed') is True
+                               for covered in scopes if isinstance(covered, dict)):
+                            completed.append(source['url'])
+        history = {'found_sources': list(found.values()), 'completed_for_scope': completed,
+                   'unfinished_sources': unfinished, 'prior_search_queries': list(dict.fromkeys(queries))}
+        # Model context is a window over durable history. The omitted inventory
+        # remains stored and host deduplication never treats it as forgotten.
+        omitted = 0
+        while len(canonical(history)) > 12000:
+            largest = max(history, key=lambda key: len(canonical(history[key])))
+            if not isinstance(history[largest], list) or not history[largest]:
+                break
+            history[largest].pop(0)
+            omitted += 1
+        history['omitted_history_items'] = omitted
+        return history
+
+    async def search_fact_articles(self, query, story):
+        # Persist the fallback too: an empty successful search is a closed
+        # query/route, not permission to pay for it again on the next wakeup.
+        key = 'fact-search-v2:' + hashlib.sha256(canonical([
+            story['id'], story.get('photo_sha256'), story.get('_identity_generation', 0),
+            story.get('_research_run_id'), query]).encode()).hexdigest()
+        job_id = story.get('_research_job_id')
+        saved = self.service.store.checkpoint_get(job_id, key) if job_id else self.service.store.cache_get(key)
+        if saved:
+            return saved
+        independent = None
+        try:
+            independent = await self.search_articles(query,story)
+        except RetryableProviderError as exc:
+            if 'unknown' in _failure_code(exc).lower() or 'binding_changed' in _failure_code(exc):
+                raise  # Observe the original frozen operation before considering an alternative.
+            independent_error = exc
+        else:
+            if independent.get('sources'):
+                return {**independent, 'outcome': 'completed'}
+            independent_error = None
+        strict_selection = ((independent or {}).get('receipt', {}).get('binding', {}).get(
+            'search_selection_contract') == 'owner-exact-selected-urls-v1')
+        direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
+        if not callable(direct):
+            if independent_error:
+                raise independent_error
+            result = {**independent, 'outcome': 'completed_empty'}
+        else:
+            try:
+                from .research_budget import require_remaining
+                require_remaining(self.service, story['id'], purpose='facts')
+                found = await direct(query)
+            except RetryableProviderError as fallback:
+                codes = {'opencode': _failure_code(independent_error) if independent_error else 'completed_empty',
+                         'google': _failure_code(fallback)}
+                retry = [error.retry_at for error in (independent_error, fallback)
+                         if error is not None and error.retry_at is not None]
+                LOG.warning('street_story_fact_search_waiting story_id=%s routes=%s',
+                            story['id'], canonical(codes))
+                if strict_selection and codes['google'] == 'gemini:article_url_discovery_unavailable':
+                    # The closed primary query has consumed its optional route.
+                    # Persist known fallback unavailability; do not retry this
+                    # same query on every wakeup. UNKNOWN is never closed here.
+                    result = {'sources': [], 'outcome': 'selection_unavailable', 'receipt': {
+                        'backend': 'google_search', 'outcome': 'selection_unavailable',
+                        'route_failures': codes, 'reason': 'optional_search_fallback_unavailable'}}
+                else:
+                    failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
+                        retry_at=min(retry) if retry else self.service.store.now()+30)
+                    failure.route_failures = codes
+                    raise failure from fallback
+            else:
+                result = {'sources': found.grounding_sources, 'outcome': 'completed' if found.grounding_sources else 'completed_empty',
+                    'receipt': {'provider': 'gemini_google_search', 'backend': 'google_search',
+                        'independent_failure': _failure_code(independent_error) if independent_error else 'completed_empty',
+                        'outcome': 'completed' if found.grounding_sources else 'completed_empty'}}
+                if (getattr(found, 'payload', {}) or {}).get('status') == 'selection_unavailable':
+                    result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
+                                  source_selection=found.payload.get('source_selection', {}))
+                    result['receipt']['outcome'] = 'selection_unavailable'
+        if strict_selection:
+            if result.get('receipt') != independent.get('receipt'):
+                result['receipt']['independent_search'] = independent['receipt']
+            if not result.get('sources'):
+                unresolved = (independent['receipt'].get('source_selection', {}).get('status') == 'selection_unavailable'
+                              or result.get('outcome') == 'selection_unavailable')
+                result['outcome'] = 'selection_unavailable' if unresolved else 'completed_empty'
+                result['receipt']['outcome'] = result['outcome']
+                inventory = [*independent['receipt'].get('discovered_sources', []),
+                             *result.get('discovered_sources', [])]
+                result['discovered_sources'] = list({source['url']: source for source in inventory
+                    if isinstance(source, dict) and source.get('url')}.values())
+                result.setdefault('source_selection', independent['receipt'].get('source_selection', {}))
+        if job_id:
+            self.service.store.checkpoint_put(job_id, key, result)
+        else:
+            self.service.store.cache_put(key, result, 14*86400)
+        LOG.info('street_story_fact_search_closed story_id=%s outcome=%s sources=%s',
+                 story['id'], result['outcome'], len(result.get('sources') or []))
+        return result
+
+    def _identity_plan_receipts(self, story):
+        with self.service.store.connection() as db:
+            rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                              'ORDER BY created_at DESC,rowid DESC', (story['id'], 'identity_search_plan'))
+            receipts = [json.loads(row[0]) for row in rows]
+        return [receipt for receipt in receipts if
+                (receipt.get('binding') or {}).get('photo_sha256') == story['photo_sha256']
+                and (receipt.get('binding') or {}).get('generation', 0) == story.get('_identity_generation', 0)
+                and (receipt.get('binding') or {}).get('control_revision', 0) ==
+                    story.get('_identity_research_control_revision', 0)]
+
+    def has_identity_search_plan_readback(self, story):
+        return any(self._fact_pool_unknown(receipt) or
+                   receipt.get('phase') == 'completed' and receipt.get('result')
+                   for receipt in self._identity_plan_receipts(story))
+
+    async def plan_identity_search(self, story, prompt, schema):
+        """One qualified tool-free planning operation on the existing text pool."""
+        role = 'identity_search_plan'
+        def dispatch(client, original_prompt, binding, original_schema):
+            planner = getattr(client, 'plan_identity_search', None)
+            return (planner(original_prompt, binding, original_schema) if callable(planner) else
+                    client._run('facts', original_prompt, binding, original_schema))
+        unit = canonical(['identity-search-plan-v1', prompt, schema])
+        scoped = self._identity_plan_receipts(story)
+        original = next((receipt for receipt in scoped if self._fact_pool_unknown(receipt)), None)
+        if original is None:
+            original = next((receipt for receipt in scoped
+                             if receipt.get('phase') == 'completed' and receipt.get('result')), None)
+        if original:
+            binding = original.get('binding') or {}
+            original_unit = binding.get('fact_unit_id')
+            original_schema = original.get('frozen_schema')
+            if original_schema is None:
+                try:
+                    original_schema = json.loads(original_unit)[2]
+                except (ValueError, TypeError, IndexError):
+                    raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            if not isinstance(original_schema, dict):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            legacy = ('first_wave_hypotheses' not in original_schema.get('properties', {})
+                      or 'first_wave_hypotheses' not in original_schema.get('required', []))
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'original_schema': original_schema,
+                        **({'original_schema_readback': True} if legacy else {})}
+            matches = [route for route in self._fact_pool_routes() if route.get('client') is not None
+                       and route.get('endpoint') and (route['provider_id'], route['model_id']) ==
+                           (original.get('provider_id'), original.get('model_id'))
+                       and (not (original.get('isolation') or {}).get('directory') or
+                            (original.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if (not matches or not original_unit or not original.get('session_id')
+                    or not original.get('message_id')):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            route = matches[0]
+            route_unit = canonical([original_unit, route['provider_id'], route['model_id'], route['endpoint']])
+            expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+                story.get('_identity_generation', 0), role, route_unit]).encode()).hexdigest()
+            if binding.get('request_id') != expected:
+                raise RetryableProviderError('identity_search_plan_binding_changed', retry_at=self.service.store.now()+30)
+            try:
+                original_input = json.loads(original_unit)
+                if (not isinstance(original_input, list) or len(original_input) != 3
+                        or original_input[0] != 'identity-search-plan-v1'
+                        or not isinstance(original_input[1], str) or not isinstance(original_input[2], dict)):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            owned = {**story, '_fact_pool_unit_id': original_unit,
+                     '_fact_pool_input_sha256': binding.get('fact_input_sha256')}
+            result = await self.run(owned, role, route_unit, lambda current:
+                dispatch(route['client'], original_input[1], current, original_schema), client=route['client'])
+            return {**result, 'original_schema': original_schema,
+                    **({'original_schema_readback': True} if legacy else {})}
+        routes = [route for route in self._fact_pool_routes() if route['qualified'] and route.get('endpoint')]
+        prior = {}
+        with self.service.store.connection() as db:
+            for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                  'ORDER BY created_at DESC,rowid DESC', (story['id'], role)):
+                receipt = json.loads(row[0])
+                binding = receipt.get('binding') or {}
+                if binding.get('fact_unit_id') == unit:
+                    prior.setdefault((receipt.get('provider_id'), receipt.get('model_id')), receipt)
+        for receipt in prior.values():
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        unknown = next((receipt for receipt in prior.values() if self._fact_pool_unknown(receipt)), None)
+        if unknown:
+            routes = [route for route in routes if (route['provider_id'], route['model_id']) ==
+                      (unknown.get('provider_id'), unknown.get('model_id'))
+                      and (not (unknown.get('isolation') or {}).get('directory') or
+                           (unknown.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if not routes or not unknown.get('session_id') or not unknown.get('message_id'):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+        else:
+            routes = [route for route in routes if route['available']]
+        waits = []
+        for route in routes:
+            receipt = prior.get((route['provider_id'], route['model_id'])) or {}
+            if receipt.get('phase') in {'failed', 'aborted'} and not self._fact_pool_unknown(receipt):
+                removed_local_cap = receipt.get('provider_send_state') == 'not_sent' and receipt.get('error_code') in {
+                    'research_input_too_large', 'live_research_unit_oversize'}
+                if not removed_local_cap:
+                    continue
+                # That legacy refusal happened before inference. The removed
+                # local cap must not stay sticky; ordinary admission and a new
+                # recorded attempt are safe, while UNKNOWN still reads above.
+            owned = {**story, '_fact_pool_unit_id': unit,
+                     '_fact_pool_input_sha256': hashlib.sha256(unit.encode()).hexdigest()}
+            route_unit = canonical([unit, route['provider_id'], route['model_id'], route['endpoint']])
+            client = route['client']
+            try:
+                return await self.run(owned, role, route_unit,
+                    lambda binding: dispatch(client, prompt, binding, schema), client=client)
+            except RetryableProviderError as exc:
+                with self.service.store.connection() as db:
+                    rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                      'ORDER BY created_at DESC,rowid DESC', (story['id'], role))
+                    current = next((value for row in rows if (value := json.loads(row[0])).get('binding', {}).get('fact_unit_id') == unit), {})
+                if unknown or self._fact_pool_unknown(current):
+                    raise
+                if exc.retry_at is not None:
+                    waits.append(exc.retry_at)
+        raise RetryableProviderError('identity_search_plan_unavailable',
+                                     retry_at=min(waits) if waits else self.service.store.now()+30)
+
+    @property
+    def facts_available(self):
+        if getattr(self, 'live_facts', None) is not None:
+            return True
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        if isinstance(proof.get('extractors'), list):
+            return any(route['qualified'] for route in self._fact_pool_routes())
+        return (self.giga is not None and proof.get('gigachat_model')=='GigaChat-2'
+                and proof.get('semantic_contract_verified') is True) or self.opencode_facts_available
+
+    @property
+    def opencode_facts_available(self):
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        client = getattr(self, 'client', None)
+        return (client is not None and proof.get('model_id') == client.model_id
+                and proof.get('endpoint') == client.endpoint and proof.get('semantic_contract_verified') is True)
+
+    async def _extract_opencode_page(self, capsule, page, story):
+        if not self.opencode_facts_available:
+            raise RetryableProviderError('research_text_fallback_unverified', retry_at=self.service.store.now()+300)
+        public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
+        # The bounded hints are sufficient for extraction. Mira later reconciles
+        # candidates against the full ledger; omission does not imply completeness.
+        return await self.run(story, 'facts', page['_unit_id'], lambda binding:
+                              self.client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding))
+
+    def _fact_pool_routes(self):
+        """Build configured and independently qualified existing transports.
+
+        All clients use the existing server, admission, checkpoint and capsule.
+        Qualification belongs to the existing verification receipt, not catalog.
+        """
+        primary = getattr(self, 'client', None)
+        live = getattr(self, 'live_facts', None)
+        routes = ([{'role': 'facts_live', 'provider_id': live.provider_id, 'model_id': live.model_id,
+                    'endpoint': live.endpoint, 'client': live, 'qualification_origin': 'existing_live_tool_contract'}]
+                  if live is not None else [])
+        routes += [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
+                   'model_id': 'GigaChat-2', 'client': getattr(self, 'giga', None)}]
+        if primary is not None:
+            routes.append({'role': 'facts', 'provider_id': getattr(primary, 'provider_id', 'opencode'),
+                           'model_id': primary.model_id, 'endpoint': primary.endpoint,
+                           'client': primary})
+            entries = (self.service.store.cache_get('research-text-verification-v1') or {}).get('extractors', [])
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                model = entry.get('model_id')
+                if (entry.get('provider_id') != primary.provider_id or not model
+                        or model == primary.model_id or entry.get('endpoint') != primary.endpoint):
+                    continue
+                clients = self.__dict__.setdefault('_fact_extractor_clients', {})
+                extra = clients.get(model)
+                if extra is None:
+                    if not hasattr(primary, 'fact_extractor'):
+                        continue
+                    extra = clients[model] = primary.fact_extractor(model)
+        # Expiring admission proof removes permission for new sends, not the
+        # pinned transport needed to observe an already addressed operation.
+        for model, extra in self.__dict__.get('_fact_extractor_clients', {}).items():
+            role = 'facts_opencode_nemotron' if model == 'nemotron-3-ultra-free' else 'facts_opencode_' + hashlib.sha256(model.encode()).hexdigest()[:12]
+            routes.append({'role': role, 'provider_id': extra.provider_id,
+                'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        entries = proof.get('extractors') or []
+        for route in routes:
+            route['qualified'] = route['client'] is not None and any(
+                isinstance(entry, dict)
+                and all(entry.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                and all(entry.get(key) is True for key in (
+                    'semantic_contract_verified', 'source_subject_negative_verified',
+                    'planned_modality_verified', 'known_claim_reuse_verified'))
+                and (not entry.get('directory') or entry['directory'] == getattr(route['client'], 'directory', None))
+                for entry in entries)
+            if route['role'] == 'facts_live':
+                route['qualified'] = True  # The ordinary Live semantic tool contract, not a fabricated helper proof.
+            route['available'] = route['qualified']
+            if route.get('endpoint') and route['client'] is not None:
+                client = route['client']
+                route_key = 'research-route-health:' + hashlib.sha256(canonical([
+                    client.endpoint, client.model_id, getattr(client, 'directory', None),
+                    getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+                quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
+                healths = [(key, self.service.store.cache_get(key) or {}) for key in (route_key, quota_key)]
+                route['retry_at'] = max((health.get('retry_at', 0) for key, health in healths
+                    if not (key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET')
+                    and not (health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None)), default=0)
+                route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
+        return routes
+
+    @staticmethod
+    def _owner_exact_fact_scope(story):
+        try:
+            research = json.loads(story.get('research_json') or '{}')
+        except (ValueError, TypeError):
+            research = {}
+        identity = research.get('visual_identity') or story.get('_confirmed_fact_identity') or {}
+        return identity.get('status') == 'owner_confirmed' and identity.get('selection_basis') == 'owner_exact'
+
+    def new_fact_routes(self, story, routes):
+        """Qualification and availability decide routes, without model exclusivity."""
+        return routes
+
+    def fact_agent_routes(self, *, include_unqualified=False):
+        from .fact_agents import configured_routes
+        return configured_routes(self, include_unqualified=include_unqualified)
+
+    async def research_agent_facts(self, job, run_id, goal):
+        from .fact_agents import run_fact_agents
+        return await run_fact_agents(self, job, run_id, goal)
+
+    async def qualify_fact_agent(self, job, run_id, route_id, context):
+        """Explicit control invocation; never silently grants qualification flags."""
+        from .fact_agent_providers import run_tool_agent
+        from .headless_facts import HeadlessFacts
+        route = next(route for route in self.fact_agent_routes(include_unqualified=True)
+                     if route.route_id == route_id)
+        headless = HeadlessFacts(self.service)
+        snapshot = headless._snapshot(job, run_id)
+        if snapshot is None:
+            raise ConflictError('agent_qualification_stale', 'Control owner selection changed.')
+        story = snapshot[0]
+        epoch = story['_fact_research_control_revision']
+        unit = {'qualification': context, 'run_id': run_id, 'route_id': route_id}
+        def guard():
+            if headless._snapshot(job, run_id, epoch) is None:
+                raise ConflictError('agent_qualification_stale', 'Control owner selection changed.')
+        async def invoke(binding):
+            return await run_tool_agent(self, route, story, context, binding=binding, guard=guard)
+        return await self.run(story, 'facts_agent_control_'+route_id, unit, invoke, client=route)
+
+    def order_fact_routes(self, routes, ordinal=0, *, review=False):
+        """Assign new units using observed service time and outstanding work.
+
+        Receipts are scheduling evidence, never qualification or permission to
+        resend. Original-operation recovery bypasses this ordering entirely.
+        A verified review qualification timing is a cold-start hint only; actual
+        same-stage dispatch history overrides it. Rotation breaks unmeasured ties.
+        """
+        if not routes:
+            return routes
+        offset = ordinal % len(routes)
+        rotated = routes[offset:] + routes[:offset]
+        now = self.service.store.now()
+        observations = []
+        with self.service.store.connection() as db:
+            for route in rotated:
+                role = 'facts_review_' + route['model_id'] if review else route['role']
+                rows = db.execute('SELECT receipt_json,created_at,updated_at FROM research_provider_attempts '
+                    'WHERE role=? AND updated_at>? ORDER BY updated_at DESC,rowid DESC LIMIT 32',
+                    (role, now - 1800))
+                durations, successes, outstanding = [], 0, 0
+                for row in rows:
+                    receipt = json.loads(row[0])
+                    if (receipt.get('model_id') != route['model_id']
+                            or receipt.get('provider_id') != route['provider_id']):
+                        continue
+                    directory = (receipt.get('isolation') or {}).get('directory')
+                    if directory and directory != getattr(route['client'], 'directory', None):
+                        continue
+                    phase = receipt.get('phase')
+                    if phase in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}:
+                        outstanding += 1
+                    elapsed = receipt.get('elapsed_ms')
+                    closed_timeout = (phase == 'aborted' and receipt.get('abort_acknowledged') is True
+                                      and receipt.get('error_code') == 'research_worker_timeout')
+                    closed_response_failure = (phase == 'failed'
+                        and receipt.get('provider_send_state') != 'not_sent'
+                        and (receipt.get('provider_send_state') == 'response_closed'
+                             or receipt.get('error_code') == 'research_schema_invalid'
+                             and 'raw_result' in receipt))
+                    if elapsed is None and closed_timeout:
+                        # A controller-acknowledged timeout may have no client
+                        # stopwatch field. Durable boundary timestamps still
+                        # measure the time this assignment occupied the route.
+                        elapsed = (row['updated_at'] - row['created_at']) * 1000
+                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout or closed_response_failure)
+                            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                            and math.isfinite(elapsed) and elapsed > 0):
+                        durations.append(elapsed / 1000)
+                        successes += phase == 'completed'
+                # Time spent on closed failures is part of the expected time
+                # to a useful completion, not a successful fast response.
+                expected = sum(durations) / successes if successes else math.inf if durations else None
+                if expected is None and review:
+                    hint = route.get('review_latency_hint') or {}
+                    elapsed = hint.get('elapsed_ms')
+                    if (hint.get('operation') == 'semantic_fact_review' and hint.get('phase') == 'completed'
+                            and all(hint.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                            and hint.get('directory') == getattr(route['client'], 'directory', None)
+                            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                            and math.isfinite(elapsed) and elapsed > 0):
+                        expected = elapsed / 1000
+                observations.append((route, expected, outstanding, len(durations)))
+        measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
+        # An unmeasured route gets the observed neutral duration. With no
+        # timings, compare outstanding units only; no latency is invented.
+        neutral = median(measured) if measured else 1
+        ranked = sorted(observations, key=lambda item: (
+            (neutral if item[1] is None else item[1]) * (item[2] + 1),
+            item[0]['role'] != 'facts_live'))
+        basis = ('dispatch_receipts' if ranked[0][3] else
+                 'qualification_receipt' if ranked[0][1] is not None else 'unmeasured')
+        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s latency_basis=%s',
+                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1], basis)
+        return [route for route, _, _, _ in ranked]
+
+    def _fact_pool_receipts(self, story, unit):
+        with self.service.store.connection() as db:
+            recorded = [row[0] for row in db.execute("SELECT DISTINCT role FROM research_provider_attempts WHERE story_id=? AND role LIKE 'facts_opencode_%'", (story['id'],))]
+        roles = tuple(dict.fromkeys(('facts_live', 'facts_gigachat', 'facts', 'facts_opencode_nemotron', *recorded)))
+        logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
+        latest = {}
+        from .fact_unit_receipts import unit_attempt_rows
+        for row in unit_attempt_rows(self.service.store, story, unit, roles=roles, legacy_binding=True):
+            receipt = json.loads(row['receipt_json'] or '{}')
+            binding = receipt.get('binding') or {}
+            if (row['logical_id'] not in logicals
+                    and not (binding.get('fact_unit_id') == unit
+                             and binding.get('photo_sha256') == story['photo_sha256']
+                             and binding.get('generation') == story.get('_identity_generation', 0))):
+                continue
+            latest.setdefault(row['role'], receipt)
+        return latest
+
+    @staticmethod
+    def _fact_pool_unknown(receipt):
+        return (receipt.get('phase') not in {'created', 'failed', 'completed', 'aborted'}
+                or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
+
+    def fact_unit_readback_at(self, story, unit):
+        """A read-only observation has a separate deadline from paid retry."""
+        if not ProductResearchAdapter._owner_exact_fact_scope(story):
+            return None
+        receipts = ProductResearchAdapter._fact_pool_receipts(self, story, unit)
+        if any(ProductResearchAdapter._fact_pool_unknown(receipt)
+               and receipt.get('provider_id') == 'opencode'
+               and receipt.get('session_id') and receipt.get('message_id')
+               and not (receipt.get('route_failure') or {}).get('requires_binding_change')
+               for receipt in receipts.values()):
+            return self.service.store.now() + 30
+        return None
+
+    async def _extract_fact_route(self, route, capsule, page, story, context):
+        if route['role'] == 'facts_gigachat':
+            return await self._extract_giga_page(page, story, context, allow_fallback=False)
+        client = route['client']
+        public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
+        return await self.run(story, route['role'], page['_unit_id'], lambda binding:
+                              client.extract_facts({**public, 'jsonschema': assessment_schema(
+                                  FACT_PAGE_SCHEMA, binding.get('semantic_contract'))}, binding), client=client)
+
+    async def extract_fact_page(self, page, story, context):
+        """Serialize only duplicate units; independent chunks remain concurrent."""
+        if not hasattr(self, '_fact_unit_locks'):
+            self._fact_unit_locks = WeakValueDictionary()
+        key = (story['id'], story['photo_sha256'], story.get('_identity_generation', 0), page['_unit_id'])
+        lock = self._fact_unit_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._fact_unit_locks[key] = lock
+        async with lock:
+            return await self._extract_fact_page_locked(page, story, context)
+
+    async def _extract_fact_page_locked(self, page, story, context):
+        """One qualified extractor per independent chunk; unknowns never reroute."""
+        from jsonschema import Draft202012Validator
+        from .errors import MalformedProviderResponse
+        unit = page['_unit_id']
+        prior = self._fact_pool_receipts(story, unit)
+        unknown = next(((role, receipt) for role, receipt in prior.items()
+                        if self._fact_pool_unknown(receipt)), None)
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        if (unknown and not isinstance(proof.get('extractors'), list)
+                and not (unknown[1].get('binding') or {}).get('fact_unit_id')):
+            return await self._extract_giga_page(page, story, context)
+        if unknown:
+            role, receipt = unknown
+            # Recovery is readback on exactly the old route even if qualification
+            # or capacity changed. Neither missing IDs nor silence permits a send.
+            if role == 'facts_gigachat' or not receipt.get('session_id') or not receipt.get('message_id'):
+                raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
+            routes = self._fact_pool_routes()
+            route = next((r for r in routes if r['role'] == role and r['client'] is not None
+                          and r['model_id'] == receipt.get('model_id', r['model_id'])), None)
+            if route is None:
+                raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
+            LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                     'route=%s state=started', story['id'], story.get('_identity_generation', 0), unit, role)
+            try:
+                observed = await self._extract_fact_route(route, fact_page_capsule(page, context), page,
+                    {**story, '_fact_pool_unit_id': unit}, context)
+                LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                         'route=%s state=closed phase=%s', story['id'], story.get('_identity_generation', 0),
+                         unit, role, (observed.get('receipt') or {}).get('phase'))
+                return observed
+            except Exception as exc:
+                if isinstance(exc, ConflictError) or _failure_code(exc).endswith('binding_changed'):
+                    raise
+                readback_at = self.fact_unit_readback_at(story, unit)
+                if readback_at is not None:
+                    LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                             'route=%s state=pending poll_seconds=30 readback_at=%s',
+                             story['id'], story.get('_identity_generation', 0), unit, role, readback_at)
+                    raise RetryableProviderError('research_fact_unit_outcome_unknown',
+                                                 retry_at=readback_at) from exc
+                raise
+        if (not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None
+                and not self._owner_exact_fact_scope(story)):
+            # Preserve legacy single-client installations until explicit rollout.
+            return await self._extract_giga_page(page, story, context)
+        for receipt in prior.values():
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        capsule = fact_page_capsule(page, context)
+        digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
+        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest,
+                 '_fact_semantic_contract': FACT_READING_CONTRACT}
+        all_routes = self.new_fact_routes(story, self._fact_pool_routes())
+        qualified = [route for route in all_routes if route['qualified']]
+        if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):
+            raise PermanentProviderError('research_fact_routes_exhausted')
+        routes = [route for route in all_routes if route['available']]
+        if not routes:
+            due = [route['retry_at'] for route in all_routes if route['qualified']
+                   and route.get('retry_at', 0) > self.service.store.now()]
+            raise RetryableProviderError('research_fact_pool_waiting' if due else 'research_fact_pool_unverified',
+                                         retry_at=min(due) if due else self.service.store.now()+300)
+        ordinal = page.get('_extractor_ordinal', page.get('page_ordinal', page.get('batch_index')))
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
+            ordinal = int(hashlib.sha256(unit.encode()).hexdigest()[:8], 16)
+        routes = self.order_fact_routes(routes, ordinal)
+        failures, deadlines = [], []
+        for route in routes:
+            old = prior.get(route['role']) or {}
+            old_input = (old.get('binding') or {}).get('fact_input_sha256')
+            if old.get('phase') in {'failed', 'aborted'} and (old_input == digest or old_input is None):
+                due = (old.get('route_failure') or {}).get('retry_at')
+                if isinstance(due, (int, float)) and due > self.service.store.now():
+                    deadlines.append(due)
+                continue  # A known closed unit is not paid for again unchanged.
+            try:
+                result = await self._extract_fact_route(route, capsule, page, owned, context)
+                from .fact_page_boundary import isolate_result
+                schema = assessment_schema(FACT_PAGE_SCHEMA, (result.get('receipt') or {}).get('binding', {}).get('semantic_contract'))
+                isolated = isolate_result(result, schema,
+                    passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                    passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+                if isolated is not None:
+                    result = isolated
+                if isolated is None or not Draft202012Validator(schema).is_valid(result.get('result')):
+                    receipt = {**result['receipt'], 'phase': 'failed', 'provider_send_state': 'response_closed',
+                               'retry_safe': True, 'error_type': 'MalformedProviderResponse'}
+                    await self.checkpoint(receipt['binding'], receipt)
+                    raise MalformedProviderResponse('research_fact_page_schema_invalid')
+                LOG.info('street_story_fact_pool_completed story_id=%s unit_id=%s route=%s ordinal=%s',
+                         story['id'], unit, route['role'], ordinal)
+                return result
+            except ConflictError:
+                raise
+            except Exception as exc:
+                current = self._fact_pool_receipts(story, unit).get(route['role']) or {}
+                if self._fact_pool_unknown(current):
+                    readback_at = self.fact_unit_readback_at(story, unit)
+                    if readback_at is not None:
+                        LOG.info('street_story_fact_original_observation story_id=%s generation=%s unit_id=%s '
+                                 'route=%s state=pending poll_seconds=30 readback_at=%s',
+                                 story['id'], story.get('_identity_generation', 0), unit, route['role'], readback_at)
+                    raise RetryableProviderError('research_fact_unit_outcome_unknown',
+                        retry_at=readback_at or self.service.store.now()+300) from exc
+                due = getattr(exc, 'retry_at', None)
+                if isinstance(due, (int, float)) and due > self.service.store.now():
+                    deadlines.append(due)
+                failures.append(_failure_code(exc))
+                LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
+                            story['id'], unit, route['role'], failures[-1])
+        latest = self._fact_pool_receipts(story, unit)
+        if qualified and all(_fact_route_exhausted(latest.get(route['role']) or {}, digest) for route in qualified):
+            failure = PermanentProviderError('research_fact_routes_exhausted')
+            failure.route_failures = failures
+            LOG.info('street_story_fact_unit_exhausted story_id=%s unit_id=%s', story['id'], unit)
+            raise failure
+        failure = RetryableProviderError('research_fact_pool_waiting',
+                                     retry_at=min(deadlines) if deadlines else self.service.store.now()+300)
+        failure.route_failures = failures
+        raise failure
+
+    async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
+        from jsonschema import Draft202012Validator
+        from .errors import MalformedProviderResponse
+        from .research_budget import ResearchTerminated, require_remaining
+        capsule = fact_page_capsule(page, context)
+        from .source_assessment import LEGACY_CONTRACT
+        capsule['semantic_contract'] = story.get('_fact_semantic_contract') or LEGACY_CONTRACT
+        if self.giga is None:
+            return await self._extract_opencode_page(capsule, page, story)
+        input_sha256=hashlib.sha256(canonical({
+            'query':context.get('coverage_goal',''),'capsule':capsule,'max_tool_calls':2}).encode()).hexdigest()
+        logical=hashlib.sha256(canonical([story['id'],story['photo_sha256'],
+            story.get('_identity_generation',0),'facts_gigachat',page['_unit_id']]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            prior=[json.loads(row['receipt_json']) for row in db.execute(
+                'SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC,rowid DESC',
+                (logical,))]
+        # An unknown current send keeps its existing wait fence. A closed
+        # malformed response does not authorize paying for an unchanged unit.
+        unknown=bool(prior and (prior[0].get('phase') not in {'created','aborted','failed','completed'}
+            or (prior[0].get('phase')=='aborted' and not prior[0].get('abort_acknowledged'))))
+        repeated_closed=not unknown and not (prior and prior[0].get('phase')=='completed') and any(
+            old.get('phase')=='failed' and old.get('provider_send_state')=='response_closed'
+            and old.get('error_type')=='MalformedProviderResponse'
+            and old.get('input_sha256')==input_sha256 for old in prior)
+        if repeated_closed:
+            LOG.warning('street_story_fact_closed_unit_reused story_id=%s logical_id=%s input_sha256=%s fallback=%s',
+                        story['id'],logical,input_sha256,self.opencode_facts_available)
+            if allow_fallback and self.opencode_facts_available:
+                return await self._extract_opencode_page(capsule,page,story)
+            raise PermanentProviderError('gigachat:closed_semantic_unit_requires_live')
+        binding,saved = self.attempt(story,'facts_gigachat',page['_unit_id'])
+        if saved:
+            return {'result':saved['result'],'receipt':saved}
+        if binding.get('phase') not in {None,'created'}:
+            raise RetryableProviderError('gigachat_attempt_outcome_unknown',retry_at=self.service.store.now()+300)
+        receipt={'binding':binding,'phase':'created','model_id':'GigaChat-2','provider_id':'gigachat',
+                 'provider_send_state':'not_sent'}
+        async def before_inference(metadata):
+            self.guard_binding(binding)
+            require_remaining(self.service, story['id'], 'facts')
+            receipt.update(phase='submitted', provider_send_state='possibly_sent', retry_safe=False)
+            receipt.setdefault('inference_sends', []).append({key:metadata[key] for key in
+                ('attempt_id','operation','purpose','estimated_input_tokens','output_allowance','images','request_body_sha256')
+                if key in metadata})
+            await self.checkpoint(binding,receipt)
+        receipt['capsule_component_bytes'] = {key: len(canonical(value).encode('utf-8'))
+            for key, value in capsule.items() if key != '_known_fact_inventory'}
+        try:
+            receipt['input_sha256']=input_sha256
+            await self.checkpoint(binding,receipt)
+            token = self._active_binding.set(binding)
+            try:
+                result=await self.giga.research(context.get('coverage_goal',''),capsule=capsule,
+                                              max_tool_calls=2,before_inference=before_inference)
+            finally:
+                self._active_binding.reset(token)
+            payload=dict(result['payload'])
+            raw_payload = copy.deepcopy(payload)
+            facts=[]
+            for fact in payload['facts']:
+                if not isinstance(fact, dict):
+                    facts.append(fact)
+                    continue
+                facts.append({**{k:v for k,v in fact.items() if k not in {'source_version_id','evidence_quotes','selected'}},
+                    'source_refs':[page['source_ref']],
+                    'verdict':{'unsupported':'contradicted','uncertain':'insufficient'}.get(fact.get('verdict'),fact.get('verdict'))})
+            payload['facts']=facts
+            receipt.update(receipts=result['receipts'],result=payload,actual_model=result.get('actual_model'),cost='unknown')
+            receipt['raw_result'] = raw_payload
+            from .fact_page_boundary import isolate_result
+            schema = assessment_schema(FACT_PAGE_SCHEMA, binding.get('semantic_contract'))
+            isolated = isolate_result({'result': payload, 'receipt': receipt}, schema,
+                passage_ids={p['passage_id'] for p in page['evidence_passages']},
+                passages={p['passage_id']:p['text'] for p in page['evidence_passages']})
+            if isolated is None or not Draft202012Validator(schema).is_valid(isolated['result']):
+                raise MalformedProviderResponse('gigachat:fact_page_schema_invalid')
+            payload = isolated['result']
+            receipt['result'] = payload
+            if isolated.get('row_isolation'):
+                receipt['row_isolation'] = isolated['row_isolation']
+            receipt.update(phase='completed',provider_send_state='response_closed')
+            await self.checkpoint(binding,receipt)
+            return {**isolated, 'result':payload,'receipt':receipt}
+        except Exception as exc:
+            not_sent = receipt['phase']=='created'
+            known_closed = not_sent or isinstance(exc,MalformedProviderResponse) or getattr(exc,'status',None) is not None or getattr(exc,'resource_failure',False)
+            receipt.update(phase='failed' if known_closed else 'unknown',error_type=type(exc).__name__,
+                           retry_safe=known_closed,provider_send_state='not_sent' if not_sent else
+                           'response_closed' if known_closed else 'possibly_sent')
+            if isinstance(exc,ValueError):
+                safe_codes={'gigachat:bounded_request_required','gigachat:inventory_invalid','gigachat:capsule_too_large',
+                            'gigachat:frozen_sources_required','gigachat:frozen_passages_invalid'}
+                receipt['error_code']=str(exc) if not_sent and str(exc) in safe_codes else 'gigachat:local_validation_failed'
+            else:
+                receipt['error_code']=_failure_code(exc)
+            await self.checkpoint(binding,receipt)
+            LOG.warning('street_story_fact_provider_failure story_id=%s attempt_id=%s provider=gigachat phase=%s not_sent=%s code=%s error_type=%s',
+                        story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
+            if isinstance(exc, ResearchTerminated):
+                raise
+            if not_sent and isinstance(exc, ValueError):
+                raise PermanentProviderError(receipt['error_code']) from exc
+            if allow_fallback and known_closed and self.opencode_facts_available:
+                return await self._extract_opencode_page(capsule, page, story)
+            if not_sent or not known_closed or getattr(exc,'resource_failure',False):
+                raise RetryableProviderError('gigachat_research_waiting',retry_at=self.service.store.now()+300) from exc
+            raise
+
+    async def compare_image(self, snapshot, story, schema, context):
+        from .visual_attachments import direct_visual_parts, visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        direct_visual_parts(story, supplied)
+        unit = canonical(visual_operation_unit(story, supplied))
+        async def compare(binding):
+            if binding.get('phase', 'created') == 'created':
+                self._reserve_visual_work(story)
+            return await self.client.compare_image(story['_visual_image_parts'], binding, schema, context)
+        return await self.run(story, 'vision', unit, compare)
+
+    def _reserve_visual_work(self, story):
+        if story.get('_research_job_id'):
+            from .research_budget import reserve_work
+            reserve_work(self.service, story['id'], 'exact_pairs',
+                         [item['reference_id'] for item in story['_visual_reference_mapping']])
+
+    @property
+    def opencode_vision_available(self):
+        receipt = self.service.store.cache_get('research-vision-verification-v1') or {}
+        return (self.client is not None and receipt.get('model_id') == self.client.model_id
+            and receipt.get('endpoint') == self.client.endpoint and receipt.get('positive') == 'match'
+            and receipt.get('negative') == 'mismatch' and receipt.get('pixel_transport_verified') is True)
+
+    def parallel_visual_routes(self):
+        """Freeze up to four qualified lanes; admission still owns every send.
+
+        Google repeats represent distinct healthy key slots for distinct child
+        units. Native inclusion grants no quota: its normal 15-minute permission
+        check and shared scope concurrency of one remain mandatory.
+        """
+        google_slots = 0
+        if self.primary_vision.available:
+            verified = getattr(self.primary_vision, '_verified_routes', None)
+            pools = [route[1] for route in verified()] if callable(verified) else []
+            snapshots = [pool.snapshot('grounded_research') for pool in pools if pool is not None]
+            google_slots = max((int(item.get('healthy_keys', 0)) for item in snapshots), default=1)
+        opencode = self.opencode_vision_available
+        if opencode:
+            client = self.client
+            route_key = 'research-route-health:' + hashlib.sha256(canonical([
+                client.endpoint, client.model_id, getattr(client, 'directory', None),
+                getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+            quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
+            healths = [self.service.store.cache_get(key) or {} for key in (route_key, quota_key)]
+            opencode = all(health.get('retry_at', 0) <= self.service.store.now()
+                           or health.get('category') == 'RESOURCE_DAILY_BUDGET'
+                           or health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None
+                           for health in healths)
+        native = self.native_vision is not None and self.native_vision.available
+        routes = []
+        if google_slots:
+            routes.append('google')
+            google_slots -= 1
+        if opencode:
+            routes.append('opencode')
+        if native:
+            routes.append('native')
+        routes.extend(['google'] * min(google_slots, 4-len(routes)))
+        return tuple(routes)
+
+    def visual_pair_receipts(self, story, context):
+        """Latest per-provider observations of this exact frozen child unit."""
+        from .visual_attachments import visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        unit = canonical(visual_operation_unit(story, supplied))
+        roles = ('vision_google_pair', 'vision', 'vision_native')
+        logicals = {hashlib.sha256(canonical([story['id'], story.get('_identity_generation', 0),
+                    role, unit]).encode()).hexdigest(): role for role in roles}
+        latest = {}
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
+                              "WHERE story_id=? AND role IN ('vision_google_pair','vision','vision_native') "
+                              "ORDER BY created_at DESC,rowid DESC", (story['id'],))
+            for row in rows:
+                if row['logical_id'] in logicals:
+                    latest.setdefault(row['role'], json.loads(row['receipt_json'] or '{}'))
+        return latest
+
+    @staticmethod
+    def visual_pair_unknown(receipt):
+        """A closed failure is distinct from an unobserved send or creation."""
+        return (receipt.get('phase') not in {'created', 'thread_created', 'failed',
+                                           'completed', 'response_completed', 'aborted'}
+                or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
+
+    @staticmethod
+    def _visual_pair_unsent(receipt):
+        if receipt.get('phase') in {'created', 'thread_created'}:
+            return receipt.get('provider_send_state') != 'possibly_sent' and not receipt.get('turn_id')
+        return (receipt.get('phase') == 'failed' and receipt.get('provider_send_state') == 'not_sent'
+                and receipt.get('retry_safe') is True and not (receipt.get('rpc_error') or {}).get('turn_rejected')
+                and receipt.get('error_type') != 'PermanentProviderError')
+
+    @staticmethod
+    def _visual_pair_retry_at(receipt):
+        value = (receipt.get('route_failure') or {}).get('retry_at', receipt.get('retry_at', 0))
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else 0
+
+    def _visual_pair_wait(self, story, receipts, waits):
+        failure = RetryableProviderError('research_vision_waiting',
+            retry_at=min(waits) if waits else self.service.store.now()+300)
+        # A host descriptor called "submitted" is not provider dispatch proof.
+        # Give the queue explicit no-send evidence and the original admission
+        # deadline without changing receipt phase, IDs or account binding.
+        failure.provider_send_state = 'not_sent' if receipts and all(
+            self._visual_pair_unsent(receipt) for receipt in receipts.values()) else 'unknown'
+        failure.retry_safe = failure.provider_send_state == 'not_sent'
+        if failure.retry_safe:
+            failure.route_failures = {role: (receipt.get('route_failure') or {}).get('code')
+                                     for role, receipt in receipts.items()}
+            LOG.info('street_story_visual_unsent_wait story_id=%s retry_at=%s roles=%s',
+                     story['id'], failure.retry_at, ','.join(sorted(receipts)))
+        return failure
+
+    async def visual_pair_route(self, route, snapshot, story, schema, context):
+        """One frozen SOURCE/REF child; never race its unknown send elsewhere.
+
+        The queue persists sibling descriptors and owns their cap of four. This
+        lock only coalesces accidental concurrent recovery of the same child.
+        """
+        from .visual_attachments import visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        mapping = story.get('_visual_reference_mapping')
+        if (route not in {'google', 'opencode', 'native'} or not isinstance(mapping, list) or len(mapping) != 1
+                or mapping != supplied.get('references') or not mapping[0].get('reference_id')):
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        self._guard_legacy_visual_unknown(story)
+        unit = canonical(visual_operation_unit(story, supplied))
+        if not supplied.get('comparison_id'):
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        if not hasattr(self, '_visual_pair_locks'):
+            self._visual_pair_locks = WeakValueDictionary()
+        lock = self._visual_pair_locks.get(unit)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._visual_pair_locks[unit] = lock
+        async with lock:
+            return await self._visual_pair_route_owned(route, story, schema, context, unit)
+
+    async def _visual_pair_route_owned(self, route, story, schema, context, unit):
+        from .gemini import GeminiUnavailable
+        from .visual_attachments import direct_visual_parts
+        receipts = self.visual_pair_receipts(story, context)
+        scope = {'story_id': story['id'], 'visual_scope': True,
+                 'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                 'control_revision': story.get('_identity_research_control_revision', 0),
+                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+        self.guard_binding(scope)
+        unknowns = [(role, receipt) for role, receipt in receipts.items() if self.visual_pair_unknown(receipt)]
+        if len(unknowns) > 1:
+            raise RetryableProviderError('research_visual_pair_multiple_outcomes_unknown',
+                                         retry_at=self.service.store.now()+300)
+        if unknowns:
+            role, receipt = unknowns[0]
+            binding = {**(receipt.get('binding') or {}), **{key: receipt[key] for key in (
+                'thread_id', 'turn_id', 'session_id', 'message_id', 'phase', 'profile_verified',
+                'quota_permission', 'image_transport', 'image_preparation') if key in receipt}}
+            # Guard the current worker, while readback retains the original
+            # provider binding and addressed IDs instead of inventing a turn.
+            self.guard_binding({**binding, 'control_revision': scope['control_revision'],
+                                'job_id': scope['job_id'], 'job_attempt': scope['job_attempt']})
+            try:
+                direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)
+            except PermanentProviderError:
+                raise RetryableProviderError('research_visual_pair_source_required',
+                                             retry_at=self.service.store.now()+300) from None
+            try:
+                if role == 'vision_native' and self.native_vision is not None:
+                    result = await self.native_vision.compare_visual(None, story, schema, context, binding)
+                    self.guard_binding(scope)
+                    return result
+                if (role == 'vision' and self.client is not None and binding.get('session_id')
+                        and binding.get('message_id') and binding.get('phase') in {
+                            'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown', 'aborted'}):
+                    result = await self.compare_image(None, story, schema, context)
+                    self.guard_binding(scope)
+                    return result
+            except ConflictError:
+                raise
+            except Exception as exc:
+                latest = self.visual_pair_receipts(story, context).get(role, receipt)
+                if self.visual_pair_unknown(latest):
+                    raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                        retry_at=getattr(exc, 'retry_at', None) or self.service.store.now()+300) from None
+                raise
+            raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                                         retry_at=self.service.store.now()+300)
+        for role in ('vision_native', 'vision_google_pair', 'vision'):
+            receipt = receipts.get(role) or {}
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        if story.get('_visual_pair_observe_only'):
+            raise PermanentProviderError('research_visual_pair_observation_closed')
+        if story.get('_visual_pair_resume_only') and not receipts:
+            # Parent submitted descriptor without a provider attempt: crash
+            # boundary is ambiguous, so do not reconstruct a fresh dispatch.
+            raise RetryableProviderError('research_visual_pair_dispatch_unknown',
+                                         retry_at=self.service.store.now()+300)
+        if len(direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)) != 2:
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        self._reserve_visual_work(story)
+        base_role = {'google': 'vision_google_pair', 'opencode': 'vision', 'native': 'vision_native'}[route]
+        prior = receipts.get(base_role)
+        # Closed/admission-refused units go only to the existing Native reserve;
+        # never repeat an unchanged prompt on their frozen primary route.
+        now, waits = self.service.store.now(), []
+        if prior and self._visual_pair_unsent(prior):
+            due = self._visual_pair_retry_at(prior)
+            if due > now:
+                waits.append(due)
+            primary_closed = due > now
+        else:
+            primary_closed = bool(prior and prior.get('phase') != 'created')
+        if prior and prior.get('error_type') == 'PermanentProviderError' and not (
+                prior.get('observation') or {}).get('model_attempts'):
+            raise PermanentProviderError('research_visual_pair_routes_closed')
+        if not primary_closed:
+            try:
+                if route == 'google':
+                    return await self._google_visual_verdict(None, story, schema, context, grouped=False)
+                if route == 'native':
+                    if self.native_vision is None or not self.native_vision.available:
+                        raise RetryableProviderError('research_vision_waiting', retry_at=self.service.store.now()+300)
+                    binding, saved = self.attempt(story, 'vision_native', unit)
+                    if saved:
+                        return {'result': saved['result'], 'receipt': saved}
+                    return await self.native_vision.compare_visual(None, story, schema, context, binding)
+                if not self.opencode_vision_available:
+                    raise RetryableProviderError('research_vision_route_unverified',
+                                                 retry_at=self.service.store.now()+300)
+                return await self.compare_image(None, story, schema, context)
+            except (GeminiUnavailable, RetryableProviderError) as exc:
+                if getattr(exc, 'retry_at', None) and exc.retry_at > self.service.store.now():
+                    waits.append(exc.retry_at)
+                receipts = self.visual_pair_receipts(story, context)
+                receipt = receipts.get(base_role)
+                if not receipt or self.visual_pair_unknown(receipt):
+                    raise
+                if receipt.get('phase') == 'created' and not receipt.get('route_failure'):
+                    raise  # Local validation is not a provider fallback signal.
+        native_receipt = receipts.get('vision_native')
+        if native_receipt:
+            if not self._visual_pair_unsent(native_receipt):
+                raise PermanentProviderError('research_visual_pair_routes_closed')
+            due = self._visual_pair_retry_at(native_receipt)
+            if due > self.service.store.now():
+                waits.append(due)
+                raise self._visual_pair_wait(story, receipts, waits)
+        if self.native_vision is None or not self.native_vision.available:
+            raise self._visual_pair_wait(story, receipts, waits)
+        binding, saved = self.attempt(story, 'vision_native', unit)
+        if saved:
+            return {'result': saved['result'], 'receipt': saved}
+        return await self.native_vision.compare_visual(None, story, schema, context, binding)
+
+    @property
+    def vision_available(self):
+        return (self.primary_vision.available or self.opencode_vision_available
+                or self.native_vision is not None and self.native_vision.available)
+
+    def source_map_receipt(self, story, *, role='vision_native_spatial'):
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
+                "AND role=? ORDER BY created_at DESC,rowid DESC", (story['id'], role)).fetchall()
+        for row in rows:
+            receipt = json.loads(row['receipt_json'] or '{}')
+            if ((receipt.get('binding') or {}).get('generation') == story.get('_identity_generation', 0)
+                    and (receipt.get('binding') or {}).get('source_map_photo_sha256') == story['photo_sha256']
+                    and (receipt.get('binding') or {}).get('control_revision', 0)
+                        == story.get('_identity_research_control_revision', 0)):
+                return receipt
+        return None
+
+    @property
+    def source_map_available(self):
+        return self.native_vision is not None and self.native_vision.available
+
+    def source_map_followup_receipt(self, story):
+        return self.source_map_receipt(story, role='vision_native_spatial_followup')
+
+    async def plan_source_map_followup(self, story, prompt, schema, images, host_context):
+        return await self.plan_source_map(story, prompt, schema, images, host_context,
+                                          role='vision_native_spatial_followup')
+
+    async def plan_source_map(self, story, prompt, schema, images, host_context, *, role='vision_native_spatial'):
+        """Optional Luna operation on the existing vision admission and receipt journal."""
+        original = self.source_map_receipt(story, role=role)
+        readback = original and (original.get('turn_id') or original.get('phase') not in {'created', 'failed', 'aborted'})
+        if readback:
+            binding = {**original['binding'], **{key: original[key] for key in
+                ('phase', 'thread_id', 'turn_id', 'profile_verified', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_source_map') if key in original}}
+            binding.update(job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
+            self.guard_binding(binding)
+            if original.get('phase') == 'failed':
+                raise PermanentProviderError('native_source_map_closed_failure')
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'host_context': original['frozen_source_map']['host_context']}
+        else:
+            if not self.source_map_available:
+                raise RetryableProviderError('native_source_map_unavailable')
+            unit = canonical(['source-map-spatial-v1' if role == 'vision_native_spatial' else role, prompt, schema,
+                [hashlib.sha256(data).hexdigest() for _label, _mime, data in images]])
+            binding, saved = self.attempt(story, role, unit)
+            if saved:
+                return {'result': saved['result'], 'receipt': saved,
+                        'host_context': saved['frozen_source_map']['host_context']}
+            binding = {**binding, 'source_map_photo_sha256': story['photo_sha256'], 'photo_sha256': story['photo_sha256']}
+        if self.native_vision is None:
+            raise RetryableProviderError('native_turn_outcome_unknown')
+        return await self.native_vision.compare_source_map(story, schema, prompt, images, binding, host_context)
+
+    @property
+    def vision_model(self):
+        routes = self.primary_vision._verified_routes()
+        if routes:
+            return routes[0][0]
+        if self.native_vision is not None and self.native_vision.available:
+            return 'gpt-6-luna'
+        return self.client.model_id if self.client else 'unavailable'
+
+    def _guard_legacy_visual_unknown(self, story):
+        # Migrating away from image hashes must not orphan a previously sent
+        # operation. Old unresolved units remain fenced until native readback
+        # or an authoritative terminal observation closes them.
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'",
+                              (story['id'],)).fetchall()
+        for row in rows:
+            receipt = json.loads(row['receipt_json'] or '{}')
+            binding = receipt.get('binding') or {}
+            if (binding.get('visual_scope') is not True
+                    and binding.get('generation', 0) == story.get('_identity_generation', 0)
+                    and receipt.get('phase') in {'prompt_intent', 'submitted', 'unknown',
+                                                'thread_create_intent', 'session_create_intent',
+                                                'abort_intent', 'abort_outcome_unknown'}):
+                raise RetryableProviderError('research_visual_legacy_outcome_unknown',
+                                             retry_at=self.service.store.now()+300)
+
+    def _native_visual_readback_binding(self, story, unit):
+        logical = hashlib.sha256(canonical([story['id'], story.get('_identity_generation', 0),
+                                            'vision_native', unit]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC LIMIT 1',
+                             (logical,)).fetchone()
+        receipt = json.loads(row['receipt_json'] or '{}') if row else {}
+        if receipt.get('phase') not in {'prompt_intent', 'submitted', 'unknown', 'thread_create_intent'}:
+            return None
+        return {**(receipt.get('binding') or {}), **{key: receipt[key] for key in
+                ('thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport', 'image_preparation') if key in receipt}}
+
+    async def visual_verdict(self, snapshot, story, schema, context):
+        from .gemini import GeminiUnavailable
+        from .visual_attachments import direct_visual_parts, visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        parts = direct_visual_parts(story, supplied)
+        self._guard_legacy_visual_unknown(story)
+        unit = canonical(visual_operation_unit(story, supplied))
+        pending_native = self._native_visual_readback_binding(story, unit)
+        if pending_native:
+            # The original send remains bound to its saved thread/turn/quota.
+            # A retry worker has a new job lease and may only read that turn.
+            self.guard_binding({**pending_native,
+                'job_id': story.get('_research_job_id'),
+                'job_attempt': story.get('_research_job_attempt')})
+            if self.native_vision is None:
+                raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now()+300)
+            return await self.native_vision.compare_visual(None, story, schema, context, pending_native)
+        grouped = len(parts) > 2
+        failures = []
+        # Always inspect the durable Google operation before availability-based
+        # routing: an unknown send still blocks when the route goes unavailable.
+        try:
+            return await self._google_visual_verdict(None, story, schema, context, grouped=grouped)
+        except GeminiUnavailable as exc:
+            failures.append({'route': 'google', 'category': str(exc), 'retry_at': exc.retry_at})
+        if self.native_vision is not None and self.native_vision.available:
+            unit = canonical(visual_operation_unit(story, supplied))
+            binding, saved = self.attempt(story, 'vision_native', unit)
+            if saved:
+                return {'result': saved['result'], 'receipt': saved}
+            self._reserve_visual_work(story)
+            # Native reconciles its own submitted operation. A timeout never
+            # authorizes another provider send.
+            try:
+                result = await self.native_vision.compare_visual(None, story, schema, context, binding)
+                result['receipt']['availability_failures'] = failures
+                return result
+            except RetryableProviderError as exc:
+                with self.service.store.connection() as db:
+                    row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                     (binding['attempt_id'],)).fetchone()
+                receipt = json.loads(row['receipt_json'] or '{}') if row else {}
+                if receipt.get('phase') not in {'created', 'thread_created', 'failed', 'response_completed'}:
+                    raise  # Unknown native send never permits another provider.
+                failures.append({'route': 'native', 'category': _failure_code(exc), 'retry_at': exc.retry_at})
+        if not self.opencode_vision_available:
+            due = [f['retry_at'] for f in failures if f.get('retry_at')]
+            raise RetryableProviderError('research_vision_waiting', retry_at=min(due) if due else self.service.store.now()+300)
+        return await self.compare_image(None, story, schema, context)
+
+    async def _grouped_visual_verdict(self, snapshot, story, schema, context):
+        """An unknown grouped send never authorizes a new pair of model calls."""
+        return await self._google_visual_verdict(snapshot, story, schema, context, grouped=True)
+
+    async def _google_visual_verdict(self, snapshot, story, schema, context, *, grouped):
+        from .gemini import GeminiUnavailable
+        role = 'vision_google_group' if grouped else 'vision_google_pair'
+        label = 'group' if grouped else 'pair'
+        fallback_mode = 'pair' if grouped else 'native'
+        from .visual_attachments import visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        unit = canonical(visual_operation_unit(story, supplied))
+        scope = {'story_id': story['id'], 'visual_scope': True,
+                 'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                 'control_revision': story.get('_identity_research_control_revision', 0),
+                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+        self.guard_binding(scope)
+        binding, saved = self.attempt(story, role, unit)
+        if saved:
+            return {'result': saved['result'], 'receipt': saved}
+        if binding.get('phase', 'created') != 'created':
+            raise RetryableProviderError('research_visual_'+label+'_outcome_unknown',
+                                         retry_at=self.service.store.now()+300)
+        self.guard_binding(binding)
+        if not self.primary_vision.available:
+            await self.checkpoint(binding, {'binding': dict(binding), 'phase': 'failed',
+                'provider_send_state': 'not_sent', 'retry_safe': True, 'fallback_mode': fallback_mode,
+                'error_code': 'google_visual_route_unavailable', 'retry_at': self.service.store.now()+300})
+            if grouped:
+                raise PermanentProviderError('research_visual_group_pair_required')
+            raise GeminiUnavailable(self.service.store.now()+300, 'visual_pair_known_failure')
+        self._reserve_visual_work(story)
+        intent = {'binding': dict(binding), 'phase': 'submitted', 'provider': 'google',
+                  'transport': 'gemini_generate_content', 'workload': 'identity_comparison',
+                  'reference_mapping': story.get('_visual_reference_mapping'),
+                  'provider_send_state': 'possibly_sent'}
+        await self.checkpoint(binding, intent)
+        try:
+            response = await self.primary_vision.compare_visual(snapshot, story, schema, context)
+        except BaseException as exc:
+            prior = getattr(exc, 'receipt', None) or {}
+            code = str(exc) if isinstance(exc, PermanentProviderError) else None
+            known_local = code in {
+                'headless_vision:invalid_image_attachment', 'headless_vision:invalid_comparison_context',
+                'visual_direct_attachments_invalid', 'research_visual_group_pair_required'}
+            attempts = prior.get('model_attempts')
+            known_unsent = known_local or (isinstance(exc, GeminiUnavailable) and not attempts) or (
+                isinstance(attempts, list) and bool(attempts)
+                and all(isinstance(item, dict) and item.get('provider_send_state') == 'not_sent' for item in attempts))
+            known_closed = _closed_malformed_visual(prior) or (
+                isinstance(attempts, list) and bool(attempts)
+                and all(isinstance(item, dict) and item.get('provider_send_state') in
+                        {'not_sent', 'response_closed'} for item in attempts)
+                and any(item.get('provider_send_state') == 'response_closed' for item in attempts))
+            retry_safe = known_unsent or known_closed
+            failed = {**intent, 'phase': 'failed' if retry_safe else 'unknown',
+                      'provider_send_state': 'not_sent' if known_unsent else
+                                             'response_closed' if known_closed else 'possibly_sent',
+                      'retry_safe': retry_safe, 'fallback_mode': fallback_mode if retry_safe else None,
+                      'error_type': type(exc).__name__,
+                      'observation': prior,
+                      **({'retry_at': getattr(exc, 'retry_at', None) or self.service.store.now()+300}
+                         if known_unsent else {})}
+            await self.checkpoint(binding, failed)
+            LOG.warning('street_story_visual_google story_id=%s attempt_id=%s role=%s phase=%s provider_send_state=%s',
+                        story['id'], binding['attempt_id'], role, failed['phase'], failed['provider_send_state'])
+            if not isinstance(exc, Exception):
+                raise
+            if known_local:
+                raise
+            if retry_safe:
+                if grouped:
+                    raise PermanentProviderError('research_visual_group_pair_required') from None
+                raise GeminiUnavailable(getattr(exc, 'retry_at', None) or self.service.store.now()+300,
+                                        'visual_pair_known_failure') from None
+            raise RetryableProviderError('research_visual_'+label+'_outcome_unknown',
+                retry_at=getattr(exc, 'retry_at', None) or self.service.store.now()+300) from None
+        receipt = {**response['receipt'], 'binding': dict(binding), 'phase': 'completed',
+                   'provider_send_state': 'response_closed', 'result': response['result']}
+        await self.checkpoint(binding, receipt)
+        return {'result': response['result'], 'receipt': receipt}
+
+
+
+def semantic_visual_context(context):
+    """Queue lease IDs do not change an already observed pair of pixels.
+
+    Photo/generation, catalog, evidence and schema still bind the attempt. The
+    current queue ID is applied only when recording through the common gate.
+    """
+    supplied = json.loads(context)
+    supplied.pop('comparison_id', None)
+    supplied.pop('remaining_illustrations', None)
+    return canonical(supplied)

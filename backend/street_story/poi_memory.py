@@ -1,0 +1,1231 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from typing import Any
+
+from .fact_ledger import _evidence_rows, merge_source_payloads, subject_reads
+from .model_facts import normalized_claim_key
+from .identity_proof import accepted_identity, verified_physical_identity
+
+logger = logging.getLogger(__name__)
+
+
+def _review_snapshot(text: str, sources_json: str) -> tuple[str, str]:
+    """Literal claim and evidence profile; IDs alone never attest a revision."""
+    sources = merge_source_payloads(json.loads(sources_json or '[]'))
+    spans = _evidence_rows('poi-memory-review', sources)
+    evidence = sorted({json.dumps(
+        [row[field] for field in ('source_url', 'source_version_id', 'support_kind',
+                                 'span_sha256', 'chunk_id', 'span_start', 'span_end', 'relation')],
+        ensure_ascii=False, separators=(',', ':'),
+    ) for row in spans})
+    # A URL without a passage is still part of the snapshot, never evidence
+    # that two different source lists are interchangeable.
+    urls = sorted({str(source.get('url') or '').rstrip('/') for source in sources})
+    return text, json.dumps([urls, evidence], ensure_ascii=False, separators=(',', ':'))
+
+
+def _canonical_poi_owner(db, owner: str) -> str | None:
+    """Follow only persisted exact owner-ID aliases; cycles are conflicts."""
+    visited: set[str] = set()
+    while owner not in visited:
+        visited.add(owner)
+        row = db.execute("SELECT poi_id FROM poi_aliases WHERE namespace='poi_id' AND normalized_value=?",
+                         (_normalized_alias(owner),)).fetchone()
+        if not row or str(row['poi_id']) == owner:
+            return owner
+        owner = str(row['poi_id'])
+    return None
+
+
+def _equivalent_poi_owners(db, canonical: str) -> list[str]:
+    """Keep historical graph owners addressable without moving their claims."""
+    return [str(row['id']) for row in db.execute(
+        "WITH RECURSIVE family(id) AS (SELECT ? UNION SELECT a.value FROM poi_aliases a "
+        "JOIN family f ON a.poi_id=f.id WHERE a.namespace='poi_id') "
+        "SELECT p.id FROM pois p JOIN family f ON p.id=f.id ORDER BY p.created_at,p.id", (canonical,))]
+
+
+def memory_keys(db, identity: dict[str, Any]) -> list[str]:
+    """Read exact candidate bindings in the existing registry, never name similarity."""
+    key = poi_key(identity)
+    if not key:
+        return []
+    owners = list(db.execute(
+        "SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?",
+        (_normalized_alias(key),),
+    ))
+    if not owners:
+        return [key]
+    canonical = _canonical_poi_owner(db, str(owners[0]['poi_id']))
+    if canonical is None:
+        return [key]
+    family = _equivalent_poi_owners(db, canonical)
+    rows = list(db.execute("SELECT value FROM poi_aliases WHERE namespace='street_story_candidate' AND poi_id IN ("
+        + ','.join('?' for _ in family) + ') ORDER BY created_at,normalized_value', tuple(family))) if family else []
+    return list(dict.fromkeys([key, *(str(row['value']) for row in rows)]))
+
+
+def poi_key(identity: dict[str, Any]) -> str | None:
+    value = str(identity.get("candidate_id") or "").strip()
+    return value or None
+
+
+def candidate_article_sources(db, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Public acquisition hints for exact shortlist bindings, never identity proof.
+
+    Text extraction coverage does not mean that an article's gallery was viewed
+    for this photo. Read all saved URLs; the existing visual queue bounds work.
+    """
+    keys: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.get('candidate_id') or '').strip()
+        if not key or candidate.get('identity_eligible') is False:
+            continue
+        owner = db.execute("SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?",
+                           (_normalized_alias(key),)).fetchone()
+        if owner and _canonical_poi_owner(db, str(owner['poi_id'])) is not None:
+            keys.update(memory_keys(db, {'candidate_id': key}))
+    if not keys:
+        return []
+    rows = db.execute('SELECT poi_key,url,title,last_seen_at FROM poi_research_sources WHERE poi_key IN ('
+                      + ','.join('?' for _ in keys) + ') ORDER BY last_seen_at DESC,url,poi_key', tuple(sorted(keys)))
+    from .article_media import public_url
+    sources: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        url = public_url(str(row['url']))
+        if not url:
+            continue
+        source = sources.setdefault(url, {'url': url, 'title': str(row['title']),
+            'discovery_provider': 'poi_memory', 'memory_candidate_ids': [], 'last_seen_at': row['last_seen_at']})
+        if row['poi_key'] not in source['memory_candidate_ids']:
+            source['memory_candidate_ids'].append(str(row['poi_key']))
+    return list(sources.values())
+
+
+def candidate_reference_images(db, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reuse accepted public REF addresses; every current SOURCE requires a new model comparison."""
+    keys = set()
+    for candidate in candidates:
+        if candidate.get('identity_eligible') is not False and candidate.get('candidate_id'):
+            keys.update(memory_keys(db, candidate))
+    if not keys:
+        return []
+    rows = db.execute("SELECT id,research_json FROM stories WHERE "
+        "json_extract(research_json,'$.visual_identity.status')='match' AND "
+        "json_extract(research_json,'$.visual_identity.visual_reference_verified')=1 AND "
+        "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
+        + ','.join('?' for _ in keys) + ') ORDER BY updated_at DESC', tuple(sorted(keys)))
+    from .article_media import public_url
+    from urllib.parse import urlsplit
+    result, seen = [], set()
+    for row in rows:
+        identity = json.loads(row['research_json']).get('visual_identity') or {}
+        for supplied in identity.get('reference_evidence') or []:
+            article_url = public_url(supplied.get('article_url') or '')
+            image_url = public_url(supplied.get('image_url') or supplied.get('source_url') or '')
+            subject = supplied.get('subject_candidate_id', supplied.get('candidate_id'))
+            if not article_url or not image_url or subject not in keys or not supplied.get('candidate_id'):
+                continue
+            address = (article_url, image_url)
+            if address in seen:
+                continue
+            seen.add(address)
+            allowed = ('kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title')
+            descriptor = {key: supplied[key] for key in allowed if key in supplied}
+            descriptor.update(candidate_id=supplied['candidate_id'], image_url=image_url,
+                              article_url=article_url, source_url=image_url)
+            title = supplied.get('article_title') or identity.get('candidate_name') or ''
+            result.append({'candidate_id': supplied['candidate_id'], 'name': str(title)[:300],
+                'url': article_url, 'source_urls': [article_url], 'reference_image_urls': [image_url],
+                'article_media': [descriptor],
+                'discovery': 'wikipedia_article_media' if (urlsplit(article_url).hostname or '').endswith('.wikipedia.org') else 'web_article_media',
+                'reference_batch': True, 'reference_reuse': {'story_id': row['id'], 'subject_candidate_id': subject}})
+    return result
+
+
+def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for raw in (
+        identity.get("candidate_id"),
+        identity.get("candidate_name"),
+        identity.get("wikidata"),
+        identity.get("wikipedia_url"),
+        identity.get("osm_id"),
+    ):
+        value = str(raw or "").strip()
+        if value and value.casefold() not in {item.casefold() for item in values}:
+            values.append(value)
+    candidate_id = str(identity.get("candidate_id") or "")
+    for candidate in identity.get("candidates") or []:
+        if not isinstance(candidate, dict) or str(candidate.get("candidate_id") or "") != candidate_id:
+            continue
+        for raw in (
+            candidate.get("candidate_id"),
+            candidate.get("name"),
+            candidate.get("wikidata"),
+            candidate.get("wikipedia_url"),
+            candidate.get("osm_id"),
+        ):
+            value = str(raw or "").strip()
+            if value and value.casefold() not in {item.casefold() for item in values}:
+                values.append(value)
+    return values
+
+
+
+
+def _normalized_alias(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def ensure_poi_identity(
+    db,
+    identity: dict[str, Any],
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    now: float | None = None,
+) -> str | None:
+    """Bind Street Story's stable identity to the canonical POI registry.
+
+    This is mechanical identity plumbing only: it does not infer semantic
+    equivalence beyond an exact entity alias or verified discovery cluster.
+    """
+    key = poi_key(identity)
+    name = str(identity.get("candidate_name") or "").strip()
+    if not key or not name or key.startswith('web:'):
+        return None
+    ts = float(now or 0.0)
+
+    aliases: list[tuple[str, str]] = [("street_story_candidate", key), ("name", name)]
+    candidate_url = str(identity.get("candidate_url") or "").strip()
+    if candidate_url.startswith("https://"):
+        aliases.append(("url", candidate_url))
+    chosen = next(
+        (
+            item for item in (identity.get("candidates") or [])
+            if isinstance(item, dict) and str(item.get("candidate_id") or "") == key
+        ),
+        None,
+    )
+    if isinstance(chosen, dict):
+        for namespace, raw in (
+            ("wikidata", chosen.get("wikidata")),
+            ("wikipedia_url", chosen.get("wikipedia_url") or (chosen.get("url") if key.startswith("wiki:") else None)),
+            ("osm_id", chosen.get("osm_id") or (key if key.startswith("osm:") else None)),
+        ):
+            value = str(raw or "").strip()
+            if value:
+                aliases.append((namespace, value))
+
+    def alias_owner(namespace: str, value: str) -> str | None:
+        row = db.execute(
+            "SELECT poi_id FROM poi_aliases WHERE namespace=? AND normalized_value=?",
+            (namespace, _normalized_alias(value)),
+        ).fetchone()
+        return str(row["poi_id"]) if row else None
+
+    # Exact registry entity aliases and model-verified clusters may point to
+    # an already accumulated physical POI. Names/proximity never merge objects.
+    raw_owners = {alias_owner(namespace, value) for namespace, value in aliases
+              if namespace in {'street_story_candidate', 'wikidata', 'wikipedia_url', 'osm_id'}} - {None}
+    proved = {key}
+    proved_raw_owners: set[str] = set()
+    if chosen and verified_physical_identity(identity):
+        from .identity_subject_binding import subject_aliases
+        proved = subject_aliases(identity.get('candidates') or []).get(key, {key})
+        proved_raw_owners = {owner for alias in proved if (owner := alias_owner('street_story_candidate', alias))}
+        raw_owners.update(proved_raw_owners)
+    owners = {_canonical_poi_owner(db, owner) for owner in raw_owners}
+    proved_owners = {_canonical_poi_owner(db, owner) for owner in proved_raw_owners}
+    if None in owners or (len(owners) > 1 and not owners.issubset(proved_owners)):
+        logger.warning('street_story_poi_binding_conflict candidate_id=%s owners=%s', key, len(owners))
+        return None
+    # Stable across candidate choice and discovery order. Every competing owner
+    # must be witnessed by the verified exact candidate cluster before any edit.
+    poi_id = None
+    if owners:
+        row = db.execute('SELECT id FROM pois WHERE id IN (' + ','.join('?' for _ in owners)
+                         + ') ORDER BY created_at,id LIMIT 1', tuple(owners)).fetchone()
+        if row is None:
+            return None
+        poi_id = str(row['id'])
+    if poi_id is None:
+        poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+        db.execute("INSERT OR IGNORE INTO pois(id,status,canonical_name,latitude,longitude,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (poi_id, "candidate", name[:300], latitude, longitude, ts, ts))
+
+    db.execute(
+        "UPDATE pois SET canonical_name=CASE WHEN status='candidate' THEN ? ELSE canonical_name END,"
+        "latitude=COALESCE(latitude,?),longitude=COALESCE(longitude,?),updated_at=? WHERE id=?",
+        (name[:300], latitude, longitude, ts, poi_id),
+    )
+    for namespace, value in aliases:
+        normalized = _normalized_alias(value)
+        owner = alias_owner(namespace, value)
+        if owner and owner != poi_id:
+            continue
+        db.execute(
+            "INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,?,?,?,?)",
+            (poi_id, namespace, value[:500], normalized[:500], ts),
+        )
+    # Preserve historical owner rows and all external aliases/claims/evidence.
+    # Only candidate keys whose exact equivalence was verified move ownership.
+    if verified_physical_identity(identity) and chosen:
+        for owner in sorted(raw_owners):
+            if owner == poi_id:
+                continue
+            db.execute("INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,'poi_id',?,?,?) "
+                       "ON CONFLICT(namespace,normalized_value) DO UPDATE SET poi_id=excluded.poi_id",
+                       (poi_id, owner, _normalized_alias(owner), ts))
+        for alias in sorted(proved):
+            alias = str(alias).strip()
+            if not alias:
+                continue
+            owner = alias_owner('street_story_candidate', alias)
+            if owner and owner != poi_id:
+                # Bind candidate keys only. Preserve the older registry row,
+                # regional claims, named aliases and every research assertion.
+                db.execute("UPDATE poi_aliases SET poi_id=? WHERE namespace='street_story_candidate' AND normalized_value=?",
+                           (poi_id, _normalized_alias(alias)))
+            else:
+                db.execute("INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,'street_story_candidate',?,?,?)",
+                           (poi_id, alias, _normalized_alias(alias), ts))
+        if len(proved) > 1 or len(raw_owners) > 1:
+            logger.info('street_story_poi_alias_binding component=poi_memory stage=owner_reconciliation poi_id=%s candidate_id=%s aliases=%s owners=%s proof=verified_exact_entity_cluster',
+                        poi_id, key, len(proved), len(raw_owners))
+    return poi_id
+
+
+def _research_observation_id(
+    poi_key_value: str,
+    assertion_id: str,
+    text: str,
+    sources: list[dict[str, Any]],
+    research_run_id: str | None,
+    query: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "poi_key": poi_key_value,
+            "assertion_id": assertion_id,
+            "text": text,
+            "sources": merge_source_payloads(sources),
+            "research_run_id": str(research_run_id or ""),
+            "query": str(query or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "poiobs_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def backfill_legacy_research_memory(db, now: float) -> int:
+    """One-way compatibility backfill from the lossy claim-key table.
+
+    Legacy rows remain readable for rollback/forensics, but all current reads and
+    writes use assertion identity so same-key/different-value claims coexist.
+    """
+    rows = list(db.execute(
+        "SELECT poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at "
+        "FROM poi_research_facts ORDER BY created_at,poi_key,claim_key"
+    ))
+    inserted = 0
+    for row in rows:
+        assertion_id = str(row["fact_id"] or "").strip()
+        text = str(row["text"] or "").strip()
+        if not assertion_id or not text:
+            continue
+        sources = [
+            source
+            for source in json.loads(row["sources_json"] or "[]")
+            if isinstance(source, dict)
+        ]
+        db.execute(
+            "INSERT OR IGNORE INTO poi_research_assertions("
+            "poi_key,assertion_id,semantic_key,text,confidence,sources_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (
+                str(row["poi_key"]),
+                assertion_id,
+                normalized_claim_key(row["claim_key"]),
+                text,
+                float(row["confidence"]),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+                float(row["created_at"]),
+                float(row["updated_at"]),
+            ),
+        )
+        observation_id = _research_observation_id(
+            str(row["poi_key"]),
+            assertion_id,
+            text,
+            sources,
+            "legacy-migration",
+            "legacy-poi-research-facts",
+        )
+        before = db.total_changes
+        db.execute(
+            "INSERT OR IGNORE INTO poi_research_observations("
+            "observation_id,poi_key,assertion_id,semantic_key,text,confidence,sources_json,"
+            "research_run_id,query,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                observation_id,
+                str(row["poi_key"]),
+                assertion_id,
+                normalized_claim_key(row["claim_key"]),
+                text,
+                float(row["confidence"]),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+                "legacy-migration",
+                "legacy-poi-research-facts",
+                float(row["created_at"] or now),
+            ),
+        )
+        if db.total_changes > before:
+            inserted += 1
+    return inserted
+
+
+def backfill_poi_assertion_review_state(db, now: float) -> int:
+    """Project the latest durable reviewed story decision into POI memory.
+
+    Unreviewed story states never downgrade an already reviewed POI assertion.
+    Immutable POI observations remain untouched.
+    """
+    rows = list(db.execute(
+        "SELECT poi_key,assertion_id,text,sources_json,reviewed_at,review_status,eligibility,review_proof_json FROM poi_research_assertions "
+        "ORDER BY poi_key,assertion_id"
+    ))
+    updated = 0
+    for row in rows:
+        try:
+            admission = json.loads(row['review_proof_json'] or '{}')
+        except (ValueError, TypeError):
+            admission = {}
+        if _canonical_admission_valid(db, admission, row['text'], row['poi_key']):
+            continue
+        keys = memory_keys(db, {"candidate_id": str(row["poi_key"])})
+        placeholders = ','.join('?' for _ in keys)
+        latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
+        reviewed = db.execute(
+            "SELECT a.story_id,a.review_status,a.eligibility,a.updated_at,a.display_text,f.sources_json "
+            "FROM fact_assertions a JOIN stories s ON s.id=a.story_id "
+            "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+            "WHERE a.assertion_id=? "
+            f"AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders}) "
+            "AND a.review_status<>'unreviewed' "
+            "ORDER BY a.updated_at DESC LIMIT 1",
+            (str(row["assertion_id"]), *keys),
+        ).fetchone()
+        if not reviewed:
+            continue
+        reviewed_at = float(reviewed["updated_at"] or now)
+        if row['reviewed_at'] is not None and float(row['reviewed_at']) > reviewed_at:
+            continue
+        reviewed_snapshot = _review_snapshot(reviewed['display_text'], reviewed['sources_json'])
+        if (_review_snapshot(row['text'], row['sources_json']) != reviewed_snapshot
+                or _review_snapshot(latest['text'], latest['sources_json']) != reviewed_snapshot):
+            if row['review_status'] != 'unreviewed' or row['eligibility'] != 'unreviewed':
+                db.execute("UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL,review_proof_json=NULL WHERE poi_key=? AND assertion_id=?", (row['poi_key'], row['assertion_id']))
+                logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=review_snapshot_mismatch', row['poi_key'], row['assertion_id'])
+                updated += 1
+            continue
+        current_reviewed_at = row["reviewed_at"]
+        if current_reviewed_at is not None and float(current_reviewed_at) >= reviewed_at:
+            continue
+        db.execute(
+            "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
+            "review_story_id=?,reviewed_at=?,updated_at=MAX(updated_at,?) "
+            "WHERE poi_key=? AND assertion_id=?",
+            (
+                str(reviewed["review_status"]),
+                str(reviewed["eligibility"]),
+                str(reviewed["story_id"]),
+                reviewed_at,
+                reviewed_at,
+                str(row["poi_key"]),
+                str(row["assertion_id"]),
+            ),
+        )
+        updated += 1
+    return updated
+
+
+def _canonical_admission(db, story_id, assertion_id, key):
+    from .fact_ledger import accepted_basis_valid
+    assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                           (story_id, assertion_id)).fetchone()
+    if not assertion or not accepted_basis_valid(db, story_id, assertion):
+        return None
+    basis = json.loads(assertion['accepted_basis_json'])
+    inherited = (basis.get('operation') or {}).get('canonical_admission')
+    if (inherited and inherited.get('assertion_id') == assertion_id
+            and _canonical_admission_valid(db, inherited, basis['claim'], key)):
+        return inherited  # Projection is readback, never a new canonical verdict.
+    supports = []
+    keys = memory_keys(db, {'candidate_id': key})
+    placeholders = ','.join('?' for _ in keys)
+    observations = list(db.execute(f'SELECT observation_id,sources_json FROM poi_research_observations '
+                                  f'WHERE poi_key IN ({placeholders}) AND assertion_id=?', (*keys, assertion_id)))
+    for evidence in basis['evidence']:
+        found = None
+        for observation in observations:
+            for source in json.loads(observation['sources_json'] or '[]'):
+                for support in source.get('supports') or []:
+                    if (str(source.get('url') or '').rstrip('/') == evidence['source_url']
+                            and hashlib.sha256(str(support.get('text') or '').strip().encode()).hexdigest() == evidence['span_sha256']
+                            and str(support.get('source_version_id') or source.get('source_version_id') or evidence['source_version_id']) == evidence['source_version_id']):
+                        found = {'observation_id': observation['observation_id'], 'source_url': evidence['source_url'],
+                                 'span_sha256': evidence['span_sha256'], 'source_version_id': evidence['source_version_id']}
+                        break
+                if found:
+                    break
+            if found:
+                break
+        if not found:
+            return None
+        supports.append(found)
+    return {'version': 1, 'claim': basis['claim'], 'subject': basis['subject'], 'assertion_id': assertion_id,
+            'supports': supports, 'operation': basis['operation'], 'reviewed_at': basis['accepted_at'],
+            'source_story_id': story_id, 'accepted_revision_digest': assertion['accepted_revision_digest'],
+            'detector': 'accepted_basis'}
+
+
+def _canonical_admission_valid(db, proof, text, key):
+    if (not isinstance(proof, dict) or proof.get('version') != 1 or proof.get('claim') != text
+            or not isinstance(proof.get('supports'), list) or not proof['supports']
+            or not isinstance(proof.get('assertion_id'), str)
+            or any(not isinstance(ev, dict) for ev in proof['supports'])):
+        return False
+    keys = memory_keys(db, {'candidate_id': key})
+    if proof.get('subject') not in keys:
+        return False
+    for evidence in proof['supports']:
+        row = db.execute('SELECT poi_key,assertion_id,sources_json FROM poi_research_observations WHERE observation_id=?',
+                         (evidence.get('observation_id'),)).fetchone()
+        if not row or row['poi_key'] not in keys or row['assertion_id'] != proof['assertion_id']:
+            return False
+        if not any(str(source.get('url') or '').rstrip('/') == evidence.get('source_url')
+                   and hashlib.sha256(str(support.get('text') or '').strip().encode()).hexdigest() == evidence.get('span_sha256')
+                   and str(support.get('source_version_id') or source.get('source_version_id') or evidence.get('source_version_id')) == evidence.get('source_version_id')
+                   for source in json.loads(row['sources_json'] or '[]') for support in source.get('supports') or []):
+            return False
+    return True
+
+
+def _review_proof(db, story_id: str, assertion_id: str, text: str, sources_json: str, key: str):
+    """Freeze a real model admission independently of the publication story."""
+    admitted = _canonical_admission(db, story_id, assertion_id, key)
+    if admitted and admitted['claim'] == text:
+        return json.dumps(admitted, ensure_ascii=False, separators=(',', ':'))
+    source = db.execute(
+        "SELECT a.display_text,a.revision_digest,f.sources_json,s.research_json FROM fact_assertions a "
+        "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+        "JOIN stories s ON s.id=a.story_id "
+        "WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible'",
+        (story_id, assertion_id),
+    ).fetchone()
+    snapshot = _review_snapshot(text, sources_json)
+    if not source or _review_snapshot(source['display_text'], source['sources_json']) != snapshot:
+        return None
+    origin_identity = json.loads(source['research_json'] or '{}').get('visual_identity') or {}
+    if key not in memory_keys(db, origin_identity):
+        return None
+    for scan in db.execute(
+        "SELECT id,detector,revision_bundle_json,created_at FROM fact_conflict_scans "
+        "WHERE story_id=? AND status IN ('ok','no_candidates') AND coverage_complete=1 ORDER BY id DESC",
+        (story_id,),
+    ):
+        bundle = json.loads(scan['revision_bundle_json'] or '{}')
+        if source['revision_digest'] and bundle.get(assertion_id) == source['revision_digest']:
+            return json.dumps({'snapshot': snapshot, 'source_story_id': story_id,
+                'scan_id': scan['id'], 'detector': scan['detector'], 'reviewed_at': scan['created_at']},
+                ensure_ascii=False, separators=(',', ':'))
+    return None
+
+
+def backfill_poi_review_proofs(db) -> int:
+    """Recover only exact retained model proofs; flags alone are not admission."""
+    updated = 0
+    for row in list(db.execute("SELECT * FROM poi_research_assertions WHERE eligibility='eligible' AND review_proof_json IS NULL")):
+        proof = _review_proof(db, str(row['review_story_id'] or ''), row['assertion_id'], row['text'], row['sources_json'], row['poi_key'])
+        if proof:
+            updated += db.execute('UPDATE poi_research_assertions SET review_proof_json=? WHERE poi_key=? AND assertion_id=?',
+                (proof, row['poi_key'], row['assertion_id'])).rowcount
+    return updated
+
+
+@subject_reads()
+def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
+    """Propagate only explicit reviewed story decisions to canonical POI memory."""
+    story = db.execute(
+        "SELECT research_json FROM stories WHERE id=?",
+        (story_id,),
+    ).fetchone()
+    if not story:
+        return 0
+    try:
+        research = json.loads(story["research_json"] or "{}")
+    except (TypeError, ValueError):
+        return 0
+    identity = research.get("visual_identity") if isinstance(research, dict) else {}
+    key = poi_key(identity if isinstance(identity, dict) else {})
+    if not key:
+        return 0
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
+
+    updated = 0
+    rows = list(db.execute(
+        "SELECT a.assertion_id,a.review_status,a.eligibility,a.updated_at,a.display_text,f.sources_json "
+        "FROM fact_assertions a JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+        "WHERE a.story_id=? AND a.review_status<>'unreviewed'",
+        (story_id,),
+    ))
+    for row in rows:
+        reviewed_at = float(row["updated_at"] or now)
+        prior = db.execute(f"SELECT review_status,eligibility,reviewed_at,review_proof_json FROM poi_research_assertions "
+            f"WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY COALESCE(reviewed_at,0) DESC LIMIT 1",
+            (*keys, row['assertion_id'])).fetchone()
+        proof = _review_proof(db, story_id, row["assertion_id"], row["display_text"], row["sources_json"], key)
+        if proof:
+            admission = json.loads(proof)
+            if admission['detector'] == 'poi_memory_reuse':
+                # Hydration projects the original admission. It cannot become a
+                # fresh semantic decision or overwrite a later canonical review.
+                continue
+            original_review_time = float(admission['reviewed_at'])
+            if row['eligibility'] == 'eligible':
+                reviewed_at = original_review_time
+                if prior and prior['eligibility'] == 'withheld' and float(prior['reviewed_at'] or 0) > reviewed_at:
+                    arbitration = db.execute("SELECT e.event_id,e.created_at FROM fact_arbitration_events e "
+                        "JOIN fact_conflicts c ON c.story_id=e.story_id AND c.conflict_id=e.conflict_id "
+                        "WHERE e.story_id=? AND e.state='active' AND (c.left_fact_id=? OR c.right_fact_id=?) "
+                        "ORDER BY e.created_at DESC LIMIT 1", (story_id, row['assertion_id'], row['assertion_id'])).fetchone()
+                    if arbitration and arbitration['created_at'] > float(prior['reviewed_at']):
+                        reviewed_at = arbitration['created_at']
+                        proof = json.dumps({**admission, 'reviewed_at': reviewed_at,
+                            'revalidation': {'arbitration_event_id': arbitration['event_id']}},
+                            ensure_ascii=False, separators=(',', ':'))
+            # A new adverse state retains the positive basis as lineage but uses
+            # its own observation time, so an older positive story cannot resurrect it.
+        if (row['eligibility'] != 'eligible' and prior
+                and prior['review_status'] == row['review_status'] and prior['eligibility'] == row['eligibility']):
+            # Readback is not a new verdict, including a rejected/cleared basis.
+            reviewed_at = float(prior['reviewed_at'] or reviewed_at)
+        latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
+        if not latest or (latest['text'] != row['display_text'] or not proof and _review_snapshot(latest['text'], latest['sources_json']) != _review_snapshot(row['display_text'], row['sources_json'])):
+            continue
+        matching_keys = [str(memory['poi_key']) for memory in db.execute(
+            f"SELECT poi_key,text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=?",
+            (*keys, row['assertion_id']),
+        ) if memory['text'] == row['display_text'] and (proof or _review_snapshot(memory['text'], memory['sources_json']) == _review_snapshot(row['display_text'], row['sources_json']))]
+        if not matching_keys:
+            continue
+        matching_placeholders = ','.join('?' for _ in matching_keys)
+        changed = db.execute(
+            "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
+            "review_story_id=?,reviewed_at=?,review_proof_json=?,updated_at=MAX(updated_at,?) "
+            f"WHERE poi_key IN ({matching_placeholders}) AND assertion_id=? "
+            "AND (reviewed_at IS NULL OR reviewed_at<=?)",
+            (
+                str(row["review_status"]),
+                str(row["eligibility"]),
+                story_id,
+                reviewed_at,
+                proof,
+                reviewed_at,
+                *matching_keys,
+                str(row["assertion_id"]),
+                reviewed_at,
+            ),
+        )
+        updated += changed.rowcount
+    return updated
+
+
+def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int | None = None) -> int:
+    """Add durable POI knowledge, preserving existing owner choices and draft."""
+    existing = {str(row['fact_id']) for row in db.execute('SELECT fact_id FROM facts WHERE story_id=?', (story_id,))}
+
+    candidates: list[dict[str, Any]] = []
+    candidates.extend(
+        _research_memory_facts(
+            db,
+            identity,
+            limit,
+            include_unreviewed=False,
+        )
+    )
+    remaining = max(0, limit - len(candidates)) if limit is not None else None
+    if remaining is None or remaining:
+        candidates.extend(_public_regional_knowledge_facts(db, identity, remaining))
+
+    inserted = 0
+    seen: set[str] = set()
+    for item in candidates:
+        fact_id = str(item.get("fact_id") or "").strip()
+        text = str(item.get("text") or "").strip()
+        sources = [source for source in (item.get("sources") or []) if isinstance(source, dict)]
+        if not fact_id or fact_id in seen or fact_id in existing or not text or not sources:
+            continue
+        seen.add(fact_id)
+        selected = False
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        inserted += db.execute(
+            "INSERT OR IGNORE INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+            "VALUES(?,?,?,?,1,?,?)",
+            (
+                story_id,
+                fact_id,
+                text[:1200],
+                confidence,
+                int(selected),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+            ),
+        ).rowcount
+    from .fact_ledger import backfill_legacy_fact_ledger, refresh_review_status
+    restored = 0
+    now = float(db.execute("SELECT unixepoch('subsec')").fetchone()[0])
+    if inserted:
+        backfill_legacy_fact_ledger(db, now)
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
+    for item in candidates:
+        if item.get('origin') != 'poi_research':
+            continue
+        fact_id = str(item.get('fact_id') or '')
+        memory = db.execute(
+            f"SELECT * FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? "
+            "ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key LIMIT 1", (*keys, fact_id),
+        ).fetchone()
+        target = db.execute(
+            'SELECT a.display_text,a.revision_digest,f.sources_json FROM fact_assertions a '
+            'JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
+            'WHERE a.story_id=? AND a.assertion_id=?', (story_id, fact_id),
+        ).fetchone()
+        if not memory or memory['eligibility'] != 'eligible' or not target:
+            continue
+        try:
+            proof = json.loads(memory['review_proof_json'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        if proof.get('version') == 1:
+            if (target['display_text'] != memory['text']
+                    or not _canonical_admission_valid(db, proof, memory['text'], memory['poi_key'])):
+                continue
+            assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                   (story_id, fact_id)).fetchone()
+            from .fact_ledger import accept_fact_basis, accepted_basis_valid
+            if accepted_basis_valid(db, story_id, assertion):
+                continue
+            # Rebind canonical supports to this story's own evidence IDs without
+            # rerunning extraction or creating a synthetic semantic scan.
+            own = list(db.execute('SELECT e.* FROM fact_evidence_spans e JOIN fact_observations o '
+                                  'ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.assertion_id=?',
+                                  (story_id, fact_id)))
+            ids = []
+            for support in proof['supports']:
+                matched = next((ev['evidence_id'] for ev in own if all(ev[k] == support[k]
+                               for k in ('source_url', 'source_version_id', 'span_sha256'))), None)
+                if matched is None:
+                    break
+                ids.append(matched)
+            else:
+                accept_fact_basis(db, story_id, fact_id, ids,
+                                  operation={'canonical_admission': proof}, now=proof['reviewed_at'])
+                db.execute('UPDATE fact_assertions SET accepted_revision_digest=? WHERE story_id=? AND assertion_id=?',
+                           (proof['accepted_revision_digest'], story_id, fact_id))
+                restored += 1
+            continue
+        snapshot = list(_review_snapshot(memory['text'], memory['sources_json']))
+        if (not isinstance(proof, dict) or not proof.get('scan_id') or proof.get('snapshot') != snapshot
+                or list(_review_snapshot(target['display_text'], target['sources_json'])) != snapshot):
+            continue
+        already_reviewed = any(json.loads(scan[0] or '{}').get(fact_id) == target['revision_digest'] for scan in db.execute(
+            "SELECT revision_bundle_json FROM fact_conflict_scans WHERE story_id=? "
+            "AND status IN ('ok','no_candidates') AND coverage_complete=1", (story_id,)))
+        if already_reviewed:
+            continue
+        db.execute("INSERT INTO fact_conflict_scans(story_id,poi_key,run_id,detector,status,pair_count,detected_count,coverage_complete,revision_bundle_json,conflict_ids_json,missing_aspects_json,error_type,created_at) VALUES(?,?,?,'poi_memory_reuse','no_candidates',0,0,1,?,'[]','[]',NULL,?)",
+            (story_id, poi_key(identity), f"poi-memory:{proof['source_story_id']}:{proof['scan_id']}",
+             json.dumps({fact_id: target['revision_digest']}, sort_keys=True), proof['reviewed_at']))
+        restored += 1
+    if inserted or restored:
+        refresh_review_status(db, story_id, now)
+        logger.info('street_story_poi_hydration story_id=%s candidate_id=%s added=%s review_restored=%s existing=%s',
+            story_id, poi_key(identity), inserted, restored, len(existing))
+    return inserted
+
+
+def _research_memory_facts(
+    db,
+    identity: dict[str, Any],
+    limit: int | None,
+    *,
+    include_unreviewed: bool = True,
+) -> list[dict[str, Any]]:
+    keys = memory_keys(db, identity)
+    if not keys:
+        return []
+    if include_unreviewed:
+        where = (
+            "eligibility<>'withheld' "
+            "AND review_status<>'quarantined'"
+        )
+    else:
+        where = "eligibility='eligible'"
+    placeholders = ','.join('?' for _ in keys)
+    rows = list(db.execute(
+        "SELECT assertion_id,semantic_key,text,confidence,sources_json,"
+        "review_status,eligibility,updated_at,poi_key,review_proof_json FROM (SELECT *,ROW_NUMBER() OVER "
+        "(PARTITION BY assertion_id ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key) AS rank "
+        f"FROM poi_research_assertions WHERE poi_key IN ({placeholders})) WHERE rank=1 AND {where} "
+        "ORDER BY updated_at DESC" + (' LIMIT ?' if limit is not None else ''),
+        (*keys, max(1, int(limit))) if limit is not None else tuple(keys),
+    ))
+    valid_rows = []
+    for row in rows:
+        try:
+            proof = json.loads(row['review_proof_json'] or '{}')
+        except (ValueError, TypeError):
+            proof = {}
+        if proof.get('version') == 1 and not _canonical_admission_valid(db, proof, row['text'], row['poi_key']):
+            continue  # Missing own canonical basis cannot hydrate as admitted.
+        valid_rows.append(row)
+    return [
+        {
+            "fact_id": str(row["assertion_id"]),
+            "claim_key": str(row["semantic_key"] or ""),
+            "text": str(row["text"]),
+            "confidence": float(row["confidence"]),
+            "evidence_supported": bool(json.loads(row["sources_json"] or "[]")),
+            "selected": False,
+            "sources": json.loads(row["sources_json"] or "[]"),
+            "review_status": str(row["review_status"]),
+            "eligibility": str(row["eligibility"]),
+            "origin": "poi_research",
+        }
+        for row in valid_rows
+    ]
+
+
+def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dict[str, Any]]:
+    keys = memory_keys(db, identity)
+    if not keys:
+        return []
+    placeholders = ','.join('?' for _ in keys)
+    rows = db.execute(
+        "WITH selected_urls AS (SELECT url FROM poi_research_sources "
+        f"WHERE poi_key IN ({placeholders}) GROUP BY url ORDER BY MAX(last_seen_at) DESC,url LIMIT ?) "
+        "SELECT url,title,last_query,supports_json,last_seen_at "
+        f"FROM poi_research_sources WHERE poi_key IN ({placeholders}) "
+        "AND url IN (SELECT url FROM selected_urls) ORDER BY last_seen_at DESC,url,poi_key",
+        (*keys, max(1, min(int(limit), 200)), *keys),
+    )
+    result = [
+        {
+            "url": str(row["url"]),
+            "title": str(row["title"]),
+            "last_query": str(row["last_query"]),
+            "supports": json.loads(row["supports_json"] or "[]"),
+            "last_seen_at": row["last_seen_at"],
+        }
+        for row in rows
+    ]
+    from .research_runs import source_coverage
+    coverage = source_coverage(db, keys)
+    by_url: dict[str, dict[str, Any]] = {}
+    for item in result:
+        existing = by_url.get(item['url'])
+        if existing is None:
+            by_url[item['url']] = item
+        else:
+            # Rows are newest first. Preserve their query/title while retaining
+            # all acquired evidence from exact aliases of the same POI.
+            existing['supports'] = merge_source_payloads([existing], [item])[0]['supports']
+    for url, scopes in coverage.items():
+        item = by_url.setdefault(url, {'url': url, 'title': url, 'supports': [], 'last_query': ''})
+        item['extraction_coverage'] = scopes
+    return list(by_url.values())
+
+
+def persist_research_memory(
+    db,
+    identity: dict[str, Any],
+    facts: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    query: str,
+    now: float,
+    research_run_id: str | None = None,
+) -> None:
+    key = poi_key(identity)
+    if not key:
+        return
+    ensure_poi_identity(db, identity, now=now)
+    source_by_url: dict[str, dict[str, Any]] = {}
+
+    def add_source(raw: dict[str, Any]) -> None:
+        if not isinstance(raw, dict):
+            return
+        url = str(raw.get("url") or "").rstrip("/")
+        if not url.startswith("https://"):
+            return
+        prior = source_by_url.get(url)
+        source_by_url[url] = (
+            merge_source_payloads([prior], [raw])[0]
+            if prior is not None
+            else merge_source_payloads([raw])[0]
+        )
+
+    for source in sources:
+        add_source(source)
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        for source in fact.get("sources") or []:
+            add_source(source)
+
+    for url, source in source_by_url.items():
+        new_supports = [
+            item for item in (source.get("supports") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        current_source = db.execute(
+            "SELECT title,supports_json,first_seen_at FROM poi_research_sources "
+            "WHERE poi_key=? AND url=?",
+            (key, url),
+        ).fetchone()
+        old_supports = (
+            json.loads(current_source["supports_json"] or "[]")
+            if current_source else []
+        )
+        merged_source = merge_source_payloads(
+            [{
+                "url": url,
+                "title": str(current_source["title"]) if current_source else "",
+                "supports": old_supports,
+            }],
+            [{
+                **source,
+                "url": url,
+                "supports": new_supports,
+            }],
+        )[0]
+        merged_supports = [
+            item for item in (merged_source.get("supports") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        first_seen = float(current_source["first_seen_at"]) if current_source else now
+        db.execute(
+            "INSERT INTO poi_research_sources(poi_key,url,title,supports_json,last_query,first_seen_at,last_seen_at) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(poi_key,url) DO UPDATE SET "
+            "title=excluded.title,supports_json=excluded.supports_json,"
+            "last_query=excluded.last_query,last_seen_at=excluded.last_seen_at",
+            (
+                key,
+                url,
+                str(merged_source.get("title") or url)[:300],
+                json.dumps(merged_supports, ensure_ascii=False, separators=(",", ":")),
+                str(query or "")[:1000],
+                first_seen,
+                now,
+            ),
+        )
+
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        claim_key = normalized_claim_key(fact.get("claim_key"))
+        assertion_id = str(fact.get("fact_id") or "").strip()
+        text = str(fact.get("text") or "").strip()
+        fact_sources = [
+            source for source in (fact.get("sources") or [])
+            if isinstance(source, dict)
+            and str(source.get("url") or "").startswith("https://")
+            and any(
+                isinstance(support, dict)
+                and str(support.get("text") or "").strip()
+                for support in (source.get("supports") or [])
+            )
+        ]
+        if not assertion_id or not text or not fact_sources:
+            continue
+        try:
+            confidence = max(0.0, min(1.0, float(fact.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        current = db.execute(
+            "SELECT semantic_key,text,confidence,sources_json,created_at "
+            "FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?",
+            (key, assertion_id),
+        ).fetchone()
+        prior_sources = (
+            json.loads(current["sources_json"] or "[]")
+            if current else []
+        )
+        merged_sources = merge_source_payloads(prior_sources, fact_sources)
+        created_at = float(current["created_at"]) if current else now
+        keys = memory_keys(db, identity)
+        placeholders = ','.join('?' for _ in keys)
+        latest_snapshot = db.execute(
+            f"SELECT text,sources_json,review_proof_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1",
+            (*keys, assertion_id),
+        ).fetchone()
+        try:
+            prior_admission = json.loads(latest_snapshot['review_proof_json'] or '{}') if latest_snapshot else {}
+        except (ValueError, TypeError):
+            prior_admission = {}
+        changed_snapshot = bool(latest_snapshot and (
+            latest_snapshot['text'] != text[:1200]
+            or not _canonical_admission_valid(db, prior_admission, text[:1200], key)
+            and _review_snapshot(latest_snapshot['text'], latest_snapshot['sources_json']) !=
+                _review_snapshot(text[:1200], json.dumps(merged_sources, ensure_ascii=False))))
+
+        observation_id = _research_observation_id(
+            key,
+            assertion_id,
+            text,
+            fact_sources,
+            research_run_id,
+            query,
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO poi_research_observations("
+            "observation_id,poi_key,assertion_id,semantic_key,text,confidence,sources_json,"
+            "research_run_id,query,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                observation_id,
+                key,
+                assertion_id,
+                claim_key,
+                text[:1200],
+                confidence,
+                json.dumps(fact_sources, ensure_ascii=False, separators=(",", ":")),
+                str(research_run_id or "")[:120] or None,
+                str(query or "")[:1000],
+                now,
+            ),
+        )
+        db.execute(
+            "INSERT INTO poi_research_assertions("
+            "poi_key,assertion_id,semantic_key,text,confidence,sources_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(poi_key,assertion_id) DO UPDATE SET "
+            "semantic_key=COALESCE(excluded.semantic_key,poi_research_assertions.semantic_key),"
+            "text=excluded.text,"
+            "confidence=MAX(poi_research_assertions.confidence,excluded.confidence),"
+            "sources_json=excluded.sources_json,updated_at=excluded.updated_at",
+            (
+                key,
+                assertion_id,
+                claim_key,
+                text[:1200],
+                confidence,
+                json.dumps(merged_sources, ensure_ascii=False, separators=(",", ":")),
+                created_at,
+                now,
+            ),
+        )
+        if changed_snapshot:
+            db.execute(f"UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL,review_proof_json=NULL WHERE poi_key IN ({placeholders}) AND assertion_id=?", (*keys, assertion_id))
+            logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=changed_snapshot', key, assertion_id)
+
+        # Compatibility snapshot only. Never update by semantic key: this table
+        # is intentionally lossy and no longer authoritative.
+        if claim_key:
+            db.execute(
+                "INSERT OR IGNORE INTO poi_research_facts("
+                "poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    key,
+                    claim_key,
+                    assertion_id,
+                    text[:1200],
+                    confidence,
+                    json.dumps(merged_sources, ensure_ascii=False, separators=(",", ":")),
+                    created_at,
+                    now,
+                ),
+            )
+
+def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
+    aliases = _identity_alias_values(identity)
+    if not aliases:
+        return []
+    normalized = [" ".join(value.split()).casefold() for value in aliases]
+    placeholders = ",".join("?" for _ in normalized)
+    poi_rows = list(db.execute(
+        f"SELECT DISTINCT poi_id FROM poi_aliases WHERE normalized_value IN ({placeholders})",
+        tuple(normalized),
+    ))
+    owners = {_canonical_poi_owner(db, str(row['poi_id'])) for row in poi_rows}
+    if len(owners) != 1 or None in owners:
+        return []
+    family = _equivalent_poi_owners(db, next(iter(owners)))
+    if not family:
+        return []
+    owner_placeholders = ','.join('?' for _ in family)
+    rows = db.execute(
+        f"""
+        SELECT c.id,c.poi_id,c.semantic_key,c.kind,c.text,c.status,
+               e.evidence_ref,e.source_family_id,e.author_score,e.publication_score,
+               e.provenance_score,e.verification_score,e.evidence_json,
+               x.source_ref,x.payload_json,x.updated_at
+        FROM poi_claims c
+        JOIN poi_claim_evidence e ON e.claim_id=c.id
+        JOIN poi_external_events x ON x.event_id=e.event_id
+        WHERE c.poi_id IN ({owner_placeholders}) AND x.visibility='public'
+          AND c.status IN ('candidate','accepted','contested')
+        ORDER BY x.updated_at DESC
+        """ + (' LIMIT ?' if limit is not None else ''),
+        (*family, max(1, int(limit))) if limit is not None else tuple(family),
+    )
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        fact_id = str(row["id"])
+        if fact_id in seen:
+            continue
+        seen.add(fact_id)
+        try:
+            evidence_payload = json.loads(row["evidence_json"] or "{}")
+        except (TypeError, ValueError):
+            evidence_payload = {}
+        result.append({
+            "fact_id": fact_id,
+            "claim_key": str(row["semantic_key"] or ""),
+            "text": str(row["text"]),
+            "confidence": (float(row["verification_score"]) / 100.0) if row["verification_score"] is not None else 0.0,
+            "evidence_supported": True,
+            "selected": False,
+            "sources": [{
+                "type": "regional_knowledge",
+                "title": str(row["source_ref"]),
+                "ref": str(row["evidence_ref"]),
+                "source_family_id": str(row["source_family_id"]),
+                "author_subject_authority": row["author_score"],
+                "publication_method_score": row["publication_score"],
+                "provenance_precision_score": row["provenance_score"],
+                "evidence_verification_score": row["verification_score"],
+                "evidence": evidence_payload,
+            }],
+            "poi_id": str(row['poi_id']),
+            "poi_claim_status": str(row["status"]),
+        })
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def previous_editorial_context(db, identity: dict[str, Any], story_id: str) -> list[dict[str, Any]]:
+    """Small exact-POI publication history, not recommendations or fact authority."""
+    if not accepted_identity(identity):
+        return []
+    keys = memory_keys(db, identity)
+    if not keys:
+        return []
+    rows = db.execute(
+        "SELECT id,research_json,photo_sha256 FROM stories WHERE id<>? AND "
+        "json_extract(research_json,'$.visual_identity.status') IN ('match','owner_confirmed') AND "
+        "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
+        + ','.join('?' for _ in keys) + ") AND "
+        "COALESCE(json_extract(research_json,'$.publication_concept'),'')<>'' "
+        "ORDER BY updated_at DESC,id LIMIT 3", (story_id, *keys),
+    )
+    result = []
+    for row in rows:
+        research = json.loads(row['research_json']) or {}
+        if not accepted_identity(research.get('visual_identity') or {}, photo_sha256=row['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
+            continue
+        selected = [str(item['assertion_id']) for item in db.execute(
+            "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 "
+            "ORDER BY created_at,assertion_id LIMIT 20", (row['id'],))]
+        result.append({'story_id': row['id'],
+            'concept': str(json.loads(row['research_json']).get('publication_concept') or '')[:600],
+            'selected_fact_ids': selected})
+    return result
+
+
+def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> list[dict[str, Any]]:
+    key = poi_key(identity)
+    if not key or limit <= 0:
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in _research_memory_facts(
+        db,
+        identity,
+        limit,
+        include_unreviewed=True,
+    ):
+        if item["fact_id"] in seen:
+            continue
+        seen.add(item["fact_id"])
+        result.append(item)
+        if len(result) >= limit:
+            return result
+
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
+    # Canonical memory owns these IDs even when an explicit review withholds
+    # them. Older story projections must never resurrect a rejected assertion.
+    seen.update(str(row['assertion_id']) for row in db.execute(
+        f"SELECT DISTINCT assertion_id FROM poi_research_assertions WHERE poi_key IN ({placeholders})",
+        tuple(keys),
+    ))
+    rows = db.execute(
+        "SELECT * FROM ("
+        "SELECT f.fact_id,f.text,f.confidence,f.evidence_supported,f.selected,f.sources_json,s.updated_at "
+        ",ROW_NUMBER() OVER (PARTITION BY f.fact_id ORDER BY s.updated_at DESC,f.rowid DESC) AS rank "
+        "FROM facts f JOIN stories s ON s.id=f.story_id "
+        "LEFT JOIN fact_assertions a "
+        "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+        f"WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders}) "
+        "AND COALESCE(a.eligibility,'unreviewed')<>'withheld' "
+        "AND COALESCE(a.review_status,'unreviewed')<>'quarantined' "
+        ") WHERE rank=1 ORDER BY updated_at DESC,fact_id",
+        (story_id, *keys),
+    )
+    for row in rows:
+        fact_id = str(row["fact_id"])
+        if fact_id in seen:
+            continue
+        seen.add(fact_id)
+        result.append({
+            "fact_id": fact_id,
+            "claim_key": "",
+            "text": str(row["text"]),
+            "confidence": float(row["confidence"]),
+            "evidence_supported": bool(row["evidence_supported"]),
+            "selected": bool(row["selected"]),
+            "sources": json.loads(row["sources_json"] or "[]"),
+            "origin": "street_story",
+        })
+        if len(result) >= limit:
+            return result
+
+    for item in _public_regional_knowledge_facts(db, identity, limit - len(result)):
+        if item["fact_id"] in seen:
+            continue
+        seen.add(item["fact_id"])
+        result.append({**item, "origin": "regional_knowledge"})
+        if len(result) >= limit:
+            break
+    return result

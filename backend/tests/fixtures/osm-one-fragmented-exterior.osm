@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="openstreetmap-cgimap 2.1.0 (3781319 spike-06.openstreetmap.org)" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">
+ <node id="1111561297" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:20Z" user="akashihi" uid="176819" lat="54.7217323" lon="20.4970485"/>
+ <node id="1111561698" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:29Z" user="akashihi" uid="176819" lat="54.7216260" lon="20.4975532"/>
+ <node id="1111561850" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:32Z" user="akashihi" uid="176819" lat="54.7218371" lon="20.4971870"/>
+ <node id="1111561907" visible="true" version="2" changeset="152729314" timestamp="2024-06-15T16:29:26Z" user="Ilya_Puchcow" uid="18791126" lat="54.7215519" lon="20.4974461"/>
+ <node id="1111561921" visible="true" version="2" changeset="152729314" timestamp="2024-06-15T16:29:26Z" user="Ilya_Puchcow" uid="18791126" lat="54.7216583" lon="20.4975943"/>
+ <way id="95935537" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:40Z" user="akashihi" uid="176819">
+  <nd ref="1111561921"/>
+  <nd ref="1111561850"/>
+  <nd ref="1111561297"/>
+  <nd ref="1111561907"/>
+ </way>
+ <way id="95935538" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:40Z" user="akashihi" uid="176819">
+  <nd ref="1111561907"/>
+  <nd ref="1111561698"/>
+ </way>
+ <way id="95935554" visible="true" version="1" changeset="7030042" timestamp="2011-01-20T12:36:43Z" user="akashihi" uid="176819">
+  <nd ref="1111561698"/>
+  <nd ref="1111561921"/>
+ </way>
+ <relation id="1383564" visible="true" version="9" changeset="188977044" timestamp="2026-09-13T19:03:16Z" user="shamilbi" uid="242206">
+  <member type="way" ref="95935554" role="outer"/>
+  <member type="way" ref="95935537" role="outer"/>
+  <member type="way" ref="95935538" role="outer"/>
+  <tag k="addr:city" v="Калининград"/>
+  <tag k="addr:country" v="RU"/>
+  <tag k="addr:housenumber" v="6"/>
+  <tag k="addr:street" v="улица Генделя"/>
+  <tag k="amenity" v="clinic"/>
+  <tag k="building" v="yes"/>
+  <tag k="check_date" v="2026-09-13"/>
+  <tag k="healthcare" v="clinic"/>
+  <tag k="health_facility:type" v="clinic"/>
+  <tag k="name" v="Поликлиника городской больницы №3"/>
+  <tag k="type" v="multipolygon"/>
+  <tag k="website" v="http://gb3.infomed39.ru"/>
+ </relation>
+</osm>

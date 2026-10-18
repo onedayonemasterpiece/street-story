@@ -1,0 +1,5 @@
+# Owner photo format
+
+The owner chooses Original or 4:5 beside the photo. The durable Android outbox saves `POST /v1/stories/{id}/photo-format` with the source SHA and identity generation; it starts no provider operation. Original keeps the complete EXIF-oriented source and aspect. 4:5 makes a real, in-bounds crop of those pixels; the initial crop is centered. Mira can persist a different valid pixel rectangle in the existing `photo_format` Live stage after inspecting the photo. If essential building/context cannot fit, she explains the conflict and offers Original.
+
+Composition freezes the preference revision, original/oriented/output hashes, source dimensions and crop rectangle. The existing Vibe SVG renderer receives that transformed private source and model-authored copy/layout. No outpainting, stretch or hidden contain fields are used. Source and draft remain unchanged. Font placement and semantic quality still require actual image review. A late result for a previous format cannot be selected/published as the current format. Android previews the chosen crop while the previous visual remains retained in its own immutable operation.

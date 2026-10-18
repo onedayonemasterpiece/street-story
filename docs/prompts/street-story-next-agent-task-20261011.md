@@ -373,3 +373,4 @@ RESOURCE_CONTROL_UNAVAILABLE в сохранённых попытках нель
 | N06 | Проверяемая универсальность и отсутствие single-photo tuning | A03/A07/A08/B20/D02: arbitrary/unseen IDs и permutations, negative cases, все final15, доступный holdout, независимая truth. Ни runtime address exceptions, ни rerun-until-PASS. |
 | N07 | Диверсификация и параллелизм по реальным готовым возможностям | B07/B09/B15/D08/D10/C11/D33: ready material + route permission/readiness + available capacity. Разные provider names за одним упавшим admission не независимость; отсутствие измерения idle не ноль. |
 | N08 | Реальное упрощение вместо растущей test/legacy церемонии | D01/D05/D18/D27–D34/D39: один state owner/acceptance, убрать неиспользуемые обязанности после caller check, необходимые негативы на живом boundary, bytes/operations/readback до/после. Не удалять useful evidence и не ставить дополнительный judge нормальному факту. |
+

@@ -1,0 +1,456 @@
+import json
+import shutil
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from street_story.article_media import extract_media, fetch_public, public_url, load_article_reference
+from street_story.identity_progress import advance
+from street_story.live import StreetStoryLiveAdapter
+from street_story.service import ConflictError
+from test_identity_lifecycle import make_service
+from test_reference_image_codec import jpeg
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('dev-artifacts') is None,
+                    reason='Devserver profile lifecycle integration requires dev-artifacts CLI')
+@pytest.mark.parametrize('ending', ['complete', 'startup_failure', 'cancelled'])
+async def test_disposable_browser_profile_is_removed_after_every_exit(monkeypatch, ending):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+    import sys
+    import street_story.article_media as media
+    profiles, closed = [], []
+    class Context:
+        async def route(self, *args):
+            pass
+        async def new_page(self):
+            return object()
+        async def close(self):
+            closed.append(True)
+    class Chromium:
+        executable_path = 'fixture'
+        async def launch_persistent_context(self, profile, **kwargs):
+            profiles.append(Path(profile))
+            assert (Path(profile).parent / '.artifact.json').is_file()
+            if ending == 'startup_failure':
+                raise RuntimeError('fixture startup failure')
+            return Context()
+    @asynccontextmanager
+    async def playwright():
+        yield SimpleNamespace(chromium=Chromium())
+    async def resolve(host):
+        return '93.184.216.34'
+    monkeypatch.setitem(sys.modules, 'playwright.async_api', SimpleNamespace(async_playwright=playwright))
+    monkeypatch.setattr(media, 'resolve_public', resolve)
+    monkeypatch.setattr(media, 'browser_executable', lambda path: path)
+    async def use():
+        async with media._article_browser('https://example.org/article'):
+            if ending == 'cancelled':
+                raise asyncio.CancelledError
+    if ending == 'complete':
+        await use()
+    else:
+        with pytest.raises(RuntimeError if ending == 'startup_failure' else asyncio.CancelledError):
+            await use()
+    assert len(profiles) == 1 and not profiles[0].parent.exists()
+    assert closed == ([] if ending == 'startup_failure' else [True])
+
+
+def test_legacy_table_content_keeps_photo_and_logon_is_not_logo():
+    title, images = extract_media('''<title>Exterior photo</title><table id="content"><tr>
+        <td id="cencolum_logon"><table><tr><td>
+        <img src="/counter.gif" style="position:absolute;left:-9999px">
+        <div class="logo"><img src="/brand.jpg"></div>
+        <img src="../images/facade.jpg" alt="Modern facade">
+        </td></tr></table></td></tr></table>''', 'https://example.org/photos/view?id=1')
+    assert title == 'Exterior photo'
+    assert [item['image_url'] for item in images] == ['https://example.org/images/facade.jpg']
+
+
+def test_default_https_port_has_one_public_resource_identity():
+    assert public_url('https://EXAMPLE.com:443/gallery#view') == 'https://example.com/gallery'
+    assert public_url('https://[2606:4700:4700::1111]:443/photo') == 'https://[2606:4700:4700::1111]/photo'
+
+
+def test_individual_photo_page_links_preserve_article_pixels_and_caption_before_layout_images():
+    title, media = extract_media('''<title>Actual building</title><div id="content">
+      <div id="popupContact"><h1>Login</h1></div><img src="/layout.gif">
+    </div><table><tr><td>
+      <a href="/photo/show.php?phid=17"><img src="/thumbnails/facade.jpg" alt="Facade in 1960"></a>
+      <a href="/other-place/"><img src="/unrelated.jpg"></a>
+      <a href="https://elsewhere.example/photo/show.php?phid=18"><img src="/foreign.jpg"></a>
+    </td></tr></table>
+    <nav><a href="/photo/show.php?phid=19"><img src="/navigation.jpg"></a></nav>
+    ''', 'https://example.org/article/?id=2')
+    assert title == 'Actual building'
+    assert media[0]['image_url'] == 'https://example.org/thumbnails/facade.jpg'
+    assert media[0]['detail_page_url'] == 'https://example.org/photo/show.php?phid=17'
+    assert media[0]['alt'] == 'Facade in 1960'
+    assert media[0]['article_url'] == 'https://example.org/article/?id=2'
+    assert len(media) == 2
+
+
+@pytest.mark.asyncio
+async def test_transient_http_error_and_empty_browser_does_not_exhaust_article(tmp_path):
+    from street_story.article_media import article_candidates
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='transient', client_story_id='transient', photo_sha256='transient',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(*args, **kwargs):
+        return '', []
+    receipts = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))) as client:
+        assert await article_candidates(svc, story, [{'url': 'https://example.com/story'}], set(),
+            http=client, resolver=resolver, browser=browser, receipts=receipts) == []
+    assert receipts[0]['status'] == 'temporary_failure'
+    assert receipts[0]['image_count'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [404, 410])
+async def test_missing_article_closes_acquisition_without_browser_or_false_mismatch(tmp_path, status):
+    from street_story.article_media import article_candidates
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='missing', client_story_id='missing', photo_sha256='missing',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(*args, **kwargs):
+        raise AssertionError('A missing page must not start Chromium')
+    receipts = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(status))) as client:
+        candidates = await article_candidates(svc, story, [{'url': 'https://example.com/deleted'}], set(),
+            http=client, resolver=resolver, browser=browser, receipts=receipts)
+    assert candidates == []
+    assert receipts == [{'url': 'https://example.com/deleted', 'final_url': 'https://example.com/deleted',
+        'status': 'completed', 'image_count': 0, 'http_status': status}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [403, 429])
+async def test_refused_page_cools_down_across_waves_while_independent_source_proceeds(tmp_path, status):
+    from street_story.article_media import article_candidates
+    from street_story.identity_discovery import _retain_article_discovery
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='cooldown', client_story_id='cooldown', photo_sha256='cooldown',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    sources = [{'url': 'https://example.com/refused'}, {'url': 'https://example.com/ready'}]
+    requests, browser_calls = [], []
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(url):
+        browser_calls.append(url)
+        raise AssertionError('Refusal must not be repeated through Chromium')
+    def response(request):
+        requests.append(request.url.path)
+        if request.url.path == '/refused':
+            return httpx.Response(status, headers={'Retry-After': '120'})
+        return httpx.Response(200, headers={'Content-Type': 'text/html'},
+            text='<article><img src="/facade.jpg" alt="Facade"></article>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        receipts = []
+        found = await article_candidates(svc, story, sources, set(), http=client,
+            resolver=resolver, browser=browser, receipts=receipts)
+        _retain_article_discovery(svc, story, sources, receipts=receipts, articles=found)
+        assert len(found) == 1 and found[0]['url'].endswith('/ready')
+        refused = next(r for r in receipts if r['url'].endswith('/refused'))
+        assert refused['http_status'] == status and refused['retry_at'] >= svc.store.now() + 119
+        second = []
+        await article_candidates(svc, story, [sources[0]], set(), http=client,
+            resolver=resolver, browser=browser, receipts=second)
+        assert second[0]['reason'] == 'article_cooldown'
+    assert requests.count('/refused') == 1 and browser_calls == []
+
+
+def test_article_gallery_keeps_later_views_but_excludes_other_objects_and_ads():
+    title, images = extract_media('''<h1>Ворота</h1><main><article>
+      <a href="/front.jpg"><img src="/small-front.jpg"></a>
+      <figure><img data-src="/rear.jpg"></figure>
+      <img srcset="/small.jpg 300w, /detail.jpg 1200w">
+      <aside><img src="/other-building.jpg"></aside>
+      <div class="poster-item__container"><img src="/another-gate.jpg"></div>
+      <a href="/other-place/"><img src="/unrelated.jpg"></a>
+      <div class="ad-banner"><img src="/sale.jpg"></div>
+      <footer><img src="/logo.jpg"></footer>
+    </article></main>''', 'https://example.com/gate/')
+    assert title == 'Ворота'
+    assert [i['image_url'] for i in images] == [
+        'https://example.com/front.jpg', 'https://example.com/rear.jpg', 'https://example.com/detail.jpg']
+    assert all(i['article_url'] == 'https://example.com/gate/' for i in images)
+
+
+def test_hero_background_and_empty_structured_image():
+    _, images = extract_media('''<section class="hero--detail" style="background-image:url('/gate.jpg')"></section>
+      <script type="application/ld+json">{"@type":"Article"}</script>
+      <a class="related" href="/other/" style="background-image:url('/other.jpg')"></a>''', 'https://example.com/article/')
+    assert [i['image_url'] for i in images] == ['https://example.com/gate.jpg']
+
+
+def test_wikipedia_inline_gallery_file_links_are_kept_but_other_articles_are_excluded():
+    _title, media = extract_media('''<div class="mw-parser-output">
+      <figure><a href="/wiki/File:Front.jpg"><img src="https://upload.wikimedia.org/front.jpg"></a></figure>
+      <figure><a href="/wiki/File:Rear.jpg"><img src="https://upload.wikimedia.org/rear.jpg"></a></figure>
+      <a href="/wiki/Other_building"><img src="https://upload.wikimedia.org/other.jpg"></a>
+    </div>''', 'https://ru.wikipedia.org/wiki/Gate')
+    assert [item['image_url'] for item in media] == ['https://upload.wikimedia.org/front.jpg', 'https://upload.wikimedia.org/rear.jpg']
+
+
+@pytest.mark.parametrize('link', ['/palomnik/Файл:Front.jpg',
+    'https://example.com/palomnik/%D0%A4%D0%B0%D0%B9%D0%BB:Front.jpg', '/articles/Image:Front.jpg'])
+def test_mediawiki_custom_prefix_file_description_is_not_an_image(link):
+    _, media = extract_media('<div class="mw-parser-output"><a href="' + link + '">'
+        '<img src="/images/front.jpg" srcset="/images/front-large.jpg 1200w"></a></div>',
+        'https://example.com/palomnik/Church')
+    assert [item['image_url'] for item in media] == ['https://example.com/images/front-large.jpg']
+
+
+@pytest.mark.parametrize('url', ['http://example.com/i.jpg', 'https://127.0.0.1/i.jpg',
+    'https://169.254.169.254/i.jpg', 'https://[::1]/i.jpg', 'https://localhost/i.jpg',
+    'https://example.com:8188/i.jpg', 'https://user:secret@example.com/i.jpg'])
+def test_nonpublic_image_url_rejected(url):
+    assert public_url(url) is None
+
+
+@pytest.mark.asyncio
+async def test_redirect_and_dns_are_validated_before_network_access():
+    calls = []
+    async def handler(request):
+        calls.append(request)
+        return httpx.Response(302, headers={'location': 'https://127.0.0.1/private'})
+    async def resolver(host):
+        return '93.184.216.34'
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match='unsafe_url'):
+            await fetch_public(client, 'https://example.com/image', 1000, resolver=resolver)
+        assert len(calls) == 1 and calls[0].url.host == '93.184.216.34'
+        assert calls[0].headers['host'] == 'example.com'
+        assert calls[0].headers['user-agent'] == (
+            'StreetStory/0.1 (https://github.com/onedayonemasterpiece/street-story)')
+        async def private(host):
+            return '10.0.0.1'
+        with pytest.raises(ValueError, match='private_address'):
+            await fetch_public(client, 'https://example.com/image', 1000, resolver=private)
+        assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_reference_must_have_article_provenance_and_be_decodable():
+    url = 'https://example.com/gate.jpg'
+    candidate = {'article_media': [{'image_url': url, 'article_url': 'https://example.com/gate', 'kind': 'article_img'}]}
+    async def resolver(host):
+        return '93.184.216.34'
+    async def handler(request):
+        return httpx.Response(200, headers={'content-type': 'image/jpeg'}, content=jpeg((640, 480)))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        image, receipt = await load_article_reference(client, candidate, url, resolver=resolver)
+        assert image[0] == 'image/jpeg' and receipt['article_url'] == 'https://example.com/gate'
+        with pytest.raises(ValueError, match='not_extracted'):
+            await load_article_reference(client, candidate, 'https://example.com/ad.jpg', resolver=resolver)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode, expected_resolution', [
+    ('unique', 'resolved'), ('ambiguous', 'ambiguous'),
+    ('page_failed', 'unavailable'), ('image_failed', 'image_unavailable'),
+])
+async def test_selected_photo_follows_received_detail_link_without_guessing_urls(mode, expected_resolution):
+    original = 'https://example.com/thumbnail.jpg'
+    caption = 'Фасад дома. 2013'
+    descriptor = {'image_url': original, 'article_url': 'https://example.com/article',
+                  'detail_page_url': 'https://example.com/photo/show.php?phid=17', 'alt': caption}
+    full = jpeg((900, 720))
+    thumbnail = jpeg((200, 160))
+    paths = []
+
+    async def resolver(_host):
+        return '93.184.216.34'
+
+    async def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == '/photo/show.php':
+            if mode == 'page_failed':
+                return httpx.Response(503)
+            extra = '<img src="/second.jpg" alt="' + caption + '">' if mode == 'ambiguous' else ''
+            html = '<meta charset="windows-1251"><main><img src="/actual-large.jpg" alt="' + caption + '">' + extra + '</main>'
+            return httpx.Response(200, headers={'content-type': 'text/html'}, content=html.encode('cp1251'))
+        if request.url.path == '/actual-large.jpg':
+            return httpx.Response(503) if mode == 'image_failed' else httpx.Response(
+                200, headers={'content-type': 'image/jpeg'}, content=full)
+        assert request.url.path == '/thumbnail.jpg'
+        return httpx.Response(200, headers={'content-type': 'image/jpeg'}, content=thumbnail)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        image, receipt = await load_article_reference(client, {'article_media': [descriptor]}, original, resolver=resolver)
+    assert image[1] == (full if mode == 'unique' else thumbnail)
+    assert receipt['image_url'] == original and receipt['article_url'] == descriptor['article_url']
+    assert receipt['detail_resolution'] == expected_resolution
+    assert receipt['resolved_image_url'] == ('https://example.com/actual-large.jpg' if mode == 'unique' else original)
+    assert paths == (['/photo/show.php', '/actual-large.jpg'] if mode == 'unique' else
+                     ['/photo/show.php', '/actual-large.jpg', '/thumbnail.jpg'] if mode == 'image_failed' else
+                     ['/photo/show.php', '/thumbnail.jpg'])
+
+
+def test_photo_detail_link_reaches_direct_provider_parts_without_changing_reference_identity():
+    from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    from street_story.visual_attachments import direct_visual_parts
+    url = 'https://example.com/thumb.jpg'
+    candidate = {'candidate_id': 'web:article', 'name': 'Article', 'url': 'https://example.com/article',
+                 'reference_image_urls': [url], 'article_media': [{'image_url': url,
+                 'detail_page_url': 'https://example.com/photo/show.php?phid=17', 'alt': 'Facade'}]}
+    entry = next(LiveVisualComparisonMixin._image_entries(candidate))
+    reply = LiveVisualComparisonMixin._visual_reply('comparison', [entry], {}, 0)
+    story = {'_visual_reference_mapping': reply['references'], '_visual_image_parts': [
+        {'label': 'SOURCE', 'mime_type': 'image/jpeg', 'data': 'c291cmNl'},
+        {'label': 'REF 1', 'url': url}]}
+    part = direct_visual_parts(story, reply)[1]
+    assert part['descriptor']['detail_page_url'] == candidate['article_media'][0]['detail_page_url']
+    assert part['descriptor']['article_url'] == candidate['url']
+    assert reply['references'][0]['reference_id'] == entry['reference_id']
+    assert part['url'] == url
+
+
+def test_count_increases_after_comparison_including_nonmatches_and_survives_readback():
+    state = advance({}, 'identity_reference_loaded', {}, 1)
+    assert state.get('images_reviewed_count', 0) == 0
+    state = advance(state, 'identity_images_reviewed', {'reference_ids': ['a', 'b']}, 2)
+    assert state['images_reviewed_count'] == 2
+    state = advance(state, 'identity_images_reviewed', {'reference_ids': ['b', 'c']}, 3)
+    assert state['images_reviewed_count'] == 3
+    state = advance(state, 'identity_finished', {'status': 'uncertain'}, 4)
+    assert not state['visual_comparison_verified']
+    state = advance(state, 'identity_live_comparison_sent', {}, 5)
+    assert not state['finished'] and state['images_reviewed_count'] == 3
+    state = advance(state, 'identity_finished', {'status': 'match', 'reference_verified': True}, 6)
+    assert state['visual_comparison_verified'] and state['images_reviewed_count'] == 3
+
+
+@pytest.mark.asyncio
+async def test_live_verdict_is_bound_to_sent_references_upload_and_generation(tmp_path, monkeypatch):
+    svc, _ = make_service(tmp_path)
+    photo = jpeg()
+    story = svc.create_story(key='media', client_story_id='media', photo_sha256='opaque-upload-token',
+        photo_mime_type='image/jpeg', photo_bytes=photo, voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({'visual_identity': {'status': 'uncertain',
+            'candidates': [{'candidate_id': 'wiki:1', 'name': 'Gate', 'url': 'https://example.com/gate',
+                            'reference_image_urls': ['https://upload.wikimedia.org/1.jpg']} ]}}), story['id']))
+    sent = []
+    adapter = StreetStoryLiveAdapter(svc, lambda *a: None, lambda s, data: sent.append(data))
+    session = SimpleNamespace(id='live_1234567890abcdef', resource_id=story['id'], model='gemini-3.8-live', state={})
+    async def images(candidates, limit, *, story_id, evidence):
+        evidence.append({'candidate_id': 'wiki:1', 'source_url': 'https://upload.wikimedia.org/1.jpg',
+            'article_url': 'https://example.com/gate'})
+        return [('wiki:1', 'image/jpeg', 'https://upload.wikimedia.org/1.jpg')]
+    svc._candidate_reference_images = images
+    from street_story import article_media
+    async def fetch(*args, **kwargs):
+        return 'https://upload.wikimedia.org/1.jpg', 'image/jpeg', photo
+    monkeypatch.setattr(article_media, 'fetch_public', fetch)
+    reply = await adapter.execute_tool(session, {'name': 'compare_place_images', 'id': 'image-call', 'args': {}})
+    from live_interaction.tool_parts import function_response
+    response = function_response('compare_place_images', 'image-call', reply)
+    assert response['parts'][0]['inlineData']['data']
+    assert not sent and reply['references'][0]['label'] == 'REF 1'
+    assert svc.story(story['id'])['identity_progress'].get('images_reviewed_count', 0) == 0
+    args = {'comparison_id': reply['comparison_id'], 'status': 'match', 'candidate_id': 'evil',
+        'confidence': .99, 'observations': ['Distinct details match'], 'alternative_candidate_ids': []}
+    with pytest.raises(ConflictError, match='показанные'):
+        adapter._record_place_comparison(session, 'bad', args)
+    args['candidate_id'] = 'wiki:1'
+    with svc.store.tx() as db:
+        original = db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0]
+        changed = json.loads(original)
+        changed['identity_generation'] = 1
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(changed), story['id']))
+    with pytest.raises(ConflictError, match='изменилось'):
+        adapter._record_place_comparison(session, 'stale', args)
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (original, story['id']))
+    result = adapter._record_place_comparison(session, 'good', args)
+    assert result['matched'] and result['story']['visual_identity']['comparison_model'] == 'gemini-3.8-live'
+    assert result['story']['identity_progress']['images_reviewed_count'] == 1
+    assert result['story']['identity_progress']['visual_comparison_verified']
+    with svc.store.connection() as db:
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0])
+        assert research['poi_id'] and research['poi_reused_fact_count'] == 0
+
+
+@pytest.mark.asyncio
+async def test_blocked_direct_image_never_uses_browser_screenshot_fallback(monkeypatch):
+    from street_story import article_media
+    descriptor = {'image_url':'https://example.com/gate.jpg','article_url':'https://example.com/gate','kind':'article_img'}
+    candidate = {'article_media':[descriptor], '_browser_budget':{'remaining':1}}
+    async def forbidden(*args):
+        raise AssertionError('No browser image fallback')
+    monkeypatch.setattr(article_media,'browser_reference',forbidden)
+    async def resolver(_host):
+        return '93.184.216.34'
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request:httpx.Response(403))) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await load_article_reference(client,candidate,descriptor['image_url'],resolver=resolver)
+    assert candidate['_browser_budget']['remaining'] == 1
+
+
+@pytest.mark.asyncio
+async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_article_images(tmp_path, monkeypatch):
+    from street_story import article_media, identity_discovery
+    svc, _ = make_service(tmp_path)
+    photo = jpeg((640, 480))
+    story = svc.create_story(key='fallback', client_story_id='fallback', photo_sha256='opaque-upload-token',
+        photo_mime_type='image/jpeg', photo_bytes=photo, voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+    wiki = {'candidate_id': 'wiki:1', 'name': 'Gate', 'url': 'https://example.com/wiki',
+            'reference_image_urls': ['https://upload.wikimedia.org/front.jpg']}
+    article = {'candidate_id': 'web:gate', 'name': 'Gate gallery', 'url': 'https://example.com/gate',
+               'discovery': 'web_article_media', 'reference_image_urls': [
+                   'https://example.com/front.jpg', 'https://example.com/rear.jpg']}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                   (json.dumps({'visual_identity': {'status': 'uncertain', 'candidates': [wiki]}}), story['id']))
+    loaded, searched = [], []
+    async def images(candidates, limit, *, story_id, evidence):
+        candidate = candidates[0]
+        url = candidate['reference_image_urls'][0]
+        loaded.append(url)
+        evidence.append({'candidate_id': candidate['candidate_id'], 'source_url': url,
+                         **({'article_url': candidate['url']} if candidate['candidate_id'].startswith('web:') else {})})
+        return [(candidate['candidate_id'], 'image/jpeg', url)]
+    async def search(service, query, visual_query, **kwargs):
+        searched.append(query)
+        return [{'url': article['url']}]
+    async def articles(*_args, receipts):
+        receipts.append({'status': 'completed'})
+        return [article]
+    svc._candidate_reference_images = images
+    monkeypatch.setattr(identity_discovery, 'web_image_sources', search)
+    monkeypatch.setattr(article_media, 'article_candidates', articles)
+    events = []
+    adapter = StreetStoryLiveAdapter(svc, lambda _session, event: events.append(event), lambda *a: None)
+    session = SimpleNamespace(id='headless:article-fallback', resource_id=story['id'], model='gemini-3.8-live', state={})
+    for index, status in enumerate(('mismatch', 'mismatch', 'match'), 1):
+        reply = await adapter.execute_tool(session, {'name': 'compare_place_images', 'id': f'load-{index}', 'args': {'query': 'Gate'}})
+        assert len(searched) == (0 if index == 1 else 1)
+        await adapter.execute_tool(session, {'name': 'record_place_comparison', 'id': f'verdict-{index}', 'args': {
+            'comparison_id': reply['comparison_id'], 'candidate_id': reply['references'][0]['candidate_id'],
+            'reference_subject_candidate_id': wiki['candidate_id'],
+            'status': status, 'confidence': .99, 'observations': ['Visible detail comparison'], 'alternative_candidate_ids': []}})
+        current = svc.story(story['id'])
+        assert current['identity_progress']['images_reviewed_count'] == index
+        assert current['identity_progress']['visual_comparison_verified'] == (status == 'match')
+        pushed = [event for event in events if event['type'] == 'product_state'][-1]['state']['identity_progress']
+        assert pushed['images_reviewed_count'] == index
+        assert pushed['visual_comparison_verified'] == (status == 'match')
+        assert 'reviewed_image_sha256s' not in pushed
+    assert loaded == [wiki['reference_image_urls'][0], *article['reference_image_urls']]
+    assert current['visual_identity']['candidate_id'] == wiki['candidate_id']
+    assert current['visual_identity']['candidate_name'] == wiki['name']
+    assert current['visual_identity']['reference_subject_binding']['reference_candidate_id'] == article['candidate_id']
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
+        assert not db.execute("SELECT 1 FROM poi_aliases WHERE namespace='street_story_candidate' AND value=?",
+                              (article['candidate_id'],)).fetchone()

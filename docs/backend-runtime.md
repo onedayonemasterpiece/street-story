@@ -64,6 +64,30 @@ Gemini; failure leaves the currently running Street Story release untouched.
 
 The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search stays inside that same Live session. Provider-native Google Search on `gemini-3.8-live` is preferred because it preserves one conversational context with no second research workflow. If native search is unavailable, Street Story falls back to its synchronous `search_web` application function using grounded `gemini-3.1-flash-lite`, then `gemini-3.5-flash-lite`, then search-only `gemini-3.8-flash`. If Google grounding is exhausted across all of those routes, `search_web` performs one bounded independent web-result lookup and returns source-linked search snippets to the same Live session as low-confidence discovery evidence; it never silently upgrades snippets into verified facts. Lite/search helpers return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
+## Installing qualified fact-agent routes
+
+For an explicitly selected current agent proof, the existing DevCoveer installer
+accepts `--fact-agent-qualification /absolute/path/to/proof.json` alongside
+`--expected-sha`. An explicitly authorized prerelease can also specify
+`--source-branch`; both local HEAD and the published branch tip must equal the
+expected SHA. This keeps the release branch and its APK publication workflow
+untouched. The operator-controlled proof must be in the managed
+`/home/dev/artifacts` tree, have mode0600 and use
+`research-agent-verification-v1`, with immutable actual search/read receipts for
+every route. The release verifies those receipts and their hashes, the executed
+model, current prompt/tool/schema profile, and source ownership through the same
+qualification loader used by product acceptance. A changed profile requires new
+evidence; an old success flag is insufficient.
+
+After validation, the installer persists the proof in the existing cache and
+writes its exact routes to `STREET_STORY_FACT_AGENT_ROUTES` in the service
+environment. Luna remains the single native primary; configured qualified routes
+remain available under the ordinary closed-failure fallback rules. Installation
+performs no research inference. This explicit path does not require requalifying
+the separate legacy extraction pool. Existing vision/review qualifications,
+retained operations, Stop and UNKNOWN protections remain independently enforced.
+Without this option the existing legacy installation path remains unchanged.
+
 ## LLM-first semantic boundary
 
 Semantic product decisions are model-owned. Mira/the configured Gemini route decides what
@@ -213,6 +237,51 @@ Photo-search target (2026-10-08): [three equal identity methods and Prussia39 di
 
 ### Durable background research (owner override, 2026-10-11)
 
+Native research context now unions identical discovery observations while retaining
+every originating attempt. Known claims and both conflict sides retain their exact
+source/version/span references; full source bodies remain immutable in the ledger
+and owned reader. Oversized discovery histories are frozen in the attempt receipt
+and delivered through `read_research_memory` pages with content-bound cursors.
+Nothing is ranked away or expired by this transport boundary. Codex discovery
+uses hosted `web_search`; this memory reader performs no search or network request.
+
+`source_memory` reports actual delivered chunks, first unread cursor, extracted
+claim IDs and failed read requests. Inherited calls count once. Full stored-chunk
+delivery is distinct from complete acquisition, OCR or semantic exhaustion.
+Historical network/cache counts and question exhaustion remain explicitly unknown
+where receipts do not record them. The model must explain the expected novel
+contribution of the next action, justify rereading and consider varied source
+families/directions. These instructions do not impose a fact/turn target or decide
+physical linkage in code. Current provider acceptance of the new profile remains
+pending; local tests alone do not establish product completeness.
+
+An explicit `generate_visual` request may use `preserve_source_frame=true` with
+model-authored `visual_copy` and `visual_layout`. This selects VibePublish's
+`frame_source` operation (compatible contract 1.12), rather than Imagegen. The
+complete oriented source is fitted uniformly across 4:5; the model chooses an
+actual free text area after inspecting the photo and preserves essential fact
+qualifiers. Geometry, photo prominence, annotation meaning and readability still
+require actual review. Layout/copy are frozen into the content revision with the
+existing selected-fact/source fences, operation ledger and separate publication
+confirmation. Observation cannot introduce a new layout or generation. Legacy
+generation/recovery keeps its original frozen operation. This is an opt-in
+consumer capability; VibePublish production activation and actual frame-source
+acceptance remain pending, and there is no automatic generator fallback.
+
+A distinct explicit source-frame composition can follow an original closed
+candidate whose exact format-mismatch proof is already retained. The freshly
+observed candidate ID/hash/dimensions/operation/job and current source/identity/
+fact bindings must match that rejection. The old candidate is never selected;
+its proof/outcome stay in history. Pending, unknown, changed or unreviewed results
+retain the original observation requirement. This does not automatically retry
+Imagegen or reinterpret a geometry/semantic assessment as a mechanical proof.
+
+Android house markers now use an interior scanline interval of the observed
+footprint, respecting courtyard holes, concavity and disjoint components. This
+changes only the displayed marker; contour, candidate ID and confirmation remain
+the server-supplied owner selection. Real-photo/map tap acceptance is still
+pending; the old CI rectangle/black source were synthetic test inputs.
+
 Accepted photo intake belongs to backend jobs, independently of client sockets.
 Identity, reference comparison, fact research and refinement have no terminal
 180/480-second upload deadline and no cumulative local ceiling on comparisons,
@@ -253,3 +322,14 @@ durable request receipts and recovery without public HTTPS, browser OAuth or an
 extra gateway. Preserve the already working routes, device token isolation and
 frozen publication identities. This is a documentation alignment, not a change
 to Street Story's deployed runtime or an assertion of new E2E coverage.
+
+## Production runs from main (2026-10-18)
+
+Production is installed only from a commit contained in `origin/main`
+(`devcoveer_install.py --source-branch main`). Until 18 October the product lived in a chain of
+unmerged branches (`chatgpt/street-story-map-facts-20261012` → `chatgpt/street-story-recall-20261010`
+→ `work/street-story-mvp-20260908` → `main` through PR #1), so `main` held only documents.
+The same pattern broke VibePublish that day: a deploy from VibePublish `main` removed the
+original-frame visuals Street Story depends on, which lived only in an unmerged PR
+(VibePublish INC-2026-10-18). Before switching a release, the running release must be an
+ancestor of the candidate; otherwise stop and merge first.

@@ -1,0 +1,605 @@
+"""One bounded background executor over the SAME Live visual queue/verdict gate."""
+from __future__ import annotations
+import json
+import logging
+import asyncio
+import time
+import base64
+from collections import Counter
+from types import SimpleNamespace
+from .live_visual_comparison import LiveVisualComparisonMixin
+from .service import canonical,digest,ConflictError
+from .errors import RetryableProviderError, PermanentProviderError
+from .identity_telemetry import record_identity_event
+
+LOG = logging.getLogger('uvicorn.error')
+
+VERDICT_SCHEMA = {'type':'object','properties':{
+    'status':{'enum':['match','uncertain','mismatch']}, 'candidate_id':{'type':'string'},
+    'reference_subject_candidate_id':{'type':'string'},'reference_subject_observations':{'type':'array','items':{'type':'string'}},
+    'confidence':{'type':'number','minimum':0,'maximum':1},'observations':{'type':'array','items':{'type':'string'}},
+    'alternative_candidate_ids':{'type':'array','items':{'type':'string'}}},
+    'required':['status','candidate_id','confidence','observations','alternative_candidate_ids'], 'additionalProperties':False}
+
+SEARCH_FEEDBACK_SCHEMA = {'type': 'object', 'properties': {
+    'reference_kind': {'enum': ['modern_exterior', 'interior', 'historical', 'diagram', 'unclear']},
+    'next_action': {'enum': ['explore_alternative', 'find_external_view', 'another_view', 'verify_binding']},
+    'reason': {'type': 'string'}, 'next_query': {'type': 'string'},
+    'candidate_ids': {'type': 'array', 'items': {'type': 'string'}}},
+    'required': ['reference_kind', 'next_action', 'reason', 'next_query', 'candidate_ids'],
+    'additionalProperties': False}
+
+
+def planned_verdict_schema(reply):
+    from copy import deepcopy
+    schema = deepcopy(VERDICT_SCHEMA)
+    # Frozen historical descriptors retain their exact old schema and prompt.
+    # Only a newly created comparison asks for the planning extension.
+    if reply.get('search_feedback_instruction'):
+        schema['properties']['search_feedback'] = deepcopy(SEARCH_FEEDBACK_SCHEMA)
+        schema['properties']['source_subject_scope'] = {'enum': ['building', 'occupant', 'other_physical_object', 'unclear']}
+        schema['required'].extend(['search_feedback', 'source_subject_scope'])
+    return schema
+
+
+def grouped_verdict_schema(reply=None):
+    from copy import deepcopy
+    schema = planned_verdict_schema(reply or {})
+    item = deepcopy(schema)
+    item['properties']['reference_id'] = {'type': 'string'}
+    item['required'].append('reference_id')
+    # Validate each result independently at the host gate. One malformed item
+    # must not erase valid results or mark unreturned references reviewed.
+    schema['properties']['reference_verdicts'] = {'type': 'array', 'maxItems': 4, 'items': {'type': 'object'}}
+    schema['properties']['reference_id'] = {'type': 'string'}
+    return schema, item
+
+
+class HeadlessIdentity(LiveVisualComparisonMixin):
+    def __init__(self, service):
+        self.service = service
+        self.write = lambda *_args: None
+
+    def _store_command(self, db, story_id, command_id, tool_name, args, result):
+        db.execute('INSERT OR IGNORE INTO live_commands(story_id,command_id,tool_name,request_digest,result_json,created_at) VALUES(?,?,?,?,?,?)',
+            (story_id,command_id,tool_name,digest({'tool':tool_name,'args':args}),canonical(result),self.service.store.now()))
+
+    async def run(self, job):
+        provider = getattr(self.service.providers, 'research', None)
+        if provider is None:
+            raise RetryableProviderError('research_vision_unavailable', retry_at=self.service.store.now()+300)
+        story,research = self.service._identity_snapshot(job['story_id'])
+        generation = int(research.get('identity_generation') or 0)
+        payload = json.loads(job.get('payload_json') or '{}')
+        from .research_control import research_stopped
+        if payload.get('identity_generation') != generation or research_stopped(
+                research, 'identity', photo_sha256=story['photo_sha256'], identity_generation=generation):
+            return
+        active_pairs = any(item.get('phase') not in {'completed', 'failed', 'skipped'}
+                           for item in (research.get('visual_search_operation') or {}).get('parallel_pairs', []))
+        if not provider.vision_available and not active_pairs:
+            raise RetryableProviderError('research_vision_unavailable', retry_at=self.service.store.now()+300)
+        if (research.get('visual_identity') or {}).get('status') in {'match','owner_confirmed'} and not active_pairs:
+            return
+        if story.get('error_code') == 'visual_identity_conflict' and not active_pairs:
+            return
+        session = SimpleNamespace(id=f"headless:{job['id']}:{job['attempts']}", resource_id=story['id'],
+            state={}, closed=False, model=provider.vision_model)
+        routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
+        session.visual_reference_limit = min(4, len(routes)) if len(routes) > 1 else 1
+        scope = {'photo_sha256': story['photo_sha256'], 'generation': generation,
+                 'control_revision': self._visual_control_revision(research, story['photo_sha256'], generation)}
+        try:
+            started = time.monotonic()
+            for _ in range(4):
+                unit_result = await self._run_owned_unit(job, provider, story, session, scope)
+                if isinstance(unit_result, dict) and unit_result.get('outcome'):
+                    return unit_result
+                if unit_result:
+                    return
+                # A completed negative is progress. Yield between units so Stop
+                # and other stories can run; each next send gets fresh admission.
+                await asyncio.sleep(0)
+                current, latest = self.service._identity_snapshot(story['id'])
+                try:
+                    self._assert_visual_current(current, latest, scope)
+                except ConflictError:
+                    return
+                if (time.monotonic() - started >= 15
+                        or not (session.state.get('visual_comparison') or {}).get('queue')):
+                    break
+            # Normal continuation, without a failure count/backoff. Keep this
+            # job addressable; the worker's guarded done update cannot claim it.
+            with self.service.store.tx() as db:
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=NULL,updated_at=? "
+                           "WHERE id=? AND state='running' AND attempts=?",
+                           (self.service.store.now(), self.service.store.now(), job['id'], job['attempts']))
+            record_identity_event(self.service, story['id'], 'identity_background_progress',
+                                  {'generation': generation, 'status': 'continuing'})
+        except ConflictError:
+            current, latest = self.service._identity_snapshot(story['id'])
+            try:
+                self._assert_visual_current(current, latest, scope)
+            except ConflictError:
+                return  # Stale completions must not fail the replacement story.
+            with self.service.store.connection() as db:
+                owned = db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
+                                   (job['id'], job['attempts'])).fetchone()
+            if not owned:
+                return
+            saved = latest.get('visual_search_operation') or {}
+            if saved.get('lease_owner') not in {None, session.id}:
+                raise RetryableProviderError('visual_unit_busy', retry_at=saved.get('lease_until')) from None
+            raise
+        finally:
+            # The awaited provider operation has exited. Preserve its durable
+            # unknown/completed receipt and pending pair for ordinary resume.
+            try:
+                self._release_visual_lease(session, scope)
+            except Exception as exc:
+                LOG.warning('street_story_identity component=visual_queue stage=lease_release story_id=%s status=failed error_type=%s',
+                            story['id'], type(exc).__name__)
+
+    def _release_visual_lease(self, session, scope):
+        """Release only this still-current worker, reading fresh queue state."""
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT photo_sha256,research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()
+            if row is None:
+                return
+            research = json.loads(row['research_json'] or '{}')
+            saved = research.get('visual_search_operation') or {}
+            if (saved.get('lease_owner') != session.id or saved.get('photo_sha256') != scope['photo_sha256']
+                    or saved.get('generation') != scope['generation']
+                    or int(saved.get('control_revision') or 0) != scope['control_revision']):
+                return
+            try:
+                self._assert_visual_current(row, research, scope, session=session)
+            except ConflictError:
+                return
+            saved.update(lease_owner=None, lease_until=0)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), session.resource_id))
+        LOG.info('street_story_identity component=visual_queue stage=lease_release story_id=%s status=released lease_owner=%s',
+                 session.resource_id, session.id)
+
+    async def _run_owned_unit(self, job, provider, story, session, scope):
+        generation = scope['generation']
+        current, latest = self.service._identity_snapshot(story['id'])
+        saved = latest.get('visual_search_operation') or {}
+        if any(pair.get('phase') not in {'completed', 'failed', 'skipped'} for pair in saved.get('parallel_pairs', [])):
+            state = self._visual_lease(session, expected=scope)
+            session.state['visual_comparison'] = state
+            return await self._run_parallel_pairs(job, provider, story, session, scope)
+        if current.get('error_code') == 'visual_identity_conflict':
+            return True
+        try:
+            unit = await self._compare_place_images(session,{},expected_scope=scope)
+        except ConflictError:
+            current,latest = self.service._identity_snapshot(story['id'])
+            try:
+                self._assert_visual_current(current, latest, scope)
+            except ConflictError:
+                return True
+            raise
+        if unit.get('already_resolved'):
+            return True
+        pending = (session.state.get('visual_comparison') or {}).get('pending')
+        if not pending:
+            record_identity_event(self.service,story['id'],'identity_background_waiting',{
+                'generation':generation,'reason':'insufficient_evidence' if unit.get('exhausted') else 'resource_or_source_wait'})
+            if unit.get('exhausted'):
+                if unit.get('reference_triage_exhausted'):
+                    return {'outcome': 'search_exhausted', 'reason': 'reference_triage_exhausted',
+                            'coverage_complete': False}
+                with self.service.store.connection() as db:
+                    discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                        "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+                if discovery_active:
+                    raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+5)
+                return True  # Known finite no-evidence outcome; fresh owner leads may resume it.
+            raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+30)
+        current,latest = self.service._identity_snapshot(story['id'])
+        try:
+            self._assert_visual_current(current, latest, scope, session=session)
+        except ConflictError:
+            return True
+        routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
+        if (len(routes) > 1 and pending['candidates']
+                and not self._parallel_parent_attempted(story, pending, generation)):
+            self._freeze_parallel_pairs(session, pending, routes[:4])
+            return await self._run_parallel_pairs(job, provider, story, session, scope)
+        grouped = len(pending['candidates']) > 1
+        extra = {'_visual_image_parts': pending['image_parts'],
+                 '_visual_reference_mapping': list(pending['reply']['references'])}
+        try:
+            result = await provider.visual_verdict(None,{**story, **extra, '_identity_generation':generation,
+                '_identity_research_control_revision': scope['control_revision'],
+                '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
+                grouped_verdict_schema(pending['reply'])[0] if grouped else planned_verdict_schema(pending['reply']),canonical(pending['reply']))
+        except PermanentProviderError as exc:
+            if not grouped and str(exc) == 'native_vision:reference_unavailable':
+                self._retire_unsent_reference(provider, story, session, pending, scope)
+                return False
+            if not grouped or str(exc) != 'research_visual_group_pair_required':
+                raise
+            state = session.state['visual_comparison']
+            state['queue'] = pending['candidates'] + state['queue']
+            state['pending'] = None
+            session.visual_reference_limit = 1
+            self._save_visual_queue(session, state)
+            return False  # Known-unsent shape reduction, never an unknown replay.
+        verdict = dict(result['result'])
+        session.model = result['receipt'].get('model') or result['receipt'].get('model_id') or session.model
+        verdict.update(comparison_id=pending['id'],provider_receipt=result['receipt'])
+        # Persisted model result can be replayed after crash; photo/generation,
+        # current lease and the common acceptance gate fence the actual commit.
+        try:
+            committed = self._record_place_comparison(session,'headless:'+pending['id'],verdict)
+        except ConflictError:
+            current,latest = self.service._identity_snapshot(story['id'])
+            try:
+                self._assert_visual_current(current, latest, scope, session=session)
+            except ConflictError:
+                return True
+            raise
+        return bool(committed['matched'])
+
+    def _retire_unsent_reference(self, provider, story, session, pending, scope):
+        # A failed reader is neither a model mismatch nor an unknown send.
+        # Every addressed provider must prove this exact unit was never sent.
+        observe = getattr(provider, 'visual_pair_receipts', None)
+        receipts = observe({**story, '_identity_generation': scope['generation'],
+            '_visual_reference_mapping': list(pending['reply']['references'])},
+            canonical(pending['reply'])) if callable(observe) else {}
+        safe = bool(receipts) and all(
+            receipt.get('provider_send_state') == 'not_sent'
+            and not receipt.get('turn_id')
+            and receipt.get('phase') in {'created', 'thread_created', 'failed', 'aborted'}
+            and (receipt.get('phase') != 'aborted' or receipt.get('abort_acknowledged') is True)
+            for receipt in receipts.values())
+        if not safe:
+            raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                                         retry_at=self.service.store.now()+30)
+        state = session.state['visual_comparison']
+        reference_id = pending['candidates'][0]['reference_id']
+        state['unavailable_reference_ids'] = list(dict.fromkeys([
+            *state.get('unavailable_reference_ids', []), reference_id]))
+        state.setdefault('unavailable_references', []).append({
+            'comparison_id': pending['id'], 'reference_id': reference_id,
+            'reason': 'native_vision:reference_unavailable',
+            'references': pending['reply']['references'], 'provider_receipts': receipts})
+        state['queue'] = [c for c in state['queue'] if c.get('reference_id') != reference_id]
+        state['pending'] = None
+        self._save_visual_queue(session, state)
+        record_identity_event(self.service, story['id'], 'identity_reference_unavailable', {
+            'generation': scope['generation'], 'comparison_id': pending['id'],
+            'reference_id': reference_id, 'provider_send_state': 'not_sent',
+            'reason': 'reference_unavailable', 'remaining_reference_count': len(state['queue'])})
+
+    def _parallel_parent_attempted(self, story, pending, generation):
+        # A previously addressed grouped unit must retain its exact original
+        # send/readback even when independent routes have become available.
+        from .visual_attachments import visual_operation_unit
+        addressed = {**story, '_identity_generation': generation,
+                     '_visual_reference_mapping': pending['reply']['references']}
+        unit = canonical(visual_operation_unit(addressed, pending['reply']))
+        with self.service.store.connection() as db:
+            return any(row['logical_id'] == digest([story['id'], generation, row['role'], unit])
+                       for row in db.execute("SELECT logical_id,role FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'",
+                                             (story['id'],)))
+
+    def _freeze_parallel_pairs(self, session, pending, routes, *, append=False):
+        state = session.state['visual_comparison']
+        pairs = []
+        for index, (candidate, evidence, route) in enumerate(zip(pending['candidates'], pending['evidence'], routes)):
+            reference = {**pending['reply']['references'][index], 'label': 'REF 1'}
+            pair_id = pending['id'] + ':' + candidate['reference_id']
+            pairs.append({'id': pair_id, 'route': route, 'phase': 'ready',
+                'reference_id': candidate['reference_id'], 'candidates': [candidate], 'evidence': [evidence],
+                'reply': {**pending['reply'], 'comparison_id': pair_id, 'references': [reference]}})
+        # Only URLs, request addresses and exact proof context persist. No bytes.
+        state['parallel_pairs'] = state.get('parallel_pairs', []) + pairs if append else pairs
+        state['queue'] = pending['candidates'][len(pairs):] + state['queue']
+        state['pending'] = None
+        self._save_visual_queue(session, state)
+        record_identity_event(self.service, session.resource_id, 'identity_parallel_pairs_frozen', {
+            'generation': state['generation'], 'pair_ids': [pair['id'] for pair in pairs],
+            'routes': [pair['route'] for pair in pairs], 'pair_count': len(pairs), 'refill': append})
+        return pairs
+
+    def _parallel_pair_pending(self, story, pair, *, require_source):
+        source = None
+        try:
+            source = self.service._source_photo_bytes(story['id'])
+        except ConflictError:
+            if require_source:
+                raise RetryableProviderError('source_unavailable', retry_at=self.service.store.now()+30) from None
+        return {**pair, 'image_parts': [
+            {'label': 'SOURCE', 'mime_type': story.get('photo_mime_type') or 'image/jpeg',
+             **({'data': base64.b64encode(source).decode('ascii')} if source is not None else {})},
+            {'label': 'REF 1', 'mime_type': 'image/jpeg',
+             'url': pair['candidates'][0]['reference_image_urls'][0]}]}
+
+    async def _run_parallel_pairs(self, job, provider, story, session, scope):
+        state = session.state['visual_comparison']
+        pairs = [item for item in state['parallel_pairs'] if item.get('phase') not in {'completed', 'failed', 'skipped'}]
+        # Retained UNKNOWN/readback addresses can outlive several dispatch
+        # batches. Their count is not a task budget. Bound simultaneous work,
+        # preserving every original address rather than failing the SOURCE.
+        dispatch_slots = asyncio.Semaphore(4)
+
+        async def run_pair(pair):
+            current, latest = self.service._identity_snapshot(story['id'])
+            self._assert_visual_current(current, latest, scope, session=session)
+            accepted = ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+                or current.get('error_code') == 'visual_identity_conflict')
+            if pair['phase'] == 'result':
+                return pair, {'result': pair['result'], 'receipt': pair['receipt']}, None
+            if pair.get('retry_at', 0) > self.service.store.now():
+                return pair, None, RetryableProviderError(
+                    pair.get('last_error') or 'research_visual_pair_outcome_unknown',
+                    retry_at=pair['retry_at'])
+            if pair['phase'] == 'ready':
+                frozen = pair['candidates'][0]
+                catalog = {c.get('candidate_id'): c for c in (latest.get('visual_identity') or {}).get('candidates', [])}
+                candidate = catalog.get(frozen.get('candidate_id'), frozen)
+                from .identity_subject_binding import documented_physical_subject
+                ineligible = (not str(frozen.get('candidate_id') or '').startswith('web:')
+                    and (candidate.get('identity_eligible') is False or frozen.get('identity_eligible') is False)
+                    and documented_physical_subject(candidate, catalog) is None)
+                if ineligible:
+                    observe = getattr(provider, 'visual_pair_receipts', None)
+                    if not callable(observe):
+                        return pair, None, RetryableProviderError('research_vision_route_unverified')
+                    receipts = observe({**story, '_identity_generation': scope['generation'],
+                        '_visual_reference_mapping': list(pair['reply']['references'])}, canonical(pair['reply']))
+                    safe_unsent = all((receipt.get('phase') in {'created', 'thread_created'}
+                        and receipt.get('provider_send_state') in {None, 'not_sent'})
+                        or (receipt.get('phase') in {'failed', 'aborted'}
+                            and receipt.get('provider_send_state') == 'not_sent'
+                            and (receipt.get('phase') != 'aborted' or receipt.get('abort_acknowledged')))
+                        for receipt in receipts.values())
+                    if safe_unsent:
+                        pair['phase'] = 'skipped'
+                        self._save_visual_queue(session, state)
+                        return pair, None, None
+                    # The ledger overrides a stale ready descriptor: observe its
+                    # original exact child address, never create another send.
+                    pair['phase'] = 'submitted'
+            if accepted and pair['phase'] == 'ready':
+                pair['phase'] = 'skipped'
+                self._save_visual_queue(session, state)
+                return pair, None, None
+            resume = pair['phase'] != 'ready'
+            pending = self._parallel_pair_pending(story, pair, require_source=not resume)
+            # The frozen dispatch address is durable before an external boundary.
+            # A crash in this gap must be observed, never turn into a fresh send.
+            pair['phase'] = 'submitted'
+            self._save_visual_queue(session, state)
+            pair_story = {**story, '_visual_image_parts': pending['image_parts'],
+                '_visual_reference_mapping': list(pair['reply']['references']),
+                '_identity_generation': scope['generation'],
+                '_identity_research_control_revision': scope['control_revision'],
+                '_research_job_id': job['id'], '_research_job_attempt': job['attempts'],
+                '_visual_pair_resume_only': resume, '_visual_pair_observe_only': accepted,
+                '_visual_source_unavailable': 'data' not in pending['image_parts'][0]}
+            LOG.info('street_story_identity component=parallel_vision stage=dispatch story_id=%s comparison_id=%s route=%s resume=%s observe=%s',
+                     story['id'], pair['id'], pair['route'], resume, accepted)
+            try:
+                result = await provider.visual_pair_route(pair['route'], None, pair_story,
+                    planned_verdict_schema(pair['reply']), canonical(pair['reply']))
+                return pair, result, None
+            except (RetryableProviderError, PermanentProviderError) as exc:
+                return pair, None, exc
+
+        async def prepare_refill(route):
+            limit = session.visual_reference_limit
+            session.visual_reference_limit = 1
+            session.state['visual_refill_preparing'] = True
+            try:
+                # Reuse normal source fairness and the single bounded reader.
+                # The completion loop remains free to commit sibling results.
+                await self._compare_place_images(session, {}, page_budget=1,
+                    search_budget=1, expected_scope=scope, parallel_refill=True)
+                pending = state.get('pending')
+                if pending:
+                    current, latest = self.service._identity_snapshot(story['id'])
+                    self._assert_visual_current(current, latest, scope, session=session)
+                    if ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+                            or current.get('error_code') == 'visual_identity_conflict'):
+                        state['queue'] = pending['candidates'] + state['queue']
+                        state['pending'] = None
+                        self._save_visual_queue(session, state)
+                        return None, None
+                    return self._freeze_parallel_pairs(session, pending, [route], append=True)[0], None
+                return None, None
+            except RetryableProviderError as exc:
+                return None, exc
+            finally:
+                session.state.pop('visual_refill_preparing', None)
+                session.visual_reference_limit = limit
+
+        async def run_in_slot(pair):
+            async with dispatch_slots:
+                return await run_pair(pair)
+
+        tasks = {asyncio.create_task(run_in_slot(pair)) for pair in pairs}
+        all_tasks = set(tasks)
+        active_pairs = {pair['id'] for pair in pairs}
+        preparation = None
+        preparation_route = None
+        # A resumed batch may contain only one unknown child. Completed lanes
+        # are already free even though no completion occurs in this worker turn.
+        # Preserve the original unknown lane; acquire independent work elsewhere.
+        available_slots = Counter(getattr(provider, 'parallel_visual_routes', lambda: ())())
+        for child in pairs:
+            available_slots[child['route']] -= 1
+        freed_routes = [route for route, count in available_slots.items() for _ in range(max(0, count))]
+        waits = []
+        pair_waits = {}
+        try:
+            while tasks:
+                timeout = self.service.settings.worker_poll_seconds if freed_routes and preparation is None else None
+                deferred = [child for child in state['parallel_pairs']
+                    if child['id'] not in active_pairs
+                    and child.get('phase') not in {'completed', 'failed', 'skipped'}
+                    and child.get('retry_at') is not None]
+                if deferred:
+                    due_in = max(0, min(child['retry_at'] for child in deferred) - self.service.store.now())
+                    # A long sibling request/reader must not hide a closed
+                    # original outcome. Poll only its retained address when due.
+                    timeout = min(self.service.settings.worker_poll_seconds, due_in,
+                        timeout if timeout is not None else float('inf'))
+                completed, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED,
+                    timeout=timeout)
+                prepared = []
+                # Commit every ready verdict before dispatching a prepared ref:
+                # a match in this batch stops needless new provider sends.
+                for finished in completed:
+                    # Completed task objects retain their provider results.
+                    # Keep only pending tasks across an unbounded refill loop.
+                    all_tasks.discard(finished)
+                    if finished is preparation:
+                        preparation = None
+                        new_pair, error = await finished
+                        if new_pair is None and error is None:
+                            # A reader/search turn with no usable image did
+                            # not occupy its visual lane. Keep that slot free
+                            # for the next unread page or late discovery.
+                            freed_routes.append(preparation_route)
+                        preparation_route = None
+                        if error:
+                            waits.append(error)
+                        elif new_pair:
+                            prepared.append(new_pair)
+                        continue
+                    pair, result, error = await finished
+                    active_pairs.discard(pair['id'])
+                    pair_waits.pop(pair['id'], None)
+                    if error is not None:
+                        known_codes = {'research_visual_pair_dispatch_unknown', 'research_visual_pair_outcome_unknown',
+                            'research_visual_pair_multiple_outcomes_unknown', 'research_visual_pair_source_required',
+                            'research_visual_pair_observation_closed', 'research_visual_pair_routes_closed',
+                            'research_vision_waiting', 'research_vision_route_unverified'}
+                        pair['last_error'] = str(error) if str(error) in known_codes else type(error).__name__
+                        if isinstance(error, PermanentProviderError):
+                            pair['phase'] = 'failed'
+                            freed_routes.append(pair['route'])
+                        else:
+                            observe = getattr(provider, 'visual_pair_receipts', None)
+                            receipts = observe({**story, '_identity_generation': scope['generation'],
+                                '_visual_reference_mapping': pair['reply']['references']},
+                                canonical(pair['reply'])) if callable(observe) else {}
+                            unsent = bool(receipts) and all(
+                                receipt.get('provider_send_state') == 'not_sent'
+                                and not receipt.get('turn_id') and not receipt.get('message_id')
+                                and (receipt.get('phase') in {'created', 'thread_created'}
+                                     or receipt.get('phase') == 'failed' and receipt.get('retry_safe') is True)
+                                for receipt in receipts.values())
+                            if unsent:
+                                # A dispatch descriptor is not evidence of a
+                                # send. Keep the exact ID/route but permit its
+                                # first prompt after authoritative admission
+                                # cooldown, rather than a resume-only read of
+                                # a turn which never existed.
+                                pair['phase'] = 'ready'
+                            pair['retry_at'] = error.retry_at or self.service.store.now() + 30
+                            pair_waits[pair['id']] = error
+                        self._save_visual_queue(session, state)
+                        LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
+                                    story['id'], pair['id'], pair['route'], pair['phase'], type(error).__name__, pair['last_error'])
+                        continue
+                    if result is None:
+                        freed_routes.append(pair['route'])
+                        continue
+                    pair.update(phase='result', result=result['result'], receipt=result['receipt'])
+                    self._save_visual_queue(session, state)
+                    # The existing proof gate atomically retains every peer.
+                    session.model = result['receipt'].get('model') or result['receipt'].get('model_id') or session.model
+                    state['pending'] = self._parallel_pair_pending(story, pair, require_source=False)
+                    verdict = {**result['result'], 'comparison_id': pair['id'], 'provider_receipt': result['receipt']}
+                    self._record_place_comparison(session, 'headless:'+pair['id'], verdict)
+                    LOG.info('street_story_identity component=parallel_vision stage=completed story_id=%s comparison_id=%s route=%s model=%s',
+                             story['id'], pair['id'], pair['route'], session.model)
+                    freed_routes.append(pair['route'])
+                for new_pair in prepared:
+                    task = asyncio.create_task(run_in_slot(new_pair))
+                    tasks.add(task)
+                    all_tasks.add(task)
+                    active_pairs.add(new_pair['id'])
+                current, latest = self.service._identity_snapshot(story['id'])
+                discovery = latest.get('identity_article_discovery') or {}
+                newly_discovered = (discovery.get('generation') == scope['generation']
+                    and discovery.get('photo_sha256') == scope['photo_sha256']
+                    and any(source['url'] not in state.get('sources', {}) for source in discovery.get('sources', [])))
+                ready_work = newly_discovered or bool(state.get('queue')) or any(
+                    page.get('status') not in {'completed', 'excluded'}
+                    and page.get('retry_at', 0) <= self.service.store.now()
+                    for page in state.get('sources', {}).values())
+                qualified_routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
+                slots = Counter(qualified_routes)
+                for child in state.get('parallel_pairs', []):
+                    if child.get('phase') not in {'completed', 'failed', 'skipped'}:
+                        slots[child['route']] -= 1
+                refills = []
+                for route in freed_routes:
+                    available = route if slots[route] > 0 else next(
+                        (name for name in qualified_routes if slots[name] > 0), None)
+                    if available:
+                        refills.append(available)
+                        slots[available] -= 1
+                # A completed lane may now use another qualified transport.
+                # Unknown children still occupy their original lane/address.
+                freed_routes = refills
+                if freed_routes and preparation is None and ready_work:
+                    self._assert_visual_current(current, latest, scope)
+                    if ((latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+                            and current.get('error_code') != 'visual_identity_conflict'):
+                        # One acquisition at a time, independent of already
+                        # submitted comparisons. UNKNOWN never frees its lane.
+                        preparation_route = freed_routes.pop(0)
+                        preparation = asyncio.create_task(prepare_refill(preparation_route))
+                        tasks.add(preparation)
+                        all_tasks.add(preparation)
+                if tasks:
+                    # If this worker is otherwise idle, return the cooldown to
+                    # its durable owner. While siblings run, observe due children
+                    # here rather than waiting for the entire batch to drain.
+                    for child in state['parallel_pairs']:
+                        if (child['id'] not in active_pairs
+                                and child.get('phase') not in {'completed', 'failed', 'skipped'}
+                                and child.get('retry_at') is not None
+                                and child['retry_at'] <= self.service.store.now()):
+                            task = asyncio.create_task(run_in_slot(child))
+                            tasks.add(task)
+                            all_tasks.add(task)
+                            active_pairs.add(child['id'])
+        except asyncio.CancelledError:
+            # Process/session shutdown: provider adapters retain UNKNOWN receipts.
+            # A sufficient match never enters this cancellation path.
+            for task in all_tasks:
+                task.cancel()
+            await asyncio.gather(*all_tasks, return_exceptions=True)
+            raise
+        finally:
+            # No first-match cancellation: already-submitted siblings drain normally.
+            if not all(task.done() for task in all_tasks):
+                await asyncio.gather(*all_tasks, return_exceptions=True)
+        waits.extend(pair_waits.values())
+        if waits:
+            current, latest = self.service._identity_snapshot(story['id'])
+            unresolved = (latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+            slots = Counter(getattr(provider, 'parallel_visual_routes', lambda: ())())
+            for child in state.get('parallel_pairs', []):
+                if child.get('phase') not in {'completed', 'failed', 'skipped'}:
+                    slots[child['route']] -= 1
+            with self.service.store.connection() as db:
+                discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                    "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+            if unresolved and discovery_active and any(count > 0 for count in slots.values()):
+                # Poll the local queue for late independent sources. Each
+                # unknown child retains its own provider readback cooldown.
+                raise RetryableProviderError('identity_parallel_waiting', retry_at=self.service.store.now()+5)
+            raise waits[0]
+        current, latest = self.service._identity_snapshot(story['id'])
+        return ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+            or current.get('error_code') == 'visual_identity_conflict')

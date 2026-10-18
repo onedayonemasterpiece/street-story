@@ -244,3 +244,4 @@ island. The Android UI therefore uses an overlay image proxy that interpolates t
 actual source-photo rectangle into the sticky image slot while the island chrome
 appears. It no longer relies on fading the source out and independently popping a
 second image in at the top.
+

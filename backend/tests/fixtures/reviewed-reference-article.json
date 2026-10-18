@@ -1,0 +1,29 @@
+{
+  "candidate_id": "wiki:403645",
+  "candidate_name": "Королевские ворота",
+  "status": "match",
+  "visual_reference_verified": true,
+  "reference_evidence": [
+    {
+      "candidate_id": "wiki:403645",
+      "delivery": "direct_public_url",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/d/dd/Kaliningrad_05-2017_img18_Kings_Gate.jpg",
+      "label": "REF 1",
+      "reference_id": "ref_4bfcdda479745abe9767719bb9f97ebc",
+      "source_url": "https://upload.wikimedia.org/wikipedia/commons/d/dd/Kaliningrad_05-2017_img18_Kings_Gate.jpg"
+    }
+  ],
+  "provider_receipt": {
+    "reference_mapping": [
+      {
+        "article_url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0",
+        "candidate_id": "wiki:403645",
+        "context": [],
+        "label": "REF 1",
+        "name": "Королевские ворота",
+        "reference_id": "ref_4bfcdda479745abe9767719bb9f97ebc",
+        "source_url": "https://upload.wikimedia.org/wikipedia/commons/d/dd/Kaliningrad_05-2017_img18_Kings_Gate.jpg"
+      }
+    ]
+  }
+}

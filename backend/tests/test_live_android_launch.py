@@ -1,0 +1,159 @@
+"""Exercise the real launcher up to adb's remote instrumentation boundary."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+
+
+@pytest.mark.parametrize('resume_id', ['', 'story_12345678abcdefgh'])
+def test_fresh_and_resume_launch_have_complete_remote_instrumentation_args(tmp_path, resume_id):
+    fixtures = tmp_path / 'fixtures'
+    fixtures.mkdir()
+    (fixtures / 'config.json').write_text(json.dumps({'backend_url': 'https://street-story.kenigevents.ru'}))
+    for name in ['token.txt', 'photo.jpg', *(f'voice-{i}.pcm' for i in range(1, 7))]:
+        (fixtures / name).write_bytes(b'fixture')
+    commands = tmp_path / 'bin'
+    commands.mkdir()
+    capture = tmp_path / 'instrumentation.json'
+    adb = commands / 'adb'
+    adb.write_text('''#!/usr/bin/env python3
+import json, os, shlex, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args[:2] == ['shell', 'ping']:
+    print('PING street-story.kenigevents.ru (203.0.113.10)')
+elif args[:3] == ['shell', 'am', 'instrument']:
+    # adb shell joins argv before the device parses it. Reproduce that boundary.
+    remote = shlex.split(' '.join(args[1:]))
+    Path(os.environ['ADB_CAPTURE_PATH']).write_text(json.dumps(remote))
+    sys.exit(91)  # Stop before any app, model, or publication operation.
+elif args[:1] == ['exec-in']:
+    sys.stdin.buffer.read()
+''')
+    adb.chmod(0o755)
+    env = {**os.environ, 'PATH': f'{commands}:{Path(sys.executable).parent}:{os.environ["PATH"]}',
+           'LIVE_E2E_FIXTURE_DIR': str(fixtures), 'LIVE_E2E_ARTIFACT_DIR': str(tmp_path / 'evidence'),
+           'LIVE_E2E_RESUME_STORY_ID': resume_id, 'LIVE_E2E_KEEP_PUBLICATION': 'true',
+           'LIVE_E2E_IDENTITY_ONLY': 'false', 'LIVE_E2E_MORE_ONLY': 'false',
+           'ADB_CAPTURE_PATH': str(capture)}
+    script = Path(__file__).resolve().parents[2] / '.github/scripts/live-e2e-android.sh'
+    result = subprocess.run(['bash', str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 91, result.stderr
+    remote = json.loads(capture.read_text())
+    assert remote[:3] == ['am', 'instrument', '-w']
+    component = 'com.onedayonemasterpiece.streetstory.test/androidx.test.runner.AndroidJUnitRunner'
+    assert remote[-1] == component
+    extras = remote[3:-1]
+    assert len(extras) % 3 == 0
+    decoded = {}
+    for offset in range(0, len(extras), 3):
+        flag, name, value = extras[offset:offset + 3]
+        assert flag == '-e' and value and value != component
+        decoded[name] = value
+    assert decoded['keepPublication'] == 'true'
+    assert decoded['identityOnly'] == decoded['moreOnly'] == 'false'
+    if resume_id:
+        assert decoded['resumeStoryId'] == resume_id
+    else:
+        assert 'resumeStoryId' not in decoded
+
+
+@pytest.mark.parametrize('resumed,turns,claimed,error', [
+    (True, 0, False, None),
+    (False, 1, True, None),
+    (False, 0, False, 'lacks prepared owner speech'),
+    (True, 0, True, 'misrepresents prepared PCM'),
+])
+def test_more_verifier_preserves_text_resume_and_fresh_voice_provenance(tmp_path, monkeypatch, resumed, turns, claimed, error):
+    sid = 'story_12345678abcdefgh'
+    evidence = {'acceptance': 'more', 'more_acceptance_status': 'passed',
+                'more_added_fact_ids': ['supported-new-claim'], 'more_selection_and_draft_preserved': True,
+                'physical_mic': False, 'prepared_pcm_turn_count': turns,
+                'prepared_pcm_after_capture_boundary': claimed, 'legacy_voice_endpoint_used': False,
+                'transport_final': {'transport': 'wss', 'http_audio_fallback': False,
+                                    'event_polling': False, 'received_pcm_bytes': 1082400}}
+    if resumed:
+        evidence.update(resumed_story_id=sid, fresh_full_pass=False)
+    (tmp_path / 'android-golden-evidence.json').write_text(json.dumps(evidence))
+    monkeypatch.setenv('LIVE_E2E_ARTIFACT_DIR', str(tmp_path))
+    monkeypatch.setenv('LIVE_E2E_RESUME_STORY_ID', sid if resumed else '')
+    monkeypatch.setenv('LIVE_E2E_IDENTITY_ONLY', 'false')
+    monkeypatch.setenv('LIVE_E2E_MORE_ONLY', 'true')
+    script = Path(__file__).resolve().parents[2] / '.github/scripts/live-e2e-android.sh'
+    verifier = script.read_text().rsplit("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    if error:
+        with pytest.raises(SystemExit, match=error):
+            exec(compile(verifier, str(script), 'exec'), {})
+    else:
+        exec(compile(verifier, str(script), 'exec'), {})
+
+
+@pytest.mark.parametrize('mode,resumed,pcm,audio,error', [
+    ('more', True, 0, 0, None),
+    ('more', True, 1, 0, 'received no model audio'),
+    ('more', False, 1, 0, 'received no model audio'),
+    ('more', False, 0, 0, 'lacks prepared owner speech'),
+    ('full_social', True, 0, 0, 'received no model audio'),
+    ('full_social', False, 1, 0, 'received no model audio'),
+    ('full_social', True, 0, 32000, None),
+    ('full_social', False, 1, 32000, None),
+])
+def test_only_saved_text_more_can_accept_real_silent_tool_turns(tmp_path, monkeypatch, mode, resumed, pcm, audio, error):
+    _verify_audio_scope(tmp_path, monkeypatch, mode=mode, resumed=resumed, pcm=pcm, audio=audio, error=error)
+
+
+@pytest.mark.parametrize('change,error', [
+    ({'completed_live_turns': 0}, 'completed Live turns'),
+    ({'completed_live_turns': None}, 'completed Live turns'),
+    ({'completed_live_turns': True}, 'completed Live turns'),
+    ({'transport_final': {'event_cursor': 0}}, 'pushed WSS events'),
+    ({'transport_final': {'event_cursor': None}}, 'pushed WSS events'),
+    ({'transport_final': {'event_cursor': True}}, 'pushed WSS events'),
+    ({'transport_final': {'transport': 'off'}}, 'prove WSS transport'),
+    ({'transport_final': {'http_audio_fallback': True}}, 'prove WSS transport'),
+    ({'transport_final': {'event_polling': True}}, 'prove WSS transport'),
+    ({'more_added_fact_ids': [], 'more_improved_fact_ids': []}, 'saved fact/evidence growth'),
+    ({'more_selection_and_draft_preserved': False}, 'changed editorial state'),
+    ({'publication_id': 'must-not-publish'}, 'changed editorial state'),
+    ({'more_acceptance_status': 'not_run'}, 'MORE acceptance did not pass'),
+    ({'prepared_pcm_after_capture_boundary': True}, 'misrepresents prepared PCM'),
+    ({'legacy_voice_endpoint_used': True}, 'legacy voice endpoint'),
+    ({'fresh_full_pass': True}, 'must not claim a fresh full pass'),
+])
+def test_saved_text_more_exception_still_requires_real_work_and_truthful_provenance(tmp_path, monkeypatch, change, error):
+    _verify_audio_scope(tmp_path, monkeypatch, change=change, error=error)
+
+
+def _verify_audio_scope(tmp_path, monkeypatch, *, mode='more', resumed=True, pcm=0, audio=0, change=None, error=None):
+    # Synthetic component evidence exercises the actual launcher verifier.
+    # Runtime acceptance requires retained Android/server receipts separately.
+    sid = 'story_12345678abcdefgh'
+    evidence = {'acceptance': mode, 'more_acceptance_status': 'passed' if mode == 'more' else 'not_run',
+                'more_added_fact_ids': ['supported-new-claim'], 'more_improved_fact_ids': [],
+                'more_selection_and_draft_preserved': True, 'physical_mic': False,
+                'prepared_pcm_turn_count': pcm, 'prepared_pcm_after_capture_boundary': pcm > 0,
+                'completed_live_turns': 6, 'legacy_voice_endpoint_used': False,
+                'publication_kept': False, 'cancel_confirmed': True,
+                'transport_final': {'transport': 'wss', 'http_audio_fallback': False,
+                                    'event_polling': False, 'event_cursor': 57, 'received_pcm_bytes': audio}}
+    if resumed:
+        evidence.update(resumed_story_id=sid, fresh_full_pass=False)
+    if change:
+        evidence.update({key: value for key, value in change.items() if key != 'transport_final'})
+        evidence['transport_final'].update(change.get('transport_final', {}))
+    (tmp_path / 'android-golden-evidence.json').write_text(json.dumps(evidence))
+    monkeypatch.setenv('LIVE_E2E_ARTIFACT_DIR', str(tmp_path))
+    monkeypatch.setenv('LIVE_E2E_RESUME_STORY_ID', sid if resumed else '')
+    monkeypatch.setenv('LIVE_E2E_IDENTITY_ONLY', 'false')
+    monkeypatch.setenv('LIVE_E2E_MORE_ONLY', 'true' if mode == 'more' else 'false')
+    monkeypatch.setenv('LIVE_E2E_KEEP_PUBLICATION', 'false')
+    script = Path(__file__).resolve().parents[2] / '.github/scripts/live-e2e-android.sh'
+    verifier = script.read_text().rsplit("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    if error:
+        with pytest.raises(SystemExit, match=error):
+            exec(compile(verifier, str(script), 'exec'), {})
+    else:
+        exec(compile(verifier, str(script), 'exec'), {})

@@ -1,0 +1,166 @@
+"""Small durable UI projection of identity events, never reconstructed from audio."""
+from __future__ import annotations
+
+
+def current_projection(previous: dict, identity: dict | None = None) -> dict:
+    """Refresh obsolete UI copy without a write, new lookup or lost stage timings."""
+    result = dict(previous or {})
+    labels = {
+        'Найден вероятный вариант · подтвердите объект': 'Найден вероятный вариант · пока недостаточно доказательств',
+        'Объект пока не подтверждён · уточните место': 'Объект пока не определён · доказательств недостаточно',
+        'Карта временно недоступна; проверяю Википедию': 'Поиск объектов OSM не ответил; проверяю другие источники',
+    }
+    result['steps'] = [dict(step, label=labels.get(step.get('label'), step.get('label', '')))
+                       for step in result.get('steps', []) if isinstance(step, dict)]
+    if identity and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+        result['visual_comparison_verified'] = True
+        for step in result['steps']:
+            if step.get('key') == 'references':
+                step.update(label='Эталон выбранного объекта проверен', status='done')
+    if identity and identity.get('proof_kind') in {'geometry', 'architectural_text', 'combined'}:
+        from .identity_proof import verified_physical_identity
+        if verified_physical_identity(identity):
+            result['physical_identity_verified'] = True
+            result['proof_kind'] = identity['proof_kind']
+            for step in result['steps']:
+                if step.get('key') == 'result':
+                    step.update(label='Объект подтверждён по фото и архитектурному описанию'
+                        if identity.get('proof_kind') == 'architectural_text' else 'Объект подтверждён по фото и пространственной геометрии', status='done')
+    return result
+
+
+def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
+    progress = current_projection(previous)
+    generation = fields.get('generation', progress.get('generation', 0))
+    if generation != progress.get('generation', generation):
+        progress = {}
+    progress.setdefault('generation', generation)
+    progress.setdefault('started_at', now)
+    steps = {x['key']: dict(x) for x in progress.get('steps', []) if isinstance(x, dict) and 'key' in x}
+    def step(key, label, status):
+        steps[key] = {'key': key, 'label': label, 'status': status}
+    if event == 'identity_requested':
+        step('gps', 'Проверяю геометки снимка', 'working')
+    elif event == 'identity_started':
+        progress['attempt'] = int(progress.get('attempt', 0)) + 1
+        progress['finished'] = False
+    elif event == 'identity_location':
+        ok = bool(fields.get('coordinates_usable'))
+        step('gps', 'Использую приблизительную точку съёмки, указанную автором' if ok and fields.get('source') == 'owner_approx_camera'
+            else 'Геометки найдены' if ok else 'В выбранной копии нет доступных геометок', 'done' if ok else 'warning')
+        if ok:
+            step('map', 'Ищу объекты на карте', 'working')
+    elif event == 'identity_osm' and fields.get('available') is not False:
+        counts = fields.get('candidate_pool_counts') or {}
+        progress['map_count'] = int(fields.get('retained_count', 0))
+        partial = bool(fields.get('partial'))
+        step('map', (f"OSM: {progress['map_count']} кандидатов · часть поиска не ответила" if partial else
+                     f"Карта: {progress['map_count']} кандидатов после отбора"), 'warning' if partial else 'done')
+        progress['map_pool_counts'] = {key:int(counts.get(key, 0)) for key in ('landmark','nearby')}
+        step('wiki', 'Ищу статьи и эталонные фотографии', 'working')
+    elif event == 'identity_osm_unavailable':
+        step('map', 'Поиск объектов OSM не ответил; проверяю другие источники', 'warning')
+    elif event == 'identity_wikipedia':
+        progress['wiki_count'] = int(fields.get('count', 0))
+        step('wiki', f"Википедия: {progress['wiki_count']} статей рядом", 'done')
+    elif event == 'identity_wikipedia_unavailable':
+        step('wiki', 'Википедия временно недоступна', 'warning')
+    elif event == 'identity_shortlist':
+        progress['candidate_count'] = int(fields.get('candidate_count', 0))
+        progress['reviewed_count'] = 0
+        step('compare', f"Для сравнения отобрано {progress['candidate_count']} кандидатов", 'working')
+    elif event == 'identity_batch_started':
+        progress['current_batch'] = int(fields.get('batch', 0))
+        progress['current_batch_size'] = len(fields.get('candidate_ids') or [])
+        step('compare', f"Сравниваю группу {progress['current_batch']} · проверено {progress.get('reviewed_count', 0)} из {progress.get('candidate_count', 0)}", 'working')
+    elif event == 'identity_batch_finished':
+        progress['reviewed_count'] = min(progress.get('candidate_count', 16), int(progress.get('reviewed_count', 0)) + int(fields.get('batch_candidate_count', progress.get('current_batch_size', 0))))
+        step('compare', f"Проверено {progress['reviewed_count']} из {progress.get('candidate_count', 0)} кандидатов", 'working')
+    elif event == 'identity_discovery_started':
+        step('discover', 'Расширяю поиск по виду объекта', 'working')
+    elif event == 'identity_discovery_candidates':
+        count = len(fields.get('candidate_ids') or [])
+        step('discover', f"Расширенный поиск: {count} вариантов для визуальной проверки", 'done' if count else 'warning')
+        if count:
+            step('compare', 'Сверяю дополнительные эталонные фотографии', 'working')
+    elif event == 'identity_discovery_unavailable':
+        step('discover', 'Расширенный поиск временно недоступен', 'warning')
+    elif event == 'identity_reference_loaded':
+        step('references', 'Эталонное фото загружено для сравнения', 'done')
+    elif event == 'identity_reference_unavailable':
+        step('references', 'Не все эталоны доступны; проверяю оставшиеся', 'warning')
+    elif event == 'identity_web_media_started':
+        progress['finished'] = False
+        step('web_media', 'Ищу иллюстрации в статьях на других сайтах', 'working')
+    elif event == 'identity_web_search_unavailable':
+        step('web_media', 'Поиск статей временно недоступен · проверяю другие источники', 'warning')
+    elif event == 'identity_web_media_candidates':
+        progress['article_page_count'] = int(fields.get('page_count', 0))
+        step('web_media', f"Статьи: {progress['article_page_count']} страниц · проверяю иллюстрации", 'working')
+    elif event == 'identity_images_reviewed':
+        seen = set(progress.get('reviewed_reference_ids') or [])
+        seen.update(str(value) for value in fields.get('reference_ids', []) if value)
+        progress['reviewed_reference_ids'] = sorted(seen)
+        progress.pop('reviewed_image_sha256s', None)
+        progress['images_reviewed_count'] = len(seen)
+        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {len(seen)}", 'working')
+    elif event == 'identity_live_comparison_sent':
+        progress['finished'] = False
+        progress['visual_comparison_verified'] = False
+        count = progress.get('images_reviewed_count', 0)
+        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'working')
+    elif event == 'identity_failed':
+        step('retry', f"Источник не ответил · попытка {progress.get('attempt', 1)}", 'warning')
+    elif event == 'identity_sources_waiting':
+        progress['finished'] = False
+        step('retry', 'Источники не ответили · повторю поиск автоматически', 'working')
+    elif event == 'identity_owner_confirmed':
+        step('result', 'Объект явно подтверждён автором', 'done')
+        progress['finished'] = True
+    elif event == 'identity_finished':
+        reference_verified = fields.get('status') == 'match' and fields.get('reference_verified') is True
+        geometry_verified = fields.get('status') == 'match' and fields.get('proof_kind') in {'geometry', 'architectural_text', 'combined'} and fields.get('physical_identity_verified') is True
+        matched = reference_verified or geometry_verified
+        progress['physical_identity_verified'] = matched
+        progress['proof_kind'] = fields.get('proof_kind')
+        step('result', 'Объект подтверждён по фото и архитектурному описанию' if geometry_verified and fields.get('proof_kind') == 'architectural_text' else 'Объект подтверждён по фото и пространственной геометрии' if geometry_verified else 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
+        if reference_verified:
+            step('references', 'Эталон выбранного объекта проверен', 'done')
+        if 'compare' in steps:
+            steps['compare']['status'] = 'done' if matched else 'warning'
+        progress['visual_comparison_verified'] = reference_verified
+        count = progress.get('images_reviewed_count', 0)
+        if geometry_verified and not reference_verified:
+            steps.pop('visual_comparison', None)
+            steps.pop('references', None)
+        else:
+            step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'done' if reference_verified else 'warning')
+        progress['finished'] = True
+        progress['elapsed_ms'] = max(0, round((now - progress['started_at']) * 1000))
+    else:
+        return progress
+    progress['steps'] = list(steps.values())[-9:]
+    progress['updated_at'] = now
+    return progress
+
+
+def from_history(db, story_id: str, generation: int) -> dict:
+    """Read-only projection for an existing topic; no new identification request."""
+    import json
+    import sqlite3
+    try:
+        rows = db.execute("SELECT event_type,payload_json,created_at FROM live_diagnostics WHERE story_id=? AND source='identity' ORDER BY id DESC LIMIT 201", (story_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    if len(rows) > 200:
+        return {}
+    progress = {}
+    for row in reversed(rows):
+        try:
+            fields = json.loads(row['payload_json'])
+        except (ValueError, TypeError):
+            continue
+        if fields.get('generation', generation) != generation:
+            continue
+        progress = advance(progress, row['event_type'], fields, row['created_at'])
+    return progress

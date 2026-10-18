@@ -2,7 +2,7 @@
 
 Каноническая документация и требования владельца находятся в `main`: [индекс](docs/README.md), [требования](docs/requirements.md), [реестр фотографий](docs/testing/photo-registry.md), [ПМИ](docs/testing/street-story-product-acceptance-20261010.md).
 
-Эта синхронизация переносит документы и ранее зафиксированные требования. Описания реализации относятся к указанным в документах product/runtime SHA; перенос документов не обновляет продуктовый код или развёрнутый сервис.
+С 18.10.2026 продуктовый код тоже живёт в `main`, и продакшен выкатывается только из `main`.
 
 Test originals, metadata and evaluator answers: [documentation index](docs/README.md) → [persistent photo registry](docs/testing/photo-registry.md).
 
@@ -16,7 +16,7 @@ The Android client on `work/street-story-mvp-20260908` uses one dense messenger-
 
 Recording keeps the proven Record Idea Hub architecture: WebRTC VAD with adaptive gate, pre-roll/hangover, AAC-LC 16 kHz mono M4A durable chunks, foreground service, pause/resume/finish, SQLite WAL, process-death recovery, WorkManager, exact chunk-SHA reconciliation and stable semantic idempotency. The raw ASR transcript remains durable source truth; a separate persisted `display_text` is used in the feed so fillers/repeats/false starts are not shown to the owner.
 
-The Python 3.12 backend under [`https://github.com/onedayonemasterpiece/street-story/tree/3fe3fc160843b9e41d79631c03ee513c1de8a123/backend`](https://github.com/onedayonemasterpiece/street-story/tree/3fe3fc160843b9e41d79631c03ee513c1de8a123/backend) provides FastAPI, SQLite WAL + `synchronous=FULL`, durable voice manifests, restartable research/visual/publish/cancel jobs, OSM/Wikipedia caching, grounded Gemini research, evidence-backed facts and HTTP-only VibePublish integration. The phone copies the photo privately and hashes it before any network effect; Gemini/VibePublish/social credentials never enter the APK.
+The Python 3.12 backend under [`backend/`](backend/) provides FastAPI, SQLite WAL + `synchronous=FULL`, durable voice manifests, restartable research/visual/publish/cancel jobs, OSM/Wikipedia caching, grounded Gemini research, evidence-backed facts and HTTP-only VibePublish integration. The phone copies the photo privately and hashes it before any network effect; Gemini/VibePublish/social credentials never enter the APK.
 
 ## VibePublish boundary
 
