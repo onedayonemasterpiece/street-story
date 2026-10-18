@@ -32,7 +32,7 @@ The backend uses `live-interaction` for provider transport/session lifecycle and
 Google Live lease. Street Story owns only topic context and domain tools (research, fact selection, text/literal editing,
 Undo, visual generation, publication preparation/confirmation/cancel).
 
-Before Android reports Live ready, the backend queues an orientation-normalized, bounded JPEG snapshot of the current source photo into the same Gemini Live session. This lets Mira answer direct visual questions about the selected photo. Object identity is still verified independently by `resolve_place`, which compares the original source photo with OSM/Wikipedia candidates; conversational vision never replaces that guard.
+Before Android reports Live ready, the backend queues an orientation-normalized, bounded JPEG snapshot of the current source photo into the same Gemini Live session. This lets Mira answer direct visual questions about the selected photo. In the automatic-identification path, `resolve_place` independently verifies identity from the original source photo and candidates; conversational vision does not replace that guard. This is not a prerequisite for the owner-confirmed exact-map path described below.
 
 On physical-phone Live capture Android uses the existing WebRTC VAD with `VOICE_COMMUNICATION` input and enables Acoustic Echo Canceler/Noise Suppressor when the device exposes them. This is intended to preserve barge-in while reducing the assistant speaker output being reclassified as new user speech.
 
@@ -42,6 +42,33 @@ Text edits keep optimistic `text_revision` protection. A Live `edit_text` revisi
 
 A Live failure is not an instruction to switch transport. The former async voice/session pipeline is preserved only as a
 compatibility boundary so it can be developed again deliberately if needed.
+
+## Map selection and missing address · revision14
+
+The current manifest distinguishes automatic identification, exact map selection
+and approximate group selection. An owner-confirmed exact building contour is
+final and does not require another model identification pass. An approximate group
+still needs narrowing to a physical object. When contours are unavailable, preserve
+the explicit-point fallback with a voice-provided name/address.
+
+For imported/shared-photo manual creation, original EXIF GPS is required before
+creating the story; it initializes the map only. The selected building determines
+the city/context and is not constrained by distance to the camera.
+
+A selected contour with neither name nor postal address is a **known selected
+object with missing metadata**, not an unknown place. Enrich context from the
+selected geometry/location and map; reverse geocoding is enrichment, not identity.
+A missing reverse-geocoded address must not revoke the selection or require the
+owner to supply an address before research starts. A nearby returned address must
+not be attributed to the selected building without support. Use available selected
+object context; do not promise that historical sources necessarily exist.
+
+Research should begin without an obligatory address question. Truly unresolved
+object identity remains explicit and is not filled by invented facts. Voluntary
+owner context may refine research but is not a mandatory gate after exact selection.
+The [map acceptance cases](testing/street-story-product-acceptance-20261010.md#map-selection-acceptance-revision14)
+verify this through the product; this contract does not assert that a specific
+implementation or deployment already passed them.
 
 ## Durable story create
 
@@ -139,7 +166,9 @@ own evidence; refresh and hydration cannot renew that authority. These source co
 require candidate acceptance evidence before being treated as deployed behavior.
 
 The worker claims durable SQLite jobs by lease and recovers expired `running`
-work after restart. The current target is the adaptive [photo-search contract](photo-search-methods.md):
+work after restart. The following adaptive [photo-search contract](photo-search-methods.md)
+describes the automatic-identification path. Exact map selection uses the final
+selected object above and enters subject-scoped research without repeating step 3:
 
 1. Preserve the original photo and actual camera metadata; transcribe available
    owner M4A chunks by `chunk_index` without making voice a prerequisite for photo identity.

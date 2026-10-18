@@ -11,26 +11,50 @@ secondary spatial route under its account limit. The current implementation
 policy is described in [photo search methods](photo-search-methods.md). This
 clarification supersedes the earlier single-tertiary / no-Lite routing restriction.
 
-The eleven critical requirements in `.devcoveer/requirements.json` remain binding.
-The current owner-approved recovery target and execution priorities are the
-[10 October universal recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
-The [core and end-to-end execution design](design/street-story-first-usable-slice-20261010.md)
-is the concrete to-be contract for the next bounded implementation: accepted photo,
-autonomous backend work, exact identity/hint recovery, usable facts and reopen.
-It combines the necessary dependencies of the first two stages; it is not implemented yet.
-The [product acceptance procedure](testing/street-story-product-acceptance-20261010.md) defines the unchanged image corpus, execution protocol and per-input evidence.
-The [G/T method evidence audit](reports/street-story-identity-methods-audit-20261010.md) records historical requirements, current working paths, new limits and targeted changes; it does not rewrite the earlier measured day report.
-The owner-approved [G method vision](design/street-story-spatial-geometry-vision-20261010.md) preserves the complete spatial/EXIF/morphology intent and maps historical requirements to existing, partial and target behavior.
-The recovery brief remains the full-task entrypoint; completing this core slice is a checkpoint, not a substitute for final product verification.
-Its [measured day audit](reports/street-story-measured-day-audit-20261010.md)
-records observations and limitations; it is not proof that proposed repairs shipped.
+## Current entrypoint and authority
+
+Read the eleven critical requirements in [the manifest](../.devcoveer/requirements.json)
+from the **same worktree and revision as the task**. A generic project name may
+resolve to another checkout and an older requirementsContext. Record the selected
+checkout/SHA; do not silently substitute the primary checkout's contract.
+
+The manifest incorporates the owner's 12–13 October map-selection decisions and
+governing revision14. Keep these paths distinct:
+- Automatic identification remains available as its own product path.
+- Exact map selection: the owner confirms one building contour; that selection is
+  final and does not require model re-identification. A missing name/address is
+  missing metadata, not an unknown object or a mandatory question to the owner.
+- Approximate selection: the model narrows within the explicitly selected group;
+  the group itself is not one accepted POI.
+- When contours are unavailable, the existing explicit-point fallback still uses
+  a confirmed point with a voice-provided name/address.
+
+For revision14 imported/shared-photo manual creation, original EXIF GPS is required
+before story creation and only initializes the map. The selected object's location
+determines the city; distance from the camera does not bound selection. Do not
+replace this path with a new no-GPS creation flow or mandatory automatic recognition.
+
+Continue from the [backend contract](backend-contract.md) and the
+[current map-path acceptance section](testing/street-story-product-acceptance-20261010.md#map-selection-acceptance-revision14).
+The test must include a contour with neither name nor address, reverse geocoding
+with and without an address, and research without a mandatory owner-address question.
+This clarification is an acceptance target, not proof of deployment or a completed run.
+
+The [10 October recovery brief](prompts/street-story-universal-product-recovery-20261010.md),
+[core design](design/street-story-first-usable-slice-20261010.md),
+[G/T evidence audit](reports/street-story-identity-methods-audit-20261010.md) and
+[G vision](design/street-story-spatial-geometry-vision-20261010.md) remain historical
+context and automatic-path references where compatible with later owner decisions.
+Their frozen corpus and autonomous identity steps do not override revision14 exact
+selection or define complete acceptance of the current map-first product.
+The [measured day audit](reports/street-story-measured-day-audit-20261010.md) remains
+historical evidence, not proof that proposed repairs shipped.
 
 The [photo search methods](photo-search-methods.md), [backend contract](backend-contract.md),
 [runtime runbook](backend-runtime.md) and [POI contract](poi-knowledge-base.md)
 describe their domain boundaries. Label current implementation separately from
 the recovery target where they differ. The 8 October unified brief and 9 October
-product-unblock brief are historical requirements/evidence, superseded only where
-the later recovery brief changes them; they no longer set the next execution step.
+product-unblock brief are historical requirements/evidence, superseded where later owner decisions and the current manifest change them; they do not set the next execution step.
 Historical prompts do not override later requirements. Preserve Stop, UNKNOWN,
 source provenance, access controls and publication authorization.
 
