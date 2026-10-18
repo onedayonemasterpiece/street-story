@@ -617,12 +617,17 @@ async def run_tool_agent(adapter, route, story, context, *, binding, guard, _ret
                     # The house's own map card page: read now in a real mobile browser (see map_pages).
                     from .map_pages import capture
                     retained_map = await capture(args['url'])
+                elif retained_map is None and args['url'] == (context.get('selected_object') or {}).get('map_record_url'):
+                    # The house's own OSM record is JSON, which the public document reader refuses.
+                    from .map_record import capture
+                    retained_map = await capture(args['url'])
                 if retained_map:
                     from .research_runs import persist_source_version
                     with adapter.service.store.tx() as db:
                         guard()
                         document = persist_source_version(db, run_id=context['run_id'],
-                            requested_url=args['url'], final_url=args['url'], title='Observed OpenStreetMap objects',
+                            requested_url=args['url'], final_url=args['url'],
+                            title=retained_map.get('title') or 'Observed OpenStreetMap objects',
                             content_type='application/json', http_status=retained_map['http_status'],
                             redirect_chain=[], normalized_text=retained_map['normalized_text'],
                             read_status='complete', source_bytes_sha256=retained_map['response_sha256'],

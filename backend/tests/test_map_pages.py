@@ -35,3 +35,31 @@ def test_a_hung_read_is_cut_by_the_hard_limit(monkeypatch):
     monkeypatch.setattr(map_pages, '_capture', hang)
     with pytest.raises(ValueError, match='map_page_timeout'):
         asyncio.run(map_pages.capture('https://2gis.ru/geo/1#reviews', budget_seconds=-119.9))
+
+
+def test_the_house_osm_record_is_read_as_text_with_its_current_tags_and_edit_date():
+    # Story 131: the public reader refused this JSON as unsupported_content_type, so the
+    # research session never saw what the map marks in the house now.
+    import asyncio
+    import httpx
+    import pytest
+    from street_story import map_record
+    url = 'https://api.openstreetmap.org/api/0.6/way/193085155.json'
+    payload = {'elements': [{'type': 'way', 'id': 193085155, 'version': 7, 'timestamp': '2024-02-10T08:00:00Z',
+                             'tags': {'amenity': 'hospital', 'name': 'Центральная больница', 'building': 'yes'}}]}
+    text = map_record.record_text(payload, url)
+    assert 'последняя правка 2024-02-10' in text and 'amenity = hospital' in text and 'а не историю' in text
+    original = httpx.AsyncClient
+
+    class Client(original):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs)
+
+    httpx.AsyncClient = Client
+    try:
+        result = asyncio.run(map_record.capture(url))
+    finally:
+        httpx.AsyncClient = original
+    assert result['normalized_text'] == text and result['http_status'] == 200
+    with pytest.raises(ValueError, match='map_record_url_unknown'):
+        asyncio.run(map_record.capture('https://example.org/way/1.json'))
