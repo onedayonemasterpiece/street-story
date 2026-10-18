@@ -132,6 +132,7 @@ def test_writer_image_notes_are_lettered_verbatim_by_the_image_brief(tmp_path):
     assert "Надписи на картинке — ровно эти, дословно: «Объект культурного наследия»; «Построен в 1901–1907 годах»" in brief
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
     assert "Основание для подписей" not in brief  # the written notes already rest on the facts
+    assert "на светлой бумажной подложке" in brief
     assert "Стрелка — только от надписи к части дома, которая ясно видна на фото" in brief
 
 
@@ -297,3 +298,10 @@ async def test_image_notes_come_only_from_documented_facts():
     edited = await GeminiClient._edit_caption(client, written, facts=facts, lead_fact=None)
     assert seen[0]["image_facts"] == ["Построен около 1905 года.", "При расчистке стен открылись немецкие кирпичи."]
     assert edited["image_notes"] == ["2017: немецкие кирпичи с клеймом", "Построен около 1905 года"]
+
+
+def test_the_post_never_names_where_a_fact_came_from():
+    # Owner, 18.10.2026: "По свидетельству посетителя" means nothing to a reader of the channel.
+    assert "по свидетельству посетителя" in GeminiClient.WRITER_RULES and "в тексте не отражается" in GeminiClient.WRITER_RULES
+    assert "посетители пишут, что…»), не как" not in GeminiClient.WRITER_RULES
+    assert "в тексте не отражается" in GeminiClient.EDITOR_RULES
