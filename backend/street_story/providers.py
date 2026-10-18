@@ -3741,7 +3741,8 @@ class GeminiClient:
         choice = answer.get("choice") or {}
         index = choice.get("index") if isinstance(choice.get("index"), int) and 0 <= choice["index"] < count else None
         strong = [row for row in rows.values() if row.get("kind") not in cls.WEAK_HOOK_KINDS]
-        score = lambda row: sum(int(row.get(k) or 0) for k in ("unexpected", "human_drama", "concrete", "relates_to_photo"))
+        def score(row):
+            return sum(int(row.get(k) or 0) for k in ("unexpected", "human_drama", "concrete", "relates_to_photo"))
         if index is not None and (rows.get(index, {}).get("kind") not in cls.WEAK_HOOK_KINDS or not strong):
             return [{"index": index, "reason": str(choice.get("reason") or "")}]
         if strong:
