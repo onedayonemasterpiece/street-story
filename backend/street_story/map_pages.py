@@ -61,7 +61,19 @@ def _tab_url(resolved: str, tab: str) -> str | None:
 
 
 async def capture(url: str, *, budget_seconds: float = 150) -> dict[str, Any]:
-    """Read one map page in mobile Chrome; reviews are scrolled until no more load."""
+    """Read one map page in mobile Chrome; reviews are scrolled until no more load.
+
+    A hard limit covers the whole read, including waiting for another read: on a small host under
+    memory pressure page steps can hang far past their own timeouts and hold the browser lock.
+    """
+    try:
+        return await asyncio.wait_for(_capture(url, budget_seconds), timeout=budget_seconds + 120)
+    except asyncio.TimeoutError:
+        LOG.warning('street_story_map_page kind=%s outcome=timeout limit_seconds=%s', kind_of(url), budget_seconds + 120)
+        raise ValueError('map_page_timeout') from None
+
+
+async def _capture(url: str, budget_seconds: float) -> dict[str, Any]:
     kind = kind_of(url)
     if kind is None:
         raise ValueError('map_page_kind_unknown')

@@ -24,3 +24,14 @@ def test_card_tab_follows_the_resolved_firm_or_building_card():
 def test_reviews_source_says_it_is_people_opinion():
     assert 'мнения и впечатления людей' in map_pages.HEADERS['reviews']
     assert 'не проверенная история' in map_pages.HEADERS['reviews']
+
+
+def test_a_hung_read_is_cut_by_the_hard_limit(monkeypatch):
+    import asyncio
+    import pytest
+
+    async def hang(url, budget):
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(map_pages, '_capture', hang)
+    with pytest.raises(ValueError, match='map_page_timeout'):
+        asyncio.run(map_pages.capture('https://2gis.ru/geo/1#reviews', budget_seconds=-119.9))
