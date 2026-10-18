@@ -24,7 +24,7 @@ public final class PhotoIntakeFixtureProvider extends ContentProvider {
         catch (IOException error) { throw new java.io.FileNotFoundException(error.getMessage()); }
         new Thread(() -> {
             try (ParcelFileDescriptor.AutoCloseOutputStream output = new ParcelFileDescriptor.AutoCloseOutputStream(pipe[1])) {
-                output.write(PhotoGpsFixture.bytes());
+                output.write("/without-gps".equals(uri.getPath()) ? PhotoGpsFixture.withoutGps() : PhotoGpsFixture.bytes());
             } catch (IOException ignored) {
                 // A preview consumer may close after reading bounds only.
             }

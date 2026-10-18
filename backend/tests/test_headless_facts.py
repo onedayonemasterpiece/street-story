@@ -31,8 +31,9 @@ def controlled_public_dns(monkeypatch):
     async def public(host):
         return '8.8.8.8'
 
-    async def acquire(store, client, raw):
-        return await original(store, client, raw, resolver=public)
+    async def acquire(store, client, raw, **kwargs):
+        kwargs.setdefault('resolver', public)
+        return await original(store, client, raw, **kwargs)
 
     monkeypatch.setattr(article_media, 'cached_public_page', acquire)
 
@@ -823,7 +824,110 @@ async def test_completed_empty_discovery_finishes_without_polling_or_resending(t
         assert outcome == {'outcome': 'no_supported_facts', 'reason': 'search_exhausted',
                            'coverage_complete': False, 'eligible_count': 0}
         assert await harness.run(job, 'headless-run', 'Find historical facts', 'history') == outcome
-        assert researcher.searches == 1 and not researcher.pages
+        assert researcher.searches == 2 and not researcher.pages
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure_code', ['research_output_exhausted', 'research_provider_failed'])
+@pytest.mark.parametrize('with_eligible_fact', [False, True])
+async def test_closed_reader_failure_is_partial_with_original_reason_and_terminal_worker_projection(
+        tmp_path, failure_code, with_eligible_fact):
+    from street_story.errors import PermanentProviderError
+    from street_story.research_adapter import ProductResearchAdapter
+    from street_story.research_budget import finish_attempt
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    run_id = 'headless-run'
+    if with_eligible_fact:
+        await HeadlessFacts(svc).run(job, run_id, 'Find historical facts', 'history')
+        await review_candidates(svc, job['story_id'], run_id)
+        assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'eligible'
+        from street_story.research_runs import register_discovered_source
+        run_id = 'additional-failed-reader'
+        with svc.store.tx() as db:
+            row = svc._story_row(db, job['story_id'])
+            begin_research_run(db, story_id=row['id'], poi_key='wiki:77', goal='Further history', scope='details',
+                               expected_story_revision=row['revision'], identity_generation=0,
+                               run_id=run_id, now=svc.store.now())
+            register_discovered_source(db, run_id=run_id, url=URL + '-further', title='Further building history',
+                                       status='discovered', now=svc.store.now())
+    calls = []
+    async def failed(page, story, context):
+        calls.append(page['_unit_id'])
+        adapter = object.__new__(ProductResearchAdapter)
+        adapter.service = svc
+        binding, _ = adapter.attempt({**story, '_fact_pool_unit_id': page['_unit_id']},
+                                     'facts', page['_unit_id'])
+        receipt = {'binding': binding, 'phase': 'failed', 'error_code': failure_code,
+                   'provider_send_state': 'response_closed', 'response_finish': 'length',
+                   'model_id': 'mimo-v2.6-flash-free', 'provider_id': 'opencode',
+                   'assistants': [{'finish': 'length', 'tokens': {'output': 0, 'reasoning': 8193}}]}
+        with svc.store.tx() as db:
+            db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                       (json.dumps(receipt), binding['attempt_id']))
+        raise PermanentProviderError('research_fact_routes_exhausted')
+    researcher.extract_fact_page = failed
+    try:
+        runner = HeadlessFacts(svc)
+        outcome = await runner.run(job, run_id, 'Find historical facts', 'history')
+        expected_outcome = 'useful_partial' if with_eligible_fact else 'resource_blocked'
+        assert outcome == {'outcome': expected_outcome, 'reason': failure_code,
+                           'coverage_complete': False, 'eligible_count': int(with_eligible_fact)}
+        assert calls and await runner.run(job, run_id, 'Find historical facts', 'history') == outcome
+        assert len(calls) == 1
+        with svc.store.tx() as db:
+            manifest = run_manifest(db, run_id)
+            assert manifest['run']['state'] == 'partial' and manifest['run']['status_detail'] == failure_code
+            assert manifest['chunks'][0]['status'] == 'failed'
+            assert manifest['chunks'][0]['error_code'] == 'research_fact_routes_exhausted'
+            assert finish_attempt(svc, db, job['story_id'], outcome=outcome['outcome'],
+                                  reason=outcome['reason'], job=job, coverage_complete=False)
+            assert run_manifest(db, run_id)['run']['state'] == 'partial'
+            research = json.loads(svc._story_row(db, job['story_id'])['research_json'])
+            assert research['automatic_research_outcome']['reason'] == failure_code
+            assert research['automatic_research_outcome']['outcome'] == expected_outcome
+            assert 'не завершено' in research['identity_progress']['steps'][-1]['label']
+            assert db.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0] == 'done'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_valid_reader_empty_claims_remain_substantive_empty(tmp_path):
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    async def empty(page, story, context):
+        return {'result': {'facts': [], 'source_matches_poi': True, 'source_content_valid': True,
+                           'continuation_needed': False}, 'receipt': {'phase': 'completed'}}
+    researcher.extract_fact_page = empty
+    try:
+        outcome = await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert outcome['outcome'] == 'no_supported_facts'
+        with svc.store.connection() as db:
+            manifest = run_manifest(db, 'headless-run')
+            assert manifest['run']['state'] == 'completed'
+            assert manifest['chunks'][0]['status'] == 'no_claims'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successful_reader_and_review_remain_useful_complete_in_worker_projection(tmp_path):
+    from street_story.research_budget import finish_attempt
+    svc, job, _, reader, _ = await fixture(tmp_path)
+    try:
+        runner = HeadlessFacts(svc)
+        await runner.run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, job['story_id'], 'headless-run')
+        from street_story.research_runs import manifest_complete
+        with svc.store.tx() as db:
+            assert manifest_complete(run_manifest(db, 'headless-run'))
+            assert finish_attempt(svc, db, job['story_id'], outcome='useful_complete',
+                                  reason='source_batches_reviewed', job=job, coverage_complete=True)
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
+            research = json.loads(svc._story_row(db, job['story_id'])['research_json'])
+            assert research['automatic_research_outcome']['outcome'] == 'useful_complete'
+            assert 'исследование завершено' in research['identity_progress']['steps'][-1]['label']
     finally:
         await reader.search_http.aclose()
 

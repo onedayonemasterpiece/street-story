@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, UnicodeDammit
 
 from .config import Settings, reveal
 from .db import Store
+from .identity_map_context import has_organization_tags
 from .fact_conflicts import conflict_scan_items, normalize_model_conflict_records
 from .research_runs import (
     chunk_checkpoint,
@@ -64,6 +65,10 @@ class OSMClient:
                 data = response.json()
                 if not isinstance(data, dict) or not isinstance(data.get("elements"), list) or data.get("remark"):
                     raise ValueError("Incomplete Overpass response")
+                data['map_observation'] = {'source_url': str(response.url), 'observed_at': time.time(),
+                    'response_sha256': hashlib.sha256(response.content).hexdigest(),
+                    'http_status': response.status_code, 'transport': 'overpass',
+                    'request_query': query}
                 receipt.update(outcome="success", element_count=len(data["elements"]))
                 return data, endpoint
             except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
@@ -103,14 +108,15 @@ class OSMClient:
             ways = {x['id']: x for x in data['elements'] if isinstance(x, dict)
                     and x.get('type') == 'way' and 'id' in x}
             elements = []
+            incomplete_building_ids = []
             for item in data['elements']:
                 if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
                     continue
                 tags = item['tags']
-                if not any(tags.get(k) for k in ('building', 'building:part', 'highway', 'name',
-                                                'addr:housenumber', 'entrance', 'amenity', 'shop', 'office')):
+                if not (has_organization_tags(tags) or any(tags.get(k) for k in
+                        ('building', 'building:part', 'highway', 'name', 'addr:housenumber', 'entrance'))):
                     continue
-                entry = {k: item[k] for k in ('type', 'id', 'tags') if k in item}
+                entry = {k: item[k] for k in ('type', 'id', 'tags', 'version', 'timestamp', 'changeset') if k in item}
                 if item.get('type') == 'node':
                     if item.get('id') not in nodes:
                         continue
@@ -120,9 +126,13 @@ class OSMClient:
                     if item.get('type') == 'relation':
                         members = item.get('members', [])
                         if not members or any(m.get('type') != 'way' or m.get('ref') not in ways for m in members):
+                            if tags.get('building') not in {None, '', 'no'}:
+                                incomplete_building_ids.append(f"osm:relation:{item['id']}")
                             continue  # Partial relations never acquire an invented center.
                         refs = [n for m in members for n in ways[m['ref']].get('nodes', [])]
                     if not refs or any(n not in nodes for n in refs):
+                        if tags.get('building') not in {None, '', 'no'}:
+                            incomplete_building_ids.append(f"osm:{item.get('type')}:{item.get('id')}")
                         continue
                     positions = [nodes[n] for n in refs]
                     if item.get('type') == 'way':
@@ -139,7 +149,10 @@ class OSMClient:
                             if (nodes[node_id].get('tags') or {}).get('entrance') not in {None, '', 'no'}]
                 elements.append(entry)
             receipt.update(outcome='success', element_count=len(elements))
-            return {'elements': elements}
+            return {'elements': elements, 'incomplete_building_ids': incomplete_building_ids,
+                'map_observation': {'source_url': str(response.url), 'observed_at': time.time(),
+                    'response_sha256': hashlib.sha256(response.content).hexdigest(),
+                    'http_status': response.status_code, 'transport': 'osm.map_api'}}
         except (httpx.TransportError, httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
             receipt.update(outcome='failed', error_type=type(exc).__name__)
             raise RetryableProviderError('OSM map routes unavailable') from exc
@@ -559,7 +572,7 @@ class _DuckDuckGoResultParser(HTMLParser):
         url = self._target_url(self.current.get("href", ""))
         title = " ".join(self.current.get("title", "").split())
         snippet = " ".join(self.current.get("snippet", "").split())
-        if url and title and len(self.results) < 12:
+        if url and title:
             self.results.append({"url": url, "title": title[:300], "snippet": snippet[:700]})
         self.current = None
 
@@ -652,6 +665,9 @@ class _ReadablePageParser(HTMLParser):
         return "\n".join(line for line in lines if line).strip()[: self.limit]
 
 
+MAX_RESEARCH_SOURCE_BYTES = 32 * 1024 * 1024
+
+
 def _read_article_text(html: str, *, limit: int = 120_000) -> tuple[str, bool]:
     """Select declared article structure; leave semantic evidence decisions to Live."""
     page = BeautifulSoup(html, "html.parser")
@@ -677,6 +693,86 @@ def _read_article_text(html: str, *, limit: int = 120_000) -> tuple[str, bool]:
     for root in roots:
         parser.feed(str(root))
     return parser.finish(), parser.truncated
+
+
+def _page_discovery_links(page: str, final_url: str, raw_bytes: bytes) -> dict:
+    """Literal public hrefs from this acquisition; never source support or identity."""
+    from .article_media import public_url
+    soup = BeautifulSoup(str(page), 'html.parser')
+    for node in soup.select('script, style, noscript, template'):
+        node.decompose()
+    links, seen, omitted, used = [], set(), 0, 0
+    for anchor in soup.find_all('a', href=True):
+        target = public_url(urljoin(final_url, str(anchor['href'])))
+        if not target or target == public_url(final_url) or target in seen:
+            continue
+        seen.add(target)
+        if len(links) >= 128:
+            omitted += 1
+            continue
+        label = anchor.get_text(' ', strip=True)
+        context = label
+        for parent in list(anchor.parents)[:3]:
+            if parent.name in {'body', 'html', '[document]'}:
+                break
+            literal = parent.get_text(' ', strip=True)
+            if len(label) + 5 < len(literal) <= 800:
+                locations = {public_url(urljoin(final_url, str(link['href'])))
+                    for link in parent.find_all('a', href=True)} - {None}
+                if locations <= {target}:
+                    context = literal
+                    break
+        item = {'url': target, 'label': label[:120], 'context': context[:360]}
+        size = len(json.dumps(item, ensure_ascii=False))
+        if len(links) >= 128 or used + size > 65_536:
+            omitted += 1
+            continue
+        used += size
+        links.append(item)
+    return {'discovery_links': links, 'discovery_links_provenance': {
+        'contract': 'same-acquisition-public-hrefs-v1', 'kind': 'unverified_discovery',
+        'final_url': final_url, 'raw_content_sha256': hashlib.sha256(raw_bytes).hexdigest(),
+        'public_link_count': len(seen), 'omitted_count': omitted}}
+
+
+def _cached_document_discovery(store, requested_url: str, document: dict) -> dict:
+    """Enrich reused text only when existing raw bytes reproduce its frozen hash."""
+    import base64
+    from .article_media import public_url
+    from .prussia39 import canonical_article, _decode, parse_article
+    target = public_url(requested_url)
+    if not target:
+        return {}
+    saved = store.cache_get('public-article-acquisition-v1:' + hashlib.sha256(target.encode()).hexdigest())
+    if not saved:
+        return {}
+    try:
+        raw = base64.b64decode(saved['body'], validate=True)
+        final_url = saved['final_url']
+        if (hashlib.sha256(raw).hexdigest() != saved['sha256']
+                or final_url != document.get('final_url')
+                or saved['mime'] not in {'text/html', 'application/xhtml+xml'}):
+            return {}
+        try:
+            sid, _ = canonical_article(requested_url)
+        except ValueError:
+            sid = None
+        if sid is not None:
+            final_sid, _ = canonical_article(final_url)
+            if sid != final_sid:
+                return {}
+            page, _ = _decode(raw)
+            text = parse_article(page)['text'][:120_000]
+        else:
+            page = UnicodeDammit(raw, is_html=True).unicode_markup
+            if page is None:
+                return {}
+            text, _ = _read_article_text(page)
+        if hashlib.sha256(text.encode()).hexdigest() != document.get('content_sha256'):
+            return {}
+        return _page_discovery_links(page, final_url, raw)
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        return {}
 
 
 class GeminiClient:
@@ -975,15 +1071,25 @@ class GeminiClient:
             model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
             model_quota = SharedQuotaGate(settings, model_pool)
             self.web_search_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+        self.writer_routes = []
+        for model in tuple(dict.fromkeys(getattr(settings, 'gemini_writer_models', ()) or research_models)):
+            model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+            model_quota = SharedQuotaGate(settings, model_pool)
+            self.writer_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
         self.pool = self.research_routes[0][1]
         self.quota = self.research_routes[0][2]
         self.executor = self.research_routes[0][3]
 
     async def close(self):
         gates = {id(route[2]): route[2] for route in (
-            *self.transcription_routes, *self.research_routes, *self.web_search_routes)}
+            *self.transcription_routes, *self.research_routes, *self.web_search_routes,
+            *getattr(self, 'writer_routes', ()))}
         for gate in gates.values():
             await gate.close()
+
+    async def verify_agent_evidence(self, payload, *, checkpoint, guard):
+        from .agent_evidence import verify_with_gemini
+        return await verify_with_gemini(self, payload, checkpoint, guard)
 
     async def _generate(
         self,
@@ -1358,6 +1464,7 @@ class GeminiClient:
         self,
         query: str,
         excluded_urls: set[str] | None = None,
+        cursor: str | None = None,
     ) -> GroundedResearch:
         """Emergency independent web discovery after Google-grounding exhaustion.
 
@@ -1371,11 +1478,24 @@ class GeminiClient:
             headers={"User-Agent": "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"},
         )
         try:
-            response = await client.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query[:1000]},
-                headers={"Accept": "text/html,application/xhtml+xml"},
-            )
+            endpoint = 'https://html.duckduckgo.com/html/'
+            query_hash = hashlib.sha256(query.encode()).hexdigest()
+            if cursor:
+                import base64
+                try:
+                    position = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                    fields = position['fields']
+                    if (position['query_sha256'] != query_hash or not isinstance(fields, dict)
+                            or fields.get('q') != query
+                            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in fields.items())):
+                        raise ValueError()
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise RetryableProviderError('public_web_search_cursor_invalid') from exc
+                response = await client.post(endpoint, data=fields,
+                    headers={'Accept': 'text/html,application/xhtml+xml'})
+            else:
+                response = await client.get(endpoint, params={'q': query},
+                    headers={'Accept': 'text/html,application/xhtml+xml'})
             response.raise_for_status()
             text = response.text
             if len(text.encode("utf-8")) > 1_500_000:
@@ -1383,6 +1503,27 @@ class GeminiClient:
             parser = _DuckDuckGoResultParser()
             parser.feed(text)
             results = parser.finish()
+            # Follow only the provider's actually returned Next form. No
+            # fabricated API, page number or arbitrary off-site action.
+            next_cursor = None
+            from urllib.parse import urljoin
+            for form in BeautifulSoup(text, 'html.parser').find_all('form'):
+                if str(form.get('method') or '').lower() != 'post':
+                    continue
+                action = urljoin(endpoint, str(form.get('action') or ''))
+                if action != endpoint:
+                    continue
+                inputs = form.find_all('input')
+                if not any(str(item.get('value') or '').casefold() in {'next', 'next page'}
+                           for item in inputs if str(item.get('type') or '').lower() == 'submit'):
+                    continue
+                fields = {str(item['name']): str(item.get('value') or '') for item in inputs if item.get('name')}
+                if fields.get('q') != query:
+                    continue
+                import base64
+                next_cursor = base64.urlsafe_b64encode(json.dumps({'query_sha256': query_hash,
+                    'fields': fields}, ensure_ascii=False).encode()).decode()
+                break
             if not results:
                 raise RetryableProviderError("public_web_search_empty")
 
@@ -1431,7 +1572,7 @@ class GeminiClient:
             return GroundedResearch(
                 payload={
                     "summary": (
-                        f"Google Search grounding сейчас недоступен. Получено {len(sources)} "
+                        f"Получено {len(sources)} "
                         "discovery-источников; evidence находится в sources[].supports и не является "
                         "автоматически доказанными фактами."
                     ),
@@ -1439,6 +1580,9 @@ class GeminiClient:
                     "facts": facts,
                     "search_provider": "duckduckgo_html_fallback",
                     "sources_skipped_completed": skipped,
+                    'has_more': next_cursor is not None,
+                    'next_cursor': next_cursor,
+                    'pagination_status': 'next_form_available' if next_cursor else 'no_supported_next_form',
                 },
                 grounding_sources=sources,
             )
@@ -1515,7 +1659,11 @@ class GeminiClient:
                     with self.store.connection() as db:
                         saved = reusable_source_document(db, run_id=run_id, url=requested_url, now=self.store.now())
                     if saved is not None:
-                        documents[requested_url] = saved
+                        from .pdf_sources import pdf_metadata
+                        with self.store.connection() as db:
+                            saved.update(pdf_metadata(db, saved['source_version_id']))
+                        documents[requested_url] = {**saved,
+                            **_cached_document_discovery(self.store, requested_url, saved)}
                         continue
                 now = self.store.now()
                 if run_id:
@@ -1534,7 +1682,8 @@ class GeminiClient:
                 error_code = None
                 try:
                     from .article_media import cached_public_page
-                    current_url, public_mime, public_body = await cached_public_page(self.store, client, requested_url)
+                    current_url, public_mime, public_body = await cached_public_page(
+                        self.store, client, requested_url, maximum=MAX_RESEARCH_SOURCE_BYTES)
                     # Public reader pins DNS and validates every redirect/TLS/size.
                     response = httpx.Response(200, content=public_body,
                         headers={'content-type': public_mime}, request=httpx.Request('GET', current_url))
@@ -1548,7 +1697,7 @@ class GeminiClient:
                     content_type = str(response.headers.get("content-type") or "").casefold()
                     if content_type and not any(
                         kind in content_type
-                        for kind in ("text/html", "application/xhtml+xml", "text/plain")
+                        for kind in ("text/html", "application/xhtml+xml", "text/plain", "application/pdf")
                     ):
                         error_code = "unsupported_content_type"
                         raise ValueError(error_code)
@@ -1557,7 +1706,6 @@ class GeminiClient:
                     if not raw_bytes:
                         error_code = "empty_body"
                         raise ValueError(error_code)
-                    body_limited = len(raw_bytes) > 768_000
 
                     # Public acquisition stores raw bytes and MIME, so decoding
                     # must honor the document charset rather than httpx's UTF-8
@@ -1567,7 +1715,14 @@ class GeminiClient:
                         publisher_sid, _ = canonical_article(requested_url)
                     except ValueError:
                         publisher_sid = None
-                    if publisher_sid is not None:
+                    pdf = None
+                    if content_type.split(';')[0].strip() == 'application/pdf':
+                        from .pdf_sources import extract_pdf, public_pdf_metadata
+                        pdf = await asyncio.to_thread(extract_pdf, raw_bytes)
+                        normalized_text = pdf['normalized_text']
+                        text_limited = False
+                        source_encoding, page = 'pdf-text-extraction', ''
+                    elif publisher_sid is not None:
                         # Reuse the publisher's body contract on the SAME acquired
                         # bytes. Navigation/login text is not an article fallback.
                         try:
@@ -1587,14 +1742,13 @@ class GeminiClient:
                             raise ValueError('article_encoding_unreadable')
                         normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
                         source_encoding = decoded.original_encoding
-                    if len(normalized_text) < 80:
+                        page = decoded.unicode_markup
+                    if pdf is None and len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
 
-                    read_status = (
-                        "partial_body_limit"
-                        if body_limited
-                        else "partial_text_limit"
+                    read_status = pdf['read_status'] if pdf is not None else (
+                        "partial_text_limit"
                         if text_limited
                         else "complete"
                     )
@@ -1612,8 +1766,12 @@ class GeminiClient:
                                 normalized_text=normalized_text,
                                 read_status=read_status,
                                 access_scope='public',
+                                source_bytes_sha256=pdf['raw_sha256'] if pdf else None,
                                 now=self.store.now(),
                             )
+                            if pdf is not None:
+                                from .pdf_sources import persist_pdf
+                                persist_pdf(db, persisted['source_version_id'], raw_bytes, pdf)
                     else:
                         content_sha = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
                         source_version_id = "srcv_" + hashlib.sha256(
@@ -1640,6 +1798,7 @@ class GeminiClient:
 
                     documents[requested_url] = {
                         **persisted,
+                        **({'pdf': public_pdf_metadata(pdf)} if pdf else {}),
                         "requested_url": requested_url,
                         "final_url": current_url,
                         "title": source_titles.get(requested_url) or source_titles.get(current_url) or current_url,
@@ -1648,10 +1807,14 @@ class GeminiClient:
                         "redirect_chain": redirect_chain,
                         "source_encoding": source_encoding,
                         "raw_content_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                        **(_page_discovery_links(page, current_url, raw_bytes)
+                            if any(kind in content_type for kind in ('text/html', 'application/xhtml+xml')) else {}),
                     }
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:
                     if isinstance(exc,httpx.HTTPStatusError):
                         error_code = f'http_{exc.response.status_code}'
+                    if isinstance(exc, ValueError) and str(exc).startswith(('article_media_', 'pdf_')):
+                        error_code = error_code or str(exc)
                     error_code = error_code or type(exc).__name__
                     if run_id:
                         with self.store.tx() as db:
@@ -3323,6 +3486,7 @@ class GeminiClient:
         concept: str,
         author_note: str,
         facts: list[dict[str, Any]],
+        photo_capture: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Compose editorial copy from already validated evidence-backed facts."""
         if not facts and not author_note.strip():
@@ -3336,6 +3500,9 @@ class GeminiClient:
             "сведения, даты, имена или причинно-следственные связи. Текст должен читаться как публикация, а не как "
             "список тезисов: обычно 2–5 коротких связных абзацев, естественный заход, развитие и завершение. "
             "Не делай каждый факт отдельным абзацем автоматически. Без Markdown-заголовка и служебных комментариев. "
+            "Отличай photo_capture (исходный EXIF снимка) от времени источника, описанного события и публикации. "
+            "Не подставляй дату или часовой пояс, если они неизвестны. Выбирай уместные детали для истории этого "
+            "дома: не обязательно пересказывать каждый выбранный факт или превращать сообщение о ремонте в сводку. "
             "Уложись в 1000 символов, чтобы оставался запас под Telegram photo caption.\n\n"
             + json.dumps(
                 {
@@ -3343,6 +3510,7 @@ class GeminiClient:
                     "publication_concept": concept,
                     "author_note": author_note,
                     "facts": facts,
+                    "photo_capture": photo_capture or {"status": "unknown", "reason": "capture_metadata_unavailable"},
                 },
                 ensure_ascii=False,
             )
@@ -3389,6 +3557,238 @@ class GeminiClient:
         if retry_at:
             raise GeminiUnavailable(min(retry_at), "all_publication_composition_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
+
+    WRITER_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "parts_on_photo": {"type": "array", "items": {"type": "object", "properties": {
+                "part": {"type": "string"},
+                "visible": {"type": "boolean"},
+            }, "required": ["part", "visible"]}},
+            "draft": {"type": "string"},
+            "check": {"type": "array", "items": {"type": "object", "properties": {
+                "sentence": {"type": "string"},
+                "supported_by": {"type": "string"},
+                "problem": {"type": "string"},
+            }, "required": ["sentence", "supported_by", "problem"]}},
+            "text": {"type": "string"},
+            "image_notes": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["parts_on_photo", "draft", "check", "text", "image_notes"],
+    }
+    WRITER_RULES = (
+        "Ты пишешь подпись к посту Street Story о конкретном доме на фотографии. Пиши для читателя, по-русски, "
+        "естественно и связно: обычно 2–4 коротких абзаца, а не список фактов. Начни с самой сильной конкретной "
+        "подробности, без пустых обещаний вроде «интересная история».\n"
+        "Используй все выбранные факты, связывая их в историю дома; не сокращай текст без нужды. Назови нынешнее "
+        "назначение дома (жилой дом, поликлиника, школа…), если оно есть среди facts или context_facts. "
+        "Вневременное свойство, данное в факте с годом источника («в 2017 году здание имело четыре этажа»), пиши "
+        "без года («четырёхэтажное здание»): год источника не год события.\n"
+        "Герой — здание. Пост читают те, кто гуляет по улице и смотрит на дом: начинай с самого дома (облик, время "
+        "постройки, история), а не с учреждения. Учреждения, компании и организации — сведения о том, что "
+        "находится или находилось в этом здании («в этом доме разместилась поликлиника»), а не подлежащее первой "
+        "фразы и не главная тема.\n"
+        "Зачин. Если передан lead_fact — это самый сильный факт о доме: первая фраза начинается прямо с него, с "
+        "события, имени или детали («1 августа 1932 года в окна этого дома полетели бутылки с горючим…»), а не с "
+        "«Это здание», «Этот дом», «Здание…». Дом входит в эту же фразу как место события. Дальше — смысл и "
+        "контекст, затем остальная история. Не начинай с отсутствия чего-либо (лифта, удобств).\n"
+        "Факты. Используй только переданные факты, сохраняя их даты, оговорки и модальность. Не добавляй новых "
+        "сведений, дат, имён, мотивов, превосходных степеней («главный», «самый эффектный») и оценок, которых нет "
+        "в фактах. Связки — тоже утверждения: «с тех пор», «стало домом», «продолжает», «изначально», «поэтому» "
+        "допустимы, только если это прямо следует из фактов. «В 2014 году здесь размещалась поликлиника» значит "
+        "состояние в 2014 году, а не год переезда и не единственный год: датированное состояние значит «по меньшей "
+        "мере тогда». Если context_facts дают другие даты того же состояния, назови промежуток («как минимум с 2008 "
+        "года»), не создавая впечатления, что это было только в одном году. context_facts — остальные проверенные "
+        "факты о доме: используй их только чтобы правильно датировать и уточнить выбранные факты, не добавляй из них "
+        "новых тем. Учреждение называй так, как оно называлось в дату события. "
+        "«Изначально», «первоначально», «с самого начала» — только если факт говорит о постройке или первом "
+        "назначении дома; «до войны здесь было…» не значит «изначально». Прежнее назначение — в прошедшем времени. «Сейчас», «сегодня», «работает» — только если факт прямо говорит о "
+        "настоящем или датирован этим годом. Учреждение занимает здание в течение периода, а не в одну дату: если "
+        "текущего подтверждения нет, пиши, что оно здесь было («прежде здесь размещалась поликлиника», «как минимум "
+        "с 2008 года здесь была поликлиника»), и никогда не привязывай его к одному году так, будто оно было здесь "
+        "только тогда («в 2017 году здесь размещалась…»). Отметка карты этого года (OpenStreetMap, 2ГИС) о том, что "
+        "учреждение находится в здании, — текущее подтверждение: тогда пиши «сейчас здесь …».\n"
+        "Фото. Если на фото ясно видно то, что факт описывает расплывчато (например, сюжеты декора фасада), опиши "
+        "видимое. Можно добавить одно-два наблюдения о том, что ясно видно на снимке (материал, цвет, декор, "
+        "балконы, окна), чтобы читатель узнал дом, — без оценок и догадок о назначении. Наблюдение по фото не должно "
+        "противоречить фактам, не указывает положение детали на фасаде («в центре», «слева»: снимок показывает не "
+        "весь дом) и не сообщает, что что-то «видно на снимке». Ничего не выдумывай. Часть дома, которой на фото не видно (утрачена, скрыта или вне кадра), "
+        "упоминай только как сведение о доме, никогда как то, что читатель видит на этом снимке.\n"
+        "Язык. Публичный текст излагает факты: без «в источниках указан», «по данным», «согласно паспорту/перечню», "
+        "«в отзыве» и других ссылок на источники и документы. Простые слова, без канцелярских аббревиатур (ОКН, "
+        "ЕГРОКН и т. п.): пиши «объект культурного наследия».\n"
+        "Адрес. place — адрес из тега карты, он бывает устаревшим или неточным: если проверенные факты называют "
+        "этот дом по другому современному адресу, бери адрес из фактов.\n"
+        "Концовка. Последние строки: самый короткий адрес — название улицы и номер дома, без города и без запятых "
+        "(например «Комсомольская улица 53–61»; несколько номеров дома — через тире, «46–48», никогда через запятую); затем отдельной строкой хештег города, один раз, и других хештегов "
+        "нет. Город больше нигде в концовке не повторяй. Ссылки на карты не пиши: их добавит приложение.\n"
+        "Факт с from_visitor_reviews — это то, что пишут посетители в отзывах на картах: подавай его именно так "
+        "(«посетители пишут, что…»), не как установленную историю. "
+        "Явные опечатки в формулировках фактов исправляй (например, «гендстиль» → «югендстиль»). "
+        "Дословные фрагменты автора из literal_fragments сохрани в точности. Просьба автора (owner_request) задаёт "
+        "угол и стиль, но не разрешает добавлять неподтверждённые сведения. Без Markdown. Не длиннее 900 символов.\n"
+        "Разметка: абзацы разделяй пустой строкой; адрес — отдельной строкой после пустой строки; хештег — "
+        "следующей строкой. Не начинай текст с части дома, которой нет на фото.\n"
+        "Порядок работы: parts_on_photo — каждая конкретная часть дома, названная в фактах (башенка, шпиль, "
+        "скульптура, эркер, вывеска и т. п.), и видна ли она на этом фото; невидимую архитектурную особенность (башенка, "
+        "скульптура, эркер) упомяни не в начале и честно: «у дома есть …, на этом снимке её не видно»; про остальное "
+        "(оборудование, подъёмники, вывески, внутренние помещения) никогда не пиши, видно ли оно на снимке; каждую дату бери только из её собственного факта; draft — черновик; check — для каждого предложения черновика укажи факт, на который оно "
+        "опирается (supported_by), и проблему (problem: неподтверждённая связка или дата, превосходная степень, "
+        "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе; пусто, если проблем нет); "
+        "text — итоговый текст, где все найденные проблемы исправлены; image_notes — 2–3 надписи для картинки по "
+        "выбранным фактам, каждая 3–8 слов и понятна сама по себе, без обрывков; первая — самый сильный факт "
+        "(lead_fact) коротко со своей датой (например «1932: нацисты подожгли дом»); дальше — события, люди, "
+        "детали облика и нынешнее назначение; справки о статусе, охране и реестрах, даты включения в перечни — "
+        "слабые надписи, только если больше сказать нечего; без года источника и названий реестров, «Прежде: …» "
+        "для прежнего назначения."
+    )
+
+    HOOK_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "ranked": {"type": "array", "items": {"type": "object", "properties": {
+                "index": {"type": "integer"},
+                "unexpected": {"type": "integer"},
+                "human_drama": {"type": "integer"},
+                "concrete": {"type": "integer"},
+                "relates_to_photo": {"type": "integer"},
+                "reason": {"type": "string"},
+            }, "required": ["index", "unexpected", "human_drama", "concrete", "relates_to_photo", "reason"]}},
+        },
+        "required": ["ranked"],
+    }
+    HOOK_RULES = (
+        "Ты редактор городского канала Street Story: пост о доме читают прохожие, которые стоят перед ним. "
+        "Найди среди проверенных фактов о доме самый сильный зачин — факт, после которого человек остановится "
+        "и посмотрит на дом иначе. Оцени каждый факт по шкале 0–3:\n"
+        "• unexpected — неожиданность, контраст, нарушение ожиданий (издательство, которое подожгли, потом "
+        "маслобаза; глазная клиника, ставшая общежитием; единственный уцелевший дом квартала);\n"
+        "• human_drama — люди, конфликт, судьбы, события (пожар, война, конфискация, знаменитые жильцы);\n"
+        "• concrete — конкретика: имена, предметы, числа, точные детали, а не общие слова;\n"
+        "• relates_to_photo — связь с тем, что прохожий видит на фото (деталь фасада, башня, надпись).\n"
+        "Слабые зачины, оценивай их низко: статус памятника и реестры, справки об учреждениях и ремонтах, "
+        "голые даты постройки, материал и этажность без истории, отзывы посетителей. Факт должен быть о самом "
+        "доме, а не о соседнем. Верни ranked — индексы фактов (из входного списка, с нуля) от сильнейшего к "
+        "слабейшему, не больше трёх, с короткой причиной. Если передан researcher_candidate — это выбор "
+        "исследователя, читавшего источники: поставь его первым, если он действительно сильнейший, иначе первым "
+        "поставь более сильный факт и объясни в причине, чем он сильнее."
+    )
+
+    async def _lite_chain(self, contents, config, parse):
+        """Any answering lite model in the writer chain; unavailable or malformed answers fall through."""
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.writer_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                response = await self._generate(key, timeout, list(contents), config,
+                                                operation="grounded_research", model=_model, quota=_quota)
+                try:
+                    return parse(response.text, _model)
+                except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
+                    raise MalformedProviderResponse("gemini:malformed_lite_answer") from None
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except MalformedProviderResponse:
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_lite_models_unavailable")
+
+    async def strongest_hook(self, *, facts: list[str], photo_jpeg: bytes | None,
+                             researcher_choice: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Rank the house's verified facts as an opening for a street post; the first is the decision.
+
+        researcher_choice is the candidate of the researcher who read the sources: confirm it or name a
+        stronger fact; the first ranked entry is the single decision for the whole run.
+        """
+        from google.genai import types
+        payload = {"facts": facts}
+        if researcher_choice and researcher_choice.get("index") is not None:
+            payload["researcher_candidate"] = researcher_choice
+        contents = [self.HOOK_RULES + "\n\n" + json.dumps(payload, ensure_ascii=False)]
+        if photo_jpeg:
+            contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
+        config = types.GenerateContentConfig(response_mime_type="application/json",
+                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=1024)
+
+        def parse(text, model):
+            ranked = [row for row in json.loads(text or "{}")["ranked"]
+                      if isinstance(row.get("index"), int) and 0 <= row["index"] < len(facts)]
+            if not ranked:
+                raise ValueError
+            return {"ranked": ranked[:3], "model": str(model or "")}
+        return await self._lite_chain(contents, config, parse)
+
+    async def write_caption(
+        self,
+        *,
+        owner_request: str,
+        current_text: str,
+        concept: str,
+        facts: list[dict[str, Any]],
+        place: dict[str, Any],
+        literal_fragments: list[str],
+        photo_jpeg: bytes | None,
+        context_facts: list[dict[str, Any]] | None = None,
+        lead_fact: str | None = None,
+    ) -> dict[str, str]:
+        """Write the publication caption with a lite text model; any answering model in the chain will do."""
+        from google.genai import types
+
+        payload = json.dumps({
+            "owner_request": owner_request,
+            "current_text": current_text,
+            "publication_concept": concept,
+            "place": place,
+            "facts": facts,
+            "context_facts": context_facts or [],
+            "lead_fact": lead_fact,
+            "literal_fragments": literal_fragments,
+        }, ensure_ascii=False)
+        contents = [self.WRITER_RULES + "\n\n" + payload]
+        if photo_jpeg:
+            contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.WRITER_SCHEMA,
+            max_output_tokens=2048,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(key, timeout, list(contents), config,
+                                            operation="grounded_research", model=model, quota=quota)
+            try:
+                payload = json.loads(response.text or "{}")
+                text = str(payload.get("text") or "").strip()
+                if not text or len(text) > 1100:
+                    raise ValueError
+                notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
+            except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+                raise MalformedProviderResponse("gemini:malformed_caption") from None
+            return {"text": text, "model": str(model or ""), "image_notes": notes}
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.writer_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except MalformedProviderResponse:
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_caption_writer_models_unavailable")
 
     async def _semantic_complete_discovery_best_effort(
         self,

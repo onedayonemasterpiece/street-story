@@ -131,8 +131,10 @@ async def test_saved_live_result_delivered_while_original_cleanup_and_permit_rem
     provider.host_factory = held_factory
     operation = asyncio.create_task(provider._run('facts', 'Own SOURCE', binding(svc, story), SCHEMA))
     try:
-        result = await asyncio.wait_for(asyncio.shield(operation), .1)
-        await asyncio.wait_for(cleanup_started.wait(), .1)
+        # The held cleanup event proves ordering. A100ms wall-clock deadline
+        # instead measures runner/filesystem load during durable receipt writes.
+        result = await asyncio.wait_for(asyncio.shield(operation), 5)
+        await asyncio.wait_for(cleanup_started.wait(), 5)
         assert result['result'] == {'facts': ['Evidence-backed result']}
         assert result['receipt']['phase'] == 'completed'
         assert finalized == [] and result['receipt']['resource_finalization'] == 'pending'

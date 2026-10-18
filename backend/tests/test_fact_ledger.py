@@ -1229,6 +1229,30 @@ def test_one_batch_merge_persists_all_own_passages(tmp_path):
         assert db.execute('SELECT count(*) FROM fact_evidence_spans').fetchone()[0] == 2
 
 
+def test_review_pass_reads_story_subject_once_not_per_fact(tmp_path):
+    from street_story.fact_ledger import accept_fact_basis
+    store = Store(tmp_path / 'db.sqlite3')
+    story = create_story(store)
+    with store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                   (json.dumps({'visual_identity': {'candidate_id': 'wiki:403645'}, 'identity_generation': 1}), story))
+    ids = persist(store, story, [fact(f'figures-{n}', f'Фигур на фасаде: {n}.', 'https://own.example',
+                                      f'Фигур на фасаде: {n}.') for n in range(3)], 'r', 'b')
+    assert len(set(ids)) == 3
+    with store.tx() as db:
+        for fid in ids:
+            own = [row[0] for row in db.execute(
+                'SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o '
+                'ON o.observation_id=e.observation_id WHERE o.assertion_id=?', (fid,))]
+            accept_fact_basis(db, story, fid, own, operation={'contract': 'source-reading-assessment-v2'}, now=store.now())
+        reads = []
+        db.set_trace_callback(lambda sql: reads.append(sql) if 'FROM stories' in sql and 'visual_identity' in sql else None)
+        refresh_review_status(db, story, store.now())
+        db.set_trace_callback(None)
+        assert len(reads) == 1
+        assert {row[0] for row in db.execute('SELECT eligibility FROM fact_assertions')} == {'eligible'}
+
+
 def test_accepted_basis_survives_support_growth_but_not_changed_claim_or_body(tmp_path):
     from street_story.fact_ledger import accept_fact_basis, accepted_basis_valid
     store = Store(tmp_path / 'db.sqlite3')

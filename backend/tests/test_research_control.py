@@ -8,7 +8,7 @@ from street_story.research_runs import (
     acquire_chunk_lease, begin_research_run, chunk_checkpoint, chunk_lease_owned,
     persist_source_version, record_chunk_batch,
 )
-from street_story.service import ConflictError
+from street_story.service import ConflictError, StreetStoryService
 from test_mvp_research import service
 
 
@@ -25,8 +25,13 @@ def fixture(tmp_path):
         db.execute('UPDATE stories SET research_json=?,draft_text=? WHERE id=?',
                    (json.dumps(research), 'Owner draft', sid))
         for kind in ('identity', 'identity_visual', 'research', 'refinement', 'visual', 'publish'):
-            svc._enqueue_job(db, sid, kind, 'control-' + kind, {
-                'identity_generation': 0, 'photo_sha256': story['photo_sha256']})
+            payload = {'identity_generation': 0, 'photo_sha256': story['photo_sha256']}
+            if kind == 'publish':
+                # Inert queue row for Stop/control isolation, not a publication
+                # intent with a selected/proven visual. Keep real product guards.
+                StreetStoryService._enqueue_job(svc, db, sid, kind, 'control-' + kind, payload)
+            else:
+                svc._enqueue_job(db, sid, kind, 'control-' + kind, payload)
         db.execute("UPDATE jobs SET state='running',attempts=3,lease_until=? WHERE kind IN ('research','identity_visual')",
                    (svc.store.now() + 90,))
         svc._enqueue_job(db, sid, 'research', 'control-completed', {'identity_generation': 0})

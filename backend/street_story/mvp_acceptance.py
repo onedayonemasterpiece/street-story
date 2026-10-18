@@ -104,7 +104,7 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                 if isinstance(decisions, dict)
                 else {}
             )
-        await super()._run_research(job)
+        outcome = await super()._run_research(job)
         self._enforce_claim_support_and_decisions(job["story_id"], prior_decisions)
         with self.store.tx() as db:
             issues = selected_eligibility_issues(db, job["story_id"])
@@ -122,6 +122,7 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                         job["story_id"],
                     ),
                 )
+        return outcome
 
     def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
         if research is None:

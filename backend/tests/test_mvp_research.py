@@ -123,7 +123,7 @@ class FakeGemini:
             }],
         }
 
-    async def compose_publication(self, *, place_name, concept, author_note, facts):
+    async def compose_publication(self, *, place_name, concept, author_note, facts, photo_capture=None):
         body = "\n\n".join(
             part for part in [author_note, " ".join(str(item["text"]) for item in facts)] if part
         )

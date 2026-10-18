@@ -23,7 +23,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
-import java.util.Base64
 
 @RunWith(AndroidJUnit4::class)
 class OwnerReviewUiInstrumentedTest {
@@ -34,9 +33,7 @@ class OwnerReviewUiInstrumentedTest {
         val previousBackend = config.backendUrl
         config.backendUrl = null
         val storyId = "conflict-journal-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val server = okhttp3.mockwebserver.MockWebServer().apply { start() }
         val serverId = "server-$storyId"
         try {
@@ -75,11 +72,13 @@ class OwnerReviewUiInstrumentedTest {
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
                 .putString("active_story_id", storyId).commit()
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-conflict")
                 scenario.onActivity { activity ->
                     descendants(activity.findViewById(android.R.id.content)).filterIsInstance<TextView>()
                         .single { it.text.toString() == "Противоречия и решения" }.performClick()
                 }
-                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-conflict")
                 val quote = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(
                     androidx.test.uiautomator.By.textContains("left-version")), 3000))
                 assertTrue(quote.text.contains("Работы ещё не начались") && quote.text.contains("Страница 17"))
@@ -110,9 +109,7 @@ class OwnerReviewUiInstrumentedTest {
         val previousBackend = config.backendUrl
         config.backendUrl = null
         val storyId = "own-source-dialog-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         try {
             StoryStore(context).use { store ->
                 store.createStory(imported)
@@ -126,6 +123,8 @@ class OwnerReviewUiInstrumentedTest {
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
                 .putString("active_story_id", storyId).commit()
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-source")
                 scenario.onActivity { activity ->
                     val root = findByDescription(activity.findViewById(android.R.id.content), "facts-island-expanded")!!
                     assertTrue(descendants(root).filterIsInstance<CheckBox>().none { it.isEnabled })
@@ -133,7 +132,7 @@ class OwnerReviewUiInstrumentedTest {
                     val spans = link.text as Spanned
                     spans.getSpans(0, spans.length, ClickableSpan::class.java).single().onClick(link)
                 }
-                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "owner-review-source")
                 val content = requireNotNull(device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textContains("version-A")), 3000))
                 assertTrue(content.text.contains("version-B") && content.text.contains("Страница 17"))
                 assertTrue(content.text.contains("планировали ремонт"))
@@ -155,9 +154,7 @@ class OwnerReviewUiInstrumentedTest {
 
     @Test fun pending_facts_and_status_reason_survive_store_reopen_without_live_session() {
         val storyId = "durable-research-ui-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         StoryStore(context).use { store ->
             store.createStory(imported)
             store.replaceFacts(storyId, listOf(FactSnapshot("f", "Нужно проверить собственный источник", .5,
@@ -195,9 +192,7 @@ class OwnerReviewUiInstrumentedTest {
         val captured = JSONObject(instrumentation.context.assets.open("live-first-real-facts.json").bufferedReader().use { it.readText() })
         assertEquals("real_retrieval", captured.getString("source_mode"))
         val storyId = "real-facts-ui-" + System.nanoTime()
-        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )), "image/png", storyId)
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val rows = captured.getJSONArray("facts")
         val facts = (0 until rows.length()).map { index ->
             val json = rows.getJSONObject(index)
@@ -275,13 +270,11 @@ class OwnerReviewUiInstrumentedTest {
     @Test
     fun topicMilestonesLiveInsideConversationAndStickyBentoIsSeparate() {
         val storyId = "owner-review-ui-" + System.nanoTime()
-        val png = Base64.getDecoder().decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII="
-        )
+        val original = PhotoGpsFixture.bytes()
         val imported = PhotoImporter.importStream(
             context,
-            ByteArrayInputStream(png),
-            "image/png",
+            ByteArrayInputStream(original),
+            "image/jpeg",
             storyId,
         )
         StoryStore(context).use { store ->

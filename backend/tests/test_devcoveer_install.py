@@ -19,6 +19,77 @@ def _load_installer():
     return module
 
 
+def test_agent_install_uses_current_actual_proof_loader_without_legacy_attestation(tmp_path, monkeypatch):
+    module = _load_installer()
+    proof = tmp_path/'agent-proof.json'
+    proof.write_text('{"contract":"research-agent-verification-v1","routes":[]}')
+    proof.chmod(0o600)
+    expected = {'fact_agent_routes': [{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'}],
+                'new_inference': False, 'cache_key': 'research-agent-verification-v1'}
+    calls = []
+    def validate(argv, **kwargs):
+        calls.append((argv, kwargs))
+        compile(argv[2], '<agent-install>', 'exec')
+        assert 'load_agent_qualification(proof_path,' in argv[2]
+        assert "service.store.cache_put(QUALIFICATION_KEY,checked,30*86400)" in argv[2]
+        assert str(proof) in argv
+        return json.dumps(expected)
+    monkeypatch.setattr(module, 'run', validate)
+    monkeypatch.setattr(module, 'install_research_runtime', lambda *_: pytest.fail('unrelated legacy pool'))
+    assert module.install_fact_agent_runtime(tmp_path/'release', tmp_path/'venv', proof) == expected
+    assert len(calls) == 1 and calls[0][1]['timeout'] == 45
+
+
+def test_agent_install_rejects_symlink_before_read_or_subprocess(tmp_path, monkeypatch):
+    module = _load_installer()
+    original = tmp_path/'proof.json'
+    original.write_text('{}')
+    original.chmod(0o600)
+    link = tmp_path/'alias.json'
+    link.symlink_to(original)
+    monkeypatch.setattr(module, 'run', lambda *_a, **_k: pytest.fail('must not execute'))
+    with pytest.raises(module.DeployError, match='symlink'):
+        module.install_fact_agent_runtime(tmp_path/'release', tmp_path/'venv', link)
+
+
+def test_agent_service_environment_preserves_exact_verified_routes(tmp_path, monkeypatch):
+    module = _load_installer()
+    monkeypatch.setattr(module, 'SERVICE_ENV', tmp_path/'service.env')
+    routes = [{'provider_id':'codex_native','model_id':'gpt-6-luna'},
+              {'provider_id':'gigachat','model_id':'GigaChat-2'}]
+    module.write_service_env('test-device-token', 'test-vibe-token', 'a'*40, fact_agent_routes=routes)
+    values = module.parse_dotenv(module.SERVICE_ENV)
+    assert json.loads(values['STREET_STORY_FACT_AGENT_ROUTES']) == routes
+    module.write_service_env('test-device-token', 'test-vibe-token', 'a'*40)
+    assert 'STREET_STORY_FACT_AGENT_ROUTES' not in module.parse_dotenv(module.SERVICE_ENV)
+
+
+@pytest.mark.parametrize('head_matches', [True, False])
+def test_explicit_source_branch_preserves_remote_and_head_sha_gates(monkeypatch, head_matches):
+    module = _load_installer()
+    monkeypatch.setattr(module, '_tracked_status', lambda: '')
+    expected = 'a'*40
+    branch = 'chatgpt/street-story-map-facts-20261012'
+    calls = []
+    def git(argv, **_kwargs):
+        calls.append(argv)
+        if 'rev-parse' in argv:
+            if argv[-1] == 'HEAD':
+                return expected if head_matches else 'b'*40
+            return 'c'*40 if argv[-1].endswith('^{tree}') else expected
+        return ''
+    monkeypatch.setattr(module, 'run', git)
+    if head_matches:
+        assert module.exact_source(expected, source_branch=branch) == (expected, 'c'*40)
+    else:
+        with pytest.raises(module.DeployError, match='exact source gate failed'):
+            module.exact_source(expected, source_branch=branch)
+    assert ['git', 'check-ref-format', 'refs/heads/'+branch] in calls
+    fetch = next(argv for argv in calls if 'fetch' in argv)
+    assert fetch[-1] == f'+refs/heads/{branch}:refs/remotes/origin/{branch}'
+    assert not any('checkout' in argv or 'push' in argv or 'merge' in argv for argv in calls)
+
+
 def test_publisher_maintenance_does_not_stop_generated_backend_unit(tmp_path, monkeypatch):
     from configparser import ConfigParser
     module = _load_installer()
@@ -97,15 +168,15 @@ def _deployment_fixture(root: Path, sha: str, repository: str = "onedayonemaster
 
 def test_environment_retention_preserves_rollback_processes_and_all_source(monkeypatch, tmp_path):
     module = _load_installer()
-    releases = [_deployment_fixture(tmp_path, character * 40) for character in "abcd"]
+    releases = [_deployment_fixture(tmp_path, character * 40) for character in "abcde"]
     monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
     monkeypatch.setattr(module, "release_process_references", lambda: {"c" * 40})
 
-    receipt = module.prune_release_environments("a" * 40, "b" * 40)
+    receipt = module.prune_release_environments("a" * 40, "b" * 40, preserve=("d" * 40,))
 
-    assert receipt["removed"] == ["d" * 40]
-    assert all((release / "venv").exists() for release in releases[:3])
-    assert not (releases[3] / "venv").exists()
+    assert receipt["removed"] == ["e" * 40]
+    assert all((release / "venv").exists() for release in releases[:4])
+    assert not (releases[4] / "venv").exists()
     assert all((release / "source/backend/street_story/keep.py").read_text() == "historical source"
                for release in releases)
     assert all((release / ".street-story-release.json").exists() for release in releases)

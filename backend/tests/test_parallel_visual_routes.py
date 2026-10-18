@@ -88,18 +88,78 @@ async def test_google_unknown_blocks_other_route_but_not_independent_child(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_opencode_original_readback_precedes_new_google_availability(tmp_path):
+@pytest.mark.parametrize('phase', ['submitted', 'unknown'])
+async def test_opencode_original_readback_precedes_new_google_availability(tmp_path, phase):
     adapter, story, calls = ready(tmp_path)
     args = pair(story)
-    await seed(adapter, args, 'vision', 'submitted', session_id='ses_original', message_id='msg_original',
+    await seed(adapter, args, 'vision', phase, session_id='ses_original', message_id='msg_original',
                image_transport='inline_data_uri_v1')
     args[1]['_visual_pair_resume_only'] = True
     args[1]['_visual_pair_observe_only'] = True
     result = await adapter.visual_pair_route('google', *args)
     assert result['receipt']['provider'] == 'opencode'
-    assert calls == [('opencode', 'submitted', 'parent:reference-a', ['SOURCE', 'REF 1'])]
+    assert calls == [('opencode', phase, 'parent:reference-a', ['SOURCE', 'REF 1'])]
     assert result['receipt']['binding']['session_id'] == 'ses_original'
     assert result['receipt']['binding']['message_id'] == 'msg_original'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pending', [False, True])
+async def test_unknown_opencode_pair_reads_original_http_address_without_dispatch(tmp_path, pending):
+    import base64
+
+    from street_story.opencode_research import ResearchLimits
+    from test_opencode_research import Harness, sheet
+
+    adapter, story, calls = ready(tmp_path)
+    args = pair(story)
+    args[1]['_visual_image_parts'][0].update(
+        mime_type='image/png', data=base64.b64encode(sheet()).decode())
+    unit = canonical(visual_operation_unit(args[1], json.loads(args[3])))
+    binding, _ = adapter.attempt(args[1], 'vision', unit)
+    harness = Harness()
+    harness.result = {'status': 'mismatch', 'candidate_id': '', 'confidence': 0,
+                      'observations': [], 'alternative_candidate_ids': []}
+    client = harness.adapter(limits=ResearchLimits(timeout_seconds=.03, poll_seconds=.001))
+    original = await client.compare_image(args[1]['_visual_image_parts'], binding, args[2], args[3])
+    receipt = {**original['receipt'], 'phase': 'unknown', 'provider_send_state': 'original_pending',
+               'retry_safe': False}
+    await adapter.checkpoint(binding, receipt)
+    harness.requests.clear()
+    harness.timeout = pending
+    adapter.client = client
+    client.checkpoint = adapter.checkpoint
+    client.scope_guard = adapter.guard_binding
+    # Original observation remains possible when new inference is unavailable.
+    adapter.service.store.cache_put('research-quota-health:opencode:mimo-v2.6-flash-free',
+                                   {'category': 'research_provider_quota', 'retry_at': adapter.service.store.now()+300}, 300)
+    adapter.service.store.cache_put('research-vision-verification-v1', {}, 3600)
+    args[1]['_visual_pair_resume_only'] = True
+    try:
+        if pending:
+            with pytest.raises(RetryableProviderError, match='pair_outcome_unknown'):
+                await adapter.visual_pair_route('google', *args)
+        else:
+            result = await adapter.visual_pair_route('google', *args)
+            assert result['result'] == harness.result
+            assert all(result['receipt']['binding'][key] == value for key, value in binding.items())
+        assert ('GET', '/session/' + receipt['session_id'] + '/message', None) in harness.requests
+        assert all(method == 'GET' for method, _path, _payload in harness.requests)
+        assert len(harness.sends) == len(harness.admissions) == 1
+        assert not calls
+        stored = adapter.visual_pair_receipts(args[1], args[3])['vision']
+        # Recovery carries frozen transport metadata alongside the original
+        # authority fields; no original binding value may change.
+        assert all(stored['binding'][key] == value for key, value in binding.items())
+        assert stored['session_id'] == receipt['session_id']
+        assert stored['message_id'] == receipt['message_id']
+        assert stored['frozen_prompt'] == receipt['frozen_prompt']
+        assert stored['frozen_schema'] == receipt['frozen_schema']
+        assert stored['phase'] == ('unknown' if pending else 'completed')
+        with adapter.service.store.connection() as db:
+            assert db.execute('SELECT count(*) FROM research_provider_attempts').fetchone()[0] == 1
+    finally:
+        await harness.client.aclose()
 
 
 @pytest.mark.asyncio

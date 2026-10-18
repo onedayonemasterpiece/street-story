@@ -31,6 +31,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         db.execSQL("CREATE INDEX idx_outbox_sync ON outbox(state,created_at)")
         db.execSQL("CREATE INDEX idx_story_feed ON stories(created_at DESC)")
         db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
+        db.execSQL("ALTER TABLE facts ADD COLUMN strongest INTEGER NOT NULL DEFAULT 0")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -40,6 +41,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
             db.execSQL("ALTER TABLE stories ADD COLUMN processed_image_bytes_url TEXT")
         }
         if (oldVersion < 3) db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
+        if (oldVersion < 4) db.execSQL("ALTER TABLE facts ADD COLUMN strongest INTEGER NOT NULL DEFAULT 0")
     }
 
     @Synchronized
@@ -398,6 +400,16 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     @Synchronized
+    fun clearPlaceMaterial(id: String) {
+        check(draftOverrides.edit().remove(id).commit())
+        story(id)?.processedImagePath?.let(PhotoAssets::releaseTemporary)
+        writableDatabase.update("stories", ContentValues().apply {
+            putNull("draft_text"); putNull("summary")
+            putNull("processed_image_path"); putNull("processed_image_url"); putNull("processed_image_bytes_url")
+        }, "client_story_id=?", arrayOf(id))
+    }
+
+    @Synchronized
     fun setDraftText(id: String, text: String) {
         check(draftOverrides.edit().putString(id, text).commit()) { "local draft override was not persisted" }
         writableDatabase.update("stories", ContentValues().apply {
@@ -429,6 +441,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
                     put("sources_json", fact.sourcesJson)
                     put("review_status", fact.reviewStatus)
                     put("eligibility_reason", fact.eligibilityReason)
+                    put("strongest", if (fact.strongest) 1 else 0)
                 })
             }
             val selectedCount = facts(storyId).count { it.selected }
@@ -444,12 +457,12 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     @Synchronized
     fun facts(storyId: String): List<FactSnapshot> = readableDatabase.query(
-        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json", "review_status", "eligibility_reason"),
+        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json", "review_status", "eligibility_reason", "strongest"),
         "story_id=?", arrayOf(storyId), null, null, "rowid",
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
-                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5), cursor.getString(6), cursor.getString(7)))
+                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5), cursor.getString(6), cursor.getString(7), cursor.getInt(8) != 0))
             }
         }
     }
@@ -578,7 +591,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     companion object {
         private const val DB_NAME = "street-story.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
         private val STORY_COLUMNS = arrayOf(
             "client_story_id", "server_story_id", "created_at", "photo_path", "photo_sha256", "photo_mime_type",
             "latitude", "longitude", "stage", "place_name", "summary", "draft_text", "processed_image_path",

@@ -2,9 +2,65 @@
 from __future__ import annotations
 import io
 import math
+import hashlib
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from PIL import Image
+
+
+def inspect_capture_time(source: bytes) -> dict[str, Any]:
+    """Describe only original EXIF capture time, independently of upload/event time."""
+    result: dict[str, Any] = {'status': 'unknown', 'provenance': 'source_exif',
+                              'source_sha256': hashlib.sha256(source).hexdigest()}
+    try:
+        with Image.open(io.BytesIO(source)) as image:
+            exif = image.getexif()
+            containers = [exif, exif.get_ifd(34665)]
+        tags = {}
+        for key, tag in (('datetime_original', 36867), ('offset_time_original', 36881),
+                         ('subsec_time_original', 37521)):
+            values = set()
+            for container in containers:
+                value = container.get(tag)
+                if value is None:
+                    continue
+                if isinstance(value, bytes):
+                    value = value.decode('ascii')
+                if not isinstance(value, str) or len(value) > 64:
+                    raise ValueError('Invalid EXIF time tag')
+                value = value.rstrip('\x00').strip()
+                if value:
+                    values.add(value)
+            if len(values) > 1:
+                return {**result, 'reason': 'conflicting_original_time_tags'}
+            tags[key] = next(iter(values), None)
+        raw = tags['datetime_original']
+        if not raw:
+            return {**result, 'reason': 'datetime_original_missing'}
+        if not re.fullmatch(r'\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}', raw):
+            raise ValueError('Invalid DateTimeOriginal')
+        local = datetime.strptime(raw, '%Y:%m:%d %H:%M:%S')
+        subsec = tags['subsec_time_original']
+        if subsec and not re.fullmatch(r'\d{1,9}', subsec):
+            raise ValueError('Invalid SubsecTimeOriginal')
+        local_text = local.isoformat() + ('.' + subsec if subsec else '')
+        result.update(datetime_original=raw, local_datetime=local_text)
+        if subsec:
+            result['subsec_time_original'] = subsec
+        offset = tags['offset_time_original']
+        if not offset:
+            return {**result, 'status': 'timezone_unknown', 'reason': 'offset_time_original_missing'}
+        if not re.fullmatch(r'[+-]\d{2}:\d{2}', offset) or int(offset[1:3]) > 23 or int(offset[4:]) > 59:
+            return {**result, 'status': 'timezone_unknown', 'reason': 'offset_time_original_invalid'}
+        captured = datetime.fromisoformat(local_text + offset)
+        return {**result, 'status': 'known', 'offset_time_original': offset,
+                'captured_at': local_text + offset,
+                'captured_at_utc': captured.astimezone(timezone.utc).isoformat()}
+    except Exception as exc:
+        return {**result, 'status': 'unknown', 'reason': 'original_capture_time_unreadable',
+                'error_type': type(exc).__name__}
 
 
 def inspect_gps(source: bytes | Path) -> dict[str, Any]:

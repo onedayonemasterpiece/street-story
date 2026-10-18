@@ -199,6 +199,9 @@ class IdentityLifecycleMixin:
             archive_attempt(research, self.store.now())
             generation += 1
             research['identity_generation'] = generation
+            if (research.get('place_selection') or {}).get('mode') == 'rough':
+                research['place_selection'].update(generation=generation, status='identifying',
+                    candidate_id=None, narrowed_candidate_id=None)
             research['identity_owner_hint'] = {'text': text[:500], 'provenance': 'owner_live_text_or_voice',
                 'independently_verified': False, 'scope': 'search_context_only', 'request_key': key,
                 'photo_sha256': row['photo_sha256'], 'generation': generation, 'control_revision': epoch}
@@ -241,7 +244,8 @@ class IdentityLifecycleMixin:
                     and not research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation))
             if not current(row, research):
                 return
-            if row.get('latitude') is None or row.get('longitude') is None:
+            if (row.get('latitude') is None or row.get('longitude') is None) and not (
+                    research.get('place_selection') or {}).get('mode') == 'rough':
                 require_remaining(self, job['story_id'], 'identity')
                 resolver = getattr(self, '_resolve_place_query', None)
                 location = await resolver(hint) if callable(resolver) else None
@@ -281,6 +285,10 @@ class IdentityLifecycleMixin:
             if previous.get('status') in ACCEPTED or (prior.get('identity_attempted_generation') == generation and not owner_hint.strip()):
                 record_identity_event(self, story_id, 'identity_reused', {'generation': generation, 'status': previous.get('status')})
                 return self.story(story_id)
+            from .owner_group_identity import selected_group, resolve_group
+            if selected_group(prior, photo_sha256=story['photo_sha256'], generation=generation):
+                return await resolve_group(self, story, prior, job_id=job_id, job_attempt=job_attempt,
+                    transcript='\n'.join(value for value in (transcript or prior.get('transcript') or '', owner_hint) if value))
             started = time.monotonic()
             record_identity_event(self, story_id, 'identity_started', {'generation': generation, 'job_id': job_id, 'policy': POLICY})
             lat, lon = story.get('latitude'), story.get('longitude')
@@ -711,6 +719,9 @@ class IdentityLifecycleMixin:
             prior.update({'identity_generation': generation, 'identity_history': history,
                           'identity_rejected_ids': rejected[-64:], 'visual_identity': {'status': 'rejected', 'candidate_id': None,
                           'photo_sha256': story['photo_sha256'], 'generation': generation, 'candidates': []}})
+            if (prior.get('place_selection') or {}).get('mode') == 'rough':
+                prior['place_selection'].update(generation=generation, status='identifying', candidate_id=None,
+                                               narrowed_candidate_id=None)
             visual = json.loads(story['visual_context_json'] or '{}')
             visual.update({'stale': True, 'stale_reason': 'identity_changed', 'content_revision': f'identity-rejected:{generation}'})
             prior['content_identity_changed'] = bool(story['draft_text'])
@@ -756,6 +767,9 @@ class IdentityLifecycleMixin:
             self._restore_source_photo(db, story_id, original)
             generation = int(prior.get('identity_generation') or 0) + 1
             prior.update({'identity_generation': generation, 'photo_camera_hints': camera_binding, 'location_provenance': {'kind': 'selected_original_exif', 'selected_original_metadata': True}})
+            if (prior.get('place_selection') or {}).get('mode') == 'rough':
+                prior['place_selection'].update(generation=generation, status='identifying',
+                    candidate_id=None, narrowed_candidate_id=None)
             prior.pop('visual_identity', None)
             prior.pop('osm', None)
             prior.pop('wikipedia', None)

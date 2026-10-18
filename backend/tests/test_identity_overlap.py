@@ -6,7 +6,7 @@ import pytest
 
 from street_story import identity_discovery
 from street_story.headless_identity import HeadlessIdentity
-from street_story.service import canonical
+from street_story.service import StreetStoryService, canonical
 from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
 
@@ -72,7 +72,11 @@ async def test_visual_lane_cannot_claim_research_or_publication(tmp_path):
     svc, topic, _ = topic_with_vision(tmp_path)
     with svc.store.tx() as db:
         for kind in ['research', 'visual', 'publish', 'identity']:
-            svc._enqueue_job(db, topic['id'], kind, kind, {})
+            if kind == 'publish':
+                # Inert row tests worker selection, not a valid publish intent.
+                StreetStoryService._enqueue_job(svc, db, topic['id'], kind, kind, {})
+            else:
+                svc._enqueue_job(db, topic['id'], kind, kind, {})
     assert not await svc.run_once(claim_kind='identity_visual')
     with svc.store.connection() as db:
         assert {r['state'] for r in db.execute('SELECT state FROM jobs')} == {'ready'}

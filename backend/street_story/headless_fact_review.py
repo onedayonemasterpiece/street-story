@@ -99,6 +99,9 @@ VERIFIER_PROMPT = (
     'wording is not conflict. equivalent_to uses a received distinct fact number or null; '
     'equivalent_to_existing/conflicts_with_existing use only received IDs. conflicts joins two '
     'distinct packet numbers. Set relations_complete only after checking the entire packet. '
+    'For reconsideration, reviewed candidates are not known facts for this decision. '
+    'Do not use a candidate\'s own stored ID as equivalent_to_existing; use only '
+    'the distinct nearby_existing_claims IDs allowed by the response schema. '
     'pending_relation_context contains other candidate texts for relation checks, never supporting '
     'evidence or accepted truth. If a duplicate/conflict/other material dependency needs joint own '
     'evidence, return insufficient with related_pending_ids from that context. Do not declare '
@@ -249,6 +252,12 @@ class HeadlessFactReview:
             if not routes:
                 return None  # Changed configuration cannot replace an original operation.
         provider = getattr(self.service.providers, 'research', None)
+        snapshot = self.harness._snapshot(job, packet['run_id'])
+        if snapshot is None:
+            return None
+        select_new = getattr(provider, 'new_fact_routes', None)
+        if not observing and callable(select_new):
+            routes = select_new(snapshot[0], routes)
         order = getattr(provider, 'order_fact_routes', None)
         if routes and not observing and callable(order):
             routes = order(routes, ordinal, review=True)
@@ -270,6 +279,8 @@ class HeadlessFactReview:
         prompt = verifier_prompt + canonical(model_view)
         closed_routes = set(saved.get('closed_routes') or [])
         all_routes = self._qualified_routes(available=False)
+        if not observing and callable(select_new):
+            all_routes = select_new(story, all_routes)
         # Preferred packet size never removes qualified routes. Original
         # requests retain their frozen input and original reader after restart.
         temporary = any(not route.get('available', True) for route in all_routes)
@@ -736,9 +747,12 @@ class HeadlessFactReview:
                 packet.update(verifier_presentation='one_assertion_all_own_slices_v1',
                     evidence_addressing=headless_review_quotes.OWN_REFS_CONTRACT, coverage_goal=goal,
                     pending_relation_context=pending_context,
-                    eligible_facts=[{'fact_id': f['fact_id'], 'text': f['text']} for f in inventory['facts']],
+                    eligible_facts=[{'fact_id': f['fact_id'], 'text': f['text']} for f in inventory['facts']
+                        if f['fact_id'] not in candidate_ids],
                     eligible_inventory_complete=not inventory['has_more'])
-        except ConflictError:
-            self._put(job, unit, {'phase': 'stale'})
+        except ConflictError as exc:
+            LOG.warning('fact_review_packet_preparation_failed job_id=%s run_id=%s unit_id=%s error_code=%s',
+                job['id'], run_id, unit, exc.code)
+            self._put(job, unit, {'phase': 'stale', 'error_code': exc.code})
             return None, unit, saved
         return packet, unit, saved

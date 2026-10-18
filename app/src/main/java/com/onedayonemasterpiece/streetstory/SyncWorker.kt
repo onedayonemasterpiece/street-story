@@ -132,7 +132,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                 android.util.Log.i("StreetStorySync", "source_unavailable story_id=${story.clientStoryId} state=${remote.state}")
             }
         }
-        val identityBackfillEligible = remote.visualIdentity == null && remote.researchControls["identity"]?.stopped != true &&
+        val identityBackfillEligible = remote.identityMode != "manual" && remote.visualIdentity == null && remote.researchControls["identity"]?.stopped != true &&
             remote.state !in setOf(
                 StoryStage.IDENTIFYING,
                 StoryStage.SCHEDULED,
@@ -160,6 +160,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         }
 
         for (operation in store.pendingOperations(story.clientStoryId).filter { it.kind != "research-control" }) {
+            if (store.operation(operation.id)?.state == "done") continue
             // Only an unsent visual depends on SOURCE. Preserve its request ID
             // and continue selection/text/voice sync while access is restored.
             if (sourceUnavailable && operation.kind == "visual") continue
@@ -259,8 +260,16 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         storyId: String,
         wire: StoryWire,
     ) {
+        val prior = research.get(storyId)
+        if (prior != null && (wire.revision < prior.backendRevision ||
+            (wire.identityGeneration ?: 0) < (prior.identityGeneration ?: 0))) return
+        val changedPlace = wire.placeSelection != null && prior != null && (wire.identityGeneration ?: 0) > (prior.identityGeneration ?: 0)
+        if (changedPlace) {
+            store.clearPlaceMaterial(storyId)
+            store.pendingOperations(storyId).filter { it.kind in setOf("facts", "draft", "visual", "publish") }.forEach { store.markOperationDone(it.id) }
+        }
         val state = normalizeState(wire.state)
-        val localDraft = store.story(storyId)?.draftText
+        val localDraft = if (changedPlace) null else store.story(storyId)?.draftText
         val draft = effectiveSnapshotDraft(state, localDraft, wire.draftText)
         store.setServerSnapshot(
             storyId,
@@ -286,6 +295,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     gson.toJson(it.sources),
                     it.reviewStatus,
                     it.eligibilityReason,
+                    it.strongest && it.eligibleForSelection,
                 )
             },
         )
@@ -299,6 +309,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
 
     private fun normalizeState(value: String): String = when (value) {
         StoryStage.PHOTO_READY, "created", "voice_pending" -> StoryStage.PHOTO_READY
+        StoryStage.PLACE_UNKNOWN -> StoryStage.PLACE_UNKNOWN
         StoryStage.IDENTIFYING -> StoryStage.IDENTIFYING
         StoryStage.IDENTITY_READY -> StoryStage.IDENTITY_READY
         StoryStage.QUEUED, "uploaded" -> StoryStage.QUEUED

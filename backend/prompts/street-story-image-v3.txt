@@ -1,0 +1,22 @@
+Use the uploaded street photo as the main visual reference and the factual city-note themes below as editorial context.
+
+Create a finished Street Story editorial image with a restrained graphic/sketch layer around the real photograph. The photograph is an immutable scene: retain its complete camera frame, viewpoint, perspective, architecture, street geometry, building placement, rooflines, entrances, windows, trees and signs. Do not redraw the facade, change proportions, correct perspective, crop, warp, stretch, outpaint or reconstruct its surroundings. The supplied photo has already received its mechanical EXIF orientation; do not rotate or mirror it again.
+
+Fit the entire photograph with uniform scaling. If the publication canvas has a different aspect ratio, use the remaining space for explicit flat graphic areas, concise factual notes or drawn accents. Those areas must read as editorial design rather than invented sky, streets, trees or buildings. Keep the real photograph clearly distinguishable from the graphic layer.
+
+Use controlled sketch contours, arrows, underlines, highlights, callout boxes and handwritten notes to guide attention without replacing photographed objects. Choose one restrained accent color that suits this photo and story. Do not tint the whole scene or hide architectural details.
+
+Use only claims supported by the supplied themes. Preserve dates, attribution, uncertainty and planned versus completed work. Every selected fact must remain legible with its material qualifiers; shorten editorial phrasing only when the same meaning is preserved. Do not invent dates, names, events or historical assertions.
+
+LAYOUT SAFETY:
+- Keep all meaningful words, labels, arrows and essential graphic elements inside a safe area about 8% in from every edge.
+- Nothing important may touch or cross an edge. Never clip or shrink text into illegibility.
+- Keep every visible part of the original photographic frame. Do not crop architecture to make room for notes.
+- Inspect all four edges and the complete photograph before finalizing.
+
+Aim for a clear visual hierarchy: recognisable real photograph, controlled editorial drawing, factual human city notes and enough quiet space to breathe. Avoid generic architecture, altered skyline, annotation noise, blueprint dimensions, invented facts, corporate logos, watermarks, UI chrome and branding.
+
+All visible annotation text should follow the language of the city-note themes. If the themes are in Russian, write the notes in Russian.
+
+City-note themes and author context to interpret, compress and distribute naturally:
+{{CITY_NOTE_THEMES}}

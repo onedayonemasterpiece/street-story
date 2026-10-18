@@ -96,6 +96,36 @@ def test_twenty_new_job_budget_continues_over_later_passes(tmp_path, purpose):
     assert original['state'] == 'done' and original['attempts'] == 3
 
 
+def test_visual_poll_skips_large_map_only_and_confirmed_histories_without_decoding_them(tmp_path, monkeypatch):
+    service, _ = make_service(tmp_path)
+    service.providers.research = SimpleNamespace(vision_available=True, facts_available=True)
+    skipped = [add_topic(service, 'large-map-only', 'identity', 'empty'),
+               add_topic(service, 'large-confirmed', 'identity', 'match')]
+    before = {}
+    with service.store.tx() as db:
+        for story_id in skipped:
+            raw = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()[0])
+            raw['place_map_snapshots'] = [{'retained_geometry': 'x' * 1_000_000}]
+            before[story_id] = json.dumps(raw)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (before[story_id], story_id))
+    target = add_topic(service, 'small-pending-after-large-maps', 'identity')
+    original = json.loads
+    large_decodes = []
+
+    def observed_loads(value, *args, **kwargs):
+        if isinstance(value, str) and len(value) > 100_000:
+            large_decodes.append(len(value))
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, 'loads', observed_loads)
+    service._schedule_identity_visual()
+    assert large_decodes == []
+    assert [job['story_id'] for job in scheduled_jobs(service, 'identity')] == [target]
+    with service.store.connection() as db:
+        assert {sid: db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0]
+                for sid in skipped} == before
+
+
 def test_qualified_native_reserve_admits_scheduler_without_google_or_opencode(tmp_path):
     service, _ = make_service(tmp_path)
     service.settings = replace(service.settings, native_vision_reserve=True)

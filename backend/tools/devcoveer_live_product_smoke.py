@@ -193,6 +193,7 @@ def poll_events(
     expected_tool: str,
     timeout_seconds: float = TURN_TIMEOUT_SECONDS,
     require_confirmation: bool = False,
+    require_post_tool_output: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     deadline = time.monotonic() + timeout_seconds
     tool_ok = False
@@ -204,6 +205,10 @@ def poll_events(
     confirmation: dict[str, Any] | None = None
     event_types: set[str] = set()
     capability_unavailable: set[str] = set()
+    any_tool_seen = False
+    spoken_output = False
+    transition_seen = False
+    interrupted_completion = False
 
     while time.monotonic() < deadline:
         payload = _json(
@@ -218,8 +223,20 @@ def poll_events(
             if not isinstance(event, dict):
                 continue
             kind = str(event.get("type") or "")
+            if kind == 'input_timing' and event.get('text_sent_at') is not None:
+                spoken_output = False
+                turn_complete_seen = False
+            if kind == 'interrupted':
+                interrupted_completion = True
+                spoken_output = False
             if kind:
                 event_types.add(kind)
+            if kind in {'tool_call', 'tool_result'}:
+                any_tool_seen = True
+            if kind.startswith('capability_transition_'):
+                transition_seen = True
+            if kind == 'output_transcript' and str(event.get('text') or '').strip():
+                spoken_output = True
             fatal = event_error(event)
             if fatal:
                 raise ProductSmokeError(fatal)
@@ -234,6 +251,19 @@ def poll_events(
                     code = str(event.get("code") or "tool_error")
                     if expected_tool == "edit_text" and code == "live_text_revision_conflict":
                         recoverable_tool_errors.append(code)
+                        tool_ok = post_tool_output = post_tool_turn_complete = False
+                        spoken_output = turn_complete_seen = False
+                    elif expected_tool == 'finalize_fact_review' and code in {
+                        'live_fact_review_evidence_invalid', 'live_review_decisions_invalid',
+                        'live_review_canonical_invalid',
+                    }:
+                        # The product returns addressed correction instructions
+                        # to the SAME model. Do not stop it before it can reread
+                        # its packet and correct its own decision. No tool or
+                        # owner input is replayed by this observer.
+                        recoverable_tool_errors.append(code)
+                        tool_ok = post_tool_output = post_tool_turn_complete = False
+                        spoken_output = turn_complete_seen = False
                     else:
                         tool_error = code
             if kind == "publication_confirmation" and isinstance(event.get("confirmation_id"), str):
@@ -242,6 +272,7 @@ def poll_events(
                     for key in (
                         "confirmation_id",
                         "text_revision",
+                        "text",
                         "visual_revision",
                         "asset_ref",
                         "image_url",
@@ -254,14 +285,24 @@ def poll_events(
             if tool_ok and kind == "output_transcript" and str(event.get("text") or "").strip():
                 post_tool_output = True
             if kind == "turn_complete":
+                if interrupted_completion:
+                    interrupted_completion = False
+                    turn_complete_seen = False
+                    spoken_output = False
+                    continue
                 turn_complete_seen = True
-                if tool_ok:
+                if tool_ok and (not require_post_tool_output or post_tool_output):
                     post_tool_turn_complete = True
         cursor = int(payload.get("cursor") or cursor)
 
         if tool_error:
             raise ProductSmokeError(f"{expected_tool}_failed_{tool_error}")
-        if turn_complete_seen and recoverable_tool_errors and not tool_ok:
+        if turn_complete_seen and spoken_output and not any_tool_seen and not transition_seen:
+            raise ProductSmokeError(f"{expected_tool}_turn_completed_without_tool")
+        # A function-calling turn completes before the model receives its tool
+        # reply and can reread/retry. Wait for that same model, without replaying
+        # owner input or supplying a replacement tool argument.
+        if turn_complete_seen and recoverable_tool_errors and not tool_ok and spoken_output:
             raise ProductSmokeError(f"{expected_tool}_recoverable_conflict_unresolved")
         if tool_ok and post_tool_turn_complete and (confirmation is not None or not require_confirmation):
             return cursor, {
@@ -276,6 +317,8 @@ def poll_events(
             }
         time.sleep(POLL_SECONDS)
 
+    if tool_ok:
+        raise ProductSmokeError(f"{expected_tool}_saved_acknowledgement_pending")
     raise ProductSmokeError(f"{expected_tool}_turn_timeout")
 
 
@@ -289,6 +332,7 @@ def send_tool_turn(
     text: str,
     timeout_seconds: float = TURN_TIMEOUT_SECONDS,
     require_confirmation: bool = False,
+    require_post_tool_output: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     _json(
         client.post(
@@ -305,6 +349,7 @@ def send_tool_turn(
         expected_tool=expected_tool,
         timeout_seconds=timeout_seconds,
         require_confirmation=require_confirmation,
+        require_post_tool_output=require_post_tool_output,
     )
 
 

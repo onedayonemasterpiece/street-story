@@ -28,6 +28,7 @@ data class ResearchProjectionSnapshot(
     val researchVoiceIds: List<String>,
     val identityProgress: IdentityProgressWire? = null,
     val publicationConcept: String? = null,
+    val visualPhotoFormat: PhotoFormatWire? = null,
     val publicationState: String? = null,
     val publicationChannels: List<String> = emptyList(),
     val publicationScheduledFor: String? = null,
@@ -35,6 +36,19 @@ data class ResearchProjectionSnapshot(
     val identityGeneration: Int? = null,
     val researchControls: Map<String, ResearchControlWire>? = null,
     val researchPending: Map<String, Boolean> = emptyMap(),
+    val backendRevision: Int = 0,
+    val placeMap: PlaceMapWire? = null,
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
+    val placeSelection: com.google.gson.JsonObject? = null,
+    val cameraPoint: PlaceCameraWire? = null,
+    val identityMode: String? = null,
+    val researchOutcome: ResearchOutcomeWire? = null,
+    @field:com.google.gson.annotations.JsonAdapter(NullableJsonObjectAdapter::class)
+    val identityClarification: com.google.gson.JsonObject? = null,
+    val sourceAvailable: Boolean? = null,
+    val placeMapFocus: PlaceMapFocusWire? = null,
+    val placeNavigationActive: Boolean = false,
+    val appliedPlaceMapFocusRevision: Int? = null,
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -42,9 +56,29 @@ class ResearchProjectionStore(context: Context) {
     private val gson = Gson()
 
     fun replace(storyId: String, wire: StoryWire) {
+        val prior = get(storyId)
+        if (prior != null && (wire.revision < prior.backendRevision ||
+            (wire.identityGeneration ?: 0) < (prior.identityGeneration ?: 0))) return
         val identity = wire.visualIdentity
         val snapshot = ResearchProjectionSnapshot(
             identityStatus = identity?.status?.takeIf { it.isNotBlank() },
+            backendRevision = wire.revision,
+            placeMap = wire.placeMap,
+            placeSelection = wire.placeSelection,
+            sourceAvailable = wire.sourceAvailable,
+            placeMapFocus = wire.placeMapFocus?.takeIf { it.valid() },
+            placeNavigationActive = wire.placeNavigationActive,
+            appliedPlaceMapFocusRevision = prior?.appliedPlaceMapFocusRevision?.takeIf {
+                prior?.photoSha256 == wire.photoSha256 && prior?.placeMapFocus?.revision == wire.placeMapFocus?.revision &&
+                    prior?.placeMapFocus?.areaId == wire.placeMapFocus?.areaId
+            },
+            identityClarification = wire.identityClarification?.takeIf {
+                runCatching { !wire.photoSha256.isNullOrBlank() && wire.identityGeneration != null &&
+                    it["photo_sha256"]?.asString == wire.photoSha256 &&
+                    it["generation"]?.asInt == wire.identityGeneration }.getOrDefault(false)
+            },
+            cameraPoint = wire.cameraPoint,
+            identityMode = wire.identityMode,
             candidateId = identity?.candidateId?.takeIf { !it.isNullOrBlank() },
             candidateName = identity?.candidateName?.takeIf { !it.isNullOrBlank() },
             observations = identity?.observations?.filter { it.isNotBlank() } ?: emptyList(),
@@ -58,6 +92,7 @@ class ResearchProjectionStore(context: Context) {
             researchRevision = wire.researchRevision?.takeIf { it.isNotBlank() },
             researchVoiceIds = wire.researchVoiceIds.filter { it.isNotBlank() },
             identityProgress = wire.identityProgress,
+            visualPhotoFormat = wire.visualPhotoFormat,
             publicationConcept = wire.publicationConcept?.takeIf { it.isNotBlank() },
             publicationState = wire.publication?.state?.takeIf { it.isNotBlank() },
             publicationChannels = wire.publication?.destinations?.filter { it.isNotBlank() } ?: emptyList(),
@@ -66,6 +101,11 @@ class ResearchProjectionStore(context: Context) {
             identityGeneration = wire.identityGeneration,
             researchControls = wire.researchControls,
             researchPending = wire.researchPending,
+            researchOutcome = wire.researchOutcome?.takeIf {
+                it.purpose == "facts" && !wire.photoSha256.isNullOrBlank() &&
+                    it.photoSha256 == wire.photoSha256 && wire.identityGeneration != null &&
+                    it.identityGeneration == wire.identityGeneration
+            },
         )
         check(prefs.edit().putString(key(storyId), gson.toJson(snapshot)).commit()) {
             "research projection was not persisted"
@@ -75,6 +115,19 @@ class ResearchProjectionStore(context: Context) {
     fun get(storyId: String): ResearchProjectionSnapshot? {
         val raw = prefs.getString(key(storyId), null) ?: return null
         return runCatching { gson.fromJson(raw, ResearchProjectionSnapshot::class.java) }.getOrNull()
+    }
+
+    fun replacePlaceMap(storyId: String, map: PlaceMapWire) {
+        val prior = get(storyId) ?: return
+        if (map.identityGeneration != (prior.identityGeneration ?: 0) ||
+            (map.photoSha256.isNotBlank() && map.photoSha256 != prior.photoSha256)) return
+        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(placeMap = map, cameraPoint = prior.cameraPoint ?: map.camera))).commit())
+    }
+
+    fun markPlaceMapFocusApplied(storyId: String, revision: Int) {
+        val prior = get(storyId) ?: return
+        if (prior.placeMapFocus?.revision != revision) return
+        check(prefs.edit().putString(key(storyId), gson.toJson(prior.copy(appliedPlaceMapFocusRevision = revision))).commit())
     }
 
     fun clear(storyId: String) {

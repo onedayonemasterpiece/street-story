@@ -94,7 +94,8 @@ class ProductFakeVibePublish:
                 "visual_job_id": "visual_job_1",
                 "visual_revision": 1,
                 "candidates": [
-                    {"id": "candidate_1", "asset_ref": "asset_candidate_1", "sha256": PROCESSED_SHA, "selection_token": "selection-token"}
+                    {"id": "candidate_1", "asset_ref": "asset_processed_1", "sha256": PROCESSED_SHA,
+                     "width": 1080, "height": 1350, "selection_token": "selection-token"}
                 ],
             }
             self.visual_effects.setdefault(request_key, ready)

@@ -152,7 +152,11 @@ async def test_publication_composition_receives_all_selected_facts():
         concept="",
         author_note="",
         facts=facts,
+        photo_capture={'status': 'known', 'captured_at': '2026-10-07T12:08:36+02:00',
+                       'provenance': 'source_exif', 'source_sha256': 'a' * 64},
     )
     assert result["draft_text"] == "Короткий итоговый текст."
     assert "Выбранный факт номер 0." in captured["prompt"]
     assert "Выбранный факт номер 24." in captured["prompt"]
+    assert '2026-10-07T12:08:36+02:00' in captured['prompt']
+    assert 'source_exif' in captured['prompt']

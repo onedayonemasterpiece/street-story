@@ -62,7 +62,7 @@ def context(db, story_id, run_id, candidates):
 def unit_recipe(db, story, run_id, candidates, contract):
     return [contract, run_id, candidates, review_packets.candidate_review_fence(db, story),
             review_packets.canonical_review_fence(db, story, candidates, include_projection=True),
-            context(db, story['id'], run_id, candidates)]
+            context(db, story['id'], run_id, candidates), review_packets.REVIEW_SLICE_CONTRACT]
 
 
 def record_links(engine, job, run_id, packet, args):

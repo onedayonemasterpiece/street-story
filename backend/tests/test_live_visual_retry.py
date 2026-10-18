@@ -105,3 +105,4 @@ async def test_legacy_adapter_fallback_allows_first_request_and_blocks_unobserve
         await adapter.execute_tool(session, {'name': 'generate_visual', 'id': 'legacy-repeat', 'args': {}})
     assert error.value.code == 'visual_outcome_unresolved'
     assert visual_snapshot(service, session.resource_id) == before
+

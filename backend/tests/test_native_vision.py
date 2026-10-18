@@ -243,13 +243,13 @@ async def test_accounting_failure_never_promotes_unknown_or_unsent_to_success(tm
 
 
 @pytest.mark.asyncio
-async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_transport(tmp_path):
+async def test_pipeline_comparisons_recheck_shared_quota_and_preserve_owned_transport(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     for attempt in ('first', 'second'):
         result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': attempt})
         assert result['result']['status'] == 'mismatch'
         assert result['receipt']['quota_permission']['expires_at'] == 1900
-    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2
     assert len(sends) == 2
     assert all(state == 'completed' and receipt['actual_total_tokens'] == 321 for receipt, state in finalized)
     start = next(body for method, body in client.calls if method == 'thread/start')
@@ -257,7 +257,7 @@ async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_tr
     assert start['dynamicTools'] == []
     provider.service.store.time = 1900
     await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'third'})
-    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 2
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 3
     await provider.close()
     assert client.closed and provider.client is None
 

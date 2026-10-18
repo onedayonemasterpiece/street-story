@@ -4,6 +4,12 @@ from __future__ import annotations
 import math
 
 
+def has_organization_tags(tags):
+    """Keep mapped use categories, including lifecycle-prefixed observations."""
+    return any(value and key.rsplit(':', 1)[-1] in {'amenity', 'shop', 'office', 'tourism', 'craft'}
+        for key, value in tags.items())
+
+
 def expand_disjoint_building_components(elements: list[dict]) -> list[dict]:
     """Expose observed closed member ways, never alias separate exterior bodies.
 
@@ -228,6 +234,13 @@ def map_entry_context(item: dict, *, source_url: str | None = None, coordinate_p
         'name', 'building', 'building:part', 'entrance', 'amenity', 'shop', 'office', 'tourism',
         'historic', 'highway', 'man_made', 'landuse', 'leisure', 'place',
         'height', 'building:levels', 'roof:levels') if tags.get(key)}
+    # Explicit source links and lifecycle observations are research context,
+    # never another identity or an assertion that an organization is open.
+    mapped_tags.update({key: str(value) for key, value in tags.items() if value and (
+        key in {'old_name', 'alt_name', 'website', 'contact:website', 'wikipedia', 'wikipedia:ru',
+                'wikidata', 'check_date', 'survey:date', 'source', 'source:date', 'start_date', 'end_date',
+                'opening_date', 'closed', 'disused', 'abandoned'}
+        or key.startswith(('disused:', 'abandoned:', 'closed:', 'was:')))})
     mapped_kind = {key: str(item[key])[:100] for key in ('category', 'class', 'addresstype') if item.get(key)}
     if item.get('osm_type') and item.get('type'):
         mapped_kind['type'] = str(item['type'])[:100]
@@ -235,6 +248,7 @@ def map_entry_context(item: dict, *, source_url: str | None = None, coordinate_p
         result['map_object'] = {**mapped_kind, 'tags': mapped_tags,
             'provenance': 'osm.tags' if mapped_tags else 'nominatim.reverse',
             'source_url': source_url, 'scope': 'mapped_entry_only'}
+        result['map_object'].update({key: item[key] for key in ('version', 'timestamp', 'changeset') if key in item})
         component = item.get('physical_component') or {}
         if component.get('inherited_building_tag') is True:
             result['map_object']['provenance'] = 'osm.relation_outer_geometry'
