@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from .config import Settings, reveal
+from .errors import ProviderRejected
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
 from .publication_content import publication_content
 from .service import (
@@ -159,7 +160,8 @@ class VibePublishBoundary:
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise RetryableProviderError(f"VibePublish response outcome unknown: {exc}") from exc
         except httpx.HTTPStatusError as exc:
-            raise PermanentProviderError(f"VibePublish request failed: HTTP {exc.response.status_code}") from exc
+            raise ProviderRejected(f"VibePublish request failed: HTTP {exc.response.status_code}",
+                                   exc.response.status_code) from exc
         finally:
             if own:
                 await client.aclose()

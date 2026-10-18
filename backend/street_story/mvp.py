@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .product import ORIGINAL_ART_FRAME_CONTRACT, ORIGINAL_PHOTO_FRAME_CONTRACT, POST_4_5_FRAME_CONTRACT, ProductStreetStoryService, _receipt
+from .errors import ProviderRejected
 from .providers import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, InvalidStateError, canonical, digest
 
@@ -287,8 +288,13 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if expected_revision is not None and story['revision'] != expected_revision:
                 raise ConflictError('visual_input_changed', 'Story changed while observing the original generation.')
             previous = json.loads(story['visual_context_json'] or '{}')
+            # A request VibePublish refused (4xx) created no operation: that attempt is closed.
+            # Older stories record it only in the error the failure handler wrote.
+            rejected = bool(previous.get('dispatch_rejected')) or (
+                story['error_code'] == 'vibepublish_visual_error'
+                and str(story['error_message'] or '').startswith('VibePublish request failed: HTTP 4'))
             if previous and not previous.get('operation_id') and (
-                story['state'] == 'visual_processing' or previous.get('visual_request_key')
+                story['state'] == 'visual_processing' or (previous.get('visual_request_key') and not rejected)
             ):
                 raise ConflictError('visual_outcome_unresolved', 'The previous visual request is still being dispatched.')
             if previous.get('operation_id') and (previous_receipt or {}).get('operation_id') != previous['operation_id']:
@@ -563,7 +569,17 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     with self.store.connection() as db:
                         if not self._frame_work_current(db, self._story_row(db, story_id), context, job):
                             return
-                receipt = await self.providers.vibepublish.visual(command, visual_key)
+                try:
+                    receipt = await self.providers.vibepublish.visual(command, visual_key)
+                except ProviderRejected as exc:
+                    # Refused before any operation existed: a closed attempt, so a new owner
+                    # request may generate again instead of waiting forever for this one.
+                    self._merge_visual_context(story_id, content_revision, {'dispatch_rejected': {
+                        'http_status': exc.status_code, 'at': self.store.now()}})
+                    logging.getLogger('uvicorn.error').warning('street_story_visual_dispatch %s', canonical({
+                        'story_id': story_id, 'outcome': 'rejected', 'http_status': exc.status_code,
+                        'content_revision': content_revision}))
+                    raise
                 operation_id = str(receipt.get("operation_id") or "")
                 if not operation_id:
                     raise RetryableProviderError(

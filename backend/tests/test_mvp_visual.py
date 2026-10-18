@@ -775,3 +775,33 @@ async def test_repeat_visual_rejects_story_changed_during_authoritative_read(tmp
     with pytest.raises(ConflictError, match='Story changed'):
         await svc.request_visual(story['id'], 'new-attempt', {'selected_fact_ids': []})
     assert svc.story(story['id'])['visual']['content_revision'] == before['content_revision']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_a_visual_request_vibepublish_refused_does_not_block_the_next_owner_request(tmp_path, legacy):
+    # Stories 131/120/102 (INC-2026-10-18): VibePublish answered 422 before creating any
+    # operation; the story kept the request key forever and every new request was refused.
+    from street_story.errors import ProviderRejected
+    svc = service(tmp_path)
+    sid = create_story(svc)['id']
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='review' WHERE id=?", (sid,))
+    svc.mutate_visual(sid, 'refused-first', {'selected_fact_ids': []})
+    with svc.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+
+    async def refuse(_command, _key):
+        raise ProviderRejected('VibePublish request failed: HTTP 422', 422)
+
+    svc.providers.vibepublish.visual = refuse
+    await svc._run_visual(job)
+    context = visual_context(svc, sid)
+    assert svc.story(sid)['state'] == 'needs_review' and not context.get('operation_id')
+    assert context['dispatch_rejected']['http_status'] == 422
+    if legacy:  # stories refused before this fix carry only the recorded error
+        context.pop('dispatch_rejected')
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(context), sid))
+    again = await svc.request_visual(sid, 'refused-again', {'selected_fact_ids': []})
+    assert again['state'] == 'visual_processing'
