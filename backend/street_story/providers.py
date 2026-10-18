@@ -3565,16 +3565,21 @@ class GeminiClient:
                 "part": {"type": "string"},
                 "visible": {"type": "boolean"},
             }, "required": ["part", "visible"]}},
+            "outline": {"type": "array", "items": {"type": "object", "properties": {
+                "thread": {"type": "string"},
+                "facts": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["thread", "facts"]}},
             "draft": {"type": "string"},
             "check": {"type": "array", "items": {"type": "object", "properties": {
                 "sentence": {"type": "string"},
                 "supported_by": {"type": "string"},
+                "flow": {"type": "string"},
                 "problem": {"type": "string"},
-            }, "required": ["sentence", "supported_by", "problem"]}},
+            }, "required": ["sentence", "supported_by", "flow", "problem"]}},
             "text": {"type": "string"},
             "image_notes": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["parts_on_photo", "draft", "check", "text", "image_notes"],
+        "required": ["parts_on_photo", "outline", "draft", "check", "text", "image_notes"],
     }
     WRITER_RULES = (
         "Ты пишешь подпись к посту Street Story о конкретном доме на фотографии. Пиши для читателя, по-русски, "
@@ -3592,6 +3597,14 @@ class GeminiClient:
         "события, имени или детали («1 августа 1932 года в окна этого дома полетели бутылки с горючим…»), а не с "
         "«Это здание», «Этот дом», «Здание…». Дом входит в эту же фразу как место события. Дальше — смысл и "
         "контекст, затем остальная история. Не начинай с отсутствия чего-либо (лифта, удобств).\n"
+        "Повествование. Рассказ строится нитями: нить — одна тема в одно время (событие и что было с ним дальше; "
+        "люди этого события; сам дом — облик, стиль, материал, чем он редок; смена назначений по времени; что здесь "
+        "сейчас). Один абзац — одна нить. После зачина продолжай ту же нить, пока она не закончится, и не вставляй в "
+        "неё сведения другой темы: описание фасада не разрывает историю клиники и её основателя, а «единственная "
+        "сохранившаяся постройка» — сведение о доме, не продолжение рассказа о поджоге. Каждую следующую нить начинай с "
+        "перехода, который показывает связь («Сам дом…», «После войны…», «Сегодня…»). Историю излагай по времени. "
+        "Ничего не выбрасывай ради порядка: переставляй, а не сокращай. Рассказ должен читаться как история, которую "
+        "интересно дослушать.\n"
         "Факты. Используй только переданные факты, сохраняя их даты, оговорки и модальность. Не добавляй новых "
         "сведений, дат, имён, мотивов, превосходных степеней («главный», «самый эффектный») и оценок, которых нет "
         "в фактах. Связки — тоже утверждения: «с тех пор», «стало домом», «продолжает», «изначально», «поэтому» "
@@ -3632,10 +3645,13 @@ class GeminiClient:
         "Порядок работы: parts_on_photo — каждая конкретная часть дома, названная в фактах (башенка, шпиль, "
         "скульптура, эркер, вывеска и т. п.), и видна ли она на этом фото; невидимую архитектурную особенность (башенка, "
         "скульптура, эркер) упомяни не в начале и честно: «у дома есть …, на этом снимке её не видно»; про остальное "
-        "(оборудование, подъёмники, вывески, внутренние помещения) никогда не пиши, видно ли оно на снимке; каждую дату бери только из её собственного факта; draft — черновик; check — для каждого предложения черновика укажи факт, на который оно "
-        "опирается (supported_by), и проблему (problem: неподтверждённая связка или дата, превосходная степень, "
-        "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе; пусто, если проблем нет); "
-        "text — итоговый текст, где все найденные проблемы исправлены; image_notes — 2–3 надписи для картинки по "
+        "(оборудование, подъёмники, вывески, внутренние помещения) никогда не пиши, видно ли оно на снимке; каждую дату бери только из её собственного факта; outline — нити рассказа в том порядке, в каком они пойдут, и "
+        "факты каждой нити; draft — черновик по этому плану; check — для каждого предложения черновика укажи факт, на который оно "
+        "опирается (supported_by), flow — «продолжает» (та же нить, что у предыдущего предложения), «переход» (первое "
+        "предложение новой нити с явной связкой) или «скачок» (другая тема без перехода или посреди чужой нити), и "
+        "проблему (problem: неподтверждённая связка или дата, превосходная степень, "
+        "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе, скачок; пусто, если проблем нет); "
+        "text — итоговый текст, где все найденные проблемы исправлены, а каждый скачок переставлен в свою нить; image_notes — 2–3 надписи для картинки по "
         "выбранным фактам, каждая 3–8 слов и понятна сама по себе, без обрывков; первая — самый сильный факт "
         "(lead_fact) коротко со своей датой (например «1932: нацисты подожгли дом»); дальше — события, люди, "
         "детали облика и нынешнее назначение; справки о статусе, охране и реестрах, даты включения в перечни — "
@@ -3643,36 +3659,97 @@ class GeminiClient:
         "для прежнего назначения."
     )
 
+    EDITOR_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "issues": {"type": "array", "items": {"type": "object", "properties": {
+                "sentence": {"type": "string"},
+                "kind": {"type": "string"},
+                "fix": {"type": "string"},
+            }, "required": ["sentence", "kind", "fix"]}},
+            "text": {"type": "string"},
+        },
+        "required": ["issues", "text"],
+    }
+
+    EDITOR_RULES = (
+        "Ты редактор подписи к посту Street Story о доме на фотографии. Тебе дают готовую подпись (caption, без "
+        "адреса и хештега), факты, на которых она построена, и lead_fact — самый сильный факт, с которого она "
+        "начинается. Прочитай как читатель, который гуляет по улице, и проверь:\n"
+        "1. Логика рассказа. Рассказ идёт нитями: событие и что было с ним дальше; люди события; сам дом (облик, "
+        "стиль, материал, чем он редок); смена назначений по времени; что здесь сейчас. Один абзац — одна нить. "
+        "Скачок — предложение другой темы посреди нити (описание фасада внутри истории клиники и её основателя; "
+        "«единственная сохранившаяся постройка» сразу после рассказа о поджоге) или новая нить без перехода. "
+        "Переставь его в свою нить и дай переход («Сам дом…», «После войны…», «Сегодня…»). История по времени.\n"
+        "2. Правила. Каждое утверждение следует из фактов; связки («с тех пор», «уже нет», «изначально») — тоже "
+        "утверждения. Нет ссылок на источники, документы, реестры и их номера, нет дат источников («по состоянию на…»), "
+        "нет аббревиатур, нет фраз о том, что видно или не видно на снимке, адреса внутри текста нет. Прежнее — в "
+        "прошедшем времени; «сейчас» — только если факт говорит о настоящем. Отзыв посетителей подаётся как отзыв.\n"
+        "3. Ничего не теряй: каждый факт подписи остаётся, если он не нарушает правила; переставляй, а не сокращай. "
+        "Первая фраза по-прежнему начинается с lead_fact. Не добавляй новых сведений.\n"
+        "issues — каждая найденная проблема: предложение, вид (скачок, нет перехода, неподтверждённое, источник, "
+        "реестр, дата источника, видно на снимке, адрес в тексте, потеря факта) и что сделано; пусто, если всё в "
+        "порядке. text — исправленная подпись без адреса и хештега, абзацы через пустую строку, без Markdown; если "
+        "проблем нет, верни подпись без изменений."
+    )
+
+    HOOK_KINDS = ["event", "people", "building_detail", "origin", "use_change", "current_use",
+                  "institutions", "status_registry", "repair", "date_only", "review", "other"]
+    WEAK_HOOK_KINDS = {"institutions", "status_registry", "repair", "date_only", "review", "current_use"}
     HOOK_SCHEMA = {
         "type": "object",
         "properties": {
-            "ranked": {"type": "array", "items": {"type": "object", "properties": {
+            "facts": {"type": "array", "items": {"type": "object", "properties": {
                 "index": {"type": "integer"},
+                "kind": {"type": "string", "enum": HOOK_KINDS},
                 "unexpected": {"type": "integer"},
                 "human_drama": {"type": "integer"},
                 "concrete": {"type": "integer"},
                 "relates_to_photo": {"type": "integer"},
+            }, "required": ["index", "kind", "unexpected", "human_drama", "concrete", "relates_to_photo"]}},
+            "choice": {"type": "object", "properties": {
+                "index": {"type": "integer"},
                 "reason": {"type": "string"},
-            }, "required": ["index", "unexpected", "human_drama", "concrete", "relates_to_photo", "reason"]}},
+            }, "required": ["index", "reason"]},
         },
-        "required": ["ranked"],
+        "required": ["facts", "choice"],
     }
     HOOK_RULES = (
         "Ты редактор городского канала Street Story: пост о доме читают прохожие, которые стоят перед ним. "
         "Найди среди проверенных фактов о доме самый сильный зачин — факт, после которого человек остановится "
-        "и посмотрит на дом иначе. Оцени каждый факт по шкале 0–3:\n"
-        "• unexpected — неожиданность, контраст, нарушение ожиданий (издательство, которое подожгли, потом "
-        "маслобаза; глазная клиника, ставшая общежитием; единственный уцелевший дом квартала);\n"
-        "• human_drama — люди, конфликт, судьбы, события (пожар, война, конфискация, знаменитые жильцы);\n"
-        "• concrete — конкретика: имена, предметы, числа, точные детали, а не общие слова;\n"
-        "• relates_to_photo — связь с тем, что прохожий видит на фото (деталь фасада, башня, надпись).\n"
-        "Слабые зачины, оценивай их низко: статус памятника и реестры, справки об учреждениях и ремонтах, "
-        "голые даты постройки, материал и этажность без истории, отзывы посетителей. Факт должен быть о самом "
-        "доме, а не о соседнем. Верни ranked — индексы фактов (из входного списка, с нуля) от сильнейшего к "
-        "слабейшему, не больше трёх, с короткой причиной. Если передан researcher_candidate — это выбор "
-        "исследователя, читавшего источники: поставь его первым, если он действительно сильнейший, иначе первым "
-        "поставь более сильный факт и объясни в причине, чем он сильнее."
+        "и посмотрит на дом иначе. Для КАЖДОГО факта (index — его номер во входном списке, с нуля) укажи kind и "
+        "оценки 0–3:\n"
+        "• kind: event — событие с этим домом (пожар, война, конфискация, открытие); people — люди и их судьбы; "
+        "building_detail — необычная деталь или находка в самом доме (надпись, кирпичи с клеймом, редкий элемент); "
+        "origin — кто и зачем построил; use_change — смена назначения как контраст (клиника стала общежитием); "
+        "current_use — что здесь сейчас; institutions — перечень учреждений, магазинов, организаций; "
+        "status_registry — статус памятника, реестры; repair — ремонты и покраска; date_only — голая дата или "
+        "этажность; review — отзыв посетителя; other;\n"
+        "• unexpected — неожиданность, контраст, нарушение ожиданий; human_drama — люди, конфликт, события; "
+        "concrete — имена, предметы, числа, точные детали; relates_to_photo — связь с тем, что видно на фото.\n"
+        "Герой поста — здание: перечень учреждений, статус, ремонты, голые даты, нынешнее назначение и отзывы — "
+        "слабые зачины. choice — один сильнейший факт с короткой причиной. Если передан researcher_candidate — "
+        "это выбор исследователя, читавшего источники: выбери его, если он действительно сильнейший, иначе выбери "
+        "более сильный и объясни, чем он сильнее."
     )
+
+    @classmethod
+    def _hook_choice(cls, answer: dict[str, Any], count: int) -> list[dict[str, Any]]:
+        """The model's choice, unless it is a weak kind while a strong fact exists (owner rule: the hero is the building)."""
+        rows = {row["index"]: row for row in answer.get("facts") or []
+                if isinstance(row, dict) and isinstance(row.get("index"), int) and 0 <= row["index"] < count}
+        choice = answer.get("choice") or {}
+        index = choice.get("index") if isinstance(choice.get("index"), int) and 0 <= choice["index"] < count else None
+        strong = [row for row in rows.values() if row.get("kind") not in cls.WEAK_HOOK_KINDS]
+        def score(row):
+            return sum(int(row.get(k) or 0) for k in ("unexpected", "human_drama", "concrete", "relates_to_photo"))
+        if index is not None and (rows.get(index, {}).get("kind") not in cls.WEAK_HOOK_KINDS or not strong):
+            return [{"index": index, "reason": str(choice.get("reason") or "")}]
+        if strong:
+            best = max(strong, key=score)
+            return [{"index": best["index"], "reason": f"сильнейший факт не слабого вида ({best.get('kind')}, "
+                     f"оценка {score(best)}); выбор модели был слабого вида"}]
+        raise ValueError("no hook choice")
 
     async def _lite_chain(self, contents, config, parse):
         """Any answering lite model in the writer chain; unavailable or malformed answers fall through."""
@@ -3714,14 +3791,10 @@ class GeminiClient:
         if photo_jpeg:
             contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
         config = types.GenerateContentConfig(response_mime_type="application/json",
-                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=1024)
+                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=4096)
 
         def parse(text, model):
-            ranked = [row for row in json.loads(text or "{}")["ranked"]
-                      if isinstance(row.get("index"), int) and 0 <= row["index"] < len(facts)]
-            if not ranked:
-                raise ValueError
-            return {"ranked": ranked[:3], "model": str(model or "")}
+            return {"ranked": GeminiClient._hook_choice(json.loads(text or "{}"), len(facts)), "model": str(model or "")}
         return await self._lite_chain(contents, config, parse)
 
     async def write_caption(
@@ -3777,7 +3850,7 @@ class GeminiClient:
             async def routed_call(key, timeout, *, _model=model, _quota=quota):
                 return await call(key, timeout, model=_model, quota=_quota)
             try:
-                return await executor.execute("grounded_research", routed_call)
+                written = await executor.execute("grounded_research", routed_call)
             except GeminiUnavailable as exc:
                 if exc.retry_at is not None:
                     retry_at.append(exc.retry_at)
@@ -3788,7 +3861,45 @@ class GeminiClient:
                 if str(exc) == "gemini:unsupported_model":
                     continue
                 raise
+            if getattr(self, "EDITOR_RULES", None) is None:
+                return written
+            return await GeminiClient._edit_caption(self, written, facts=facts, lead_fact=lead_fact)
         raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_caption_writer_models_unavailable")
+
+    async def _edit_caption(self, written: dict[str, Any], *, facts: list[dict[str, Any]],
+                            lead_fact: str | None) -> dict[str, Any]:
+        """A second, separate lite pass reads the caption as an editor: story order and the writer rules.
+
+        Owner decision 18.10.2026: the story must be built logically and be interesting. One writer pass
+        checking itself left jumps (a building detail inside an event thread) and slipped rule breaks, so an
+        independent editor reviews every caption once. The ending (address and hashtag) is kept as written.
+        If no lite model answers, the writer's text stays.
+        """
+        from google.genai import types
+        body, sep, ending = written["text"].rpartition("\n\n")
+        if not sep or not ending.lstrip().startswith(("#",)) and "\n#" not in ending:
+            body, ending = written["text"], ""
+        payload = json.dumps({"caption": body, "facts": facts, "lead_fact": lead_fact}, ensure_ascii=False)
+        config = types.GenerateContentConfig(response_mime_type="application/json",
+                                             response_json_schema=self.EDITOR_SCHEMA, max_output_tokens=2048)
+
+        def parse(text, model):
+            answer = json.loads(text or "{}")
+            edited = str(answer.get("text") or "").strip()
+            if not edited or len(edited) + len(ending) > 1100:
+                raise ValueError
+            return {"text": edited, "issues": [i for i in answer.get("issues") or [] if isinstance(i, dict)], "model": model}
+
+        try:
+            edited = await self._lite_chain([self.EDITOR_RULES + "\n\n" + payload], config, parse)
+        except GeminiUnavailable:
+            logging.getLogger("uvicorn.error").warning("street_story_caption_editor outcome=unavailable")
+            return written
+        logging.getLogger("uvicorn.error").info("street_story_caption_editor %s", json.dumps({
+            "outcome": "edited", "model": edited["model"], "issues": [str(i.get("kind") or "")[:40] for i in edited["issues"]][:12],
+            "changed": edited["text"] != body.strip()}, ensure_ascii=False))
+        return {**written, "text": edited["text"] + ("\n\n" + ending if ending else ""),
+                "editor_model": edited["model"]}
 
     async def _semantic_complete_discovery_best_effort(
         self,

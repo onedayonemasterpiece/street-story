@@ -235,3 +235,44 @@ async def test_a_fact_resting_only_on_visitor_reviews_does_not_open_the_post_whe
         db.execute("UPDATE stories SET research_json=? WHERE id=?", (json.dumps(research), sid))
     lead = await adapter._strongest_hook(sid, adapter._topic_state(sid), set(), None)
     assert lead["fact_id"] == ids[1]
+
+
+@pytest.mark.asyncio
+async def test_an_independent_editor_reorders_the_story_and_keeps_the_ending():
+    # 105/120 (owner, 18.10.2026): a building detail interrupted the event thread; the editor moves it.
+    written = {"text": "В 1877 году здесь открылась клиника. Фасад из жёлтого кирпича. Перед входом стоял памятник основателю."
+                       "\n\nБарнаульская улица 8\n#Калининград", "model": "writer", "image_notes": []}
+    seen = []
+
+    async def lite_chain(contents, config, parse):
+        seen.append(json.loads(contents[0].split("\n\n", 1)[1]))
+        return parse(json.dumps({"issues": [{"sentence": "Фасад из жёлтого кирпича.", "kind": "скачок", "fix": "перенесено"}],
+                                 "text": "В 1877 году здесь открылась клиника. Перед входом стоял памятник основателю.\n\nСам дом — из жёлтого кирпича."}),
+                     "lite")
+
+    client = SimpleNamespace(EDITOR_RULES=GeminiClient.EDITOR_RULES, EDITOR_SCHEMA=GeminiClient.EDITOR_SCHEMA, _lite_chain=lite_chain)
+    edited = await GeminiClient._edit_caption(client, written, facts=[{"text": "клиника"}], lead_fact="клиника")
+    assert "Барнаульская" not in seen[0]["caption"]  # the ending is not the editor's business
+    assert edited["text"].endswith("Сам дом — из жёлтого кирпича.\n\nБарнаульская улица 8\n#Калининград")
+    assert edited["image_notes"] == [] and edited["editor_model"] == "lite"
+
+    async def unavailable(*_args):
+        raise GeminiUnavailable(0, "busy")
+
+    client._lite_chain = unavailable
+    assert await GeminiClient._edit_caption(client, written, facts=[], lead_fact=None) == written
+
+
+def test_the_hook_is_never_a_list_of_institutions_while_a_story_about_the_building_exists():
+    # 102: the lite model chose "insurance society, grocery, coffee shop on the ground floor" as the opening.
+    facts = [
+        {"index": 0, "kind": "institutions", "unexpected": 1, "human_drama": 0, "concrete": 2, "relates_to_photo": 0},
+        {"index": 1, "kind": "building_detail", "unexpected": 3, "human_drama": 1, "concrete": 3, "relates_to_photo": 1},
+        {"index": 2, "kind": "date_only", "unexpected": 0, "human_drama": 0, "concrete": 1, "relates_to_photo": 0},
+    ]
+    weak = GeminiClient._hook_choice({"facts": facts, "choice": {"index": 0, "reason": "много учреждений"}}, 3)
+    assert weak[0]["index"] == 1
+    strong = GeminiClient._hook_choice({"facts": facts, "choice": {"index": 1, "reason": "клеймо на кирпичах"}}, 3)
+    assert strong == [{"index": 1, "reason": "клеймо на кирпичах"}]
+    only_weak = [dict(facts[0]), dict(facts[2])]
+    assert GeminiClient._hook_choice({"facts": only_weak, "choice": {"index": 0, "reason": "больше нечего"}}, 3)[0]["index"] == 0
