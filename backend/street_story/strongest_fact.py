@@ -17,13 +17,27 @@ from typing import Any
 LOG = logging.getLogger(__name__)
 
 
-def _inventory(db, story_id: str) -> list[dict[str, str]]:
-    return [{'fact_id': str(row[0]), 'claim_key': str(row[1] or ''), 'text': str(row[2])}
-            for row in db.execute(
-                "SELECT a.assertion_id,a.semantic_key,f.text FROM fact_assertions a JOIN facts f "
-                "ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
-                "WHERE a.story_id=? AND a.eligibility='eligible' ORDER BY f.rowid", (story_id,))
-            if str(row[2] or '').strip()]
+def _inventory(db, story_id: str) -> list[dict[str, Any]]:
+    from .map_pages import from_visitor_reviews
+    items = []
+    for row in db.execute(
+            "SELECT a.assertion_id,a.semantic_key,f.text FROM fact_assertions a JOIN facts f "
+            "ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+            "WHERE a.story_id=? AND a.eligibility='eligible' ORDER BY f.rowid", (story_id,)):
+        if not str(row[2] or '').strip():
+            continue
+        sources = [str(item[0]) for item in db.execute(
+            "SELECT e.source_url FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+            "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (story_id, row[0]))]
+        items.append({'fact_id': str(row[0]), 'claim_key': str(row[1] or ''), 'text': str(row[2]),
+                      'reviews_only': bool(sources) and all(from_visitor_reviews(url) for url in sources)})
+    return items
+
+
+def _openers(inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Visitor reviews are a weak opening (owner decision 18.10.2026): only when nothing else exists."""
+    documented = [item for item in inventory if not item['reviews_only']]
+    return documented or inventory
 
 
 def current(research: dict[str, Any], eligible_ids: set[str]) -> dict[str, Any] | None:
@@ -54,7 +68,7 @@ async def decide(service, story_id: str, *, luna_candidate: dict[str, Any] | Non
     with service.store.connection() as db:
         row = service._story_row(db, story_id)
         research = json.loads(row['research_json'] or '{}')
-        inventory = [item for item in _inventory(db, story_id) if item['fact_id'] not in (exclude or set())]
+        inventory = _openers([item for item in _inventory(db, story_id) if item['fact_id'] not in (exclude or set())])
     if not callable(ranker) or not inventory:
         return None
     luna = None

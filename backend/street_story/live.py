@@ -5839,7 +5839,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             return None
         with self.service.store.connection() as db:
             research = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
-        record = current(research, set(inventory)) or await decide(self.service, story_id)
+        documented = {str(item.get("fact_id")) for item in state["story"].get("facts", [])
+                      if str(item.get("fact_id")) in inventory and not item.get("from_visitor_reviews")}
+        record = current(research, set(inventory))
+        if record and record.get("source") != "owner" and documented and record.get("fact_id") not in documented:
+            record = None  # an automatic choice resting only on visitor reviews: decide again (owner decision 18.10.2026)
+        record = record or await decide(self.service, story_id)
         if not record or record.get("fact_id") not in inventory:
             return None
         lead = {"fact_id": record["fact_id"], "text": inventory[record["fact_id"]]}
