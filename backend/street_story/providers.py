@@ -3651,13 +3651,12 @@ class GeminiClient:
         "предложение новой нити с явной связкой) или «скачок» (другая тема без перехода или посреди чужой нити), и "
         "проблему (problem: неподтверждённая связка или дата, превосходная степень, "
         "невидимое как видимое, ссылка на источник, аббревиатура, город в адресе, скачок; пусто, если проблем нет); "
-        "text — итоговый текст, где все найденные проблемы исправлены, а каждый скачок переставлен в свою нить; image_notes — 2–3 надписи для картинки по "
-        "выбранным фактам, каждая 3–8 слов и понятна сама по себе, без обрывков; первая — самый сильный факт "
+        "text — итоговый текст, где все найденные проблемы исправлены, а каждый скачок переставлен в свою нить; image_notes — 2–3 надписи для картинки только по "
+        "image_facts (выбранные факты без отзывов посетителей), каждая 3–8 слов и понятна сама по себе, без обрывков; первая — самый сильный факт "
         "(lead_fact) коротко со своей датой (например «1932: нацисты подожгли дом»); дальше — события, люди, "
         "детали облика и нынешнее назначение; справки о статусе, охране и реестрах, даты включения в перечни — "
-        "слабые надписи, только если больше сказать нечего; факт с from_visitor_reviews на картинку не выносится: "
-        "надпись читается как установленная история, а это слова посетителей; без года источника и названий "
-        "реестров, «Прежде: …» для прежнего назначения."
+        "слабые надписи, только если больше сказать нечего; отзывов посетителей на картинке нет: надпись читается как "
+        "установленная история; без года источника и названий реестров, «Прежде: …» для прежнего назначения."
     )
 
     EDITOR_SCHEMA = {
@@ -3669,8 +3668,9 @@ class GeminiClient:
                 "fix": {"type": "string"},
             }, "required": ["sentence", "kind", "fix"]}},
             "text": {"type": "string"},
+            "image_notes": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["issues", "text"],
+        "required": ["issues", "text", "image_notes"],
     }
 
     EDITOR_RULES = (
@@ -3689,10 +3689,13 @@ class GeminiClient:
         "прошедшем времени; «сейчас» — только если факт говорит о настоящем. Отзыв посетителей подаётся как отзыв.\n"
         "3. Ничего не теряй: каждый факт подписи остаётся, если он не нарушает правила; переставляй, а не сокращай. "
         "Первая фраза по-прежнему начинается с lead_fact. Не добавляй новых сведений.\n"
+        "4. Надписи на картинке (image_notes): каждая опирается на факт из image_facts — это выбранные факты без "
+        "отзывов посетителей. Надпись по отзыву или по сведению не из image_facts замени надписью по image_facts "
+        "(3–8 слов, понятна сама по себе); первая — самый сильный факт, если он есть в image_facts.\n"
         "issues — каждая найденная проблема: предложение, вид (скачок, нет перехода, неподтверждённое, источник, "
         "реестр, дата источника, видно на снимке, адрес в тексте, потеря факта) и что сделано; пусто, если всё в "
         "порядке. text — исправленная подпись без адреса и хештега, абзацы через пустую строку, без Markdown; если "
-        "проблем нет, верни подпись без изменений."
+        "проблем нет, верни подпись без изменений. image_notes — 2–3 проверенные надписи."
     )
 
     HOOK_KINDS = ["event", "people", "building_detail", "origin", "use_change", "current_use",
@@ -3823,6 +3826,7 @@ class GeminiClient:
             "facts": facts,
             "context_facts": context_facts or [],
             "lead_fact": lead_fact,
+            "image_facts": [str(f.get("text") or "") for f in facts if not f.get("from_visitor_reviews")],
             "literal_fragments": literal_fragments,
         }, ensure_ascii=False)
         contents = [self.WRITER_RULES + "\n\n" + payload]
@@ -3881,7 +3885,9 @@ class GeminiClient:
         body, sep, ending = written["text"].rpartition("\n\n")
         if not sep or not ending.lstrip().startswith(("#",)) and "\n#" not in ending:
             body, ending = written["text"], ""
-        payload = json.dumps({"caption": body, "facts": facts, "lead_fact": lead_fact}, ensure_ascii=False)
+        image_facts = [str(f.get("text") or "") for f in facts if not f.get("from_visitor_reviews")]
+        payload = json.dumps({"caption": body, "facts": facts, "lead_fact": lead_fact, "image_facts": image_facts,
+                              "image_notes": written.get("image_notes") or []}, ensure_ascii=False)
         config = types.GenerateContentConfig(response_mime_type="application/json",
                                              response_json_schema=self.EDITOR_SCHEMA, max_output_tokens=2048)
 
@@ -3890,7 +3896,9 @@ class GeminiClient:
             edited = str(answer.get("text") or "").strip()
             if not edited or len(edited) + len(ending) > 1100:
                 raise ValueError
-            return {"text": edited, "issues": [i for i in answer.get("issues") or [] if isinstance(i, dict)], "model": model}
+            notes = [str(n).strip() for n in answer.get("image_notes") or [] if str(n).strip()][:3]
+            return {"text": edited, "notes": notes,
+                    "issues": [i for i in answer.get("issues") or [] if isinstance(i, dict)], "model": model}
 
         try:
             edited = await self._lite_chain([self.EDITOR_RULES + "\n\n" + payload], config, parse)
@@ -3901,7 +3909,7 @@ class GeminiClient:
             "outcome": "edited", "model": edited["model"], "issues": [str(i.get("kind") or "")[:40] for i in edited["issues"]][:12],
             "changed": edited["text"] != body.strip()}, ensure_ascii=False))
         return {**written, "text": edited["text"] + ("\n\n" + ending if ending else ""),
-                "editor_model": edited["model"]}
+                "image_notes": edited["notes"] or written.get("image_notes") or [], "editor_model": edited["model"]}
 
     async def _semantic_complete_discovery_best_effort(
         self,
