@@ -1,5 +1,11 @@
 # Street Story
 
+Каноническая документация и требования владельца находятся в `main`: [индекс](docs/README.md), [требования](docs/requirements.md), [реестр фотографий](docs/testing/photo-registry.md), [ПМИ](docs/testing/street-story-product-acceptance-20261010.md).
+
+С 18.10.2026 продуктовый код тоже живёт в `main`, и продакшен выкатывается только из `main`.
+
+Test originals, metadata and evaluator answers: [documentation index](docs/README.md) → [persistent photo registry](docs/testing/photo-registry.md).
+
 Application chat: [Street Story in Telegram](https://t.me/c/4488229487/2). Agent delivery details: [Telegram routing](docs/telegram-routing.md).
 
 Street Story is a small Android product for the reliable path **city photo → long voice context → source-backed facts → VibePublish visual → provider-native scheduled publication**.

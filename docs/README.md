@@ -1,5 +1,9 @@
 # Documentation authority
 
+`main` is the canonical home for basic documentation, [owner requirements](requirements.md) and the [machine-readable critical manifest](../.devcoveer/requirements.json), [persistent photo registry](testing/photo-registry.md) and [acceptance procedure](testing/street-story-product-acceptance-20261010.md). Product code lives in `main` too, and production is deployed only from `main` (since 2026-10-18; see the incident note in [backend-runtime](backend-runtime.md)).
+
+[Test-photo registry](testing/photo-registry.md) is the persistent original-byte, EXIF/provenance and evaluator inventory. The [fact-saturation table](testing/fact-saturation.md) is the living per-photo record of verified facts found, used in the post and taken from visitor reviews, against the best count ever seen for the house; it is updated after every product run with `docs/testing/fact_saturation.py snapshot` and flags a run that finds noticeably fewer facts. It links back to the [acceptance procedure](testing/street-story-product-acceptance-20261010.md); frozen inputs and historical results are unchanged.
+
 Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
 This docs-only synchronization does not update product code or prove deployment.
 Target changes are identified separately and tracked in the [recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
@@ -59,3 +63,9 @@ manifest, provider configuration and actual case receipts.
 The [historical recovery validation](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/docs/reports/product-recovery-validation-20261009.md)
 separates prepared corrections from measured live outcomes and records remaining
 acceptance gates and observed usage.
+
+## Published clarifications and independent evidence
+
+The [11 October owner priority clarification](prompts/street-story-temporary-core-priority-20261011.md) temporarily changes execution order while preserving the full original requirements; it is dated historical guidance, not a new acceptance gate. The [12 October independent multi-photo comparison](reports/street-story-independent-cases-method-recovery-20261012.md), [case125 method study](reports/street-story-case125-independent-methods-20261012.md), [case125 fact register](reports/street-story-case125-fact-register-20261012.md) and [case130 method study](reports/street-story-case130-independent-methods-20261012.md) retain their stated sources, truth limits and assisted/blind distinctions. They are research evidence, not proof of runtime acceptance.
+
+Canonical consolidation sources: [basic documentation and registry `3fe3fc1`](https://github.com/onedayonemasterpiece/street-story/tree/3fe3fc160843b9e41d79631c03ee513c1de8a123), [historical audit `9e7e511`](https://github.com/onedayonemasterpiece/street-story/tree/9e7e511d0901a799c14ac6ab82b17dd41efa2d1b), [owner priority source](https://github.com/onedayonemasterpiece/street-story/tree/62f08b4f02db4d42111374029cd6da02544a27a5) and [independent reports source](https://github.com/onedayonemasterpiece/street-story/tree/3c45cf7e42775374d41053fe20783ab66081a014). The critical manifest is transferred byte-for-byte from the existing product/documentation baseline; this consolidation creates no new owner requirements.

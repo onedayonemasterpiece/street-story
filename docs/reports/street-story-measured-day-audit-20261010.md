@@ -1,0 +1,158 @@
+# Street Story: измерения по сохранённым запускам за 10 октября 2026
+
+Дополнение к [постановке о полезном результате](../prompts/street-story-universal-product-recovery-20261010.md). Это доказательная справка, не новая программа обязательных проверок. Прочитаны уже существующие артефакты через DevCoveer; новых тестов, модельных запросов, повторов UNKNOWN или запусков продукта аудит не выполнял.
+
+## Покрытие и способ подсчёта
+
+Окно отбора: 9 октября 22:00 UTC (10 октября 00:00 в Калининграде) — остановка владельцем 10 октября 19:14:09,786 UTC. Фактические uploaded_at в выборке: 22:10:43–19:13:02. Проверены 13 именованных корней артефактов Street Story за 9–10 октября, непосредственные результаты cold-run. Все подходящие cold uploads находятся в корне `20261009T214809Z-overnight-product-finish-20261009`.
+
+- 36 каталогов `run.json`, 35 source SHA, 133 разных `(story_id, uploaded_at)` обычных загрузок. `story_id` всего 37: один ID повторяется в изолированных harness DB. Склеивать только по нему нельзя.
+- 36 SQLite DB прочитаны read-only. 228 различных job rows по `(job_id, created_at)`, без дубликатов по этому ключу. 32 job имели больше одного claim; сумма сохранённых claim counters — 288. Это **не число provider sends**.
+- Отдельно классифицированы 22 некорпусных каталога: 3 editorial snapshots, 2 fresh-client E2E, 11 REF/comparison/recovery и 6 Android/build/release. Копии прежних DB не добавляются как новые исходные опыты. В 11 cold runs импортировалась только история доступности/cooldown: её 429-записи нельзя суммировать как новые отказы.
+- Это адаптивные эксперименты на меняющемся коде и повторяющихся фотографиях. 133 загрузки не означают 133 независимые сцены, а общий процент PASS не является точностью релиза.
+
+Источники подсчёта: сохранённые `run.json`, `results.json`, case JSON и read-only проекции `jobs`, `research_provider_attempts` из изолированных DB. Provider attempts, фактические sends, worker claims, HTTP readers и admission — разные единицы. Продолжительности параллельных операций не складываются в wall time. Полная стоимость и свободная доступная мощность этой выборкой не установлены.
+
+По явному поручению владельца отменён только acceptance child `job_eb2f53c6af54f1c3f9c8d876`; terminal `cancelled` проверен в 19:14:18. Сохранённые артефакты не удалены, production сервис этой отменой не изменялся. Это не доказательство остановки всех процессов на хосте. Строка125 `RUNNING` в последнем сохранённом results отражает прерванный случай, а не подтверждённую текущую активность.
+
+## Картина дня: состояния, а не единая оценка качества
+
+| Сохранённая метка загрузки | Количество |
+|---|---:|
+| FAIL | 89 |
+| BLOCKED | 12 |
+| PASS_CANDIDATE | 9 |
+| REVIEW_REQUIRED | 9 |
+| CLARIFICATION_REQUIRED | 8 |
+| OPERATOR_STOPPED | 4 |
+| CONDITIONAL_CONTEXT_AVAILABLE | 1 |
+| RUNNING в сохранённом файле, затем отмена child | 1 |
+
+80 job rows с deadline-related `last_error` относятся к 71 различной паре `(run, story)`: 58 `identity_deadline_exceeded`, 13 `acceptance_upload_deadline_exceeded`, 9 `research_deadline_exceeded`. Это финальное изменяемое поле, не полный журнал причин каждой попытки. Сам deadline не доказывает, что всё время ушло на модель или нехватку квоты.
+
+Результаты меняются немонотонно:106 загружалась восемь раз, один726-запуск дал правильный REF/три факта за237,911 с до terminal, следующий e40 завершился без identity. У 107 семь запусков и разные выбранные тела:726 ошибочно связал фасад с `way103633560`, e40 выбрал T/`way135507463`, другой прежний run — `way135507769`. Проверка одного из них не устанавливает правильность остальных.
+
+## Последняя e40-серия: измеренные стадии
+
+Все времена — секунды от upload, не чистое время модели. SHA `e40dba990ff56a989811cdbd43825e146835fa45`, каталог `cold-recall-e40dba9`.
+
+| Фото | Identity | Первый eligible | Полезный набор через API | Terminal | Сохранённый итог |
+|---|---:|---:|---:|---:|---|
+| 102 | 82,877 | 163,733 | 218,386 | 317,569 | 6 eligible, PASS_CANDIDATE |
+| 104 | 54,586 | 119,279 | 166,273 | 299,300 | 5 eligible, PASS_CANDIDATE |
+| 105 | — | — | — | 180,263 | FAIL без identity |
+| 106 | — | — | — | 180,206 | FAIL без identity |
+| 107 | — | 91,169 | 399,283 | 399,283 | 3 eligible, REVIEW_REQUIRED; точное тело независимо не подтверждено |
+| 108 | — | — | — | 180,149 | FAIL |
+| 111 | — | — | — | 138,334 | OPERATOR_STOPPED; причина отдельно не установлена |
+| 119 | — | — | — | 170,209 | 3 eligible, REVIEW_REQUIRED |
+| 120 | — | — | — | 445,558 | 4 eligible, REVIEW_REQUIRED |
+| 124 | — | — | — | 5,737 | CLARIFICATION_REQUIRED |
+| 125 | — | — | — | — | Прервано отменой child; последняя запись59,774 с |
+
+Прочерк означает «точный показатель здесь не извлечён», а не нулевую работу. 126/129/130/132 последней серии не превращаются в FAIL из-за отсутствия выполненного случая. Серия не завершила15.
+
+У 102 после identity до первого факта80,856 с, до useful-set135,509 с; после useful-set до terminal99,183 с. У 104 useful-set доступен за166,273 с, terminal наступил через133,027 с после этого. Эти хвосты **не равны времени блокировки редактора**: полезное уже могло использоваться. Нельзя выдавать их за чистый inference или доказанный простой.
+
+## Что подтверждено о распознавании
+
+- e40/106: к93,506 с закрытый SOURCE-план оставил правильный `150596899` среди двух active, но выбрал targeted_search. В просмотренной timeline на152,210 с нет `comparison_sent/pairs_frozen`; terminal180,206 с. Это потеря продвижения до достаточного результата, но наличие готового различающего текста в тот момент не доказано. Не переносить сюда прежний1c Native NotSent→Google UNKNOWN и не вводить обязательный T для любого OCR.
+- 726/107: ошибочная REF identity124,587 с, первый eligible197,776 с, terminal291,752 с. После неверной физической привязки прошло ещё167,165 с до terminal. Ускорение фактов о неподтверждённом соседнем корпусе не решает продуктовую задачу. Существующее REF-сравнение должно согласовать match с собственной открытой `verify_binding`, как предписывает основной brief.
+- Исторический7a/132: настоящий REF match через24,333 с после send, правильная identity145,354 с, evaluator Stop146,992 с из-за доказанного Wiki/OSM эквивалента. Это уже исправленная ошибка оценки, не неудача распознавания.
+- Старые20-секундные generic timeouts, непереход после закрытого503 и browser-after403 уже исправлялись. Их доля в дневных FAIL не превращает их снова в неисправленные пункты. Sticky-thumbnail и некоторые барьеры очередей остаются кодовыми рисками: их причинная доля в этих логах не измерена.
+
+## Факты: повторяемая ошибка формы, измеренная по всему дню
+
+В18 из36 cold DB найдены228 разных fact-provider attempt IDs:196 completed,16 failed,7 unknown,2 submitted,3 created,4 aborted. Это отдельные provider rows, случайно совпавшие числом с228 jobs; не одни и те же сущности. У199 rows есть различные provider_call_id, у29 ID отсутствует: это не полный реестр оплаченных вызовов. Completed означает закрытый ответ провайдера, не истинность всех фактов и не успешный commit.
+
+| Этап/модель, completed | n | Медиана elapsed, с | p90, с |
+|---|---:|---:|---:|
+| Извлечение, Gemini Live | 37 | 20,402 | 31,606 |
+| Review, Gemini Live | 155 | 14,447 | 21,281 |
+| Review, Nemotron | 2 | 56,734 | — |
+| Review, Mimo | 2 | 66,305 | — |
+
+Всего извлечение41 attempts, review187. `elapsed_ms` включает накладные расходы операции; p90 — nearest rank, для n<10 не публикуется. Отсутствующие elapsed не заменены нулём. Большое число review отражает текущую архитектуру и порции, не автоматически187 ненужных операций.
+
+**Семь Live malformed reviews имеют сохранённую точную ошибку.** Шесть раз — только optional `equivalent_to_existing:null`: 7a453fb×1,017c713×1,7265246×2,e40×2. Один раз — отсутствует адрес `decisions[0].fact` при единственной цели `enum=[0]`. В raw уже есть смысловое решение и поля собственной опоры; это не доказательство, что все остальные семантические проверки прошли бы. Сумма длительностей этих семи Live —113,807 operation-seconds. Шесть последующих OpenCode schema failures —376,486 operation-seconds; их конкретные поля ошибки не сохранены. Не называй их тем же null-дефектом и не складывай суммы в задержку одного пользователя.
+
+| Run, первый старт UTC10 октября | Первый дефект | Следующие исходы того же frozen input | Wall span, с |
+|---|---|---|---:|
+| 7a,13:43:11 | optional null | Nemotron schema failure; затем лишь created |105,919|
+| 017,17:18:18 | optional null | Nemotron schema failure → Mimo completed |90,871|
+| 726,17:59:52 | optional null | Nemotron schema failure → Mimo timeout-aborted |193,651|
+| 726,18:04:17 | optional null | Nemotron aborted, ошибка не сохранена |44,465|
+| e40,18:43:15 | singleton fact отсутствует | Nemotron и Mimo schema failures |78,624|
+| e40,18:53:08 | optional null | Nemotron schema failure → Mimo completed |244,188|
+| e40,19:07:48 | optional null | Nemotron и Mimo timeout-aborted |261,826|
+
+Ключ цепочки — run+fact_unit_id+fact_input_sha256, не только story ID. Wall span — от first created_at до last updated_at; последнее может включать reconciliation. Для244,188 с сохранены elapsed18,398+115,719+108,471=242,588 с. Unit `898a179c97e7f38aa5925101`, story107 `story_203990e7b1df07f276b603c7`. Последующая проверка result.packet_ref связала Mimo `rattempt_d97e0e3f5ac7e2243b30d346` с finalized packet `p8944c88785ae`: claim `claim_558454d35f15ffe1643b` принят supported, eligible_count стал3. Предыдущий packet `p83c147a876cd` завершился repair_needed и оставил2. Поэтому для этой цепочки commit теперь доказан отдельно от provider completed; историческая истинность claim/physical body этим не установлена. Для261,826 с известны только Live19,938 с; elapsed двух timeout-aborts нет. Это не261 с чистого model runtime.
+
+Для singleton104 (unit `901e1d5e03ebd128d3fd73b4`) Live12,268+Nemotron37,757+Mimo28,207=78,232 с. Полные78 с не являются обещанной экономией: первый смысловой ответ нужен; следующие65,964 с могли не понадобиться, только если нормализованный Live прошёл бы остальные проверки. Такой контрфактический проход не запускался.
+
+### Какой результат действительно удерживала цепочка
+
+У e40/104 useful-set уже был на166,273 с. Неудачная singleton-review цепочка началась на220,311 с от upload, через54,038 с после useful, завершилась298,935 с; terminal299,300 с. Она задерживает дополнительную обработку/завершение, но не объясняет время до первого полезного набора. У e40/107 сохранённый readback18:53:07,634 уже показывал два eligible; null-цепочка началась18:53:08,265. Первый eligible был на91,169 с от upload. Теперь packet→commit join показывает, что цепочка приняла третий eligible: последний receipt закрылся18:57:12,453, useful399,283 с от upload18:50:37,645 наблюдён около18:57:16,928, через4,475 с. Следовательно, это часть наблюдённого пути к третьему пригодному факту, а не только хвост после useful. Без контрфактической проверки нельзя обещать сокращение на все244 с; правильность физического объекта отдельно не подтверждена.
+
+Identity726/106 занимает152,960 с из237,911 с пути до трёх фактов/terminal, около64,3%. Это измеренный последовательный барьер конкретного запроса, не доказательство узкого места пропускной способности всего сервиса. Source-preparation/wave barrier и глобальные sweeps — кодовые кандидаты на такое ограничение; реальных arrival-rate, readyqueue и доступных permit во времени недостаточно. Подробная классификация и минимальные проверки включены в класс «Бутылочное горлышко» основной постановки.
+
+### Что конкретно убрать
+
+[Schema live.py584](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/backend/street_story/live.py#L584) допускает optional reference только как строку; [domain commit](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/backend/street_story/review_packets.py#L485-L501) уже трактует omission/null одинаково, а пустую строку убирает. Ранний validator запрещает представление, которое нижележащий существующий контракт понимает как отсутствие связи.
+
+Один канонический контракт и механическая нормализация на текущей provider boundary: null optional-reference → omission; однозначный singleton без адреса → единственный frozen адрес. Сохранять raw и нормализованный результат; не выдумывать IDs, verdict, evidence, qualifiers или разрешение конфликта. Несколько целей/решений, несовпавший packet, неправильная ссылка и спорное сопоставление не «ремонтируются» догадкой. После нормализации остаются обычные source/subject/semantic/revision/Stop guards. Удаляется escalation всего неизменного пакета из-за безвредного способа записи, а не смысловая проверка.
+
+### Реальная параллельность и106
+
+В пределах одного run/story найдены12 пересечений lifetimes завершённых attempts:6 extraction/extraction и6 extraction/review; review/review не найдено. Это пересечение сохранённых created_at→updated_at, не точные интервалы вычисления GPU. Система не полностью последовательная; preparation/wave barriers из brief остаются отдельными кодовыми проблемами.
+
+Для726/106 дополнительно получены реальные receipts: extraction24,596 с, review18,062 и15,684 с, без пересечения. Между закрытием receipt и следующей попыткой6,552 и7,766 с; содержание этих промежутков не установлено. Identity152,960 с, первый eligible212,643 с, три факта и terminal237,911 с: после identity84,951 с. Приписывать все238 с фактам/подтверждению неверно.
+
+## Что review действительно сделал: уточнение по текущим состояниям
+
+Дополнительный read-only join тех же 36 DB: 473 persisted assertions/observations,140 eligible,311 unreviewed,22 withheld. Structural observation accepted не означает semantic eligibility.156 finalized packets содержат168 item decisions для162 уникальных `(run,story,assertion)`; лишь шесть appearances сверх первого относятся к старым4b0c7bc/a11129e/d3effe2. Их причина из snapshots неизвестна.149 supported decisions не равны140 нынешним eligible: повторы/repair lineage/другие переходы не дают права назвать разницу девятью ошибками.
+
+В e40:6 extraction и35 review attempts;42 assertions.26 completed reviews связаны с26 finalized packets, каждый для отдельной assertion:21 supported,4 repair_needed,1 insufficient. Ныне21eligible/16unreviewed/5withheld. Остальные9 review attempts:6failed,2aborted,1unknown. Повторного finalized assertion в e40 не обнаружено.187/41 за день — разные размеры операций, не доказательство многократной повторной проверки тех же фактов.
+
+| e40 | Assertions | Review attempts | Finalized decisions | Текущий итог |
+|---|---:|---:|---|---|
+|102|10|8:7completed+1unknown|6supported+1repair_needed|6eligible/3unreviewed/1withheld;0selected|
+|104|9|10:7completed+3failed|5supported+2repair_needed|5eligible/2unreviewed/2withheld;0selected|
+
+Нулевой selected нормален для этого cold harness, не доказывает невозможность выбора автором. Решение repair_needed меняет состояние без увеличения eligible: это не автоматически бесполезный/no-op вызов.
+
+Candidate persistence→review-attempt start у102:9,682;45,988;71,334;97,624;115,770;138,892;158,185 с. У 104 completed:6,162;36,691;53,572;74,386;95,566;118,255;132,468 с; failed eighth149,185 с. Это ожидание сохранённого кандидата, не ready/admitted→model start. [Последовательные новые review rounds](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/backend/street_story/headless_fact_review.py#L435-L495) подтверждают механизм; resource grants в эти промежутки неизвестны.
+
+Точной частоты accepted→unreviewed и доли изменённого смысла нет: таблицы содержат current status, packets и timestamps, но не полный журнал переходов assertion.62 superseded packets e40 при нуле повторных finalized assertions прямо показывают, что superseded — плохой proxy повторного semantic review. При исправлении использовать существующий audit/checkpoint для prior/new eligibility, причины и revisions; смена digest сама по себе не доказывает смену смысла. No-op rate и «правильные ответы, остановленные host» без независимой разметки также неизвестны.
+
+Дополнительная сверка требований: все11 critical имеют 30 письменных acceptance clauses; positive fixture не покрывает новый same-session get_facts разрыв с inherited run. Сводка 133 загрузок может связывать run/SHA/upload/status/jobs/fact attempts, но незаполненные SOURCE/stage timestamps и truth остаются неизвестными, а не нулями. Исправления и границы поддержки типов изложены в основной постановке.
+
+## Экология хранения, передачи и постоянная память: разные контуры
+
+Срез 19:50–19:54; код развитияe40, installed health19:53 сообщает 93a0878. Это не один runtime и не один набор данных.
+
+| Контур | Измерение | Чего число не означает |
+|---|---|---|
+| Retained overnight artifact root |914 files,2 174 223 706 bytes; SQLite1 151 037 440, исходные фото 624 000 661, JSON290 695 138, APK65 200 060|Не production growth и не вся история хоста|
+| e40 cold DB,11 uploads |95 461 376 bytes; provider-attempt pages40 439 808, stories22 126 592, cache9 060 352, commands8 564 736, review packets7 192 576|Файл/allocated pages не равно logical JSON или wire bytes|
+|15 из 75 provider receipts e40|Точное JSON-равенство top-level frozen_source_map и binding.frozen_source_map; одна копия 19 767 473 UTF-8 bytes|Не гарантированное уменьшение SQLite-файла на эту величину, не model tokens|
+|26 finalized review results e40|5 894 909 logical UTF-8 bytes; nested identity5 044 638 (85,6%)|Не оплаченный prompt и не измеренный HTTP-трафик|
+|Installed POI research memory|723 rows/717 assertion IDs;249eligible/396unreviewed/11disputed/67withheld;239nonnull proofs|Не 723 независимо проверенных исторических факта и не 249 безусловно warm-admissible|
+
+Installed память также содержит 1522 observations,170 POI–URL associations/135 URLs,6 candidate/alias keys,14registry POI rows; один physical subject может иметь несколько keys. `poi_claims=0` — другая, typed-RKB-intake поверхность, а не отсутствие накопленных Street Story фактов. Cold473 assertions/140eligible принадлежат 36 изолированным DB и не суммируются с installed памятью. Sample warm proof сохраняет точный source revision/passage hash и `poi_memory_reuse` scan; новый warm запуск не выполнялся. Total warm reuse count не получен: отменённый запрос не повторялся.
+
+PR255/93a0878 даёт ID-link и authenticated RKB context read-through, не автоматический fact ingest. Будущая admission книжных фактов использует существующий POI/evidence/commit, а не второй реестр. Никакие test DB автоматически не импортируются.
+
+На хосте однократно наблюдалось 3 385 331 712 bytes free. Production DB size, тренд роста и время до заполнения не установлены. Такой снимок не доказывает текущую угрозу потери данных. Доминируют execution proofs/snapshots; безопасно мёртвые schemas/adapters не установлены. Compatibility readers и UNKNOWN guards активно используются; cache9,06 MB не измеряет expired-only данные. Аудит ничего не удалял и не мигрировал.
+
+### Передача и материализация
+
+У e40/107 одна identity395 305 bytes, source_text_receipt370 589; story snapshot около 412 KB, при одном review item3031–4162 bytes. Android DTO не читает весь proof. Компактная UI projection со стабильной server-side proof ссылкой и один immutable snapshot для receipt уменьшают явные дубли; readback/idempotency и source provenance сохраняются. Модельный finalize_fact_review reply уже компактен, context trim e40 уже сделан.
+
+Статически чистый SyncWorker проход для N существующих локальных stories выполняет capabilities+2N GET и 3N applyRemote, без extra recovery/commands/assets; повторный apply одного snapshot можно убрать, необходимый post-mutation read оставить. Для 107 две несжатые copies дали бы около 824 KB сериализации за проход; реальный compressed wire traffic, parse time, local write amplification и батарея не измерены. SOURCE start/resume имеет верхнюю границу JPEG220 KiB/base64 около 300 376 bytes, но фактический размер каждого сеанса не измерен; успешная текстовая коррекция уже прошла при неизменённом SOURCE-пути.
+
+Приоритет этих оптимизаций ниже неверной identity, недоступных пригодных фактов, потери принятой работы и подтверждённой задержки полезного результата. Не создавать платформу кеширования/событий и не повышать их приоритет только из-за больших чисел bytes. Поднять конкретную проблему можно при доказанном влиянии на commit/recovery/доступную ёмкость.
+
+## Что не установлено о простое
+
+Production journal за15:11–19:11 содержит главным образом startup/access и не даёт claim/admission/queue telemetry. CPU/RAM production процесса не измеряют изолированную acceptance-нагрузку. Нет достаточных рядов readyqueue age, реальных grant/permit, lock wait, строк глобального sweep или event-loop delay. Поэтому O(N²) scan и незаполнение свободного слота остаются доказанными кодовыми механизмами, но секунды простоя доступных провайдеров неизвестны. Нужны короткие метки существующих границ ready/admission/send/result/commit/cleanup, а не новая система наблюдения или запуск всего корпуса ради графика.

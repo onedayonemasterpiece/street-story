@@ -312,3 +312,24 @@ observation window limits the experiment, not the product task. Pending jobs
 remain pending at experiment shutdown, and the report does not count them as
 successful product acceptance. Report-only evaluator IDs never enter intake.
 One-use Chromium profiles are deleted on close, startup failure and cancellation.
+
+## Common DevCoveer service policy (2026-10-18)
+
+Street Story's existing local bearer-protected VibePublish and RKB POI links are
+the reference pattern for [the server-wide service policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
+New same-host connections reuse loopback HTTP, a dedicated scoped service key,
+durable request receipts and recovery without public HTTPS, browser OAuth or an
+extra gateway. Preserve the already working routes, device token isolation and
+frozen publication identities. This is a documentation alignment, not a change
+to Street Story's deployed runtime or an assertion of new E2E coverage.
+
+## Production runs from main (2026-10-18)
+
+Production is installed only from a commit contained in `origin/main`
+(`devcoveer_install.py --source-branch main`). Until 18 October the product lived in a chain of
+unmerged branches (`chatgpt/street-story-map-facts-20261012` → `chatgpt/street-story-recall-20261010`
+→ `work/street-story-mvp-20260908` → `main` through PR #1), so `main` held only documents.
+The same pattern broke VibePublish that day: a deploy from VibePublish `main` removed the
+original-frame visuals Street Story depends on, which lived only in an unmerged PR
+(VibePublish INC-2026-10-18). Before switching a release, the running release must be an
+ancestor of the candidate; otherwise stop and merge first.

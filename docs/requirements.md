@@ -1,0 +1,90 @@
+# Ключевые требования владельца Street Story
+
+[Индекс документации](README.md) · [Канонический manifest](../.devcoveer/requirements.json) · [Полная продуктовая постановка](prompts/street-story-universal-product-recovery-20261010.md) · [ПМИ](testing/street-story-product-acceptance-20261010.md)
+
+Ниже читаемое представление существующих11 critical requirements. Формулировки и acceptance clauses перенесены дословно из manifest; источник истины — JSON. Наличие требования в `main` не означает, что оно реализовано или прошло приёмку. [Матрица требований и доказательств](reports/street-story-requirements-traceability-20261011.md) отдельно сохраняет фактическое состояние и ограничения.
+
+## CORE-PHOTO-IDENTITY
+
+After the owner selects a source photo, Street Story automatically identifies the depicted place or object through product automation/Mira; manual identification by the owner is not a required normal-path step.
+
+- The source photo is evaluated before research and publication work depends on its identity.
+- Uncertain identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity.
+
+## CORE-CONCEPT-DIALOG
+
+The owner can shape and refine the concept or angle of the publication conversationally instead of being forced through a disconnected manual workflow.
+
+- Concept refinement remains available in the same story conversation before the final publication output.
+
+## CORE-SOURCE-RESEARCH
+
+Street Story can find information on the internet about the identified subject and preserve source-backed evidence rather than inventing unsupported facts.
+
+- Research exposes source-linked evidence for publication facts.
+- Low-confidence discovery material is not silently upgraded into a verified fact.
+
+## CORE-FACT-SELECTION
+
+The owner can review and choose which evidence-backed facts are used in the publication.
+
+- Fact selection is visible to the owner and survives normal story refinement.
+- Unsupported facts cannot silently become selected publication facts.
+
+## CORE-PUBLICATION-TEXT
+
+The publication text is visible to the owner and can be reviewed or refined within the conversational story flow before publication.
+
+- A real draft is presented when available and remains associated with the story and selected facts.
+
+## CORE-VOICE-MIRA
+
+The primary creation and refinement flow supports live voice communication with Mira while preserving the same story conversation and product context.
+
+- Voice interaction does not force the owner into a separate manual research or editing workflow.
+- A transport or provider implementation change must preserve the conversational product outcome.
+
+## CORE-FINAL-VISUAL
+
+Street Story can generate final publication visuals from the source material and approved story context, and the owner can review or select the resulting visual before publication.
+
+- Visual generation remains part of the story flow and is tied to the approved publication context.
+
+## CORE-LLM-FIRST-SEMANTICS
+
+Street Story is LLM-first for semantic product decisions. Mira/the configured model owns object interpretation, fact extraction and normalization, semantic deduplication, contradiction detection and fact arbitration, concept shaping and editorial composition. Deterministic code is limited to transport, authentication, bounded orchestration, schemas, reference/evidence validation, idempotency, persistence, telemetry, mechanical formatting and fail-closed safety checks.
+
+- Regexes, keyword lists, year/predicate heuristics or rule scores do not decide whether text is a fact, whether two claims are semantically equivalent, whether they contradict, or which claim is true.
+- Fact and conflict semantics come from model outputs with stable model-provided claim identifiers/relations; deterministic code may validate shape, evidence references and bounds but must not silently replace model judgment.
+- If the required model semantic step is unavailable or malformed, the product surfaces or logs that state and fails closed rather than synthesizing semantic facts through deterministic fallback.
+- Legacy deterministic normalization may exist only as explicitly labeled migration/repair compatibility code and is not used by the normal photo-to-publication path or POI/RAG evidence path.
+
+## CORE-LIVE-FIRST-FACT-RESEARCH
+
+Street Story is Live-first for fact research economics and orchestration. The normal fact-research path should exploit the Live model as the primary low-marginal-cost semantic worker by decomposing research into many small, simple, bounded operations over retrieved source material. Search/fetch may use dedicated services, but stronger or separately metered non-Live models are not a mandatory dependency of normal fact extraction unless measured product evidence shows that Live alone is insufficient.
+
+- A normal source-research run can produce a useful evidence-backed fact set with Mira/Live plus search/fetch and deterministic persistence/orchestration, without requiring a paid or stronger helper-model chain.
+- Live work is decomposed into small bounded semantic operations that fit the model and resource envelope; weakness of the Live model is addressed first by decomposition, repetition, evidence access and resumable orchestration rather than by replacing it with deterministic semantics.
+- A non-Live research or verification model may be used as an optional targeted quality/latency fallback only when a concrete measured blocker justifies it; it must not silently become a permanent mandatory cost of the normal path.
+- If operational evidence later disproves the assumed Live cost/capacity advantage, that is surfaced as a product/economic constraint and the architecture may be reconsidered explicitly rather than drifting implicitly.
+
+## CORE-PRODUCT-FIRST-PARTIAL-VALUE
+
+Street Story prioritizes a working end-to-end product that returns useful, source-backed partial results over an idealized fact pipeline that withholds the entire product outcome until near-perfect recall or precision is achieved.
+
+- One uncertain, malformed or unsupported candidate does not fail an otherwise useful research run; that candidate is withheld while supported facts remain available to the owner.
+- Research quality is improved iteratively from real product outcomes. Imperfect recall is acceptable for MVP when the returned set is materially useful and evidence-backed; there is no requirement to find every possible fact before the user can proceed.
+- Tests, semantic benchmarks and acceptance harnesses are quality controls, not substitutes for delivery. A green test suite without a usable research-to-selection-to-draft flow is not product completion.
+- Recovery, repair, review and supersession mechanisms must not become mandatory normal-path ceremony unless concrete product failures prove they are necessary.
+
+## CORE-SHARED-POI-HISTORY-GRAPH
+
+Street Story is not a knowledge silo. Facts discovered by Street Story are accumulated directly in the existing persistent server-side POI memory and reused across stories and devices; story-local facts are only a publication projection. The Regional Knowledge Base maintains its evidence-backed historical graph for people, events and historical threads linked to canonical POIs. These existing domains interoperate by stable references and evidence contracts; no duplicate canonical POI layer or mandatory migration between POI tables is required.
+
+- A new story hydrates relevant existing POI memory before redundant web research, including eligible claims, known sources and aliases.
+- Research reuses already processed evidence and focuses new web work on gaps, new sources or changed questions instead of rediscovering the same POI from zero.
+- New evidence-backed facts discovered by Street Story persist directly in the existing POI research memory and are reusable by later stories; no second copy is required for them to become canonical product knowledge.
+- poi_research_assertions, poi_research_observations and poi_research_sources are valid durable POI knowledge for Street Story-discovered web research; they must not be mirrored into poi_claims merely to satisfy architecture ceremony.
+- poi_claims, poi_claim_evidence and poi_external_events remain integration-specific structures for typed external evidence intake where that contract is useful, not a mandatory migration target for existing Street Story POI memory.
+- Story-specific owner selection, editorial angle and draft state remain local to the story and do not redefine reusable POI knowledge.
+- Regional Knowledge Base can contribute provenance-rich evidence and maintain person/event/historical_thread relations linked to POIs without requiring Street Story research findings to be copied back into the Regional Knowledge corpus.
