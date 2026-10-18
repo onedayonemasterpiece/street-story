@@ -19,29 +19,47 @@ class TestDestinationVP(NoopVP):
         return payload
 
 
+class BothVP(TestDestinationVP):
+    __test__ = False
+
+    async def bootstrap(self):
+        payload = await super().bootstrap()
+        payload["destinations"].append({"alias": "lovekenig_tg", "kind": "destination", "label": "lovekenig Telegram", "provider": "telegram"})
+        payload["capabilities"].append({"destination": "lovekenig_tg", "operation": "publish", "surface": "post", "provider": "telegram", "status": "supported"})
+        payload["destinations"].append({"alias": "street_story_e2e_other_tg", "kind": "destination", "label": "Other", "provider": "telegram"})
+        payload["capabilities"].append({"destination": "street_story_e2e_other_tg", "operation": "publish", "surface": "post", "provider": "telegram", "status": "supported"})
+        return payload
+
+
 @pytest.mark.asyncio
-async def test_owner_mode_exposes_only_the_actual_test_group(tmp_path):
+async def test_the_owner_sees_the_test_chat_selected_and_the_real_channel_beside_it(tmp_path):
+    # Owner decision 18.10.2026: test chat first, then a scheduled post to the real channel.
     svc, _, _ = service(tmp_path)
     svc.settings = replace(svc.settings, publication_test_alias=TEST_ALIAS)
-    svc.providers.vibepublish = TestDestinationVP()
+    svc.providers.vibepublish = BothVP()
     result = await svc.capabilities()
-    assert [item["alias"] for item in result["destinations"]] == [TEST_ALIAS]
-    assert result["destinations"][0]["selected"] is True
+    assert [(d["alias"], d["label"], d["selected"]) for d in result["destinations"]] == [
+        (TEST_ALIAS, "Тестовый чат", True), ("tg-safe", "Полюбить Калининград", False),
+        ("lovekenig_tg", "lovekenig Telegram", False)]
 
 
 @pytest.mark.asyncio
-async def test_missing_test_destination_does_not_fall_back_to_production(tmp_path):
+async def test_without_the_test_chat_nothing_is_preselected_for_production(tmp_path):
     svc, _, _ = service(tmp_path)
     svc.settings = replace(svc.settings, publication_test_alias=TEST_ALIAS)
-    assert (await svc.capabilities())["destinations"] == []
+    destinations = (await svc.capabilities())["destinations"]
+    assert destinations and not any(d["selected"] for d in destinations)
 
 
-@pytest.mark.parametrize("destinations", [[], ["lovekenig_tg"], [TEST_ALIAS, "lovekenig_tg"], ["street_story_e2e_other_tg"]])
-def test_owner_mode_rejects_other_destinations_before_creating_an_intent(tmp_path, destinations):
+@pytest.mark.parametrize(("destinations", "code"), [([], "publish_destination_required"),
+                                                    ([TEST_ALIAS, "lovekenig_tg"], "test_and_production_mixed"),
+                                                    (["street_story_e2e_other_tg"], "test_destination_only")])
+def test_a_publication_goes_either_to_the_test_chat_or_to_real_channels(tmp_path, destinations, code):
     svc, _, _ = service(tmp_path)
     svc.settings = replace(svc.settings, publication_test_alias=TEST_ALIAS)
-    with pytest.raises(ConflictError, match="configured test group"):
+    with pytest.raises(ConflictError) as error:
         svc.mutate_publish("not-created", "scope-guard", {"destinations": destinations})
+    assert error.value.code == code
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM publish_intents").fetchone()[0] == 0
 
