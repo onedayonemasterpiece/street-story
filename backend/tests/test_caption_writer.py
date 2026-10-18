@@ -261,3 +261,18 @@ async def test_an_independent_editor_reorders_the_story_and_keeps_the_ending():
 
     client._lite_chain = unavailable
     assert await GeminiClient._edit_caption(client, written, facts=[], lead_fact=None) == written
+
+
+def test_the_hook_is_never_a_list_of_institutions_while_a_story_about_the_building_exists():
+    # 102: the lite model chose "insurance society, grocery, coffee shop on the ground floor" as the opening.
+    facts = [
+        {"index": 0, "kind": "institutions", "unexpected": 1, "human_drama": 0, "concrete": 2, "relates_to_photo": 0},
+        {"index": 1, "kind": "building_detail", "unexpected": 3, "human_drama": 1, "concrete": 3, "relates_to_photo": 1},
+        {"index": 2, "kind": "date_only", "unexpected": 0, "human_drama": 0, "concrete": 1, "relates_to_photo": 0},
+    ]
+    weak = GeminiClient._hook_choice({"facts": facts, "choice": {"index": 0, "reason": "много учреждений"}}, 3)
+    assert weak[0]["index"] == 1
+    strong = GeminiClient._hook_choice({"facts": facts, "choice": {"index": 1, "reason": "клеймо на кирпичах"}}, 3)
+    assert strong == [{"index": 1, "reason": "клеймо на кирпичах"}]
+    only_weak = [dict(facts[0]), dict(facts[2])]
+    assert GeminiClient._hook_choice({"facts": only_weak, "choice": {"index": 0, "reason": "больше нечего"}}, 3)[0]["index"] == 0

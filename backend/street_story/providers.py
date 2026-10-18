@@ -3693,36 +3693,62 @@ class GeminiClient:
         "проблем нет, верни подпись без изменений."
     )
 
+    HOOK_KINDS = ["event", "people", "building_detail", "origin", "use_change", "current_use",
+                  "institutions", "status_registry", "repair", "date_only", "review", "other"]
+    WEAK_HOOK_KINDS = {"institutions", "status_registry", "repair", "date_only", "review", "current_use"}
     HOOK_SCHEMA = {
         "type": "object",
         "properties": {
-            "ranked": {"type": "array", "items": {"type": "object", "properties": {
+            "facts": {"type": "array", "items": {"type": "object", "properties": {
                 "index": {"type": "integer"},
+                "kind": {"type": "string", "enum": HOOK_KINDS},
                 "unexpected": {"type": "integer"},
                 "human_drama": {"type": "integer"},
                 "concrete": {"type": "integer"},
                 "relates_to_photo": {"type": "integer"},
+            }, "required": ["index", "kind", "unexpected", "human_drama", "concrete", "relates_to_photo"]}},
+            "choice": {"type": "object", "properties": {
+                "index": {"type": "integer"},
                 "reason": {"type": "string"},
-            }, "required": ["index", "unexpected", "human_drama", "concrete", "relates_to_photo", "reason"]}},
+            }, "required": ["index", "reason"]},
         },
-        "required": ["ranked"],
+        "required": ["facts", "choice"],
     }
     HOOK_RULES = (
         "Ты редактор городского канала Street Story: пост о доме читают прохожие, которые стоят перед ним. "
         "Найди среди проверенных фактов о доме самый сильный зачин — факт, после которого человек остановится "
-        "и посмотрит на дом иначе. Оцени каждый факт по шкале 0–3:\n"
-        "• unexpected — неожиданность, контраст, нарушение ожиданий (издательство, которое подожгли, потом "
-        "маслобаза; глазная клиника, ставшая общежитием; единственный уцелевший дом квартала);\n"
-        "• human_drama — люди, конфликт, судьбы, события (пожар, война, конфискация, знаменитые жильцы);\n"
-        "• concrete — конкретика: имена, предметы, числа, точные детали, а не общие слова;\n"
-        "• relates_to_photo — связь с тем, что прохожий видит на фото (деталь фасада, башня, надпись).\n"
-        "Слабые зачины, оценивай их низко: статус памятника и реестры, справки об учреждениях и ремонтах, "
-        "голые даты постройки, материал и этажность без истории, отзывы посетителей. Факт должен быть о самом "
-        "доме, а не о соседнем. Верни ranked — индексы фактов (из входного списка, с нуля) от сильнейшего к "
-        "слабейшему, не больше трёх, с короткой причиной. Если передан researcher_candidate — это выбор "
-        "исследователя, читавшего источники: поставь его первым, если он действительно сильнейший, иначе первым "
-        "поставь более сильный факт и объясни в причине, чем он сильнее."
+        "и посмотрит на дом иначе. Для КАЖДОГО факта (index — его номер во входном списке, с нуля) укажи kind и "
+        "оценки 0–3:\n"
+        "• kind: event — событие с этим домом (пожар, война, конфискация, открытие); people — люди и их судьбы; "
+        "building_detail — необычная деталь или находка в самом доме (надпись, кирпичи с клеймом, редкий элемент); "
+        "origin — кто и зачем построил; use_change — смена назначения как контраст (клиника стала общежитием); "
+        "current_use — что здесь сейчас; institutions — перечень учреждений, магазинов, организаций; "
+        "status_registry — статус памятника, реестры; repair — ремонты и покраска; date_only — голая дата или "
+        "этажность; review — отзыв посетителя; other;\n"
+        "• unexpected — неожиданность, контраст, нарушение ожиданий; human_drama — люди, конфликт, события; "
+        "concrete — имена, предметы, числа, точные детали; relates_to_photo — связь с тем, что видно на фото.\n"
+        "Герой поста — здание: перечень учреждений, статус, ремонты, голые даты, нынешнее назначение и отзывы — "
+        "слабые зачины. choice — один сильнейший факт с короткой причиной. Если передан researcher_candidate — "
+        "это выбор исследователя, читавшего источники: выбери его, если он действительно сильнейший, иначе выбери "
+        "более сильный и объясни, чем он сильнее."
     )
+
+    @classmethod
+    def _hook_choice(cls, answer: dict[str, Any], count: int) -> list[dict[str, Any]]:
+        """The model's choice, unless it is a weak kind while a strong fact exists (owner rule: the hero is the building)."""
+        rows = {row["index"]: row for row in answer.get("facts") or []
+                if isinstance(row, dict) and isinstance(row.get("index"), int) and 0 <= row["index"] < count}
+        choice = answer.get("choice") or {}
+        index = choice.get("index") if isinstance(choice.get("index"), int) and 0 <= choice["index"] < count else None
+        strong = [row for row in rows.values() if row.get("kind") not in cls.WEAK_HOOK_KINDS]
+        score = lambda row: sum(int(row.get(k) or 0) for k in ("unexpected", "human_drama", "concrete", "relates_to_photo"))
+        if index is not None and (rows.get(index, {}).get("kind") not in cls.WEAK_HOOK_KINDS or not strong):
+            return [{"index": index, "reason": str(choice.get("reason") or "")}]
+        if strong:
+            best = max(strong, key=score)
+            return [{"index": best["index"], "reason": f"сильнейший факт не слабого вида ({best.get('kind')}, "
+                     f"оценка {score(best)}); выбор модели был слабого вида"}]
+        raise ValueError("no hook choice")
 
     async def _lite_chain(self, contents, config, parse):
         """Any answering lite model in the writer chain; unavailable or malformed answers fall through."""
@@ -3764,14 +3790,10 @@ class GeminiClient:
         if photo_jpeg:
             contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
         config = types.GenerateContentConfig(response_mime_type="application/json",
-                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=1024)
+                                             response_json_schema=self.HOOK_SCHEMA, max_output_tokens=4096)
 
         def parse(text, model):
-            ranked = [row for row in json.loads(text or "{}")["ranked"]
-                      if isinstance(row.get("index"), int) and 0 <= row["index"] < len(facts)]
-            if not ranked:
-                raise ValueError
-            return {"ranked": ranked[:3], "model": str(model or "")}
+            return {"ranked": GeminiClient._hook_choice(json.loads(text or "{}"), len(facts)), "model": str(model or "")}
         return await self._lite_chain(contents, config, parse)
 
     async def write_caption(
