@@ -1998,7 +1998,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 if item.get("provider") == "telegram" and item.get("status") in {"supported", "needs_review"}]
         test = [dict(item, label="Тестовый чат", test=True, selected=True)
                 for item in live if test_alias and item.get("alias") == test_alias]
-        real = [dict(item, test=False, selected=not test_alias)
+        from .destination_names import CHANNEL_LABELS
+        real = [dict(item, test=False, selected=not test_alias,
+                     label=CHANNEL_LABELS.get(item.get("alias"), item.get("label")))
                 for item in live if not _is_internal_acceptance_destination(item.get("alias"))]
         result["destinations"] = test + real
         result["mvp_providers"] = {"telegram": "active", "vk": "deferred", "max": "deferred"}

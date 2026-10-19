@@ -745,7 +745,7 @@ FUNCTIONS = [
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "description": "Exact destination alias from the current Street Story capabilities; do not prefix it with words such as alias or channel.",
+                    "description": "Destination name as the author says it, or its alias.",
                 },
             },
             "scheduled_for": {
@@ -2029,9 +2029,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 result = await asyncio.to_thread(self._edit_text, story_id, command_id, args)
             else:
                 written = await self._write_caption(story_id, args)
+                rebased = await asyncio.to_thread(self._rebase_over_writer_draft, story_id, args)
                 result = await asyncio.to_thread(functools.partial(
-                    self._edit_text, story_id, command_id, {**args, "new_text": written["text"]},
+                    self._edit_text, story_id, command_id, {**rebased, "new_text": written["text"]},
                     composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or []))
+                logger.info("street_story_caption_saved %s", canonical({"story_id": story_id,
+                    "text_revision": result.get("text_revision"), "rebased": rebased is not args}))
         elif name == "literal_finish":
             result = self._literal_finish(session, command_id)
         elif name == "undo":
@@ -5825,8 +5828,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             logger.warning("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
             raise InvalidStateError("caption_writer_unavailable",
                 "The caption writer is unavailable right now: write the text yourself in new_text by the same rules.") from None
+        # Owner request 19.10.2026: keep the written text in the log so a post can be analysed later.
+        # It is the owner's own post draft, not a credential; it is published as is.
         logger.info("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "written",
-            "model": written.get("model"), "chars": len(written.get("text") or ""), "facts": len(facts)}))
+            "model": written.get("model"), "chars": len(written.get("text") or ""), "facts": len(facts),
+            "fact_texts": [str(fact.get("text") or "")[:300] for fact in facts],
+            "lead_fact": (lead or {}).get("text"), "owner_request": str(request or "")[:1000],
+            "image_notes": written.get("image_notes") or [], "text": written.get("text") or ""}))
         return written
 
     async def _strongest_hook(self, story_id, state, selected_ids, snapshot):
@@ -5858,6 +5866,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         logger.info("street_story_strongest_lead %s", canonical({"story_id": story_id, "fact_id": lead["fact_id"],
             "source": record.get("source"), "added_to_selection": lead["fact_id"] not in selected_ids}))
         return lead
+
+    def _rebase_over_writer_draft(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """A newer writer composition replaces an older writer composition.
+
+        Owner test 19.10.2026: two writer calls started on revision 0; the first (4 facts)
+        was saved, the second (all 7 selected facts) hit a revision conflict and was lost.
+        Only a draft the writer itself composed is replaced; the owner's edits still conflict.
+        """
+        with self.service.store.connection() as db:
+            row = db.execute("SELECT s.research_json, e.text_revision FROM stories s LEFT JOIN live_editor_state e "
+                             "ON e.story_id=s.id WHERE s.id=?", (story_id,)).fetchone()
+        if row is None or row[1] is None or int(args.get("expected_text_revision", -1)) == int(row[1]):
+            return args
+        composed_by = str(json.loads(row[0] or "{}").get("draft_composed_by") or "")
+        return {**args, "expected_text_revision": int(row[1])} if composed_by.startswith("writer:") else args
 
     def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,
                    composed_by: str = "mira_live", image_notes: list[str] | None = None) -> dict[str, Any]:
@@ -5943,7 +5966,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "revision": self.service._story_row(db, story_id)["revision"],
             }
             self._store_command(db, story_id, command_id, "edit_text", args, result)
-            return result
+        logger.info("street_story_text_saved %s", canonical({"story_id": story_id, "composed_by": composed_by,
+            "text_revision": result.get("text_revision"), "change_summary": summary, "text": new_text}))
+        return result
 
     def _literal_begin(self, session, args: dict[str, Any]) -> dict[str, Any]:
         if session.state.get("literal") is not None:
@@ -6175,22 +6200,17 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         await self.service.refresh_failed_publication(story_id)
         capabilities = await self.service.capabilities()
-        available = {
-            str(item.get("alias") or "").strip()
-            for item in capabilities.get("destinations", [])
-            if isinstance(item, dict) and str(item.get("alias") or "").strip()
-        }
-        if not available:
+        listed = [item for item in capabilities.get("destinations", [])
+                  if isinstance(item, dict) and str(item.get("alias") or "").strip()]
+        if not listed:
             raise ConflictError(
                 "publish_destinations_unavailable",
                 "No publication destination is currently available",
             )
-        invalid = [alias for alias in destinations if alias not in available]
-        if invalid:
-            raise ConflictError(
-                "publish_destination_invalid",
-                "Publication destination must exactly match an available destination alias",
-            )
+        from .destination_names import resolve_destination
+        destinations = [resolve_destination(name, listed) for name in destinations]
+        if len(set(destinations)) != len(destinations):
+            raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
 
         scheduled_for = _bounded_text(args.get("scheduled_for"), 80, required=True)
         tz_name = _bounded_text(args.get("timezone"), 80, required=True)
