@@ -42,11 +42,13 @@ confirmations: `delivered`, `poi_resolved` (+ `poi_id`, `state`) and the fact ac
 (higher `source.revision` for the same `document_ref`) supersedes the earlier revision's
 evidence. Candidates remain research hints for the house's researcher.
 
-**Provisioning (2026-10-19).** The installer reads the shared service key and the owner's RKB
-subject from `~/.local/state/street-story/rkb-poi.json` (0600: `service_token`, `owner_subs`) into
-`STREET_STORY_RKB_POI_SERVICE_TOKEN` and `STREET_STORY_RKB_OWNER_SUBS` on every deploy; without the file
-the bridge stays disabled. RKB's delivery worker (`regional_knowledge.street_story_delivery`) holds the
-same key in its own 0600 file.
+**Provisioning (2026-10-19).** The RKB↔Street Story bridge key already existed (2026-10-10) in
+`~/.local/state/rkb-street-story-poi/bridge.env` (0600), loaded into both services by the drop-ins
+`99-rkb-poi-bridge.conf`; it is the canonical key, and the RKB delivery worker
+(`regional-knowledge-street-story-delivery.service`) uses it too. The installer additionally reads
+`~/.local/state/street-story/rkb-poi.json` (0600: `owner_subs`, and the same key aligned with the bridge)
+into `STREET_STORY_RKB_OWNER_SUBS` on every deploy. First delivery 2026-10-19: the one pending book event
+arrived and stayed `unresolved_identity` (name-only locator; a POI is created only from external ids).
 
 **The owner's private books.** The owner granted delivery of their private book evidence to their own
 Street Story (2026-10-19). Such evidence keeps `visibility=private` and its `owner_sub`; accepted claims
