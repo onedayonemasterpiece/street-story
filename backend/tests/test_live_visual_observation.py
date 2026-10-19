@@ -104,9 +104,9 @@ async def test_normal_live_observation_requeues_same_context_and_imports_without
     assert after['context']['selected_sha256'] == PROCESSED_SHA
     assert reads == ['visual-op', 'visual-op', 'visual-op']
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model=session.model)
-    assert initialized['capability'] == 'publication'
+    assert initialized['capability'] != 'publication'  # a ready post opens where it can still change (19.10.2026)
     tools = {tool['name'] for tool in initialized['configuration']['functions']}
-    assert {'prepare_publication', 'confirm_publication'} <= tools
+    assert 'generate_visual' in tools
     assert visual_snapshot(service, session.resource_id) == after
 
 

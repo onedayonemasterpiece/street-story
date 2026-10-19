@@ -140,12 +140,3 @@ async def test_find_more_facts_queues_one_researcher_run_without_a_stage_switch(
         assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
                           (session.resource_id,)).fetchone()[0] == 1
 
-
-def test_every_stage_knows_to_switch_for_a_missing_tool_of_a_full_request(tmp_path):
-    # Night run 19.10: in the publication stage "перепиши подпись и сделай картинку" produced only the image.
-    service, adapter, session, _events = make_service(tmp_path)
-    configuration = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled',
-                                       full_configuration=True)['configuration']
-    for stage in ('publication', 'research', 'editor'):
-        instruction = adapter._capability_configuration(configuration, stage)['system_instruction']
-        assert 'first continue_story to that stage, then do it' in instruction

@@ -803,7 +803,6 @@ Voice and intent:
 - Russian is the owner's default language. Short foreign fragments in silence/rustling are likely ASR noise: do not invent speech or answer unintelligible sounds. Support deliberate coherent foreign speech and explicit language changes.
 - A one-word or clearly fragmented input (однословный или явно обрывочный ввод) must not start expensive tools. Clarify intent without asking the owner to name an object they are trying to identify.
 - Use only available product functions: no shell/SQL/HTTP or hidden external actions. A mutation is complete only after its result/readback. Never repeat an unknown-result mutation; read state first. Continue the same Live conversation after tool results.
-- Carry out every action one owner request asks for, in order, before answering: "перепиши подпись и сделай картинку" means edit_text, then generate_visual on the new text. If a needed tool is not in the current stage (edit_text lives in editor), first continue_story to that stage, then do it. Never say an action is under way or done unless its tool was called and accepted.
 - Perform only the operations requested in the latest owner turn, including its explicit deferrals. Selecting facts does not also request a concept, draft, image or post. During a stage handoff pending_owner_request carries that exact accepted request; a model-written routing summary grants no additional actions. A later direct owner turn supersedes the pending handoff request.
 - A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim. Story-local conditional source discussion is allowed only via identity_research_context, clearly qualified; it is not a saved or verified fact.
 
@@ -1347,13 +1346,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Reopening an already prepared card must expose its normal confirm
             # tool, without requiring another provider reconnect or new card.
             # This restores capabilities only; owner confirmation stays separate.
-            saved_visual = state['story'].get('visual') or {}
-            ready_visual = (state['story'].get('state') == 'ready_to_publish'
-                and bool(state['story'].get('draft_text'))
-                and bool(state['story'].get('processed_image_url'))
-                and not saved_visual.get('stale', False))
-            publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
-                or ready_visual)
+            # Only a prepared/confirmed card opens in publication. A ready post opens in editor, which has both text
+            # and image tools: in publication "перепиши подпись и сделай картинку" produced only the image (19.10.2026).
+            # Publishing from editor is one continue_story(stage=publication).
+            publication_ready = (state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
             requested_review = False
             if reviewing and eligible_available:
                 # Resume an actual author-requested, unfinished review in its
