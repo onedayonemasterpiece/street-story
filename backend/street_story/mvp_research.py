@@ -39,6 +39,27 @@ from .research_runs import (
 )
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
+# A direct provider HTTP call (Google, GigaChat) with an unknown outcome is
+# bounded by its client timeout; after this it can no longer produce a result.
+STATELESS_CALL_SETTLED_SECONDS = 600
+
+
+def original_operation_pending(db, story_id: str, job_id: str, generation: int, now: float) -> bool:
+    """An earlier job's provider send for this topic may still finish; resume must wait for it."""
+    return db.execute(
+        "SELECT 1 FROM research_provider_attempts WHERE story_id=? "
+        "AND json_extract(receipt_json,'$.binding.job_id') IS NOT ? "
+        "AND json_extract(receipt_json,'$.binding.generation')=? "
+        "AND (json_extract(receipt_json,'$.phase') NOT IN ('created','completed','failed','aborted') "
+        "OR (json_extract(receipt_json,'$.phase')='aborted' AND COALESCE(json_extract(receipt_json,'$.abort_acknowledged'),0)=0)) "
+        # A direct Google/GigaChat HTTP call has no session or thread
+        # to read back: once its connection is long gone it cannot
+        # finish later. Waiting on it would block the topic forever.
+        "AND NOT (json_extract(receipt_json,'$.provider_id') IN ('google','gigachat') "
+        "AND json_extract(receipt_json,'$.session_id') IS NULL "
+        "AND json_extract(receipt_json,'$.thread_id') IS NULL AND updated_at<?) LIMIT 1",
+        (story_id, job_id, generation, now - STATELESS_CALL_SETTLED_SECONDS)).fetchone() is not None
+
 
 def _is_internal_acceptance_destination(alias: Any) -> bool:
     value = str(alias or "").strip().lower()
@@ -1231,13 +1252,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     return
                 # An inherited wrapper cannot rebind an outstanding send to its
                 # own job. Maintenance observes the original operation instead.
-                original_pending = db.execute(
-                    "SELECT 1 FROM research_provider_attempts WHERE story_id=? "
-                    "AND json_extract(receipt_json,'$.binding.job_id') IS NOT ? "
-                    "AND json_extract(receipt_json,'$.binding.generation')=? "
-                    "AND (json_extract(receipt_json,'$.phase') NOT IN ('created','completed','failed','aborted') "
-                    "OR (json_extract(receipt_json,'$.phase')='aborted' AND COALESCE(json_extract(receipt_json,'$.abort_acknowledged'),0)=0)) LIMIT 1",
-                    (story_id, job['id'], int(prior.get('identity_generation') or 0))).fetchone()
+                original_pending = original_operation_pending(
+                    db, story_id, job['id'], int(prior.get('identity_generation') or 0), self.store.now())
             if original_pending:
                 from .errors import RetryableProviderError
                 raise RetryableProviderError('research_original_operation_pending', retry_at=self.store.now()+30)
