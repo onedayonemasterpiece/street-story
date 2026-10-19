@@ -330,6 +330,32 @@ class MainActivity : Activity() {
         }
     }
 
+    private val serverThumbnails = android.util.LruCache<String, android.graphics.Bitmap>(64)
+    private val thumbnailTargets = mutableMapOf<String, MutableList<java.lang.ref.WeakReference<ImageView>>>()
+
+    /** The phone keeps no photo copies. When it can no longer open the original
+     * (a shared photo after an app update), show the server's retained preview. */
+    private fun showServerThumbnail(story: StorySnapshot, target: ImageView) {
+        val server = story.serverStoryId ?: return
+        serverThumbnails.get(server)?.let { target.setImageBitmap(it); return }
+        val base = config.backendUrl; val token = config.deviceToken
+        if (base.isNullOrBlank() || token.isNullOrBlank()) return
+        val waiting = thumbnailTargets[server]
+        if (waiting != null) { waiting += java.lang.ref.WeakReference(target); return }
+        thumbnailTargets[server] = mutableListOf(java.lang.ref.WeakReference(target))
+        Thread {
+            val bitmap = runCatching { ApiClient(base, token).readThumbnail(server) }.getOrNull()
+                ?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }
+            runOnUiThread {
+                val targets = thumbnailTargets.remove(server).orEmpty()
+                if (bitmap != null) {
+                    serverThumbnails.put(server, bitmap)
+                    targets.forEach { it.get()?.takeIf { view -> view.drawable == null }?.setImageBitmap(bitmap) }
+                }
+            }
+        }.start()
+    }
+
     private fun topicCard(story: StorySnapshot): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -342,7 +368,8 @@ class MainActivity : Activity() {
         }
         val image = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            ImagePreviewDecoder.decode(this@MainActivity, story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
+            val local = ImagePreviewDecoder.decode(this@MainActivity, story.processedImagePath ?: story.photoPath, 240, 240)
+            if (local != null) setImageBitmap(local) else showServerThumbnail(story, this)
             background = rounded(SAGE_DARK, 14)
             clipToOutline = true
         }
@@ -675,8 +702,10 @@ class MainActivity : Activity() {
         if (shownImagePath != imageKey) {
             shownImagePath = imageKey
             val format = if (imagePath == story.photoPath) selectedFormat else null
-            previewImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 1200, 1000, format))
+            val preview = ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 1200, 1000, format)
+            previewImage?.setImageBitmap(preview)
             stickyImage?.setImageBitmap(ImagePreviewDecoder.decodePhotoFormat(this, imagePath, 240, 320, format))
+            if (preview == null) listOfNotNull(previewImage, stickyImage).forEach { showServerThumbnail(story, it) }
         }
 
         previewText?.apply {

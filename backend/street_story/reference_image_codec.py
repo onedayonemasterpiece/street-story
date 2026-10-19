@@ -83,3 +83,26 @@ def normalize_reference(data: bytes) -> tuple[str, bytes]:
         if output.tell() <= MAX_LIVE_BYTES:
             return 'image/jpeg', output.getvalue()
     raise ValueError('reference_model_size')
+
+
+THUMBNAIL_EDGE = 320
+
+
+def topic_thumbnail(data: bytes) -> bytes:
+    """Small JPEG of the retained original for the phone's topic list.
+
+    The phone keeps no image copies; after an app update it can lose access to
+    a shared photo, so the list falls back to this server-side preview.
+    """
+    try:
+        with Image.open(BytesIO(data)) as source:
+            if source.width * source.height > MAX_PIXELS:
+                raise ValueError('thumbnail_pixel_limit')
+            source.draft('RGB', (THUMBNAIL_EDGE * 2, THUMBNAIL_EDGE * 2))
+            image = ImageOps.exif_transpose(source).convert('RGB')
+            image.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), Image.Resampling.LANCZOS)
+    except (Image.DecompressionBombError, OSError) as exc:
+        raise ValueError('thumbnail_format') from exc
+    output = BytesIO()
+    image.save(output, format='JPEG', quality=80, optimize=True)
+    return output.getvalue()

@@ -422,6 +422,9 @@ class ApiClient(private val baseUrl: String, private val token: String,
         return requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey, StoryWire::class.java)
     }
 
+    /** Small preview of the original the server retained for this topic. */
+    fun readThumbnail(serverStoryId: String): ByteArray = readAsset("/v1/stories/${segment(serverStoryId)}/thumbnail")
+
     fun readAsset(relativePath: String): ByteArray {
         val connection = if (relativePath.startsWith("https://")) {
             (URL(relativePath).openConnection() as HttpURLConnection).apply {
