@@ -1346,13 +1346,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Reopening an already prepared card must expose its normal confirm
             # tool, without requiring another provider reconnect or new card.
             # This restores capabilities only; owner confirmation stays separate.
-            saved_visual = state['story'].get('visual') or {}
-            ready_visual = (state['story'].get('state') == 'ready_to_publish'
-                and bool(state['story'].get('draft_text'))
-                and bool(state['story'].get('processed_image_url'))
-                and not saved_visual.get('stale', False))
-            publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
-                or ready_visual)
+            # Only a prepared/confirmed card opens in publication. A ready post opens in editor, which has both text
+            # and image tools: in publication "перепиши подпись и сделай картинку" produced only the image (19.10.2026).
+            # Publishing from editor is one continue_story(stage=publication).
+            publication_ready = (state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
             requested_review = False
             if reviewing and eligible_available:
                 # Resume an actual author-requested, unfinished review in its

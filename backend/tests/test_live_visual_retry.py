@@ -139,3 +139,4 @@ async def test_find_more_facts_queues_one_researcher_run_without_a_stage_switch(
     with service.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
                           (session.resource_id,)).fetchone()[0] == 1
+

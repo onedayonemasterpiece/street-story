@@ -305,3 +305,9 @@ def test_the_post_never_names_where_a_fact_came_from():
     assert "по свидетельству посетителя" in GeminiClient.WRITER_RULES and "в тексте не отражается" in GeminiClient.WRITER_RULES
     assert "посетители пишут, что…»), не как" not in GeminiClient.WRITER_RULES
     assert "в тексте не отражается" in GeminiClient.EDITOR_RULES
+
+
+def test_city_hashtag_is_capitalized():
+    from street_story.providers import _capitalized_hashtags
+    assert _capitalized_hashtags("Текст.\n\nулица Суворова 11\n#черняховск") == "Текст.\n\nулица Суворова 11\n#Черняховск"
+    assert _capitalized_hashtags("#Калининград") == "#Калининград"
