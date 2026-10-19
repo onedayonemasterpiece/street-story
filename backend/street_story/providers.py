@@ -3729,8 +3729,9 @@ class GeminiClient:
                 "index": {"type": "integer"},
                 "reason": {"type": "string"},
             }, "required": ["index", "reason"]},
+            "story": {"type": "array", "items": {"type": "integer"}},
         },
-        "required": ["facts", "choice"],
+        "required": ["facts", "choice", "story"],
     }
     HOOK_RULES = (
         "Ты редактор городского канала Street Story: пост о доме читают прохожие, которые стоят перед ним. "
@@ -3748,7 +3749,11 @@ class GeminiClient:
         "Герой поста — здание: перечень учреждений, статус, ремонты, голые даты, нынешнее назначение и отзывы — "
         "слабые зачины. choice — один сильнейший факт с короткой причиной. Если передан researcher_candidate — "
         "это выбор исследователя, читавшего источники: выбери его, если он действительно сильнейший, иначе выбери "
-        "более сильный и объясни, чем он сильнее."
+        "более сильный и объясни, чем он сильнее.\n"
+        "story — 4–8 фактов (индексы) для полного поста об этом доме: зачин (choice), постройка и первое "
+        "назначение, люди и события, заметные детали облика, что здесь сейчас — все нынешние назначения, если "
+        "дом делят несколько (например, музей и школа). Без повторов одного и того же сведения, без справок о "
+        "реестрах и ремонтах. Если подходящих фактов меньше четырёх, возьми все подходящие."
     )
 
     @classmethod
@@ -3812,7 +3817,10 @@ class GeminiClient:
                                              response_json_schema=self.HOOK_SCHEMA, max_output_tokens=4096)
 
         def parse(text, model):
-            return {"ranked": GeminiClient._hook_choice(json.loads(text or "{}"), len(facts)), "model": str(model or "")}
+            answer = json.loads(text or "{}")
+            story = [i for i in answer.get("story") or [] if isinstance(i, int) and 0 <= i < len(facts)]
+            return {"ranked": GeminiClient._hook_choice(answer, len(facts)), "model": str(model or ""),
+                    "story": list(dict.fromkeys(story))[:8]}
         return await self._lite_chain(contents, config, parse)
 
     async def write_caption(

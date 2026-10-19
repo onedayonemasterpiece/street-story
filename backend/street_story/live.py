@@ -1022,6 +1022,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'writing_request carrying the author\'s request and angle, check the returned draft_text against '
                 'these rules and the author\'s request, and if it breaks one call edit_text again with a precise '
                 'writing_request. Use new_text only for exact author wording or after caption_writer_unavailable. '
+                'read_topic shows suggested_selection, the post\'s facts proposed after research: for a general '
+                'request to choose facts for the post keep all of them and add what the author asks; never shrink it. '
                 'read_topic shows strongest_fact: the post opens with it and the author sees it above all facts. '
                 'When the author disagrees with it, call select_facts with strongest_fact_id when the author names or '
                 'describes another fact, otherwise with strongest_dispute (the reason) to decide again without the '
@@ -2789,6 +2791,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
             "confirmed_place": confirmed_place,
+            "suggested_selection": story.get("suggested_selection") or [],
             "strongest_fact": (lambda record: {**record, "text": next((str(item.get("text") or "")[:280]
                 for item in story.get("facts", []) if item.get("strongest")), "")} if record else None)(
                 story.get("strongest_fact")),

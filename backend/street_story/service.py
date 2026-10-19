@@ -475,6 +475,7 @@ class StreetStoryService:
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
             "facts": facts, "destinations": [],
+            "suggested_selection": [str(fid) for fid in research.get("suggested_selection") or []],
             "strongest_fact": ({key: (research.get("strongest_fact") or {}).get(key) for key in
                 ("fact_id", "reason", "source", "agrees_with_researcher", "researcher")}
                 if any(f.get("strongest") for f in facts) else None),
