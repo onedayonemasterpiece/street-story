@@ -175,14 +175,23 @@ def test_story_projection_runs_off_the_live_event_loop(client, monkeypatch):
     import street_story.app as app_module
     original = app_module.asyncio.to_thread
 
+    encoded_on_loop = []
+    real_encoder = app_module.json_bytes_response
+
+    def recording_encoder(value):
+        encoded_on_loop.append(threading.current_thread() is threading.main_thread())
+        return real_encoder(value)
+
     async def recording_to_thread(func, *args, **kwargs):
-        seen.append(getattr(func, '__name__', ''))
         return await original(lambda: (seen.append(threading.current_thread() is threading.main_thread()), func(*args, **kwargs))[1])
 
+    monkeypatch.setattr(app_module, 'json_bytes_response', recording_encoder)
     monkeypatch.setattr(app_module.asyncio, 'to_thread', recording_to_thread)
-    assert c.get(f'/v1/stories/{story_id}').status_code == 200
-    assert c.get('/v1/stories').status_code == 200
-    assert seen[:4] == ['story', False, 'stories', False]
+    story = c.get(f'/v1/stories/{story_id}')
+    assert story.status_code == 200 and story.json()['id'] == story_id
+    assert isinstance(c.get('/v1/stories').json(), list)
+    # Both the projection and its 1.6 MB JSON encoding happen off the loop.
+    assert seen[:2] == [False, False] and encoded_on_loop == [False, False]
 
 
 def test_live_start_timeout_is_retryable_not_500(client, monkeypatch):

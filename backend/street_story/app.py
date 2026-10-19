@@ -26,6 +26,13 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
 
 
+def json_bytes_response(value) -> Response:
+    # A story is ~1.6 MB of JSON. FastAPI would encode a returned dict on the
+    # event loop that carries Live audio ACKs; encode it in the worker thread.
+    return Response(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(),
+                    media_type="application/json")
+
+
 LIVE_PROVIDER_AUDIO_CHARS = 16_000
 LIVE_HTTP_AUDIO_CHARS = 48_000
 
@@ -289,11 +296,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def list_stories():
         # Story projections are heavy synchronous SQLite work. The same event
         # loop carries Live audio and its ACKs, so it must never wait on them.
-        return await asyncio.to_thread(service.stories)
+        return await asyncio.to_thread(lambda: json_bytes_response(service.stories()))
 
     @app.get("/v1/stories/{story_id}", dependencies=[Depends(auth)])
     async def get_story(story_id: str):
-        return await asyncio.to_thread(service.story, story_id)
+        return await asyncio.to_thread(lambda: json_bytes_response(service.story(story_id)))
 
     @app.get('/v1/stories/{story_id}/place-map', dependencies=[Depends(auth)])
     async def story_place_map(story_id: str, latitude: float | None = None,
