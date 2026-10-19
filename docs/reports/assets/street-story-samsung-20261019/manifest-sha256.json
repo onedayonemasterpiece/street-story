@@ -1,0 +1,67 @@
+{
+  "status": "FINAL BLOCKED",
+  "files": [
+    {
+      "file": "01-topics-no-thumbnails.png",
+      "bytes": 124474,
+      "sha256": "90e696b72701b4556948daffcb6d32fe1a3d72f42461e3a243c960cc304e56cd"
+    },
+    {
+      "file": "02-shared-photo-loading.png",
+      "bytes": 502866,
+      "sha256": "d21b6bc2fc8e009247b52bc01442bf9fdd4b38af9d4b3c02cbb6be49c9707045"
+    },
+    {
+      "file": "03-saving-place.png",
+      "bytes": 555018,
+      "sha256": "052cf2e76559e5033f863aff6010c9170030839b7798a357a7292eef045b2651"
+    },
+    {
+      "file": "04-research-temporary-error.png",
+      "bytes": 426088,
+      "sha256": "65ecfe7b5d6e71d18e07180e74078b77b5fee97e7b9568ecfe9680021f793911"
+    },
+    {
+      "file": "05-mira-requested-snapshot.png",
+      "bytes": 534962,
+      "sha256": "e211d93d7dab4d098c3872a4c9d6046b87cd38a3598a5f109d9c9fa4b5334db7"
+    },
+    {
+      "file": "06-mira-http500.png",
+      "bytes": 538177,
+      "sha256": "f821142d05db7dd057f2efe83570e8e305adc8cbbc66b0f7ef159a7c076ca536"
+    },
+    {
+      "file": "baseline.txt",
+      "bytes": 2229,
+      "sha256": "630ce68ad7649141ddc4e143e9463eafd86b1e965c3c0961956c8678c33624be"
+    },
+    {
+      "file": "collection-intervals.json",
+      "bytes": 906,
+      "sha256": "e43dbc8241365b104c08589ae88deb53d1e8b6ad67abe8a25d4d0a87cf6c81e7"
+    },
+    {
+      "file": "logcat-key-events.txt",
+      "bytes": 8536,
+      "sha256": "77c835c2760e12cd8e2d6a2000bc182d40beb50436a46183cae4ae1b4dbb803b"
+    },
+    {
+      "file": "logcat-redacted.txt",
+      "bytes": 1159887,
+      "sha256": "f70042be1591e43d1ba67653f9bf64cf83818ecacde84356426e554f3b00abec"
+    },
+    {
+      "file": "observation-events.txt",
+      "bytes": 13100,
+      "sha256": "ac355890694e01f14fefaf5466228a87c4de59ae940c9a49f5d93ff939591ef6"
+    },
+    {
+      "file": "voice-episode-logcat.txt",
+      "bytes": 451163,
+      "sha256": "c04f1804cdbccf89f2f53e749bc7cc57847ec64ec256049377b986498a0a788a"
+    }
+  ],
+  "cutoff_utc": "2026-10-19T11:29:46.2822847Z",
+  "redaction": "Credentials/query/privateIP/MAC/mediaURI; test UI retained"
+}

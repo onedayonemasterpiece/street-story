@@ -1,0 +1,91 @@
+2026-10-19T10:21:18.1842441Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102117Z-launch-private.png
+2026-10-19T10:21:50.8800919+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:22:06.6104313Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102206Z-periodic-private.png
+2026-10-19T10:22:22.1737688Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102221Z-periodic-private.png
+2026-10-19T10:22:37.9487732Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102237Z-periodic-private.png
+2026-10-19T10:22:53.7271482Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102253Z-periodic-private.png
+2026-10-19T10:23:09.0232645+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:23:24.8885721Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102324Z-periodic-private.png
+2026-10-19T10:23:40.8095580Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102340Z-periodic-private.png
+2026-10-19T10:23:56.6238386Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102356Z-periodic-private.png
+2026-10-19T10:24:12.2917012Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102411Z-periodic-private.png
+2026-10-19T10:24:28.0526744Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102427Z-periodic-private.png
+2026-10-19T10:24:41.2369120Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102440Z-share-intent-private.png
+2026-10-19T10:24:43.7758789Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102443Z-periodic-private.png
+2026-10-19T10:24:59.6106863Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102459Z-periodic-private.png
+2026-10-19T10:25:15.4856742Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102515Z-periodic-private.png
+2026-10-19T10:25:31.3595308Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102530Z-periodic-private.png
+2026-10-19T10:25:47.0188074Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102546Z-periodic-private.png
+2026-10-19T10:26:03.0220141Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102602Z-periodic-private.png
+2026-10-19T10:26:18.7659640Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102618Z-periodic-private.png
+2026-10-19T10:26:34.5038151Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102634Z-periodic-private.png
+2026-10-19T10:26:50.1678659Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102649Z-periodic-private.png
+2026-10-19T10:27:06.0274611Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102705Z-periodic-private.png
+2026-10-19T10:27:21.8059283Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102721Z-periodic-private.png
+2026-10-19T10:27:37.0449744+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:27:52.2908910+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:28:07.5848333+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:28:22.8302394+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:28:38.4904455Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102838Z-periodic-private.png
+2026-10-19T10:28:51.0592864Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102850Z-facts-polling-private.png
+2026-10-19T10:28:54.1407591Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102853Z-periodic-private.png
+2026-10-19T10:29:09.9052546Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102909Z-periodic-private.png
+2026-10-19T10:29:25.7033154Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102925Z-periodic-private.png
+2026-10-19T10:29:41.5573335Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102940Z-periodic-private.png
+2026-10-19T10:29:57.5382273Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T102956Z-periodic-private.png
+2026-10-19T10:30:13.2844173Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103012Z-periodic-private.png
+2026-10-19T10:30:28.9953542Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103028Z-periodic-private.png
+2026-10-19T10:30:44.6832815Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103044Z-periodic-private.png
+2026-10-19T10:31:00.4505977Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103059Z-periodic-private.png
+2026-10-19T10:31:16.5276570Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103115Z-periodic-private.png
+2026-10-19T10:31:32.3011020Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103131Z-periodic-private.png
+2026-10-19T10:31:47.9980815Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103147Z-periodic-private.png
+2026-10-19T10:32:03.7217980Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103203Z-periodic-private.png
+2026-10-19T10:32:19.5037032Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103219Z-periodic-private.png
+2026-10-19T10:32:35.2128339Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103234Z-periodic-private.png
+2026-10-19T10:32:50.9257116Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103250Z-periodic-private.png
+2026-10-19T10:33:06.6109272Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103306Z-periodic-private.png
+2026-10-19T10:33:22.3479188Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103321Z-periodic-private.png
+2026-10-19T10:33:38.0199534Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103337Z-periodic-private.png
+2026-10-19T10:33:53.7945715Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103353Z-periodic-private.png
+2026-10-19T10:34:09.5960523Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103409Z-periodic-private.png
+2026-10-19T10:34:25.3803604Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103424Z-periodic-private.png
+2026-10-19T10:34:41.1577509Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103440Z-periodic-private.png
+2026-10-19T10:34:56.8505239Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103456Z-periodic-private.png
+2026-10-19T10:35:12.5817350Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103512Z-periodic-private.png
+2026-10-19T10:35:28.3486310Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103527Z-periodic-private.png
+2026-10-19T10:35:44.0574743Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103543Z-periodic-private.png
+2026-10-19T10:35:59.7626348Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103559Z-periodic-private.png
+2026-10-19T10:36:15.5484611Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103615Z-periodic-private.png
+2026-10-19T10:36:31.2621583Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103630Z-periodic-private.png
+2026-10-19T10:36:46.9780763Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103646Z-periodic-private.png
+2026-10-19T10:37:02.7635302Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103702Z-periodic-private.png
+2026-10-19T10:37:18.4584181Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103718Z-periodic-private.png
+2026-10-19T10:37:34.6288663Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103734Z-periodic-private.png
+2026-10-19T10:37:50.3441967Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103749Z-periodic-private.png
+2026-10-19T10:38:13.3318020Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103812Z-extension-periodic-private.png
+2026-10-19T10:38:29.0837123Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103828Z-extension-periodic-private.png
+2026-10-19T10:38:44.8829197Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103844Z-extension-periodic-private.png
+2026-10-19T10:39:00.6536116Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103900Z-extension-periodic-private.png
+2026-10-19T10:39:16.4461295Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103915Z-extension-periodic-private.png
+2026-10-19T10:39:32.2773146Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103931Z-extension-periodic-private.png
+2026-10-19T10:39:48.0346702Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T103947Z-extension-periodic-private.png
+2026-10-19T10:40:04.0410091Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104003Z-extension-periodic-private.png
+2026-10-19T10:40:19.7606670Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104019Z-extension-periodic-private.png
+2026-10-19T10:40:32.4500238Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104031Z-mira-disconnect-private.png
+2026-10-19T10:40:35.4974352Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104035Z-extension-periodic-private.png
+2026-10-19T10:40:51.1845313Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104050Z-extension-periodic-private.png
+2026-10-19T10:41:06.9674334Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104106Z-extension-periodic-private.png
+2026-10-19T10:41:22.7151604Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104122Z-extension-periodic-private.png
+2026-10-19T10:41:38.4924497Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104137Z-extension-periodic-private.png
+2026-10-19T10:41:42.6495238Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104141Z-owner-fresh-1041-private.png
+2026-10-19T10:41:54.4600429Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104153Z-extension-periodic-private.png
+2026-10-19T10:42:10.1042503Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104209Z-extension-periodic-private.png
+2026-10-19T10:42:25.8094515Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104225Z-extension-periodic-private.png
+2026-10-19T10:42:41.5574517Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104241Z-extension-periodic-private.png
+2026-10-19T10:42:57.2586849Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104256Z-extension-periodic-private.png
+2026-10-19T10:43:13.9705938Z Screenshot C:\Users\artko\Documents\Codex\2026-10-19\task\street-story-evidence\20261019T104312Z-extension-periodic-private.png
+2026-10-19T10:43:29.2804900+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:43:44.9751258+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:44:00.3080869+00:00 SKIP Street Story not foreground; no screenshot taken
+2026-10-19T10:44:15.5706620+00:00 SKIP Street Story not foreground; no screenshot taken
