@@ -1,0 +1,30 @@
+{
+  "identical_overlap_lines": 240,
+  "extension_first_line": "10-19 12:38:13.710",
+  "screenshot_status": {
+    "ended_utc": "2026-10-19T12:44:30.5890513+02:00",
+    "captures": 20,
+    "pid": 2896,
+    "state": "stopped"
+  },
+  "extension_last_line": "10-19 12:43:14.068",
+  "extension_status": {
+    "start_utc": "2026-10-19T12:38:12.0537983+02:00",
+    "bytes": 222721,
+    "ended_utc": "2026-10-19T12:45:17.0471965+02:00",
+    "collector_pid": 15288,
+    "device_changes": false,
+    "state": "stopped"
+  },
+  "primary_last_line": "10-19 12:39:38.680",
+  "primary_status": {
+    "start_utc": "2026-10-19T12:19:39.3249521+02:00",
+    "bytes": 940793,
+    "ended_utc": "2026-10-19T12:39:39.5065023+02:00",
+    "collector_pid": 12944,
+    "device_changes": false,
+    "state": "stopped"
+  },
+  "primary_first_line": "10-19 12:21:05.840",
+  "logcat_phone_offset": "+02:00"
+}

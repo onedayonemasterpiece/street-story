@@ -1,0 +1,42 @@
+Captured UTC 2026-10-19T10:19:36.9214303Z
+Package: com.onedayonemasterpiece.streetstory
+No launch/install/clear/permission/auth/network changes.
+    appId=10393
+    codePath=/data/app/~~xNjyRw4V8a-0X6QmbJE5oA==/com.onedayonemasterpiece.streetstory-m3opnuBYD6Gum_mt6eQfhQ==
+    versionCode=902 minSdk=29 targetSdk=35
+    versionName=0.1.902
+    lastUpdateTime=2026-10-07 17:17:44
+    installerPackageName=com.google.android.packageinstaller
+      android.permission.POST_NOTIFICATIONS
+      android.permission.FOREGROUND_SERVICE
+      android.permission.READ_MEDIA_VISUAL_USER_SELECTED
+      android.permission.RECEIVE_BOOT_COMPLETED
+      android.permission.INTERNET
+      android.permission.ACCESS_NETWORK_STATE
+      android.permission.FOREGROUND_SERVICE_MICROPHONE
+      android.permission.REQUEST_INSTALL_PACKAGES
+      android.permission.RECORD_AUDIO
+      android.permission.WAKE_LOCK
+      android.permission.ACCESS_MEDIA_LOCATION
+      android.permission.FOREGROUND_SERVICE: granted=true
+      android.permission.RECEIVE_BOOT_COMPLETED: granted=true
+      android.permission.INTERNET: granted=true
+      android.permission.ACCESS_NETWORK_STATE: granted=true
+      android.permission.FOREGROUND_SERVICE_MICROPHONE: granted=true
+      android.permission.WAKE_LOCK: granted=true
+      firstInstallTime=2026-10-01 19:29:46
+        android.permission.POST_NOTIFICATIONS: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_MEDIA_VISUAL_USER_SELECTED: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.RECORD_AUDIO: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.ACCESS_MEDIA_LOCATION: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+PID: none
+Launcher resolution (not launched):
+priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false
+com.onedayonemasterpiece.streetstory/.MainActivity
+Activity matches:
+Services:
+ACTIVITY MANAGER SERVICES (dumpsys activity services)
+  (nothing)
+Keyguard:
+      showing=false
+        mIsShowing=false
