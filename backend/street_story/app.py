@@ -562,6 +562,22 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def cancel(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "cancel", idempotency_key)
 
+    @app.get("/v1/stories/{story_id}/thumbnail", dependencies=[Depends(auth)])
+    async def story_thumbnail(story_id: str):
+        from .reference_image_codec import topic_thumbnail
+
+        def build() -> bytes:
+            with service.store.connection() as db:
+                service._story_row(db, story_id)
+            try:
+                return topic_thumbnail(service._source_photo_bytes(story_id))
+            except ValueError:
+                raise ConflictError("thumbnail_unavailable", "Миниатюру не удалось построить из исходного фото") from None
+
+        data = await asyncio.to_thread(build)
+        return Response(data, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
     @app.get("/v1/assets/{story_id}/processed", dependencies=[Depends(auth)])
     async def asset(story_id: str):
         data, mime = await service.asset(story_id)

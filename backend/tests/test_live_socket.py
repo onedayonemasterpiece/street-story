@@ -195,3 +195,21 @@ def test_live_start_timeout_is_retryable_not_500(client, monkeypatch):
     response = c.post(f'/v1/stories/{story_id}/live-sessions', json={'transport': 'wss', 'attempt_id': 'attempt_timeout'})
     assert response.status_code == 503
     assert response.json()['error']['code'] == 'live_start_timeout'
+
+
+def test_topic_thumbnail_comes_from_the_retained_original(tmp_path):
+    # Samsung 19.10.2026: after an app update the topic list lost access to
+    # shared photos; the server keeps the original and serves a small preview.
+    from io import BytesIO
+    from PIL import Image
+    svc, _, session, _ = make_service(tmp_path)
+    original = BytesIO()
+    Image.new('RGB', (1600, 1200), (120, 90, 60)).save(original, format='JPEG')
+    svc._temporary_photos.put(session.resource_id, original.getvalue())
+    with TestClient(create_app(settings=svc.settings, service=svc)) as c:
+        c.headers['Authorization'] = 'Bearer ' + reveal(svc.settings.device_token)
+        response = c.get(f'/v1/stories/{session.resource_id}/thumbnail')
+        assert response.status_code == 200 and response.headers['content-type'] == 'image/jpeg'
+        assert max(Image.open(BytesIO(response.content)).size) == 320
+        assert c.get('/v1/stories/story_missing/thumbnail').status_code == 404
+        assert c.get(f'/v1/stories/{session.resource_id}/thumbnail', headers={'Authorization': ''}).status_code == 401
