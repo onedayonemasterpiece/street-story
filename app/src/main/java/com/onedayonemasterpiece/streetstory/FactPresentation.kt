@@ -5,6 +5,7 @@ import java.util.Locale
 
 internal object FactPresentation {
     private const val MAX_FACT_CHARS = 160
+    private const val ENOUGH_FACTS_FOR_POST = 4
 
     fun statusLabel(fact: FactSnapshot): String = when {
         fact.evidenceSupported -> "Готов к выбору"
@@ -30,6 +31,10 @@ internal object FactPresentation {
             result.identityGeneration != projection.identityGeneration || result.purpose != "facts" ||
             projection.researchPending["facts"] == true || result.coverageComplete != false) return null
         return when {
+            // Owner test 19.10.2026: 34 verified facts were shown under «Исследование не завершено».
+            // With enough facts for a post (4–8), a partial run is not a problem for the author.
+            result.outcome == "useful_partial" && (result.eligibleCount ?: 0) >= ENOUGH_FACTS_FOR_POST ->
+                "Фактов достаточно для поста · ${result.eligibleCount} подтверждено"
             result.reason == "research_routes_unavailable" ->
                 "Исследование недоступно · нет двух независимых проверенных маршрутов"
             result.reason == "source_selection_unavailable" ->

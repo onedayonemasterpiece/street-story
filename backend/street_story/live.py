@@ -745,7 +745,7 @@ FUNCTIONS = [
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "description": "Exact destination alias from the current Street Story capabilities; do not prefix it with words such as alias or channel.",
+                    "description": "Destination name as the author says it, or its alias.",
                 },
             },
             "scheduled_for": {
@@ -6175,22 +6175,17 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         await self.service.refresh_failed_publication(story_id)
         capabilities = await self.service.capabilities()
-        available = {
-            str(item.get("alias") or "").strip()
-            for item in capabilities.get("destinations", [])
-            if isinstance(item, dict) and str(item.get("alias") or "").strip()
-        }
-        if not available:
+        listed = [item for item in capabilities.get("destinations", [])
+                  if isinstance(item, dict) and str(item.get("alias") or "").strip()]
+        if not listed:
             raise ConflictError(
                 "publish_destinations_unavailable",
                 "No publication destination is currently available",
             )
-        invalid = [alias for alias in destinations if alias not in available]
-        if invalid:
-            raise ConflictError(
-                "publish_destination_invalid",
-                "Publication destination must exactly match an available destination alias",
-            )
+        from .destination_names import resolve_destination
+        destinations = [resolve_destination(name, listed) for name in destinations]
+        if len(set(destinations)) != len(destinations):
+            raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
 
         scheduled_for = _bounded_text(args.get("scheduled_for"), 80, required=True)
         tz_name = _bounded_text(args.get("timezone"), 80, required=True)

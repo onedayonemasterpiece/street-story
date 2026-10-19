@@ -331,3 +331,30 @@ async def test_the_decision_also_proposes_the_posts_facts_and_only_adds_to_the_s
     story = svc.story(sid)
     assert sorted(f["fact_id"] for f in story["facts"] if f.get("selected")) == sorted(ids)
     assert story["suggested_selection"] == [ids[2], ids[1]]
+
+
+@pytest.mark.asyncio
+async def test_overloaded_lite_model_is_skipped_on_the_next_step():
+    # Owner test 19.10.2026: each writing step waited 40-60 s on an overloaded
+    # gemini-3.1-flash-lite before reaching 3.5.
+    calls = []
+
+    async def generate(_key, _timeout, contents, _config, *, operation, model, quota):
+        calls.append(model)
+        return SimpleNamespace(text='{"ok": true}')
+
+    client = SimpleNamespace(_generate=generate, writer_routes=[
+        ("gemini-3.1-flash-lite", None, None, Route(GeminiUnavailable(0, "busy"))),
+        ("gemini-3.5-flash-lite", None, None, Route(None)),
+    ])
+    parse = lambda text, model: model  # noqa: E731
+    assert await GeminiClient._lite_chain(client, ["x"], None, parse) == "gemini-3.5-flash-lite"
+    order = []
+    client.writer_routes[0][3].execute = None  # an attempt on the skipped model would fail loudly
+
+    async def first_only(_op, call):
+        order.append("3.5")
+        return await call("key", 1)
+    client.writer_routes[1][3].execute = first_only
+    assert await GeminiClient._lite_chain(client, ["x"], None, parse) == "gemini-3.5-flash-lite"
+    assert order == ["3.5"]

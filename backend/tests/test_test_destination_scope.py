@@ -40,7 +40,7 @@ async def test_the_owner_sees_the_test_chat_selected_and_the_real_channel_beside
     result = await svc.capabilities()
     assert [(d["alias"], d["label"], d["selected"]) for d in result["destinations"]] == [
         (TEST_ALIAS, "Тестовый чат", True), ("tg-safe", "Полюбить Калининград", False),
-        ("lovekenig_tg", "lovekenig Telegram", False)]
+        ("lovekenig_tg", "Полюбить Калининград", False)]
 
 
 @pytest.mark.asyncio

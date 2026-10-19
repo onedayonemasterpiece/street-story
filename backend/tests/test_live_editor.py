@@ -1795,7 +1795,7 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
                 "name": "prepare_publication",
                 "id": "prepare-invalid-destination",
                 "args": {
-                    "destinations": ["alias street_story_e2e_test"],
+                    "destinations": ["Street Story 여의도점"],
                     "scheduled_for": scheduled_for,
                     "timezone": "Europe/Kaliningrad",
                 },

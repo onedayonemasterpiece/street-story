@@ -21,6 +21,19 @@ class FactPresentationTest {
         assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "other-source"))
     }
 
+    @Test fun partial_run_with_enough_facts_reads_as_ready() {
+        val outcome = ResearchOutcomeWire().apply {
+            this.outcome = "useful_partial"; reason = "research_agent_original_pending"; eligibleCount = 34
+            purpose = "facts"; photoSha256 = "source"; identityGeneration = 3; coverageComplete = false
+        }
+        val projection = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(),
+            0, null, emptyList(), photoSha256 = "source", identityGeneration = 3, researchOutcome = outcome)
+        assertEquals("Фактов достаточно для поста · 34 подтверждено", FactPresentation.researchOutcomeNotice(projection, "source"))
+        outcome.eligibleCount = 2
+        assertEquals("Исследование не завершено · найдена часть подтверждённых фактов",
+            FactPresentation.researchOutcomeNotice(projection, "source"))
+    }
+
     @Test fun unfinished_outcome_requires_current_photo_generation_and_facts_purpose() {
         val wire = com.google.gson.Gson().fromJson("""{"photo_sha256":"source","identity_generation":3,
             "research_outcome":{"outcome":"resource_blocked","reason":"source_selection_unavailable",

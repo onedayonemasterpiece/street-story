@@ -356,6 +356,24 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** The current visual (or photo) on the whole screen; tap anywhere to close. */
+    private fun showFullImage(storyId: String) {
+        val story = store.story(storyId) ?: return
+        val path = story.processedImagePath?.takeIf { PhotoAssets.available(it) } ?: story.photoPath
+        val metrics = resources.displayMetrics
+        val bitmap = ImagePreviewDecoder.decode(this, path, metrics.widthPixels, metrics.heightPixels)
+            ?: (previewImage?.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return
+        val dialog = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        dialog.setContentView(ImageView(this).apply {
+            setImageBitmap(bitmap)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(android.graphics.Color.BLACK)
+            contentDescription = "full-image"
+            setOnClickListener { dialog.dismiss() }
+        })
+        dialog.show()
+    }
+
     private fun topicCard(story: StorySnapshot): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -477,7 +495,8 @@ class MainActivity : Activity() {
             background = rounded(SAGE_DARK, 22)
             clipToOutline = true
             contentDescription = "publication-image"
-            setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
+            // Owner test 19.10.2026: the lettering on the visual must be readable.
+            setOnClickListener { showFullImage(storyId) }
         }
         val availableHeight = resources.displayMetrics.heightPixels / resources.displayMetrics.density
         val photoHeight = (availableHeight * .17f).coerceIn(72f, 170f).toInt()
@@ -609,9 +628,13 @@ class MainActivity : Activity() {
             } else if (current.stage == StoryStage.SCHEDULED) {
                 live.sendText("Отмени текущую запланированную публикацию.")
             } else {
+                // The destination chosen in the app goes with the request, by its name.
+                val chosen = store.destinations(storyId).filter { it.selected }.joinToString(", ") { "«${it.label}»" }
+                val where = if (chosen.isBlank()) "" else " в $chosen"
                 live.sendText(
-                    "Хочу опубликовать именно этот текущий вариант. " +
-                        "Если не хватает канала, даты или времени — коротко спроси меня."
+                    "Хочу опубликовать именно этот текущий вариант$where. " +
+                        "Если не хватает канала, даты или времени — коротко спроси меня.",
+                    "Опубликуй$where.",
                 )
             }
         }.apply { contentDescription = "publish-action" }

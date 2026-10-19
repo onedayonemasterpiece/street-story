@@ -781,6 +781,12 @@ def _capitalized_hashtags(text: str) -> str:
     """A city hashtag is a proper name: «#черняховск» → «#Черняховск» (19.10.2026, post 133)."""
     return re.sub(r"(?m)^#(\w)", lambda m: "#" + m.group(1).upper(), text)
 
+# A lite model whose keys all failed (Google 503/504 overload) is skipped for
+# this long. Owner test 19.10.2026: every writing step first spent 40-60 s on
+# an overloaded gemini-3.1-flash-lite before falling to 3.5.
+LITE_OVERLOAD_SKIP_SECONDS = 180
+
+
 class GeminiClient:
     # Cache evaluation is an optional latency optimization. It must never spend
     # the full multi-key research retry budget before ordinary discovery.
@@ -3777,7 +3783,15 @@ class GeminiClient:
     async def _lite_chain(self, contents, config, parse):
         """Any answering lite model in the writer chain; unavailable or malformed answers fall through."""
         retry_at: list[float] = []
-        for model, _pool, quota, executor in self.writer_routes:
+        skipped = getattr(self, '_lite_unavailable_until', None)
+        if skipped is None:
+            skipped = self._lite_unavailable_until = {}
+        routes = list(self.writer_routes)
+        now = time.time()
+        healthy = [route for route in routes if skipped.get(route[0], 0) <= now]
+        if healthy:
+            routes = healthy + [route for route in routes if route not in healthy]
+        for model, _pool, quota, executor in routes:
             async def routed_call(key, timeout, *, _model=model, _quota=quota):
                 response = await self._generate(key, timeout, list(contents), config,
                                                 operation="grounded_research", model=_model, quota=_quota)
@@ -3786,10 +3800,14 @@ class GeminiClient:
                 except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
                     raise MalformedProviderResponse("gemini:malformed_lite_answer") from None
             try:
-                return await executor.execute("grounded_research", routed_call)
+                answer = await executor.execute("grounded_research", routed_call)
+                skipped.pop(model, None)
+                return answer
             except GeminiUnavailable as exc:
                 if exc.retry_at is not None:
                     retry_at.append(exc.retry_at)
+                skipped[model] = time.time() + LITE_OVERLOAD_SKIP_SECONDS
+                logging.getLogger(__name__).info("street_story_lite_model_skipped model=%s seconds=%s", model, LITE_OVERLOAD_SKIP_SECONDS)
                 continue
             except MalformedProviderResponse:
                 continue
