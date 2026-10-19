@@ -1113,3 +1113,18 @@ def test_activation_accepts_the_test_chat_beside_real_channels_and_rejects_unsaf
                  [test, {"alias": "street_story_e2e_other_tg", "provider": "telegram", "status": "supported"}]):
         with pytest.raises(installer.DeployError):
             installer.check_destination_projection(rows)
+
+
+def test_rkb_poi_env_comes_from_a_private_file(tmp_path, monkeypatch):
+    import json as _json
+    module = _load_installer()
+    config = tmp_path / "rkb-poi.json"
+    monkeypatch.setattr(module, "RKB_POI_CONFIG", config)
+    assert module.rkb_poi_env() == {}
+    config.write_text(_json.dumps({"service_token": "k" * 48, "owner_subs": ["6f7f732e-6ff3-5425-a3f1-b2062f4d9e50"]}))
+    config.chmod(0o600)
+    assert module.rkb_poi_env() == {"STREET_STORY_RKB_POI_SERVICE_TOKEN": "k" * 48,
+                                    "STREET_STORY_RKB_OWNER_SUBS": "6f7f732e-6ff3-5425-a3f1-b2062f4d9e50"}
+    config.chmod(0o644)
+    with pytest.raises(module.DeployError):
+        module.rkb_poi_env()

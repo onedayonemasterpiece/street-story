@@ -42,6 +42,13 @@ confirmations: `delivered`, `poi_resolved` (+ `poi_id`, `state`) and the fact ac
 (higher `source.revision` for the same `document_ref`) supersedes the earlier revision's
 evidence. Candidates remain research hints for the house's researcher.
 
-**Not yet provisioned.** `STREET_STORY_RKB_POI_SERVICE_TOKEN` is not set on the server;
-the RKB side needs the same key in its delivery worker. Street Story → RKB search during
-photo research is a later step (owner, 18.10.2026).
+**Provisioning (2026-10-19).** The installer reads the shared service key and the owner's RKB
+subject from `~/.local/state/street-story/rkb-poi.json` (0600: `service_token`, `owner_subs`) into
+`STREET_STORY_RKB_POI_SERVICE_TOKEN` and `STREET_STORY_RKB_OWNER_SUBS` on every deploy; without the file
+the bridge stays disabled. RKB's delivery worker (`regional_knowledge.street_story_delivery`) holds the
+same key in its own 0600 file.
+
+**The owner's private books.** The owner granted delivery of their private book evidence to their own
+Street Story (2026-10-19). Such evidence keeps `visibility=private` and its `owner_sub`; accepted claims
+of the configured owner subjects enter that owner's stories like public ones. Other users' private
+evidence never does. Street Story → RKB search during photo research is a later step.

@@ -46,3 +46,17 @@ def test_rkb_delivers_book_evidence_and_reads_back_the_three_confirmations(tmp_p
         with svc.store.tx() as db:  # the corrected book revision supersedes the old evidence
             texts = [f["text"] for f in _public_regional_knowledge_facts(db, identity, None)]
         assert texts == ["Ворота построены в 1844 году."]
+
+
+def test_the_owners_private_book_facts_reach_stories_and_others_stay_out(tmp_path, monkeypatch):
+    from street_story.poi_external import ingest_poi_evidence
+    svc, _, _ = service(tmp_path)
+    owner, stranger = "6f7f732e-6ff3-5425-a3f1-b2062f4d9e50", "11111111-2222-3333-4444-555555555555"
+    mine = ingest_poi_evidence(svc.store, event(visibility="private", owner=owner, semantic_key="own", text="Из моей книги."))
+    theirs = ingest_poi_evidence(svc.store, event(visibility="private", owner=stranger, semantic_key="other", text="Из чужой книги."))
+    identity = {"wikidata": "Q12345"}
+    with svc.store.tx() as db:
+        db.execute("UPDATE poi_claims SET status='accepted' WHERE id IN (?,?)", (mine["claim_id"], theirs["claim_id"]))
+        assert _public_regional_knowledge_facts(db, identity, None, statuses=("accepted",)) == []
+        monkeypatch.setenv("STREET_STORY_RKB_OWNER_SUBS", owner)
+        assert [f["text"] for f in _public_regional_knowledge_facts(db, identity, None, statuses=("accepted",))] == ["Из моей книги."]

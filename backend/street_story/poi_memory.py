@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import logging
 from typing import Any
 
@@ -1081,6 +1082,10 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
     if not family:
         return []
     owner_placeholders = ','.join('?' for _ in family)
+    # The deployment owner's own private books (RKB owner grant, 2026-10-19) count like public ones.
+    owner_subs = tuple(sub.strip() for sub in os.getenv('STREET_STORY_RKB_OWNER_SUBS', '').split(',') if sub.strip())
+    private_clause = (f" OR (x.visibility='private' AND x.owner_sub IN ({','.join('?' for _ in owner_subs)}))"
+                      if owner_subs else '')
     rows = db.execute(
         f"""
         SELECT c.id,c.poi_id,c.semantic_key,c.kind,c.text,c.status,
@@ -1090,14 +1095,14 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
         FROM poi_claims c
         JOIN poi_claim_evidence e ON e.claim_id=c.id
         JOIN poi_external_events x ON x.event_id=e.event_id
-        WHERE c.poi_id IN ({owner_placeholders}) AND x.visibility='public'
+        WHERE c.poi_id IN ({owner_placeholders}) AND (x.visibility='public'{private_clause})
           AND c.status IN ({','.join('?' for _ in statuses)})
           -- A corrected book revision supersedes evidence from its earlier revisions.
           AND x.source_revision = (SELECT MAX(y.source_revision) FROM poi_external_events y
                                    WHERE y.source_ref = x.source_ref)
         ORDER BY x.updated_at DESC
         """ + (' LIMIT ?' if limit is not None else ''),
-        (*family, *statuses, max(1, int(limit))) if limit is not None else (*family, *statuses),
+        (*family, *owner_subs, *statuses, max(1, int(limit))) if limit is not None else (*family, *owner_subs, *statuses),
     )
     result: list[dict[str, Any]] = []
     seen: set[str] = set()

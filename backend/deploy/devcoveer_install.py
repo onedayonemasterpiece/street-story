@@ -1140,6 +1140,25 @@ def preview_preflight(token: str, sha: str) -> dict[str, str]:
     }
 
 
+RKB_POI_CONFIG = STATE_ROOT / "rkb-poi.json"
+
+
+def rkb_poi_env() -> dict[str, str]:
+    """RKB book-evidence intake (2026-10-19): the shared service key and the owner's RKB subject.
+
+    Read from a private 0600 file so a redeploy keeps them; absent file leaves the bridge disabled.
+    """
+    if not RKB_POI_CONFIG.is_file():
+        return {}
+    require_mode(RKB_POI_CONFIG, 0o600)
+    config = json.loads(RKB_POI_CONFIG.read_text(encoding="utf-8"))
+    token = str(config.get("service_token") or "").strip()
+    subs = [str(sub).strip() for sub in config.get("owner_subs") or [] if str(sub).strip()]
+    if len(token) < 32:
+        raise DeployError("RKB POI service token is missing or too short")
+    return {"STREET_STORY_RKB_POI_SERVICE_TOKEN": token, "STREET_STORY_RKB_OWNER_SUBS": ",".join(subs)}
+
+
 def write_service_env(device: str, vibe: str, sha: str, *, fact_agent_routes=None) -> None:
     private_write(
         SERVICE_ENV,
@@ -1163,6 +1182,7 @@ def write_service_env(device: str, vibe: str, sha: str, *, fact_agent_routes=Non
                 "STREET_STORY_NATIVE_VISION_RESERVE": "true" if RESEARCH_QUALIFICATION.is_file() else "false",
                 **({"STREET_STORY_FACT_AGENT_ROUTES": json.dumps(fact_agent_routes)}
                    if fact_agent_routes is not None else {}),
+                **rkb_poi_env(),
             }
         ),
     )
