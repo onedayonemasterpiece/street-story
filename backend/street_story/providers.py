@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -774,6 +775,11 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
     except (KeyError, TypeError, ValueError, UnicodeError):
         return {}
 
+
+
+def _capitalized_hashtags(text: str) -> str:
+    """A city hashtag is a proper name: «#черняховск» → «#Черняховск» (19.10.2026, post 133)."""
+    return re.sub(r"(?m)^#(\w)", lambda m: "#" + m.group(1).upper(), text)
 
 class GeminiClient:
     # Cache evaluation is an optional latency optimization. It must never spend
@@ -3633,7 +3639,8 @@ class GeminiClient:
         "«в отзыве» и других ссылок на источники и документы. Простые слова, без канцелярских аббревиатур (ОКН, "
         "ЕГРОКН и т. п.): пиши «объект культурного наследия».\n"
         "Адрес. place — адрес из тега карты, он бывает устаревшим или неточным: если проверенные факты называют "
-        "этот дом по другому современному адресу, бери адрес из фактов.\n"
+        "этот дом по другому современному адресу, бери адрес из фактов. Если в place нет улицы или номера, возьми их "
+        "из фактов; название города вместо адреса не пиши никогда.\n"
         "Концовка. Последние строки: самый короткий адрес — название улицы и номер дома, без города и без запятых "
         "(например «Комсомольская улица 53–61»; несколько номеров дома — через тире, «46–48», никогда через запятую); затем отдельной строкой хештег города, один раз, и других хештегов "
         "нет. Город больше нигде в концовке не повторяй. Ссылки на карты не пиши: их добавит приложение.\n"
@@ -3873,9 +3880,9 @@ class GeminiClient:
                 if str(exc) == "gemini:unsupported_model":
                     continue
                 raise
-            if getattr(self, "EDITOR_RULES", None) is None:
-                return written
-            return await GeminiClient._edit_caption(self, written, facts=facts, lead_fact=lead_fact)
+            if getattr(self, "EDITOR_RULES", None) is not None:
+                written = await GeminiClient._edit_caption(self, written, facts=facts, lead_fact=lead_fact)
+            return {**written, "text": _capitalized_hashtags(written["text"])}
         raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_caption_writer_models_unavailable")
 
     async def _edit_caption(self, written: dict[str, Any], *, facts: list[dict[str, Any]],
