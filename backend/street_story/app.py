@@ -287,11 +287,13 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.get("/v1/stories", dependencies=[Depends(auth)])
     async def list_stories():
-        return service.stories()
+        # Story projections are heavy synchronous SQLite work. The same event
+        # loop carries Live audio and its ACKs, so it must never wait on them.
+        return await asyncio.to_thread(service.stories)
 
     @app.get("/v1/stories/{story_id}", dependencies=[Depends(auth)])
     async def get_story(story_id: str):
-        return service.story(story_id)
+        return await asyncio.to_thread(service.story, story_id)
 
     @app.get('/v1/stories/{story_id}/place-map', dependencies=[Depends(auth)])
     async def story_place_map(story_id: str, latitude: float | None = None,
@@ -412,13 +414,20 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
     async def start_live(story_id: str, request: Request):
-        service.story(story_id)
-        return await start_live_socket(
-            live_host,
-            story_id,
-            request,
-            history=live_history(service, story_id),
-        )
+        await asyncio.to_thread(service.story, story_id)
+        try:
+            return await start_live_socket(
+                live_host,
+                story_id,
+                request,
+                history=await asyncio.to_thread(live_history, service, story_id),
+            )
+        except TimeoutError:
+            # The provider did not become ready in time (usually its voice
+            # token budget is still recovering). This is retryable, not a 500.
+            logging.getLogger(__name__).warning("street_story_live_start_timeout story_id=%s", story_id)
+            return error_response(503, "live_start_timeout",
+                                  "Мира не успела подключиться. Подождите минуту и включите Live снова.")
 
     install_live_socket_routes(app, live_host, auth)
 
@@ -499,21 +508,21 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         body = await request.json()
         actual_key = idem(key)
         if kind == "facts":
-            return service.mutate_facts(story_id, actual_key, body)
+            return await asyncio.to_thread(service.mutate_facts, story_id, actual_key, body)
         if kind == "refinements":
-            return service.mutate_refinement(story_id, actual_key, body)
+            return await asyncio.to_thread(service.mutate_refinement, story_id, actual_key, body)
         if kind == "visual":
             request_visual = getattr(service, 'request_visual', None)
             if callable(request_visual):
                 return await request_visual(story_id, actual_key, body)
             return service.mutate_visual(story_id, actual_key, body)
         if kind == "publish":
-            return service.mutate_publish(story_id, actual_key, body)
+            return await asyncio.to_thread(service.mutate_publish, story_id, actual_key, body)
         if kind == "cancel":
             cancel = getattr(service, "mutate_cancel", None)
             if cancel is None:
                 raise InvalidStateError("cancel_not_supported", "This Street Story runtime does not expose publication cancellation")
-            return cancel(story_id, actual_key, body)
+            return await asyncio.to_thread(cancel, story_id, actual_key, body)
         raise AssertionError(kind)
 
     @app.post("/v1/stories/{story_id}/facts", dependencies=[Depends(auth)])
@@ -528,7 +537,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post('/v1/stories/{story_id}/research-control', dependencies=[Depends(auth)])
     async def research_control(story_id: str, request: Request,
                                idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
-        return service.mutate_research_control(story_id, idem(idempotency_key), await request.json())
+        body = await request.json()
+        return await asyncio.to_thread(service.mutate_research_control, story_id, idem(idempotency_key), body)
 
     @app.post("/v1/stories/{story_id}/refinements", dependencies=[Depends(auth)])
     async def refinements(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
@@ -541,7 +551,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post('/v1/stories/{story_id}/photo-format', dependencies=[Depends(auth)])
     async def photo_format(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
         from .photo_format import set_photo_format
-        return set_photo_format(service, story_id, idem(idempotency_key), await request.json())
+        body = await request.json()
+        return await asyncio.to_thread(set_photo_format, service, story_id, idem(idempotency_key), body)
 
     @app.post("/v1/stories/{story_id}/publish", dependencies=[Depends(auth)])
     async def publish(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):

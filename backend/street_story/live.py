@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import functools
 
 import base64
 import hashlib
@@ -1791,7 +1792,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 session.state["research_author_interrupted"] = True
                 session.state["research_output_pending"] = False
                 self._handoff_research(session)
-                topic = self._topic_state(session.resource_id)
+                topic = await asyncio.to_thread(self._topic_state, session.resource_id)
                 completed = (topic.get("research_run") or {}).get("state") == "completed"
                 self._emit_research_progress(session, stage="completed" if completed else "partial", active=False,
                     query="", source_count=topic["story"].get("source_count", 0), fact_count=len(topic["story"].get("facts", [])))
@@ -2000,7 +2001,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 strongest = (choose(self.service, story_id, str(args["strongest_fact_id"]), reason)
                              if args.get("strongest_fact_id") else await dispute(self.service, story_id, reason))
             if args.get("fact_ids") is not None:
-                result = self._select_facts(story_id, command_id, args)
+                result = await asyncio.to_thread(self._select_facts, story_id, command_id, args)
             elif strongest is None:
                 raise ConflictError("live_fact_selection_invalid", "Pass fact_ids or a strongest-fact change")
             else:
@@ -2020,19 +2021,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = {"story": set_photo_format(self.service, story_id, command_id, payload)}
             self._send_visual_snapshot(session)
         elif name == "set_concept":
-            result = self._set_concept(story_id, command_id, args)
+            # Editor tools build the full story projection (hundreds of KiB).
+            # Run them off the loop that carries Live audio ACKs.
+            result = await asyncio.to_thread(self._set_concept, story_id, command_id, args)
         elif name == "edit_text":
             if str(args.get("new_text") or "").strip():
-                result = self._edit_text(story_id, command_id, args)
+                result = await asyncio.to_thread(self._edit_text, story_id, command_id, args)
             else:
                 written = await self._write_caption(story_id, args)
-                result = self._edit_text(story_id, command_id, {**args, "new_text": written["text"]},
-                                         composed_by="writer:" + written["model"],
-                                         image_notes=written.get("image_notes") or [])
+                result = await asyncio.to_thread(functools.partial(
+                    self._edit_text, story_id, command_id, {**args, "new_text": written["text"]},
+                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or []))
         elif name == "literal_finish":
             result = self._literal_finish(session, command_id)
         elif name == "undo":
-            result = self._undo(story_id, command_id)
+            result = await asyncio.to_thread(self._undo, story_id, command_id)
         elif name == "generate_visual":
             result = await self._generate_visual(story_id, command_id, args)
             if args.get("observe_existing_visual") is True:
@@ -2041,17 +2044,18 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = await self._prepare_publication(story_id, command_id, args)
             self.emit(session, {"type": "publication_confirmation", **result["confirmation"]})
         elif name == "confirm_publication":
-            result = self._confirm_publication(story_id, command_id, args)
+            result = await asyncio.to_thread(self._confirm_publication, story_id, command_id, args)
         elif name == "cancel_publication":
-            result = self._cancel_publication(story_id, command_id)
+            result = await asyncio.to_thread(self._cancel_publication, story_id, command_id)
         else:
             raise ConflictError("live_tool_unknown", f"Unknown Live tool: {name}")
 
         if name != "literal_finish":
-            self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
+            state = await asyncio.to_thread(lambda: self._compact_context(self._topic_state(story_id)))
+            self.emit(session, {"type": "product_state", "state": state})
         if name == 'compare_place_images' and result.get('comparison_id'):
             return result
-        projected = self._model_result(name, result)
+        projected = await asyncio.to_thread(self._model_result, name, result)
         if name == 'select_facts':
             # Repeat the accepted request at the decision boundary, not a router
             # paraphrase. The model interprets it; the host does not classify prose

@@ -164,3 +164,34 @@ def test_android_diagnostics_are_authenticated_and_bounded(client):
     assert accepted.json()["ok"] is True
     assert c.post(url, content=b"x" * 32769).status_code == 413
     c.post(f"/v1/stories/{story}/live-sessions/{value['session_id']}/stop")
+
+
+def test_story_projection_runs_off_the_live_event_loop(client, monkeypatch):
+    # Samsung 19.10.2026: the phone polls the story every ~10 s; building it on
+    # the loop delayed audio ACKs until the device hit LIVE_AUDIO_BACKPRESSURE.
+    import threading
+    c, story_id, _, _ = client
+    seen = []
+    import street_story.app as app_module
+    original = app_module.asyncio.to_thread
+
+    async def recording_to_thread(func, *args, **kwargs):
+        seen.append(getattr(func, '__name__', ''))
+        return await original(lambda: (seen.append(threading.current_thread() is threading.main_thread()), func(*args, **kwargs))[1])
+
+    monkeypatch.setattr(app_module.asyncio, 'to_thread', recording_to_thread)
+    assert c.get(f'/v1/stories/{story_id}').status_code == 200
+    assert c.get('/v1/stories').status_code == 200
+    assert seen[:4] == ['story', False, 'stories', False]
+
+
+def test_live_start_timeout_is_retryable_not_500(client, monkeypatch):
+    c, story_id, _, host = client
+
+    async def slow_start(**_kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(host, 'start', slow_start)
+    response = c.post(f'/v1/stories/{story_id}/live-sessions', json={'transport': 'wss', 'attempt_id': 'attempt_timeout'})
+    assert response.status_code == 503
+    assert response.json()['error']['code'] == 'live_start_timeout'

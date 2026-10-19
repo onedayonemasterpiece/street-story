@@ -521,11 +521,12 @@ class LiveSessionController(context: Context) {
         diagnostic("speech_ended")
     }
 
-    fun sendText(text: String) {
+    /** [shown] is what the owner sees in the chat; [text] is the request Mira receives. */
+    fun sendText(text: String, shown: String = text) {
         val value = text.trim()
         if (!state.active || value.isEmpty()) return
         inputOpen = false
-        userTranscriptIndex = mergeMessage(LiveRole.USER, value.take(4000), -1)
+        userTranscriptIndex = mergeMessage(LiveRole.USER, shown.trim().ifEmpty { value }.take(4000), -1)
         update(state.copy(inputActive = false))
         waitStage = "provider"
         waitStarted = SystemClock.elapsedRealtime()
@@ -858,7 +859,7 @@ class LiveSessionController(context: Context) {
     private fun humanLiveError(code: String): String = when (code.uppercase(java.util.Locale.ROOT)) {
         "RESOURCE_CAPACITY", "LIVE_BUSY", "HTTP_429", "HTTP_503" ->
             "Мира сейчас занята. Нажмите кнопку ещё раз через несколько секунд."
-        "RESOURCE_TOKEN_BUDGET" ->
+        "RESOURCE_TOKEN_BUDGET", "LIVE_START_TIMEOUT" ->
             "Голосовой лимит временно исчерпан. Подождите около минуты и включите Live снова."
         "LIVE_SOCKET_ACK_TIMEOUT", "LIVE_SOCKET_HEARTBEAT_TIMEOUT", "LIVE_SOCKET_IO", "LIVE_CONNECTION_FAILED",
         "LIVE_AUDIO_BACKPRESSURE", "LIVE_AUDIO_STALE" ->
