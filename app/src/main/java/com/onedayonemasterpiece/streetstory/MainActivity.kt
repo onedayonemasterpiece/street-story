@@ -70,6 +70,7 @@ class MainActivity : Activity() {
     private var pendingLiveStoryId: String? = null
     private var ownerConversation: OwnerConversationScope? = null
     private var ownerConversationText: String? = null
+    private var ownerConversationShown: String? = null
     private var ownerConversationGuard: (() -> Boolean)? = null
     private var ownerConversationNeedsNavigation = false
     private var pendingPhotoRecoveryStoryId: String? = null
@@ -465,7 +466,7 @@ class MainActivity : Activity() {
         }
         column.addView(photoFormatChoices, blockMargins(top = 4))
         placeMapPanel = PlaceMapPanel(this, storyId, store, research, config, { navigateOwnerPlace(storyId) }, { markOwnerPlaceUnknown(storyId) }, {
-            requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.")
+            requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.", "Это мой дом.")
         })
         column.addView(placeMapPanel, blockMargins(top = 8))
         column.addView(identityLinkView, blockMargins(top = 8))
@@ -1132,7 +1133,8 @@ class MainActivity : Activity() {
                 if (live.isActiveFor(storyId)) {
                     live.sendText(
                         "Я вручную изменил выбор фактов. Прочитай текущее состояние темы; " +
-                            "не переписывай текст без отдельной просьбы."
+                            "не переписывай текст без отдельной просьбы.",
+                        "Я поменял выбор фактов.",
                     )
                 }
             }
@@ -1226,7 +1228,7 @@ class MainActivity : Activity() {
         val request = "Разбери сохранённое противоречие ${conflict.conflictId} между фактами ${conflict.left.factId} и ${conflict.right.factId}. " +
             "Обсуди уточнение с автором голосом. Прочитай источники обеих версий и сохрани обоснованное решение либо оставь противоречие неразрешённым. " +
             "Сохрани авторский выбор и черновик; не возобновляй фоновое исследование."
-        requestOwnerConversation(storyId, request) { current() }
+        requestOwnerConversation(storyId, request, "Давай разберём противоречие в фактах.") { current() }
     }
 
     private fun createOwnerVisual(storyId: String) {
@@ -1245,7 +1247,8 @@ class MainActivity : Activity() {
                 android.util.Log.i("StreetStoryOwnerVisual", "stage=requested story_id=$storyId generation=${request.generation} selected_fact_count=${request.selectedFacts.size}")
                 live.sendText("Создай визуал для текущего сохранённого черновика из оригинальной фотографии этого сюжета. " +
                     "Используй только текущие выбранные подтверждённые факты: ${request.selectedFacts.joinToString(", ") { it.first }}. " +
-                    "Сохрани текст черновика и авторский выбор фактов. Покажи результат для проверки. Ничего не публикуй и не планируй публикацию.")
+                    "Сохрани текст черновика и авторский выбор фактов. Покажи результат для проверки. Ничего не публикуй и не планируй публикацию.",
+                    "Сделай картинку к посту.")
             } else {
                 android.util.Log.i("StreetStoryOwnerVisual", "stage=not_sent story_id=$storyId reason=scope_or_session_changed")
                 ownerVisualRequest = null
@@ -2047,7 +2050,7 @@ class MainActivity : Activity() {
             "Продолжи текущую историю в режиме поиска места: continue_story stage=place_map. Дом не здесь. " +
                 "Спроси голосом, что я помню о месте съёмки. Используй find_place_area и focus_owner_map, чтобы перенести карту. " +
                 "Дом я выберу сам касанием или назову показанный контур. Не выбирай дом за меня, не используй resolve_place и не запускай распознавание по GPS.",
-            navigation = true)
+            "Дом не здесь, помоги найти место на карте.", navigation = true)
         SyncScheduler.enqueue(this)
     }
 
@@ -2061,10 +2064,13 @@ class MainActivity : Activity() {
         placeMapPanel?.refresh()
     }
 
-    private fun requestOwnerConversation(storyId: String, text: String, navigation: Boolean = false, guard: () -> Boolean = { true }) {
+    // Owner decision 19.10.2026: the chat shows the owner's own short phrase,
+    // never the tool instruction sent to Mira.
+    private fun requestOwnerConversation(storyId: String, text: String, shown: String, navigation: Boolean = false, guard: () -> Boolean = { true }) {
         val scope = OwnerConversationScope.capture(store.story(storyId), research.get(storyId)) ?: return
         ownerConversation = scope
         ownerConversationText = text
+        ownerConversationShown = shown
         ownerConversationGuard = guard
         ownerConversationNeedsNavigation = navigation
         android.util.Log.i("StreetStoryOwnerVoice", "stage=queued story_id=$storyId generation=${scope.generation} place_navigation=$navigation")
@@ -2072,7 +2078,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearOwnerConversation() {
-        ownerConversation = null; ownerConversationText = null; ownerConversationGuard = null
+        ownerConversation = null; ownerConversationText = null; ownerConversationShown = null; ownerConversationGuard = null
         ownerConversationNeedsNavigation = false
     }
 
@@ -2089,9 +2095,10 @@ class MainActivity : Activity() {
         }
         if (live.isActiveFor(scope.storyId)) {
             val text = ownerConversationText ?: return
+            val shown = ownerConversationShown ?: text
             clearOwnerConversation()
             android.util.Log.i("StreetStoryOwnerVoice", "stage=sent story_id=${scope.storyId} generation=${scope.generation}")
-            live.sendText(text)
+            live.sendText(text, shown)
             return
         }
         if (live.snapshot().connecting || live.snapshot().active) return
@@ -2116,7 +2123,8 @@ class MainActivity : Activity() {
         requestOwnerConversation(storyId,
             "Составь или поправь черновик текущего выбранного дома с помощью существующих инструментов редактора edit_text. " +
                 "Используй только текущие выбранные подтверждённые факты: ${selected.joinToString(", ") { it.first }}. " +
-                "Обсуди пожелания с автором голосом, сохрани черновик. Ничего не публикуй.") {
+                "Обсуди пожелания с автором голосом, сохрани черновик. Ничего не публикуй.",
+            "Помоги составить текст поста.") {
             store.story(storyId)?.draftText == draft &&
                 store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId to it.text } == selected
         }
