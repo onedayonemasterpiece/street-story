@@ -2223,3 +2223,22 @@ async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, 
         await adapter.execute_tool(session, {'name': 'edit_text'})
     assert session.state['research_output_pending'] is True
     assert len(paused) == 0
+
+
+def test_newer_writer_draft_replaces_older_writer_draft_but_not_owner_edits(tmp_path):
+    # Owner test 19.10.2026: the second writer call (all 7 selected facts) was lost
+    # on a revision conflict with the first one (4 facts).
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    adapter._edit_text(story_id, "w1", {"expected_text_revision": 0, "new_text": "Первый вариант",
+                                        "change_summary": "writer"}, composed_by="writer:gemini-3.5-flash-lite")
+    stale = {"expected_text_revision": 0, "change_summary": "writer"}
+    rebased = adapter._rebase_over_writer_draft(story_id, stale)
+    assert rebased["expected_text_revision"] == 1
+    adapter._edit_text(story_id, "w2", {**rebased, "new_text": "Второй вариант"}, composed_by="writer:gemini-3.5-flash-lite")
+    adapter._edit_text(story_id, "o1", {"expected_text_revision": 2, "new_text": "Правка автора",
+                                        "change_summary": "owner"})
+    assert adapter._rebase_over_writer_draft(story_id, {"expected_text_revision": 2}) == {"expected_text_revision": 2}
+    with pytest.raises(ConflictError):
+        adapter._edit_text(story_id, "w3", {"expected_text_revision": 2, "new_text": "Третий",
+                                            "change_summary": "writer"}, composed_by="writer:x")
