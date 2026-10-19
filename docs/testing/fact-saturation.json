@@ -14,7 +14,7 @@
    "candidate_id": "osm:way:1085593396",
    "house": "Багратионовск, Калининградская 10",
    "baseline_facts": null,
-   "db_max_eligible": 1,
+   "db_max_eligible": 15,
    "runs": [
     {
      "date": "2026-10-18",
@@ -25,6 +25,16 @@
      "from_visitor_reviews": 0,
      "status": "ready",
      "note": "один факт; подпись спорит с OSM; не опубликован"
+    },
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_2a08604c12dcba1243a77044",
+     "eligible": 15,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37898"
     }
    ]
   },
@@ -34,8 +44,19 @@
    "candidate_id": "osm:way:91256978",
    "house": "Калининград, пер. Желябова 7–9",
    "baseline_facts": null,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 19,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_c941953176981331b8429532",
+     "eligible": 19,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37899"
+    }
+   ]
   },
   {
    "telegram_id": 102,
@@ -63,8 +84,19 @@
    "candidate_id": "osm:relation:3665416",
    "house": "Калининград, башня Врангеля",
    "baseline_facts": 8,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 56,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_ed9c6eeeddfe5fd6d418e3a6",
+     "eligible": 56,
+     "selected": 4,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37900"
+    }
+   ]
   },
   {
    "telegram_id": 105,
@@ -93,8 +125,19 @@
    "candidate_id": "osm:way:150596899",
    "house": "Калининград, Комсомольская 88",
    "baseline_facts": 0,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 14,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_1f1a4632d267c1c2f3417e14",
+     "eligible": 14,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37901"
+    }
+   ]
   },
   {
    "telegram_id": 107,
@@ -111,8 +154,19 @@
    "candidate_id": "osm:relation:1383564",
    "house": "Калининград, Генделя 6",
    "baseline_facts": 0,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 37,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_8b0b55a2efe9ee6d7b17b9ac",
+     "eligible": 37,
+     "selected": 7,
+     "from_visitor_reviews": 3,
+     "status": "ready",
+     "note": "зачин с учреждения и пустая фраза — не опубликован"
+    }
+   ]
   },
   {
    "telegram_id": 109,
@@ -120,8 +174,19 @@
    "candidate_id": "osm:way:903713161",
    "house": "Калининград, Клиническая 19А",
    "baseline_facts": null,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 27,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_a2d4e1311dfe80be6b0b48fd",
+     "eligible": 27,
+     "selected": 6,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37902"
+    }
+   ]
   },
   {
    "telegram_id": 111,
@@ -129,8 +194,19 @@
    "candidate_id": "osm:way:95290265",
    "house": "Калининград, Дмитрия Донского 15",
    "baseline_facts": 0,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 8,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_097dc6ab310321037ccfa82b",
+     "eligible": 8,
+     "selected": 3,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37903"
+    }
+   ]
   },
   {
    "telegram_id": 119,
@@ -167,8 +243,19 @@
    "candidate_id": "osm:way:313504456",
    "house": "Светлогорск, Октябрьская 14",
    "baseline_facts": null,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 12,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_3935b90df0d0c1aaa456bb68",
+     "eligible": 13,
+     "selected": 3,
+     "from_visitor_reviews": 2,
+     "status": "ready",
+     "note": "house differs from table: osm:way:297368195; дом — здание кафе 2008 года, истории нет — не опубликован"
+    }
+   ]
   },
   {
    "telegram_id": 124,
@@ -251,7 +338,7 @@
    "candidate_id": "osm:way:210946099",
    "house": "Черняховск, Суворова 11 (гимназия № 2, корпус 2)",
    "baseline_facts": null,
-   "db_max_eligible": 22,
+   "db_max_eligible": 36,
    "runs": [
     {
      "date": "2026-10-18",
@@ -262,6 +349,16 @@
      "from_visitor_reviews": 0,
      "status": "ready",
      "note": "1929 и «новая вещественность» — другой корпус гимназии; не опубликован"
+    },
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_666476109a2a1c24aa8198a3",
+     "eligible": 36,
+     "selected": 3,
+     "from_visitor_reviews": 1,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37905"
     }
    ]
   },
@@ -271,7 +368,7 @@
    "candidate_id": "osm:way:175185525",
    "house": "Калининград, Шмидта 4",
    "baseline_facts": null,
-   "db_max_eligible": 12,
+   "db_max_eligible": 20,
    "runs": [
     {
      "date": "2026-10-18",
@@ -282,6 +379,16 @@
      "from_visitor_reviews": 0,
      "status": "ready",
      "note": "публикация сорвалась на перегрузке хоста, повтор"
+    },
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_9b259bfdc0ee57ed66334c6d",
+     "eligible": 20,
+     "selected": 4,
+     "from_visitor_reviews": 1,
+     "status": "ready",
+     "note": "нет адреса ни в фактах, ни в теге карты — не опубликован"
     }
    ]
   },
@@ -291,8 +398,20 @@
    "candidate_id": null,
    "house": "Калининград, Комсомольская 53–61",
    "baseline_facts": null,
-   "db_max_eligible": null,
-   "runs": []
+   "db_max_eligible": 0,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_269e8bbfef388a224b99da22",
+     "eligible": 19,
+     "selected": 4,
+     "from_visitor_reviews": 1,
+     "status": "published",
+     "note": "house differs from table: osm:way:135507463",
+     "post": "https://t.me/c/5202935288/37906"
+    }
+   ]
   },
   {
    "telegram_id": 147,
@@ -333,6 +452,25 @@
      "post": "https://t.me/c/5202935288/37884"
     }
    ]
+  },
+  {
+   "telegram_id": 122,
+   "house": "Светлогорск, Октябрьская 18 («Хубертус»)",
+   "candidate_id": "osm:way:185249717",
+   "baseline_facts": null,
+   "runs": [
+    {
+     "date": "2026-10-19",
+     "release": "93f34bf",
+     "story_id": "story_95f1baa34679683e0bf5dbff",
+     "eligible": 10,
+     "selected": 4,
+     "from_visitor_reviews": 0,
+     "status": "published",
+     "post": "https://t.me/c/5202935288/37904"
+    }
+   ],
+   "db_max_eligible": 10
   }
  ]
 }
