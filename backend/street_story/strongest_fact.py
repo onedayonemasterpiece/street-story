@@ -90,6 +90,7 @@ async def decide(service, story_id: str, *, luna_candidate: dict[str, Any] | Non
     if not valid:
         return None
     top = valid[0]
+    story = [inventory[i]['fact_id'] for i in ranked.get('story') or [] if isinstance(i, int) and 0 <= i < len(inventory)]
     record = {'fact_id': inventory[top['index']]['fact_id'], 'reason': str(top.get('reason') or '')[:400],
               'source': 'auto', 'model': ranked.get('model'), 'researcher': luna,
               'agrees_with_researcher': bool(luna) and luna['fact_id'] == inventory[top['index']]['fact_id'],
@@ -105,12 +106,21 @@ async def decide(service, story_id: str, *, luna_candidate: dict[str, Any] | Non
             research['strongest_proposal'] = record
         else:
             research['strongest_fact'] = record
+        if story:
+            # The same call proposes the post's facts (owner, 19.10.2026: Mira kept choosing three and a
+            # current use was lost). The proposal only adds to the selection; owner picks are never removed.
+            from .fact_ledger import eligible_selected_fact_ids, set_owner_selection
+            current_ids = eligible_selected_fact_ids(db, story_id)
+            merged = list(dict.fromkeys([*current_ids, record['fact_id'], *story]))
+            if len(merged) > len(current_ids):
+                set_owner_selection(db, story_id, merged, service.store.now())
+            research['suggested_selection'] = story
         db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                    (canonical(research), service.store.now(), story_id))
     LOG.info('street_story_strongest_fact %s', canonical({
         'story_id': story_id, 'outcome': 'decided', 'fact_id': record['fact_id'], 'model': record['model'],
         'researcher_fact_id': (luna or {}).get('fact_id'), 'agrees': record['agrees_with_researcher'],
-        'owner_held': bool(held and held.get('source') == 'owner'), 'run_id': run_id}))
+        'owner_held': bool(held and held.get('source') == 'owner'), 'run_id': run_id, 'suggested': len(story)}))
     return research.get('strongest_fact')
 
 

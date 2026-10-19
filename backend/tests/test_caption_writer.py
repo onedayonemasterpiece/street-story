@@ -311,3 +311,23 @@ def test_city_hashtag_is_capitalized():
     from street_story.providers import _capitalized_hashtags
     assert _capitalized_hashtags("Текст.\n\nулица Суворова 11\n#черняховск") == "Текст.\n\nулица Суворова 11\n#Черняховск"
     assert _capitalized_hashtags("#Калининград") == "#Калининград"
+
+
+@pytest.mark.asyncio
+async def test_the_decision_also_proposes_the_posts_facts_and_only_adds_to_the_selection(tmp_path):
+    # Owner, 19.10.2026 (Bagrationovsk Kreishaus): Mira kept choosing three facts and the museum was lost.
+    from street_story import strongest_fact
+    from street_story.fact_ledger import set_owner_selection
+    svc, _adapter, session, ids = eligible_story(tmp_path)
+    sid = session.resource_id
+    with svc.store.tx() as db:
+        set_owner_selection(db, sid, [ids[0]], svc.store.now())  # the owner's own pick stays
+
+    async def strongest_hook(*, facts, photo_jpeg, researcher_choice=None):
+        return {"ranked": [{"index": 2, "reason": "поджог"}], "model": "lite", "story": [2, 1]}
+
+    svc.providers.gemini.strongest_hook = strongest_hook
+    await strongest_fact.decide(svc, sid)
+    story = svc.story(sid)
+    assert sorted(f["fact_id"] for f in story["facts"] if f.get("selected")) == sorted(ids)
+    assert story["suggested_selection"] == [ids[2], ids[1]]
