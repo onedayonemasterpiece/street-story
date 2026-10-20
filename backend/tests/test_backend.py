@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from street_story.app import create_app
@@ -508,3 +509,25 @@ def test_provider_projection_never_fabricates_ambiguous_provider():
         "capabilities": [{"destination": "channel_one", "operation": "publish", "surface": "post", "status": "supported"}],
     }
     assert project_destinations(bootstrap) == []
+
+
+@pytest.mark.asyncio
+async def test_vibepublish_read_domain_error_is_retried_not_final(tmp_path):
+    # Owner test 20.10.2026: a single 422 from /v1/bootstrap ended a visual job that would have succeeded.
+    import httpx
+    from street_story.providers import VibePublishClient
+    from street_story.errors import RetryableProviderError, PermanentProviderError
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(422, json={"error": {"code": "store_busy"}})
+        return httpx.Response(422, json={"error": {"code": "invalid_input"}})
+
+    settings = SimpleNamespace(vibepublish_base_url="http://vp.test", vibepublish_bearer_token="token",
+                               vibepublish_http_host=None)
+    client = VibePublishClient(settings, http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(RetryableProviderError) as read:
+        await client.bootstrap()
+    assert "store_busy" in str(read.value)
+    with pytest.raises(PermanentProviderError):
+        await client._request("POST", "/v1/visuals/commands", json_body={}, key="k")
