@@ -3893,6 +3893,18 @@ class GeminiClient:
             "literal_fragments": literal_fragments,
         }, ensure_ascii=False)
         contents = [self.WRITER_RULES + "\n\n" + payload]
+        if getattr(getattr(self, "settings", None), "external_writers", False):
+            from . import external_writers
+            try:
+                answer, model = await external_writers.write(contents[0], photo_jpeg)
+                text = str(answer.get("text") or "").strip()
+                if not text or len(text) > 1100:
+                    raise external_writers.ExternalWriterUnavailable("writer_answer_too_long")
+                notes = [str(note).strip() for note in answer.get("image_notes") or [] if str(note).strip()][:3]
+                return {"text": _capitalized_hashtags(text), "model": external_writers.DISPLAY.get(model, model),
+                        "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
+            except external_writers.ExternalWriterUnavailable as exc:
+                logging.getLogger(__name__).warning("street_story_external_writers_unavailable reason=%s fallback=gemini", exc)
         if photo_jpeg:
             contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
         config = types.GenerateContentConfig(
