@@ -777,6 +777,16 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
 
 
 
+def _note_arrows(answer: dict[str, Any], notes: list[str]) -> list[str]:
+    """Per note: the part of the building visible on the photo now that its arrow points to, or "" (no arrow).
+
+    Owner decision 20.10.2026: a note about the past or a lost building never points at today's building.
+    """
+    raw = answer.get("image_note_arrows")
+    targets = [str(item or "").strip()[:80] for item in raw] if isinstance(raw, list) else []
+    return (targets + [""] * len(notes))[:len(notes)]
+
+
 def _capitalized_hashtags(text: str) -> str:
     """A city hashtag is a proper name: «#черняховск» → «#Черняховск» (19.10.2026, post 133)."""
     return re.sub(r"(?m)^#(\w)", lambda m: "#" + m.group(1).upper(), text)
@@ -3591,8 +3601,10 @@ class GeminiClient:
             }, "required": ["sentence", "supported_by", "flow", "problem"]}},
             "text": {"type": "string"},
             "image_notes": {"type": "array", "items": {"type": "string"}},
+            "image_note_arrows": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["throughline", "parts_on_photo", "outline", "draft", "check", "text", "image_notes"],
+        "required": ["throughline", "parts_on_photo", "outline", "draft", "check", "text", "image_notes",
+                     "image_note_arrows"],
     }
     # Owner decision 20.10.2026: a story, not a list — the concept is the throughline, in the author's voice.
     WRITER_RULES = (
@@ -3646,6 +3658,12 @@ class GeminiClient:
         "дома, которой на снимке нет, — только как сведение о доме, никогда «видно на снимке».\n"
         "- literal_fragments — дословно. Явные опечатки фактов исправляй. Слова пиши только кириллицей, без латинских "
         "букв внутри русских слов.\n"
+        "Время. Фото — это сейчас. Всё о прошлом называй с привязкой ко времени: дата или период («в 1905 году», "
+        "«до 1945 года», «до войны»; для немецкого периода региона — дата или «до 1945 года», город до войны — "
+        "Кёнигсберг). Если здания из факта больше нет (разрушено, снесено, разобрано) и на его месте стоит другое, "
+        "так и пиши: «До войны на этом месте стоял пансион…», «Сегодня здесь жилой комплекс…» — никогда не выдавай "
+        "нынешнее здание за прежнее и не начинай так, будто на фото прежнее здание. Прежние назначения и владельцы "
+        "того же дома — в прошедшем времени с датой.\n"
         "- Адрес — из place; если факты называют этот дом по другому современному адресу — из фактов. Если улицы "
         "и номера нет ни в place, ни в фактах, строку адреса пропусти: название города вместо адреса не пиши "
         "никогда.\n"
@@ -3659,7 +3677,15 @@ class GeminiClient:
         "«переход: <слова перехода>») или «перечень», если связи нет, и problem (пусто, если проблем нет). text "
         "— итог: каждое «перечень» переписано связно, каждая problem исправлена, замысел звучит. image_notes "
         "— 2–3 надписи для картинки только по image_facts, 3–8 слов, понятны сами по себе; первая — lead_fact "
-        "коротко со своей датой; без отзывов, годов источника и названий реестров."
+        "коротко со своей датой; без отзывов, годов источника и названий реестров. Надпись, к которой может "
+        "вести стрелка, говорит о том, что видно на фото сейчас, и верна для видимого: цвет и материал — как на "
+        "снимке (название в кавычках, например «красный дом», — не утверждение о цвете; если цвет на фото другой, "
+        "не пиши его как видимый). Надпись о прошлом или об утраченном здании начинается с даты или периода («До "
+        "1945 года: …», «До войны здесь стоял …») и будет без стрелки. Глаголы надписей — как в тексте: прошлое "
+        "в прошедшем времени с привязкой ко времени («После войны долго извлекали из стен осколки и пули», не «В "
+        "стенах извлекают осколки»); настоящее время — только для того, что верно сейчас. image_note_arrows — для "
+        "каждой надписи по порядку: часть дома, которая видна на фото сейчас и к которой ведёт стрелка (например "
+        "«эркер», «стена башни»), или пустая строка — без стрелки (прошлое, утраченное здание, невидимое)."
     )
 
     EDITOR_SCHEMA = {
@@ -3672,8 +3698,9 @@ class GeminiClient:
             }, "required": ["sentence", "kind", "fix"]}},
             "text": {"type": "string"},
             "image_notes": {"type": "array", "items": {"type": "string"}},
+            "image_note_arrows": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["issues", "text", "image_notes"],
+        "required": ["issues", "text", "image_notes", "image_note_arrows"],
     }
 
     EDITOR_RULES = (
@@ -3698,7 +3725,9 @@ class GeminiClient:
         "фраз «видно на снимке», адреса внутри текста; латинских букв внутри русских слов нет. Прежнее — в прошедшем "
         "времени; «сейчас» — только если факт о настоящем.\n"
         "4. Надписи (image_notes): каждая по факту из image_facts, 3–8 слов, понятна сама по себе; первая — lead_fact "
-        "коротко со своей датой.\n"
+        "коротко со своей датой. Прошлое — в прошедшем времени с датой или периодом («После войны долго извлекали "
+        "из стен осколки»), никогда не настоящим. image_note_arrows — для каждой надписи: видимая сейчас часть дома, "
+        "к которой ведёт стрелка, или пустая строка; надпись о прошлом или об утраченном здании — всегда без стрелки.\n"
         "issues — каждая найденная проблема: предложение, вид (перечень, нет замысла, скачок, неподтверждённое, "
         "источник, видно на снимке, адрес в тексте, потеря факта) и что сделано. text — исправленная подпись "
         "без адреса и хештега, абзацы через пустую строку, без Markdown. image_notes — 2–3 надписи."
@@ -3873,9 +3902,10 @@ class GeminiClient:
                 if not text or len(text) > 1100:
                     raise ValueError
                 notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
+                arrows = _note_arrows(payload, notes)
             except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
                 raise MalformedProviderResponse("gemini:malformed_caption") from None
-            return {"text": text, "model": str(model or ""), "image_notes": notes}
+            return {"text": text, "model": str(model or ""), "image_notes": notes, "image_note_arrows": arrows}
 
         retry_at: list[float] = []
         for model, _pool, quota, executor in self.writer_routes:
@@ -3925,7 +3955,7 @@ class GeminiClient:
             if not edited or len(edited) + len(ending) > 1100:
                 raise ValueError
             notes = [str(n).strip() for n in answer.get("image_notes") or [] if str(n).strip()][:3]
-            return {"text": edited, "notes": notes,
+            return {"text": edited, "notes": notes, "arrows": _note_arrows(answer, notes),
                     "issues": [i for i in answer.get("issues") or [] if isinstance(i, dict)], "model": model}
 
         try:
@@ -3937,7 +3967,9 @@ class GeminiClient:
             "outcome": "edited", "model": edited["model"], "issues": [str(i.get("kind") or "")[:40] for i in edited["issues"]][:12],
             "changed": edited["text"] != body.strip()}, ensure_ascii=False))
         return {**written, "text": edited["text"] + ("\n\n" + ending if ending else ""),
-                "image_notes": edited["notes"] or written.get("image_notes") or [], "editor_model": edited["model"]}
+                "image_notes": edited["notes"] or written.get("image_notes") or [],
+                "image_note_arrows": edited["arrows"] if edited["notes"] else written.get("image_note_arrows") or [],
+                "editor_model": edited["model"]}
 
     async def _semantic_complete_discovery_best_effort(
         self,
