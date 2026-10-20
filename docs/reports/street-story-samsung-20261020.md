@@ -69,7 +69,6 @@
 
 - `Job didn't exist in JobStore`: 11 + 53 события.
 - Есть `Sending onNetworkChanged for a job that isn't started`.
-- Есть `onNetworkChanged() not implemented`.
 
 3. Уведомления подавлялись:
 
@@ -144,10 +143,6 @@ W JobServiceContext:
 Sending onNetworkChanged for a job that isn't started
 ... com.onedayonemasterpiece.streetstory/.../SystemJobService
 
-W JobService:
-onNetworkChanged() not implemented in
-androidx.work.impl.background.systemjob.SystemJobService.
-
 E NotificationService:
 Suppressing notification from package
 com.onedayonemasterpiece.streetstory by user request.
@@ -181,3 +176,7 @@ Killing 28328:com.onedayonemasterpiece.streetstory/u0a393
 ## Полнота материалов
 
 Документ содержит подтверждённые агрегаты и ключевые очищенные строки. Полные очищенные клиентские логи подготовлены на компьютере, их передача выполняется отдельно. Общие сырые logcat с данными иных приложений не публикуются. Серверные логи не включены.
+
+## Уточнение атрибуции после повторного чтения очищенных файлов
+
+При независимой проверке исключены 25 общих Android-строк без доказанной связи со Street Story (12 из блока 1, 13 из блока 2): предупреждения `onNetworkChanged() not implemented` неизвестных PID и две строки network tracker PID 31223. Эти предупреждения не приписываются Street Story. Сохранены только строки известных PID приложения (22691, 21986, 28328) либо явно содержащие его package. Агрегаты SyncWorker (129/127), JobStore (64) и подавления уведомлений (48) перепроверены по файлам и не изменились. В окончательных выборках 125 и 433 строки. Связь этих технических сигналов с незавершённой генерацией по-прежнему не доказана.
