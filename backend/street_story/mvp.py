@@ -61,9 +61,16 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
             notes.append("Каждая надпись — на светлой бумажной подложке или плашке, контрастно и читаемо на любом фоне "
                          "(небо, кирпич, листва); целиком внутри кадра с отступом от края, ни одна не обрезана.")
+            arrows = [str(item or "") for item in context.get("caption_image_note_arrows") or []]
+            if len(arrows) == len(written):
+                # The writer decided per note; a note about the past never points at today's building.
+                notes.append("Стрелки: " + "; ".join(
+                    f"«{note}» — стрелка к: {arrow}" if arrow else f"«{note}» — без стрелки"
+                    for note, arrow in zip(written, arrows)) + ". Других стрелок нет.")
             notes.append("Стрелка — только от надписи к части дома, которая ясно видна на фото и о которой надпись. "
-                         "Надпись о том, чего на фасаде не видно (найдено внутри, утрачено, люди, события, даты), — "
-                         "без стрелки, в небе или на поле; ничего к ней не дорисовывай.")
+                         "Надпись о том, чего на фасаде не видно (найдено внутри, утрачено, люди, события, даты), и "
+                         "любая надпись, начинающаяся с даты, периода, «до войны» или «здесь стоял», — о прошлом: без "
+                         "стрелки, в небе или на поле; ничего к ней не дорисовывай и не показывай её на нынешнее здание.")
         if facts and not written:  # written notes already rest on these facts; the brief keeps room for them
             notes.append("Основание для подписей, не готовый текст надписей: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
@@ -412,9 +419,13 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 frozen['output_frame_contract'] = ((ORIGINAL_PHOTO_FRAME_CONTRACT if source_frame is not None
                     else ORIGINAL_ART_FRAME_CONTRACT) if photo_choice['mode'] == 'original' else POST_4_5_FRAME_CONTRACT)
                 frozen['identity_generation'] = int(research.get('identity_generation') or 0)
-            notes = [str(note) for note in ((research.get('caption_image_notes') or {}).get('notes') or [])][:3]
+            written_notes = research.get('caption_image_notes') or {}
+            notes = [str(note) for note in (written_notes.get('notes') or [])][:3]
             if notes:
                 frozen['caption_image_notes'] = notes
+                arrows = [str(item or '') for item in (written_notes.get('arrows') or [])]
+                if len(arrows) >= len(notes):
+                    frozen['caption_image_note_arrows'] = arrows[:len(notes)]
             content_revision = digest(frozen)
             context = {
                 **frozen,

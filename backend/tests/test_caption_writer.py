@@ -105,7 +105,7 @@ async def test_writer_uses_the_next_lite_model_when_one_does_not_answer(first):
         facts=[{"text": "Дом построен в 1905 году."}], place={"city": "Калининград"},
         literal_fragments=[], photo_jpeg=None)
     assert result == {"text": "Подпись.\n\nУлица 1\n#Калининград", "model": "gemini-3.5-flash-lite",
-                      "image_notes": ["Построен в 1905 году"]}
+                      "image_notes": ["Построен в 1905 году"], "image_note_arrows": [""]}
 
 
 @pytest.mark.asyncio
@@ -377,3 +377,18 @@ async def test_concept_is_the_throughline_for_writer_and_editor():
     await GeminiClient._edit_caption(client, {"text": "Текст.\n\nУлица 1\n#Калининград"}, facts=[], lead_fact=None,
                                      concept="красивое здание", owner_request="Напиши историю")
     assert seen["publication_concept"] == "красивое здание" and seen["owner_request"] == "Напиши историю"
+
+
+def test_notes_about_the_past_never_point_at_todays_building(tmp_path):
+    # Owner, 20.10.2026: «Пансион Bellevue со смотровой башней» pointed at the modern Rosgarten tower;
+    # «В стенах извлекают осколки» spoke in the present about the post-war years.
+    from test_mvp_visual import service
+    svc = service(tmp_path)
+    brief = svc._visual_brief({"place_name": "Калининград"}, {
+        "selected_facts": [{"fact_id": "f1", "text": "До войны здесь стоял пансион Bellevue."}],
+        "caption_image_notes": ["До войны здесь стоял пансион Bellevue", "Башенки на фасаде комплекса"],
+        "caption_image_note_arrows": ["", "башенки"]})
+    assert "«До войны здесь стоял пансион Bellevue» — без стрелки" in brief
+    assert "«Башенки на фасаде комплекса» — стрелка к: башенки" in brief
+    assert "прошедшем времени" in GeminiClient.WRITER_RULES and "image_note_arrows" in GeminiClient.EDITOR_RULES
+    assert "никогда не выдавай нынешнее здание за прежнее" in GeminiClient.WRITER_RULES

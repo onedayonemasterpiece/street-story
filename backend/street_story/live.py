@@ -2032,7 +2032,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 rebased = await asyncio.to_thread(self._rebase_over_writer_draft, story_id, args)
                 result = await asyncio.to_thread(functools.partial(
                     self._edit_text, story_id, command_id, {**rebased, "new_text": written["text"]},
-                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or []))
+                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or [],
+                    image_note_arrows=written.get("image_note_arrows") or []))
                 logger.info("street_story_caption_saved %s", canonical({"story_id": story_id,
                     "text_revision": result.get("text_revision"), "rebased": rebased is not args}))
         elif name == "literal_finish":
@@ -5883,7 +5884,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         return {**args, "expected_text_revision": int(row[1])} if composed_by.startswith("writer:") else args
 
     def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,
-                   composed_by: str = "mira_live", image_notes: list[str] | None = None) -> dict[str, Any]:
+                   composed_by: str = "mira_live", image_notes: list[str] | None = None,
+                   image_note_arrows: list[str] | None = None) -> dict[str, Any]:
         expected = int(args.get("expected_text_revision", -1))
         new_text = _bounded_text(args.get("new_text"), 5000, required=True)
         summary = _bounded_text(args.get("change_summary"), 240, required=True)
@@ -5921,7 +5923,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             research["draft_stale_reason"] = None
             research["draft_composed_by"] = composed_by
             # The writer's image notes belong to this text; a text written elsewhere drops them.
-            research["caption_image_notes"] = {"notes": list(image_notes or [])} if image_notes else None
+            research["caption_image_notes"] = ({"notes": list(image_notes), "arrows": list(image_note_arrows or [])}
+                                               if image_notes else None)
             current_fact_ids = eligible_selected_fact_ids(db, story_id)
             research["draft_fact_revisions"] = fact_revision_bundle(
                 db,
