@@ -66,6 +66,8 @@ class Settings:
     # Caption writer: any lite model that answers; quality is comparable, availability is not.
     # Owner decision 20.10.2026: write with Flash first, step down to Flash-Lite on 429/overload.
     gemini_writer_models: tuple[str, ...] = ('gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite')
+    # Owner decision 20.10.2026: GLM 5.3 (OpenCode) writes first, then GPT-6.1 Sol (Codex), then Gemini.
+    external_writers: bool = False
     worker_poll_seconds: float = 1.0
     gemini_api_keys: tuple[SecretStr, ...] = field(default=(), repr=False)
     gemini_key_refs: tuple[str, ...] = ()
@@ -177,6 +179,7 @@ class Settings:
             gemini_web_search_tertiary_model=os.getenv('GEMINI_WEB_SEARCH_TERTIARY_MODEL', 'gemini-3.8-flash'),
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
+            external_writers=os.getenv('STREET_STORY_EXTERNAL_WRITERS', '1').strip() not in {'', '0', 'false'},
             gemini_writer_models=tuple(m.strip() for m in os.getenv('GEMINI_WRITER_MODELS', 'gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',') if m.strip()),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
             rkb_poi_service_token=os.getenv('STREET_STORY_RKB_POI_SERVICE_TOKEN', '').strip() or None,
