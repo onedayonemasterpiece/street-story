@@ -58,7 +58,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         ]
         written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()][:3]
         if written:
-            notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written))
+            notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written)
+                         + ". Кавычки «» здесь только отделяют надписи друг от друга: на картинке их не рисуй.")
             notes.append("Каждая надпись — на светлой бумажной подложке или плашке, контрастно и читаемо на любом фоне "
                          "(небо, кирпич, листва); целиком внутри кадра с отступом от края, ни одна не обрезана.")
             arrows = [str(item or "") for item in context.get("caption_image_note_arrows") or []]

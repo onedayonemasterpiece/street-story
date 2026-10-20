@@ -25,12 +25,12 @@ OPENCODE = os.getenv("STREET_STORY_OPENCODE_BIN", "/home/dev/.opencode/bin/openc
 CODEX = os.getenv("STREET_STORY_CODEX_BIN", "/home/dev/.local/bin/codex")
 GLM_MODEL = "opencode/glm-5.3-flash-free"
 SOL_MODEL = "gpt-6.1-sol"
-GLM_TIMEOUT = 180
+# Owner decision 20.10.2026: GLM is the main writer; Sol only after several GLM failures, because Sol may
+# become rarely available. The free tier either answers in 30-90 s or hangs, so a hung attempt is cut
+# short and GLM is asked again.
+GLM_ATTEMPTS = 3
+GLM_TIMEOUT = 90
 SOL_TIMEOUT = 240
-# After this many GLM failures in a row, Sol writes directly for a while (owner: "if GLM fails several times, Sol").
-GLM_FAILURES_BEFORE_PAUSE = 2
-GLM_PAUSE_SECONDS = 900
-_glm_state = {"failures": 0, "paused_until": 0.0}
 # The status line in the app names a model the author recognises.
 DISPLAY = {GLM_MODEL: "GLM 5.3 Flash", SOL_MODEL: "GPT-6.1 Sol"}
 NO_PHOTO = "\n\nФото дома в этом задании не передаётся: наблюдений по фото не делай, parts_on_photo оставь пустым."
@@ -88,7 +88,9 @@ async def _run(argv: list[str], *, timeout: float, output_file: Path | None = No
 
 
 async def glm(prompt: str) -> dict[str, Any]:
-    return parse_answer(await _run([OPENCODE, "run", "-m", GLM_MODEL, prompt + NO_PHOTO + ANSWER], timeout=GLM_TIMEOUT))
+    # A fixed title: otherwise OpenCode asks a paid model to name the session, and that call fails.
+    return parse_answer(await _run([OPENCODE, "run", "--title", "Street Story caption", "-m", GLM_MODEL,
+                                    prompt + NO_PHOTO + ANSWER], timeout=GLM_TIMEOUT))
 
 
 async def sol(prompt: str, photo_jpeg: bytes | None) -> dict[str, Any]:
@@ -104,22 +106,17 @@ async def sol(prompt: str, photo_jpeg: bytes | None) -> dict[str, Any]:
 
 
 async def write(prompt: str, photo_jpeg: bytes | None) -> tuple[dict[str, Any], str]:
-    """GLM (one attempt; skipped for a while after repeated failures), then Sol. Raises when both fail."""
-    if time.monotonic() >= _glm_state["paused_until"]:
+    """GLM up to GLM_ATTEMPTS times, then Sol. Raises when both are unavailable."""
+    for attempt in range(1, GLM_ATTEMPTS + 1):
         started = time.monotonic()
         try:
             answer = await glm(prompt)
-            _glm_state["failures"] = 0
-            logger.info("street_story_external_writer model=%s outcome=written seconds=%.1f",
-                        GLM_MODEL, time.monotonic() - started)
+            logger.info("street_story_external_writer model=%s attempt=%s outcome=written seconds=%.1f",
+                        GLM_MODEL, attempt, time.monotonic() - started)
             return answer, GLM_MODEL
         except ExternalWriterUnavailable as exc:
-            _glm_state["failures"] += 1
-            if _glm_state["failures"] >= GLM_FAILURES_BEFORE_PAUSE:
-                _glm_state["paused_until"] = time.monotonic() + GLM_PAUSE_SECONDS
-                _glm_state["failures"] = 0
-            logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f paused=%s",
-                           GLM_MODEL, exc, time.monotonic() - started, _glm_state["paused_until"] > time.monotonic())
+            logger.warning("street_story_external_writer model=%s attempt=%s outcome=%s seconds=%.1f",
+                           GLM_MODEL, attempt, exc, time.monotonic() - started)
     started = time.monotonic()
     try:
         answer = await sol(prompt, photo_jpeg)
