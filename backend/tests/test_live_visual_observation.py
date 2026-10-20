@@ -173,6 +173,14 @@ async def test_wrong_default_on_existing_non_selected_image_cannot_regenerate(tm
         return {'receipts': [{'operation_id': operation, 'state': 'needs_selection'}]}
 
     service.providers.vibepublish.status = status
-    with pytest.raises(ConflictError, match='Import and review'):
-        await adapter.execute_tool(session, {'name': 'generate_visual', 'id': 'wrong-default', 'args': {}})
+    observed = []
+
+    async def observe(story_id, key, body):
+        observed.append(body)
+        return {'observed': True}
+
+    # Owner test 20.10.2026: a plain request imports the ready result itself instead of telling Mira to.
+    service._observe_existing_visual = observe
+    await adapter.execute_tool(session, {'name': 'generate_visual', 'id': 'wrong-default', 'args': {}})
+    assert observed and observed[0]['observe_existing_visual'] is True
     assert visual_snapshot(service, session.resource_id) == before
