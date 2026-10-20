@@ -174,9 +174,25 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 with self.store.connection() as db:
                     current = self._story_row(db, story_id)
                     rejected = self._closed_rejected_frame(db, current, previous, observed)
-                if not rejected:
+                composition = any(body.get(field) is not None for field in ('visual_copy', 'visual_layout', 'preserve_source_frame'))
+                if not rejected and composition:
                     raise ConflictError('visual_observation_required',
                         'Import and review the existing result before requesting another generation.')
+                if not rejected:
+                    # Owner test 20.10.2026: Mira did not find the observation flag and called generation
+                    # five times in a row while the author waited in silence. The server now imports a
+                    # ready result itself; if the story changed since, that result is stale and a new
+                    # generation goes ahead.
+                    try:
+                        return await self._observe_existing_visual(story_id, key, {
+                            'observe_existing_visual': True,
+                            'selected_fact_ids': body.get('selected_fact_ids', []),
+                            **({'visual_instruction': body['visual_instruction']} if body.get('visual_instruction') else {})})
+                    except ConflictError as exc:
+                        if exc.code != 'visual_observation_input_changed':
+                            raise
+                        logging.getLogger('uvicorn.error').info(
+                            'street_story_visual_stale_result_replaced story_id=%s operation_id=%s', story_id, operation)
             # A closed operation that produced no image (a failed image task) allows
             # a new explicit author request; it is a new operation, not a resend.
             closed_without_image = (observed.get('state') in {'failed', 'cancelled', 'blocked'}
