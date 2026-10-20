@@ -26,10 +26,12 @@ CODEX = os.getenv("STREET_STORY_CODEX_BIN", "/home/dev/.local/bin/codex")
 GLM_MODEL = "opencode/glm-5.3-flash-free"
 SOL_MODEL = "gpt-6.1-sol"
 # Owner decision 20.10.2026: GLM is the main writer; Sol only after several GLM failures, because Sol may
-# become rarely available. The free tier either answers in 30-90 s or hangs, so a hung attempt is cut
-# short and GLM is asked again.
+# become rarely available. At its default reasoning depth GLM thought for ~3 minutes (105k characters)
+# and often returned no text; with reasoning variant "low" it writes the same post in 13-25 s. A thinking
+# model is never cut short: the time limit is generous and only catches a request that never answers.
+GLM_VARIANT = "low"
 GLM_ATTEMPTS = 3
-GLM_TIMEOUT = 90
+GLM_TIMEOUT = 240
 SOL_TIMEOUT = 240
 # The status line in the app names a model the author recognises.
 DISPLAY = {GLM_MODEL: "GLM 5.3 Flash", SOL_MODEL: "GPT-6.1 Sol"}
@@ -89,8 +91,8 @@ async def _run(argv: list[str], *, timeout: float, output_file: Path | None = No
 
 async def glm(prompt: str) -> dict[str, Any]:
     # A fixed title: otherwise OpenCode asks a paid model to name the session, and that call fails.
-    return parse_answer(await _run([OPENCODE, "run", "--title", "Street Story caption", "-m", GLM_MODEL,
-                                    prompt + NO_PHOTO + ANSWER], timeout=GLM_TIMEOUT))
+    return parse_answer(await _run([OPENCODE, "run", "--title", "Street Story caption", "--variant", GLM_VARIANT,
+                                    "-m", GLM_MODEL, prompt + NO_PHOTO + ANSWER], timeout=GLM_TIMEOUT))
 
 
 async def sol(prompt: str, photo_jpeg: bytes | None) -> dict[str, Any]:
