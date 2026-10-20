@@ -90,6 +90,7 @@ class MainActivity : Activity() {
     private var updatingPhotoFormat = false
     private var previewImage: ImageView? = null
     private var previewText: TextView? = null
+    private var draftStatusView: TextView? = null
     private var literalBanner: TextView? = null
     private var lastChangeView: TextView? = null
     private var chatBox: LinearLayout? = null
@@ -589,6 +590,13 @@ class MainActivity : Activity() {
         }
         column.addView(literalBanner, blockMargins(top = 12))
 
+        draftStatusView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+            setPadding(dp(4), dp(10), dp(4), 0)
+            visibility = View.GONE
+            contentDescription = "draft-status"
+        }
+        chatBox?.addView(draftStatusView)
+
         previewText = label("", 16, INK, Typeface.DEFAULT).apply {
             setLineSpacing(dp(3).toFloat(), 1.06f)
             background = rounded(PAPER, 16)
@@ -740,6 +748,11 @@ class MainActivity : Activity() {
         }
 
         val projection = research.get(id)
+        draftStatusView?.apply {
+            val status = FactPresentation.draftStatus(projection)
+            text = status ?: ""
+            visibility = if (status == null) View.GONE else View.VISIBLE
+        }
         photoRecoveryButton?.apply {
             val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE ||
                 (projection?.photoSha256 == story.photoSha256 && projection?.sourceAvailable == false && !PhotoAssets.available(story.photoPath))

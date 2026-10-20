@@ -51,6 +51,21 @@ internal object FactPresentation {
         }
     }
 
+    /** Owner request 20.10.2026: whether the text is being written and which model wrote it. */
+    fun draftStatus(projection: ResearchProjectionSnapshot?): String? {
+        projection ?: return null
+        if (projection.draftWriting) return "Пишу текст…"
+        if (projection.draftWritingFailed) return "Текст написать не удалось · попросите Миру ещё раз"
+        val composed = projection.draftComposedBy ?: return null
+        if (!composed.startsWith("writer:")) return null
+        return "Текст написала модель " + modelName(composed.removePrefix("writer:"))
+    }
+
+    fun modelName(model: String): String {
+        val match = Regex("""gemini-(\d+(?:\.\d+)?)-flash(-lite)?""").find(model) ?: return model
+        return "Gemini " + (if (match.groupValues[2].isNotEmpty()) "Flash-Lite " else "Flash ") + match.groupValues[1]
+    }
+
     /** The post's opening fact, shown above all facts; only a verified fact qualifies. */
     fun strongest(facts: List<FactSnapshot>): FactSnapshot? = facts.firstOrNull { it.strongest && it.evidenceSupported }
 

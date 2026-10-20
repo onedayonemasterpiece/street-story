@@ -75,6 +75,9 @@ class StoryWire {
     @SerializedName("research_outcome") var researchOutcome: ResearchOutcomeWire? = null
     @SerializedName("identity_progress") var identityProgress: IdentityProgressWire? = null
     @SerializedName("publication_concept") var publicationConcept: String? = null
+    @SerializedName("draft_writing") var draftWriting: DraftWritingWire? = null
+    @SerializedName("draft_composed_by") var draftComposedBy: String? = null
+    @SerializedName("draft_writing_last") var draftWritingLast: DraftWritingWire? = null
     var publication: PublicationWire? = null
     var id: String = ""
     @SerializedName("client_story_id") var clientStoryId: String = ""
@@ -96,6 +99,15 @@ class StoryWire {
     @SerializedName("source_count") var sourceCount: Int = 0
     @SerializedName("research_revision") var researchRevision: String? = null
     @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
+}
+
+/** The caption writer's background run (owner request 20.10.2026: predictable status and the model used). */
+class DraftWritingWire {
+    @SerializedName("started_at") var startedAt: Double? = null
+    @SerializedName("finished_at") var finishedAt: Double? = null
+    var ok: Boolean? = null
+    var model: String? = null
+    var error: String? = null
 }
 
 class ResearchOutcomeWire {
