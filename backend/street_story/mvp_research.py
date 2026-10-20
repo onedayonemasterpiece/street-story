@@ -1736,29 +1736,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         ]
         preserve_draft = (is_refinement and previous_identity is not None
                           and previous_identity.get("candidate_id") == identity.get("candidate_id"))
-        if preserve_draft:
-            # Research adds evidence. The author controls when an existing
-            # publication draft/concept is recomposed from the expanded pool.
-            draft = story.get("draft_text")
-            publication_concept = prior.get("publication_concept")
-        else:
-            compose = getattr(self.providers.gemini, "compose_publication", None)
-            if not callable(compose):
-                raise PermanentProviderError("Gemini publication composition capability is unavailable")
-            composition = await compose(
-                place_name=place_name,
-                concept=str(prior.get("publication_concept") or ""),
-                author_note=author_note,
-                facts=selected_for_draft,
-                photo_capture=self._photo_capture_context(story_id),
-            )
-            draft = str(composition.get("draft_text") or "").strip()
-            if not draft:
-                raise PermanentProviderError("Gemini publication composition returned empty draft")
-            publication_concept = (
-                str(prior.get("publication_concept") or "").strip()
-                or str(composition.get("concept") or "").strip()
-            )
+        # Owner decision 20.10.2026: text is written only on the author's explicit request, by the caption
+        # writer through Mira. Research never composes a draft by itself (the old composer wrote one here with
+        # its own older rules). A new house starts without a draft; the same house keeps the author's draft.
+        draft = story.get("draft_text") if preserve_draft else None
+        publication_concept = str(prior.get("publication_concept") or "")
         image_notes = "\n".join(str(fact["text"]) for fact in selected_for_draft[:6])
         if place_name and image_notes:
             image_notes = f"{place_name}:\n{image_notes}"
@@ -1842,7 +1824,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "source_count": len(source_urls),
                 "author_note": author_note,
                 "publication_concept": publication_concept if preserve_draft else publication_concept[:1200] or None,
-                "draft_composed_by": prior.get("draft_composed_by") if preserve_draft else "gemini_model",
+                "draft_composed_by": prior.get("draft_composed_by") if preserve_draft else None,
                 "draft_needs_refresh": prior.get("draft_needs_refresh", False) if preserve_draft else False,
                 "draft_stale_reason": prior.get("draft_stale_reason") if preserve_draft else None,
                 "draft_fact_revisions": draft_fact_revisions,

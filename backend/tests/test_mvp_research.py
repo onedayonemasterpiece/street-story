@@ -514,7 +514,8 @@ async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_pat
     }]
     assert unsupported[0]["selected"] is False
     assert unsupported[0]["text"] not in (result["draft_text"] or "")
-    assert "\n\n" in (result["draft_text"] or "")
+    # Owner decision 20.10.2026: research never writes a draft; text is written only on request.
+    assert not result["draft_text"]
 
 
 @pytest.mark.asyncio
