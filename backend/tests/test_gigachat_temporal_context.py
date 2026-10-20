@@ -33,7 +33,8 @@ async def test_actual_giga_v3_final_preserves_frozen_date_source_and_bad_known_i
         assert supplied['context']['review_as_of_date_utc'] == '2026-10-13'
         assert supplied['known_fact_inventory'] == [known]
         assert 'context.review_as_of_date_utc' in system
-        assert 'date explicitly in fact.text' in system
+        # Owner decision 20.10.2026: the state's date stays in fact.text, the source's name never does.
+        assert 'date in fact.text as the time of the state' in system and 'never names its source' in system
         assert 'Resolve relative dates' in system and 'source publication date' in system
         assert 'unchanged text and ID as nonpositive' in system
         assert 'new claim with existing_fact_id=""' in system
