@@ -476,6 +476,10 @@ class StreetStoryService:
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
             "facts": facts, "destinations": [],
             "suggested_selection": [str(fid) for fid in research.get("suggested_selection") or []],
+            # Owner request 20.10.2026: a predictable writing status and the model that wrote the text.
+            "draft_writing": research.get("draft_writing"),
+            "draft_composed_by": research.get("draft_composed_by"),
+            "draft_writing_last": research.get("draft_writing_last"),
             "strongest_fact": ({key: (research.get("strongest_fact") or {}).get(key) for key in
                 ("fact_id", "reason", "source", "agrees_with_researcher", "researcher")}
                 if any(f.get("strongest") for f in facts) else None),

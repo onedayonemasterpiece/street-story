@@ -3822,8 +3822,10 @@ class GeminiClient:
             except GeminiUnavailable as exc:
                 if exc.retry_at is not None:
                     retry_at.append(exc.retry_at)
-                skipped[model] = time.time() + LITE_OVERLOAD_SKIP_SECONDS
-                logging.getLogger(__name__).info("street_story_lite_model_skipped model=%s seconds=%s", model, LITE_OVERLOAD_SKIP_SECONDS)
+                # A daily quota stays exhausted until its reset; skip until then, not just for a few minutes.
+                skipped[model] = max(time.time() + LITE_OVERLOAD_SKIP_SECONDS, float(exc.retry_at or 0))
+                logging.getLogger(__name__).info("street_story_lite_model_skipped model=%s seconds=%s", model,
+                                                 round(skipped[model] - time.time()))
                 continue
             except MalformedProviderResponse:
                 continue
@@ -3893,41 +3895,24 @@ class GeminiClient:
             max_output_tokens=8192,
         )
 
-        async def call(key, timeout, *, model=None, quota=None):
-            response = await self._generate(key, timeout, list(contents), config,
-                                            operation="grounded_research", model=model, quota=quota)
-            try:
-                payload = json.loads(response.text or "{}")
-                text = str(payload.get("text") or "").strip()
-                if not text or len(text) > 1100:
-                    raise ValueError
-                notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
-                arrows = _note_arrows(payload, notes)
-            except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
-                raise MalformedProviderResponse("gemini:malformed_caption") from None
-            return {"text": text, "model": str(model or ""), "image_notes": notes, "image_note_arrows": arrows}
+        def parse(raw_text, model):
+            payload = json.loads(raw_text or "{}")
+            text = str(payload.get("text") or "").strip()
+            if not text or len(text) > 1100:
+                raise ValueError
+            notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
+            return {"text": text, "model": str(model or ""), "image_notes": notes,
+                    "image_note_arrows": _note_arrows(payload, notes)}
 
-        retry_at: list[float] = []
-        for model, _pool, quota, executor in self.writer_routes:
-            async def routed_call(key, timeout, *, _model=model, _quota=quota):
-                return await call(key, timeout, model=_model, quota=_quota)
-            try:
-                written = await executor.execute("grounded_research", routed_call)
-            except GeminiUnavailable as exc:
-                if exc.retry_at is not None:
-                    retry_at.append(exc.retry_at)
-                continue
-            except MalformedProviderResponse:
-                continue
-            except PermanentProviderError as exc:
-                if str(exc) == "gemini:unsupported_model":
-                    continue
-                raise
-            if getattr(self, "EDITOR_RULES", None) is not None:
-                written = await GeminiClient._edit_caption(self, written, facts=facts, lead_fact=lead_fact,
-                                                           concept=concept, owner_request=owner_request)
-            return {**written, "text": _capitalized_hashtags(written["text"])}
-        raise GeminiUnavailable(min(retry_at) if retry_at else time.time() + 60, "all_caption_writer_models_unavailable")
+        # The same ladder as every writer step: an unavailable or out-of-quota model is skipped until it can answer.
+        try:
+            written = await GeminiClient._lite_chain(self, contents, config, parse)
+        except GeminiUnavailable as exc:
+            raise GeminiUnavailable(exc.retry_at, "all_caption_writer_models_unavailable") from None
+        if getattr(self, "EDITOR_RULES", None) is not None:
+            written = await GeminiClient._edit_caption(self, written, facts=facts, lead_fact=lead_fact,
+                                                       concept=concept, owner_request=owner_request)
+        return {**written, "text": _capitalized_hashtags(written["text"])}
 
     async def _edit_caption(self, written: dict[str, Any], *, facts: list[dict[str, Any]],
                             lead_fact: str | None, concept: str = "", owner_request: str = "") -> dict[str, Any]:

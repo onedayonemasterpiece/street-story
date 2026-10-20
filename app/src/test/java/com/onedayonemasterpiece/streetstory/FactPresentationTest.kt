@@ -21,6 +21,17 @@ class FactPresentationTest {
         assertEquals(null, FactPresentation.researchOutcomeNotice(projection, "other-source"))
     }
 
+    @Test fun draft_status_shows_writing_and_the_model_that_wrote_the_text() {
+        val base = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(), 0, null, emptyList())
+        assertEquals("Пишу текст…", FactPresentation.draftStatus(base.copy(draftWriting = true)))
+        assertEquals("Текст написала модель Gemini Flash-Lite 3.1",
+            FactPresentation.draftStatus(base.copy(draftComposedBy = "writer:gemini-3.1-flash-lite")))
+        assertEquals("Текст написала модель Gemini Flash 3.5",
+            FactPresentation.draftStatus(base.copy(draftComposedBy = "writer:gemini-3.5-flash")))
+        assertEquals(null, FactPresentation.draftStatus(base.copy(draftComposedBy = "mira_live")))
+        assertTrue(FactPresentation.draftStatus(base.copy(draftWritingFailed = true))!!.startsWith("Текст написать не удалось"))
+    }
+
     @Test fun partial_run_with_enough_facts_reads_as_ready() {
         val outcome = ResearchOutcomeWire().apply {
             this.outcome = "useful_partial"; reason = "research_agent_original_pending"; eligibleCount = 34

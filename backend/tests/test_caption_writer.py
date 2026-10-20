@@ -32,40 +32,55 @@ def prepared(tmp_path):
 
 @pytest.mark.asyncio
 async def test_writing_request_is_composed_by_the_writer_and_gets_the_server_footer(tmp_path):
+    # Owner test 20.10.2026: the writer runs in the background; the voice turn returns at once.
     svc, adapter, session = prepared(tmp_path)
-    calls = []
+    calls, written_to_mira = [], []
+    adapter.write = lambda _session, message: written_to_mira.append(message)
 
     async def write_caption(**kwargs):
         calls.append(kwargs)
+        with svc.store.connection() as db:  # the app sees that the text is being written
+            assert json.loads(svc._story_row(db, session.resource_id)["research_json"])["draft_writing"]
         return {"text": "Новая подпись о доме.\n\nУлица 1\n#Калининград", "model": "gemini-3.5-flash-lite"}
 
     svc.providers.gemini.write_caption = write_caption
-    edited = await adapter.execute_tool(session, {"name": "edit_text", "id": "write-1", "args": {
+    started = await adapter.execute_tool(session, {"name": "edit_text", "id": "write-1", "args": {
         "expected_text_revision": 0, "change_summary": "Переписано", "writing_request": "Перепиши подпись."}})
-    assert edited["draft_text"].startswith("Новая подпись о доме.\n\nУлица 1\n#Калининград\n\n[ЯндексКарты](")
+    assert started["writing"] == "started"
+    again = await adapter.execute_tool(session, {"name": "edit_text", "id": "write-1b", "args": {
+        "expected_text_revision": 0, "change_summary": "Переписано", "writing_request": "Перепиши подпись."}})
+    assert again["writing"] == "in_progress"
+    await adapter._writing_tasks[session.resource_id]
+    story = svc.story(session.resource_id)
+    assert story["draft_text"].startswith("Новая подпись о доме.\n\nУлица 1\n#Калининград\n\n[ЯндексКарты](")
+    assert story["draft_writing"] is None and story["draft_composed_by"] == "writer:gemini-3.5-flash-lite"
+    assert story["draft_writing_last"]["ok"] is True and story["draft_writing_last"]["model"] == "gemini-3.5-flash-lite"
     request = calls[0]
+    assert len(calls) == 1
     assert request["owner_request"] == "Перепиши подпись."
     assert request["current_text"].startswith("Старый текст.")
     assert request["photo_jpeg"]  # the writer sees the photo to tell visible from unseen parts
-    with svc.store.connection() as db:
-        research = json.loads(svc._story_row(db, session.resource_id)["research_json"])
-    assert research["draft_composed_by"] == "writer:gemini-3.5-flash-lite"
+    assert "Текст готов" in written_to_mira[-1]["text"]
 
 
 @pytest.mark.asyncio
 async def test_unavailable_writer_leaves_the_text_and_tells_mira_to_write_it_herself(tmp_path):
     svc, adapter, session = prepared(tmp_path)
+    written_to_mira = []
+    adapter.write = lambda _session, message: written_to_mira.append(message)
 
     async def write_caption(**kwargs):
         raise GeminiUnavailable(0, "all_caption_writer_models_unavailable")
 
     svc.providers.gemini.write_caption = write_caption
-    with pytest.raises(Exception) as failure:
-        await adapter.execute_tool(session, {"name": "edit_text", "id": "write-2", "args": {
-            "expected_text_revision": 0, "change_summary": "Переписано", "writing_request": "Перепиши подпись."}})
-    assert getattr(failure.value, "code", None) == "caption_writer_unavailable"
-    with svc.store.connection() as db:
-        assert svc._story_row(db, session.resource_id)["draft_text"].startswith("Старый текст.")
+    await adapter.execute_tool(session, {"name": "edit_text", "id": "write-2", "args": {
+        "expected_text_revision": 0, "change_summary": "Переписано", "writing_request": "Перепиши подпись."}})
+    await adapter._writing_tasks[session.resource_id]
+    story = svc.story(session.resource_id)
+    assert story["draft_text"].startswith("Старый текст.")
+    assert story["draft_writing"] is None
+    assert story["draft_writing_last"] == {**story["draft_writing_last"], "ok": False, "error": "caption_writer_unavailable"}
+    assert "не удалось" in written_to_mira[-1]["text"]
     exact = await adapter.execute_tool(session, {"name": "edit_text", "id": "write-3", "args": {
         "expected_text_revision": 0, "change_summary": "Сама", "new_text": "Текст Миры.\n\nУлица 1\n#Калининград"}})
     assert exact["draft_text"].startswith("Текст Миры.")

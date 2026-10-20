@@ -1019,10 +1019,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'city story does not override a later explicit instruction to save only the choice first. '
                 'When the owner requests saving or changing an angle, use set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
-                'change selection. The caption writer composes publication text: call edit_text with '
-                'writing_request carrying the author\'s request and angle, check the returned draft_text against '
-                'these rules and the author\'s request, and if it breaks one call edit_text again with a precise '
-                'writing_request. Use new_text only for exact author wording or after caption_writer_unavailable. '
+                'change selection. Write text only when the author explicitly asks for it; a concept is not '
+                'such a request. The caption writer composes text in the background: call edit_text once with '
+                'writing_request carrying the author\'s request and angle, tell the author briefly that the text is '
+                'being written; it appears in the draft and you get a note when it is ready. Do not call edit_text '
+                'again while it is being written. Use new_text only for exact author wording or after caption_writer_unavailable. '
                 'read_topic shows suggested_selection, the post\'s facts proposed after research: for a general '
                 'request to choose facts for the post keep all of them and add what the author asks; never shrink it. '
                 'read_topic shows strongest_fact: the post opens with it and the author sees it above all facts. '
@@ -2028,14 +2029,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if str(args.get("new_text") or "").strip():
                 result = await asyncio.to_thread(self._edit_text, story_id, command_id, args)
             else:
-                written = await self._write_caption(story_id, args)
-                rebased = await asyncio.to_thread(self._rebase_over_writer_draft, story_id, args)
-                result = await asyncio.to_thread(functools.partial(
-                    self._edit_text, story_id, command_id, {**rebased, "new_text": written["text"]},
-                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or [],
-                    image_note_arrows=written.get("image_note_arrows") or []))
-                logger.info("street_story_caption_saved %s", canonical({"story_id": story_id,
-                    "text_revision": result.get("text_revision"), "rebased": rebased is not args}))
+                result = await self._start_background_writing(session, story_id, command_id, args)
         elif name == "literal_finish":
             result = self._literal_finish(session, command_id)
         elif name == "undo":
@@ -5789,8 +5783,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ids = set(eligible_selected_fact_ids(db, story_id))
             story, editor = self._editor_row(db, story_id)
             literals = [str(item.get("text") or "") for item in self._literal_spans(editor["literal_json"]) if item.get("text")]
-        state = self._topic_state(story_id)
-        context = self._compact_context(state)
+        state = await asyncio.to_thread(self._topic_state, story_id)
+        context = await asyncio.to_thread(self._compact_context, state)
         facts = [{"text": str(item.get("text") or ""),
                   **({"from_visitor_reviews": True} if item.get("from_visitor_reviews") else {})}
                  for item in state["story"].get("facts", [])
@@ -5808,7 +5802,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if not place.get("city"):
             from .map_links import city_hashtag
             place["city"] = (city_hashtag(json.loads(story["research_json"] or "{}")) or "").lstrip("#") or None
-        snapshot = self._visual_snapshot(story_id, selected_format=False)
+        snapshot = await asyncio.to_thread(functools.partial(self._visual_snapshot, story_id, selected_format=False))
         lead = await self._strongest_hook(story_id, state, ids, snapshot)
         if lead is not None:
             if lead["fact_id"] not in ids:
@@ -5867,6 +5861,67 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         logger.info("street_story_strongest_lead %s", canonical({"story_id": story_id, "fact_id": lead["fact_id"],
             "source": record.get("source"), "added_to_selection": lead["fact_id"] not in selected_ids}))
         return lead
+
+    async def _start_background_writing(self, session, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """The writer composes in the background; the voice turn returns at once.
+
+        Owner test 20.10.2026: writing took 1.5-3.5 minutes while Gemini Flash was out of quota, the voice
+        socket dropped about 40 s into each wait, and Mira started the writer again after every reconnect
+        (four texts, none seen in the conversation). The draft is saved durably; the app shows the status.
+        """
+        _bounded_text(args.get("writing_request"), 800, required=True)
+        tasks = self.__dict__.setdefault("_writing_tasks", {})
+        running = tasks.get(story_id)
+        if running is not None and not running.done():
+            return {"writing": "in_progress", "instruction": "The text is already being written. Tell the author it "
+                    "will appear in the draft shortly; do not call edit_text again."}
+        await asyncio.to_thread(self._set_draft_writing, story_id, {"started_at": self.service.store.now(),
+                                                                      "command_id": command_id})
+
+        async def write() -> None:
+            outcome: dict[str, Any] = {"ok": False}
+            try:
+                written = await self._write_caption(story_id, args)
+                rebased = await asyncio.to_thread(self._rebase_over_writer_draft, story_id, args)
+                saved = await asyncio.to_thread(functools.partial(
+                    self._edit_text, story_id, command_id, {**rebased, "new_text": written["text"]},
+                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or [],
+                    image_note_arrows=written.get("image_note_arrows") or []))
+                outcome = {"ok": True, "model": written["model"], "text_revision": saved.get("text_revision")}
+                logger.info("street_story_caption_saved %s", canonical({"story_id": story_id,
+                    "text_revision": saved.get("text_revision"), "rebased": rebased is not args}))
+            except Exception as exc:  # the author sees the failure; the previous draft stays
+                outcome = {"ok": False, "error": getattr(exc, "code", type(exc).__name__)}
+                logger.warning("street_story_caption_background_failed %s", canonical({"story_id": story_id, **outcome}))
+            finally:
+                await asyncio.to_thread(self._set_draft_writing, story_id, None,
+                                        {**outcome, "finished_at": self.service.store.now()})
+            if getattr(session, "closed", False):
+                return
+            try:
+                state = await asyncio.to_thread(lambda: self._compact_context(self._topic_state(story_id)))
+                self.emit(session, {"type": "product_state", "state": state})
+                note = ("Текст готов и показан автору в черновике. Коротко скажи автору, что текст готов."
+                        if outcome["ok"] else "Текст написать не удалось; прежний черновик сохранён. Скажи автору.")
+                self.write(session, {"type": "text", "text": "[Сообщение приложения] " + note})
+            except Exception:  # the session ended meanwhile; the app reads the saved draft
+                pass
+
+        tasks[story_id] = asyncio.create_task(write(), name="street-story-writer-" + story_id)
+        return {"writing": "started", "instruction": "The caption writer is composing the text in the background "
+                "(usually under a minute). Tell the author briefly that you are writing it; it will appear in the "
+                "draft and you will get a note. Do not call edit_text again for this request."}
+
+    def _set_draft_writing(self, story_id: str, writing: dict[str, Any] | None,
+                           last: dict[str, Any] | None = None) -> None:
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            research["draft_writing"] = writing
+            if last is not None:
+                research["draft_writing_last"] = last
+            db.execute("UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                       (canonical(research), self.service.store.now(), story_id))
 
     def _rebase_over_writer_draft(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
         """A newer writer composition replaces an older writer composition.
