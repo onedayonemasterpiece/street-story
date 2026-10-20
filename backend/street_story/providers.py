@@ -3822,7 +3822,7 @@ class GeminiClient:
                 except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
                     raise MalformedProviderResponse("gemini:malformed_lite_answer") from None
             try:
-                answer = await executor.execute("grounded_research", routed_call)
+                answer = await executor.execute("grounded_research", routed_call, model_overload_limit=2)
                 skipped.pop(model, None)
                 return answer
             except GeminiUnavailable as exc:
