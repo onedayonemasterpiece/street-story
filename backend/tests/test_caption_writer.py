@@ -358,3 +358,22 @@ async def test_overloaded_lite_model_is_skipped_on_the_next_step():
     client.writer_routes[1][3].execute = first_only
     assert await GeminiClient._lite_chain(client, ["x"], None, parse) == "gemini-3.5-flash-lite"
     assert order == ["3.5"]
+
+
+@pytest.mark.asyncio
+async def test_concept_is_the_throughline_for_writer_and_editor():
+    # Owner, 20.10.2026: none of «красивый, фешенебельный, старый район Хуфен» reached the post —
+    # the writer had no rule about the concept and the editor never saw it.
+    assert "publication_concept — замысел автора" in GeminiClient.WRITER_RULES
+    assert "голос автора" in GeminiClient.WRITER_RULES and "голос автора" in GeminiClient.EDITOR_RULES
+    assert "перечень" in GeminiClient.WRITER_RULES and "правишь точечно" in GeminiClient.EDITOR_RULES
+    seen = {}
+
+    async def lite_chain(contents, _config, parse):
+        seen.update(json.loads(contents[0].split("\n\n", 1)[1]))
+        return parse(json.dumps({"issues": [], "text": "Рассказ.", "image_notes": []}), "lite")
+
+    client = SimpleNamespace(EDITOR_RULES=GeminiClient.EDITOR_RULES, EDITOR_SCHEMA=GeminiClient.EDITOR_SCHEMA, _lite_chain=lite_chain)
+    await GeminiClient._edit_caption(client, {"text": "Текст.\n\nУлица 1\n#Калининград"}, facts=[], lead_fact=None,
+                                     concept="красивое здание", owner_request="Напиши историю")
+    assert seen["publication_concept"] == "красивое здание" and seen["owner_request"] == "Напиши историю"
