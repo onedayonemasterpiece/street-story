@@ -368,7 +368,7 @@ async def test_model_detector_output_is_bounded_to_known_pairs():
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
 
     class PassingExecutor:
-        async def execute(self, _operation, call):
+        async def execute(self, _operation, call, **_options):
             return await call("test-key", 2)
 
     fake = SimpleNamespace(

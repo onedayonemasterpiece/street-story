@@ -90,7 +90,7 @@ class Route:
     def __init__(self, outcome):
         self.outcome = outcome
 
-    async def execute(self, _operation, call):
+    async def execute(self, _operation, call, **_options):
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return await call("key", 30)
@@ -367,7 +367,7 @@ async def test_overloaded_lite_model_is_skipped_on_the_next_step():
     order = []
     client.writer_routes[0][3].execute = None  # an attempt on the skipped model would fail loudly
 
-    async def first_only(_op, call):
+    async def first_only(_op, call, **_options):
         order.append("3.5")
         return await call("key", 1)
     client.writer_routes[1][3].execute = first_only
@@ -407,3 +407,52 @@ def test_notes_about_the_past_never_point_at_todays_building(tmp_path):
     assert "«Башенки на фасаде комплекса» — стрелка к: башенки" in brief
     assert "прошедшем времени" in GeminiClient.WRITER_RULES and "image_note_arrows" in GeminiClient.EDITOR_RULES
     assert "никогда не выдавай нынешнее здание за прежнее" in GeminiClient.WRITER_RULES
+
+
+@pytest.mark.asyncio
+async def test_model_wide_overload_moves_to_the_next_model_after_two_keys():
+    # Owner test 20.10.2026: Google 503/timeouts were retried on every key of a model (~20 s each).
+    from street_story.gemini import GeminiExecutor
+    attempts = []
+
+    class Pool:
+        keys = [SimpleNamespace(get_secret_value=lambda i=i: f"k{i}") for i in range(6)]
+        ids = [f"id{i}" for i in range(6)]
+        policy = SimpleNamespace(max_failover_keys=6, attempt_timeout=120, call_timeout=20)
+
+        def reserve(self, _op, attempted, _timeout):
+            return next((i for i in self.ids if i not in attempted), None)
+
+        def finish(self, *_args):
+            pass
+
+        def event(self, *_args, **_kwargs):
+            pass
+
+        def clock(self):
+            return 0.0
+
+        def unavailable(self, _op):
+            return GeminiUnavailable(0, "all_keys_unavailable")
+
+        def all_enabled_keys_blocked_for_model(self, _op):
+            return False
+
+    class Overloaded(Exception):
+        code = 503
+
+    async def call(key, _timeout):
+        attempts.append(key)
+        raise Overloaded("503 UNAVAILABLE")
+
+    executor = GeminiExecutor(Pool())
+    import street_story.gemini as gemini_module
+    original = gemini_module.classify_error
+    gemini_module.classify_error = lambda exc, now: SimpleNamespace(category="provider_overload", code=503, retry_after=None,
+                                                                    permanent=False, disable_key=False, block_model=False)
+    try:
+        with pytest.raises(GeminiUnavailable):
+            await executor.execute("grounded_research", call, model_overload_limit=2)
+    finally:
+        gemini_module.classify_error = original
+    assert attempts == ["k0", "k1"]

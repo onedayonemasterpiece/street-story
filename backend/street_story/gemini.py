@@ -260,9 +260,11 @@ class GeminiExecutor:
 
     async def execute(self, operation: str, call: Callable[[str, float], Awaitable[T]],
                       *, call_timeout: float | None = None,
-                      can_failover: Callable[[], bool] | None = None) -> T:
+                      can_failover: Callable[[], bool] | None = None,
+                      model_overload_limit: int | None = None) -> T:
         started = time.monotonic()
         attempted: set[str] = set()
+        overloaded = 0
         while len(attempted) < min(len(self.pool.keys), self.pool.policy.max_failover_keys):
             remaining = self.pool.policy.attempt_timeout - (time.monotonic()-started)
             if remaining <= 0:
@@ -300,6 +302,12 @@ class GeminiExecutor:
                     # The adapter owns the addressed request's send boundary.
                     # Do not reserve or penalize another key after an outcome
                     # that must be recovered through the original request.
+                    raise self.pool.unavailable(operation) from None
+                # Google overload (503) and timeouts hit the whole model, not one key: a caller with another
+                # model to fall back to stops after a few such answers instead of waiting on every key
+                # (owner test 20.10.2026: ~20 s per key across six keys, twice, before a text was written).
+                overloaded = overloaded + 1 if failure.category in {'provider_overload', 'timeout'} else 0
+                if model_overload_limit is not None and overloaded >= model_overload_limit:
                     raise self.pool.unavailable(operation) from None
                 continue
             self.pool.finish(key_id, operation, None)
