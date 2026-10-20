@@ -18,13 +18,16 @@ def test_answer_is_found_inside_client_banners():
 
 
 @pytest.mark.asyncio
-async def test_glm_then_sol_and_glm_paused_after_repeated_failures(monkeypatch):
-    # Owner decision 20.10.2026: GLM 5.3 first; after two failures GPT-6.1 Sol; then Gemini.
+async def test_glm_three_times_then_sol_and_glm_stays_first(monkeypatch):
+    # Owner decision 20.10.2026: GLM is the main writer; Sol only after several GLM failures.
     calls = []
+    outcomes = iter(["fail", "fail", "fail", "fail", "ok"])
 
     async def glm(prompt):
         calls.append("glm")
-        raise external_writers.ExternalWriterUnavailable("writer_timeout")
+        if next(outcomes) == "fail":
+            raise external_writers.ExternalWriterUnavailable("writer_timeout")
+        return json.loads(ANSWER)
 
     async def sol(prompt, photo):
         calls.append("sol")
@@ -32,12 +35,9 @@ async def test_glm_then_sol_and_glm_paused_after_repeated_failures(monkeypatch):
 
     monkeypatch.setattr(external_writers, "glm", glm)
     monkeypatch.setattr(external_writers, "sol", sol)
-    monkeypatch.setattr(external_writers, "_glm_state", {"failures": 0, "paused_until": 0.0})
-    for _ in range(3):
-        answer, model = await external_writers.write("prompt", b"jpeg")
-        assert model == external_writers.SOL_MODEL
-    # One GLM attempt per text; after two failures in a row Sol writes directly for a while.
-    assert calls == ["glm", "sol", "glm", "sol", "sol"]
+    assert (await external_writers.write("prompt", b"jpeg"))[1] == external_writers.SOL_MODEL
+    assert (await external_writers.write("prompt", b"jpeg"))[1] == external_writers.GLM_MODEL
+    assert calls == ["glm", "glm", "glm", "sol", "glm", "glm"]
 
 
 @pytest.mark.asyncio
