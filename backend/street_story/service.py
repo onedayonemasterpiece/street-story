@@ -1075,6 +1075,23 @@ class StreetStoryService:
             params.append(claim_story_id)
         return ''.join(' AND ' + clause for clause in filters), params
 
+    # Owner test 21.10.2026: these scans (~350 ms each over the story table) ran on every worker poll of every
+    # lane on the event loop that carries Live audio ACKs; the idle process used ~66% CPU and every voice
+    # session dropped with LIVE_AUDIO_BACKPRESSURE. The app runs them at most this often, off the loop.
+    scheduler_interval_seconds = 0.0
+
+    def _run_schedulers(self, claim_kind=None):
+        lane = 'identity' if claim_kind in {'identity', 'identity_visual'} else 'facts'
+        last = self.__dict__.setdefault('_scheduler_last_run', {})
+        now = time.monotonic()
+        if self.scheduler_interval_seconds and now - last.get(lane, -1e9) < self.scheduler_interval_seconds:
+            return
+        last[lane] = now
+        self._schedule_identity_visual()
+        if lane == 'facts':
+            self._schedule_confirmed_facts()
+            self._schedule_auto_continuations()
+
     def worker_story_ids(self, *, claim_kind=None, exclude_kind=None):
         """Independent stories can progress while an addressed provider awaits.
 
@@ -1082,10 +1099,7 @@ class StreetStoryService:
         controls actual inference capacity. Never serialize stories on a slow
         provider response from an unrelated story.
         """
-        self._schedule_identity_visual()
-        if claim_kind not in {'identity', 'identity_visual'}:
-            self._schedule_confirmed_facts()
-            self._schedule_auto_continuations()
+        self._run_schedulers(claim_kind)
         filters, params = self._worker_filters(claim_kind=claim_kind, exclude_kind=exclude_kind)
         now = self.store.now()
         with self.store.connection() as db:
@@ -1284,10 +1298,7 @@ class StreetStoryService:
                     pass  # No provider work; pending accounting remains durable.
 
     async def run_once(self, *, claim_kind=None, exclude_kind=None, claim_story_id=None) -> bool:
-        self._schedule_identity_visual()
-        if claim_kind not in {'identity', 'identity_visual'}:
-            self._schedule_confirmed_facts()
-            self._schedule_auto_continuations()
+        await asyncio.to_thread(self._run_schedulers, claim_kind)
         job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind, claim_story_id=claim_story_id)
         if not job:
             if claim_kind in {'identity', 'identity_visual'}:

@@ -99,6 +99,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     settings = settings or Settings.from_env()
     service = service or RuntimeStreetStoryService(settings)
     service.recover_jobs()
+    service.scheduler_interval_seconds = 15.0
     live_host = create_live_host(service, settings)
     source_sha = checkout_source_sha()
 
@@ -118,7 +119,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
                                 'street_story_worker_lane_failure lane=%s story_id=%s error_type=%s',
                                 name, story_id, type(error).__name__)
                         del active[story_id]
-                for story_id in service.worker_story_ids(**lane):
+                for story_id in await asyncio.to_thread(service.worker_story_ids, **lane):
                     if story_id not in active:
                         active[story_id] = asyncio.create_task(
                             service.run_once(**lane, claim_story_id=story_id), name=name)
