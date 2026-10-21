@@ -39,9 +39,9 @@ class FactPresentationTest {
         }
         val projection = ResearchProjectionSnapshot(null, null, null, emptyList(), emptyList(), emptyList(),
             0, null, emptyList(), photoSha256 = "source", identityGeneration = 3, researchOutcome = outcome)
-        assertEquals("Фактов достаточно для поста · 34 подтверждено", FactPresentation.researchOutcomeNotice(projection, "source"))
+        assertEquals("Найдено 34 подтверждённых фактов · поиск не закончен, можно попросить Миру найти ещё", FactPresentation.researchOutcomeNotice(projection, "source"))
         outcome.eligibleCount = 2
-        assertEquals("Исследование не завершено · найдена часть подтверждённых фактов",
+        assertEquals("Поиск не закончен · найдена часть фактов, попросите Миру найти ещё",
             FactPresentation.researchOutcomeNotice(projection, "source"))
     }
 

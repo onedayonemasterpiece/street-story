@@ -14,8 +14,6 @@ from .research_runs import set_run_state
 
 LOG = logging.getLogger(__name__)
 QUALIFICATION_KEY = 'research-agent-verification-v1'
-AUTO_CONTINUE_LIMIT = 3
-AUTO_CONTINUE_DELAY = 900
 # Host hand-backs of the model's own unresolved gaps when it named no next step.
 GAP_CONTINUATIONS = 2
 GAP_CONTINUATION_MEANING = ('Your previous turn ended with these unresolved_gaps while resources remained and '
@@ -1059,13 +1057,6 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         if retained_waits:
             value.update(retained_waits=retained_waits, retry_at=max(row['retry_at'] for row in retained_waits))
         research['research_outcome'] = value
-        # Owner, 21.10.2026: the Government building got 3 facts from one source and nothing more all night.
-        # A partial run (main researcher out of limit, lost checks, open gaps) is continued automatically later.
-        if pending:
-            continued = int((research.get('auto_continue') or {}).get('count') or 0)
-            if continued < AUTO_CONTINUE_LIMIT:
-                research['auto_continue'] = {'count': continued, 'run_id': run_id, 'reason': reason,
-                                             'at': adapter.service.store.now() + AUTO_CONTINUE_DELAY}
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)
