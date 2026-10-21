@@ -1078,6 +1078,7 @@ class StreetStoryService:
     # Owner test 21.10.2026: these scans (~350 ms each over the story table) ran on every worker poll of every
     # lane on the event loop that carries Live audio ACKs; the idle process used ~66% CPU and every voice
     # session dropped with LIVE_AUDIO_BACKPRESSURE. The app runs them at most this often, off the loop.
+    # Owner decision: no extra background work; a partial research is continued by asking Mira for more.
     scheduler_interval_seconds = 0.0
 
     def _run_schedulers(self, claim_kind=None):
@@ -1090,7 +1091,6 @@ class StreetStoryService:
         self._schedule_identity_visual()
         if lane == 'facts':
             self._schedule_confirmed_facts()
-            self._schedule_auto_continuations()
 
     def worker_story_ids(self, *, claim_kind=None, exclude_kind=None):
         """Independent stories can progress while an addressed provider awaits.
@@ -1182,47 +1182,6 @@ class StreetStoryService:
         if scheduled:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'identity_visual', 'scheduled': scheduled}))
-
-    def _schedule_auto_continuations(self):
-        """Continue a partial facts research later, the same way the author asks for more facts.
-
-        A run marks research.auto_continue when it ends partial; due marks start one more run when no research
-        is active for the story, at most AUTO_CONTINUE_LIMIT times per house selection.
-        """
-        if not callable(getattr(self, 'mutate_facts', None)):
-            return
-        from .fact_agents import AUTO_CONTINUE_LIMIT
-        from .research_control import research_stopped
-        now = self.store.now()
-        with self.store.connection() as db:
-            due = list(db.execute(
-                "SELECT id,photo_sha256,research_json FROM stories WHERE json_extract(research_json,'$.auto_continue.at')<=? "
-                "AND state NOT IN ('scheduling','scheduled','published') AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "
-                "j.story_id=stories.id AND j.kind IN ('research','refinement') AND j.state IN ('ready','running','retry')) "
-                "ORDER BY updated_at LIMIT 3", (now,)))
-        for row in due:
-            research = json.loads(row['research_json'] or '{}')
-            mark = research.get('auto_continue') or {}
-            count = int(mark.get('count') or 0) + 1
-            generation = int(research.get('identity_generation') or 0)
-            with self.store.tx() as db:
-                current = json.loads(self._story_row(db, row['id'])['research_json'] or '{}')
-                current['auto_continue'] = {**mark, 'count': count, 'at': None}
-                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(current), row['id']))
-            if count > AUTO_CONTINUE_LIMIT or research_stopped(research, 'facts', photo_sha256=row['photo_sha256'],
-                                                               identity_generation=generation):
-                continue
-            key = 'ss-auto-continue-' + digest([row['id'], generation, count])[:40]
-            try:
-                self.mutate_facts(row['id'], key, {'action': 'research', 'expected_identity_generation': generation,
-                    'coverage_goal': 'Продолжи исследование этого дома: прошлый прогон закончился частично. Ищи новые '
-                                     'источники и сведения, проверь найденные, но ещё не подтверждённые факты, '
-                                     'закрой оставшиеся пробелы.'})
-                logging.getLogger(__name__).info('street_story_research_auto_continue story_id=%s count=%s reason=%s',
-                                                 row['id'], count, mark.get('reason'))
-            except (ConflictError, InvalidStateError) as exc:
-                logging.getLogger(__name__).warning('street_story_research_auto_continue story_id=%s outcome=%s',
-                                                    row['id'], getattr(exc, 'code', type(exc).__name__))
 
     def _schedule_confirmed_facts(self):
         """After visual confirmation, collect evidence without requiring voice.

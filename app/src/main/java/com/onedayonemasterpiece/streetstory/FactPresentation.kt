@@ -33,8 +33,9 @@ internal object FactPresentation {
         return when {
             // Owner test 19.10.2026: 34 verified facts were shown under «Исследование не завершено».
             // With enough facts for a post (4–8), a partial run is not a problem for the author.
+            // Owner decision 21.10.2026: no automatic continuation; say plainly that the search was cut short.
             result.outcome == "useful_partial" && (result.eligibleCount ?: 0) >= ENOUGH_FACTS_FOR_POST ->
-                "Фактов достаточно для поста · ${result.eligibleCount} подтверждено"
+                "Найдено ${result.eligibleCount} подтверждённых фактов · поиск не закончен, можно попросить Миру найти ещё"
             result.reason == "research_routes_unavailable" ->
                 "Исследование недоступно · нет двух независимых проверенных маршрутов"
             result.reason == "source_selection_unavailable" ->
@@ -46,7 +47,7 @@ internal object FactPresentation {
             result.outcome == "resource_blocked" ->
                 "Исследование не завершено · временная ошибка обработки"
             result.outcome == "useful_partial" ->
-                "Исследование не завершено · найдена часть подтверждённых фактов"
+                "Поиск не закончен · найдена часть фактов, попросите Миру найти ещё"
             else -> "Исследование не завершено"
         }
     }
