@@ -5935,9 +5935,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             try:
                 self.emit(session, {"type": "product_state", "state":
                                    await asyncio.to_thread(lambda: self._compact_context(self._topic_state(story_id)))})
-                note = ("Текст сохранён в черновике. Сообщите автору, что его можно открыть."
+                note = ("Текст готов и сохранён в черновике. Сообщите автору, что его можно открыть."
                         if last.get("ok") else
-                        "Создание текста завершилось ошибкой. Черновик сохранён без изменений; сообщите автору.")
+                        "Создать текст не удалось. Черновик сохранён без изменений; сообщите автору.")
                 self.write(session, {"type": "text", "text": "[Сообщение приложения] " + note})
             except Exception:
                 pass  # GET story is the authoritative readback after reconnect.
