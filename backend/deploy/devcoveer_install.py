@@ -1456,17 +1456,25 @@ def systemd_env() -> dict[str, str]:
     return env
 
 
-def install_service(release: Path, venv: Path) -> None:
+def install_service(release: Path, venv: Path, *, preserve_existing_config: bool = False) -> None:
     source = release / "source"
-    DATA_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(DATA_ROOT, 0o700)
+    if not preserve_existing_config:
+        DATA_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(DATA_ROOT, 0o700)
+    elif not DATA_ROOT.is_dir() or DATA_ROOT.is_symlink():
+        raise DeployError("existing data directory is unavailable or unsafe")
+    if preserve_existing_config and SHA_RE.fullmatch(release.name) is None:
+        raise DeployError("release directory requires an exact SHA")
+    command_prefix = (f"/usr/bin/env STREET_STORY_DEPLOY_SHA={release.name} "
+                      if preserve_existing_config else "")
     UNIT_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     unit = "\n".join(
         (
             "[Unit]",
             "Description=Street Story backend (exact DevCoveer release)",
             "After=network-online.target vibepublish.service",
-            "Wants=network-online.target vibepublish.service",
+            ("Wants=network-online.target" if preserve_existing_config
+             else "Wants=network-online.target vibepublish.service"),
             "",
             "[Service]",
             "Type=simple",
@@ -1474,7 +1482,7 @@ def install_service(release: Path, venv: Path) -> None:
             f"EnvironmentFile={PROVIDERS_ENV}",
             f"EnvironmentFile={SERVICE_ENV}",
             (
-                f"ExecStart={venv}/bin/uvicorn street_story.app:app "
+                f"ExecStart={command_prefix}{venv}/bin/uvicorn street_story.app:app "
                 f"--app-dir {source}/backend --host 127.0.0.1 --port {PORT} --workers 1"
             ),
             "Restart=on-failure",
@@ -1565,9 +1573,84 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
     return health, {"destinations": safe_rows}
 
 
+def existing_config_snapshot() -> dict[Path, bytes | None]:
+    """Private, in-process comparison only: never emit config or credential hashes."""
+    snapshot = {}
+    for path in (PROVIDERS_ENV, SERVICE_ENV, DEVICE_TOKEN_FILE, VIBE_TOKEN_FILE, VIBE_PRINCIPAL_FILE):
+        if path.is_symlink():
+            raise DeployError("existing private configuration symlink is not accepted")
+        if not path.exists():
+            if path in (PROVIDERS_ENV, SERVICE_ENV):
+                raise DeployError("existing provider/service configuration is required")
+            snapshot[path] = None
+            continue
+        require_mode(path, 0o600)
+        snapshot[path] = path.read_bytes()
+    return snapshot
+
+
+def install_preserving_config(expected_sha: str) -> dict[str, Any]:
+    """Upgrade code only using existing credentials; never bootstrap external state.
+
+    Normal application workers may resume existing jobs on restart. This promises
+    no installer DB writes/reset, not a frozen live database or stopped workers.
+    """
+    sha, tree_sha = exact_source(expected_sha, source_branch="main")
+    before = existing_config_snapshot()
+    settings = parse_dotenv(SERVICE_ENV)
+    device = settings.get("STREET_STORY_DEVICE_TOKEN", "")
+    if len(device) < 32 or not settings.get("VIBEPUBLISH_BEARER_TOKEN"):
+        raise DeployError("existing authentication is required; bootstrap is forbidden")
+    if settings.get("DATA_DIR") != str(DATA_ROOT) or not DATA_ROOT.is_dir() or DATA_ROOT.is_symlink():
+        raise DeployError("existing canonical data directory is required")
+    if not UNIT_FILE.is_file() or UNIT_FILE.is_symlink():
+        raise DeployError("existing Street Story unit is required")
+    previous_unit = UNIT_FILE.read_text()
+    previous_sha = deployed_release_sha()
+    if not previous_sha:
+        raise DeployError("existing verified release is required")
+    release = materialize_release(sha, tree_sha)
+    venv = ensure_venv(release)
+    # GET-only existing resource ledger attestation. No qualification/cache writes.
+    resource = verify_live_resource_control(venv)
+    if existing_config_snapshot() != before:
+        raise DeployError("existing configuration changed before service activation")
+    try:
+        install_service(release, venv, preserve_existing_config=True)
+        status = service_status()
+        health, capabilities = verify_runtime(sha, device)
+        if existing_config_snapshot() != before:
+            raise DeployError("existing configuration changed during service activation")
+        activate_release_pointer(release)
+    except Exception:
+        # Restore only the prior unit, never overwrite externally changed config.
+        private_write(UNIT_FILE, previous_unit)
+        env = systemd_env()
+        run(["systemctl", "--user", "daemon-reload"], env=env, timeout=30)
+        run(["systemctl", "--user", "restart", SERVICE], env=env, timeout=180)
+        raise
+    if _tracked_status().strip():
+        raise DeployError("deployment changed the canonical repository checkout")
+    return {
+        "schema_version": 2,
+        "deployment_mode": "preserve_existing_config",
+        "repository": REPOSITORY, "branch": "main", "release_sha": sha,
+        "tree_sha": tree_sha, "previous_release_sha": previous_sha,
+        "listener": f"127.0.0.1:{PORT}", "service": status,
+        "local_health": {"ok": health.get("ok") is True, "source_sha": health.get("source_sha")},
+        "capabilities": capabilities, "live_resource_control": resource,
+        "existing_config_unchanged": True,
+        "installer_database_writes": False, "credential_writes": False,
+        "external_publication_calls": False, "other_service_actions": False,
+        "environment_cleanup": {"skipped": True}, "secrets_disclosed": False,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--preserve-existing-config", action="store_true",
+        help="Main-only code upgrade; retain existing auth/provider config and data, no bootstrap or cache writes")
     parser.add_argument('--source-branch', default=BRANCH,
         help='Explicit published source branch; local HEAD and remote tip must both match expected SHA')
     parser.add_argument('--fact-agent-qualification', type=Path,
@@ -1578,6 +1661,12 @@ def main() -> int:
     if any(SHA_RE.fullmatch(sha) is None for sha in args.keep_release_environment):
         raise DeployError('preserved release environment requires an exact SHA')
     expected_sha = args.expected_sha.strip().lower()
+
+    if args.preserve_existing_config:
+        if args.source_branch != "main" or args.fact_agent_qualification is not None:
+            raise DeployError("preserve-existing-config requires main and no qualification changes")
+        print(json.dumps(install_preserving_config(expected_sha), ensure_ascii=False, sort_keys=True))
+        return 0
 
     sha, tree_sha = exact_source(expected_sha, source_branch=args.source_branch)
     previous_sha = deployed_release_sha()
@@ -1647,3 +1736,4 @@ if __name__ == "__main__":
     except DeployError as exc:
         print(json.dumps({"status": "failed", "error": _safe_output(str(exc)), "secrets_disclosed": False}))
         raise SystemExit(2)
+
