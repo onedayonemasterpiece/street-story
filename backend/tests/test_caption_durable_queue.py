@@ -110,10 +110,17 @@ async def test_queue_survives_crash_before_dispatch_and_recovers_same_owner_requ
     task = adapter._writing_tasks[sid]
     task.cancel()  # simulates dropped in-memory starter before it runs
     await asyncio.gather(task, return_exceptions=True)
-    with service.store.connection() as db:
+    with service.store.tx() as db:
         job = db.execute("SELECT state FROM jobs WHERE id=?", (started["job_id"],)).fetchone()
-        assert job["state"] == "ready"
+        # The starter may be cancelled before claiming, or just after taking
+        # its lease. An actual restarted worker must respect a live lease and
+        # reclaim the same job only after it expires (not steal a live task).
+        assert job["state"] in {"ready", "running"}
+        if job["state"] == "running":
+            db.execute("UPDATE jobs SET lease_until=? WHERE id=?",
+                       (service.store.now()-1, started["job_id"]))
     restarted = connection_again(service)
+    restarted.recover_jobs()
     assert await restarted.run_once(claim_kind="caption", claim_story_id=sid)
     after = restarted.story(sid)
     assert after["draft_text"].startswith("Текст после перезапуска.")
