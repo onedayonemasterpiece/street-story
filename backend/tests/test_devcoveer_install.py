@@ -1128,3 +1128,144 @@ def test_rkb_poi_env_comes_from_a_private_file(tmp_path, monkeypatch):
     config.chmod(0o644)
     with pytest.raises(module.DeployError):
         module.rkb_poi_env()
+
+
+def _preserve_fixture(tmp_path, monkeypatch):
+    module = _load_installer()
+    for name in ('PROVIDERS_ENV', 'SERVICE_ENV', 'DEVICE_TOKEN_FILE', 'VIBE_TOKEN_FILE', 'VIBE_PRINCIPAL_FILE', 'UNIT_FILE'):
+        path = tmp_path / name.lower()
+        monkeypatch.setattr(module, name, path)
+        path.write_text('existing')
+        path.chmod(0o600)
+    data = tmp_path / 'data'
+    data.mkdir()
+    monkeypatch.setattr(module, 'DATA_ROOT', data)
+    module.SERVICE_ENV.write_text(module.render_env({'DATA_DIR': str(data),
+        'STREET_STORY_DEVICE_TOKEN': 'x' * 32, 'VIBEPUBLISH_BEARER_TOKEN': 'y' * 32,
+        'STREET_STORY_DEPLOY_SHA': 'a' * 40}))
+    sha = 'b' * 40
+    release = tmp_path / sha
+    calls = []
+    monkeypatch.setattr(module, 'exact_source', lambda expected, **kw: (expected, 'c' * 40))
+    monkeypatch.setattr(module, 'deployed_release_sha', lambda: 'a' * 40)
+    monkeypatch.setattr(module, 'materialize_release', lambda *_: release)
+    monkeypatch.setattr(module, 'dependency_fingerprint', lambda r: {})
+    monkeypatch.setattr(module, 'reuse_compatible_environment', lambda r, _: r / 'venv')
+    monkeypatch.setattr(module, 'ensure_venv', lambda *_: pytest.fail('dependency bootstrap forbidden'))
+    monkeypatch.setattr(module, 'verify_live_resource_control', lambda _: {'contract': 'ai_resource_leases_v1'})
+    monkeypatch.setattr(module, 'install_service', lambda *a, **kw: calls.append(('install', kw)))
+    monkeypatch.setattr(module, 'service_status', lambda: {'active': 'active'})
+    monkeypatch.setattr(module, 'verify_runtime', lambda s, token: ({'ok': True, 'source_sha': s}, {'destinations': []}))
+    monkeypatch.setattr(module, 'activate_release_pointer', lambda r: calls.append(('activate', r)))
+    monkeypatch.setattr(module, '_tracked_status', lambda: '')
+    for name in ('configure_provider_env', 'device_token', 'ensure_vibe_principal',
+                 'write_service_env', 'install_fact_agent_runtime', 'install_research_runtime',
+                 'preview_preflight', 'prune_release_environments'):
+        monkeypatch.setattr(module, name, lambda *a, _name=name, **kw: pytest.fail('forbidden: ' + _name))
+    monkeypatch.setattr(module.sqlite3, 'connect', lambda *a, **kw: pytest.fail('SQLite write/access forbidden'))
+    monkeypatch.setattr(module, 'run', lambda *a, **kw: pytest.fail('unexpected external command'))
+    return module, sha, calls
+
+
+def test_preserve_mode_skips_bootstrap_and_keeps_private_config(tmp_path, monkeypatch):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    before = module.existing_config_snapshot()
+    result = module.install_preserving_config(sha)
+    assert module.existing_config_snapshot() == before
+    assert result['deployment_mode'] == 'preserve_existing_config'
+    assert result['existing_config_unchanged'] is True
+    for flag in ('credential_writes', 'installer_database_writes', 'external_publication_calls', 'other_service_actions'):
+        assert result[flag] is False
+    assert result['local_health'] == {'ok': True, 'source_sha': sha}
+    assert calls[0] == ('install', {'preserve_existing_config': True})
+    assert calls[1][0] == 'activate'
+    assert 'x' * 32 not in json.dumps(result)
+
+
+@pytest.mark.parametrize('invalid', ['missing', 'symlink', 'permissions', 'token'])
+def test_preserve_mode_bad_existing_config_fails_before_activation(tmp_path, monkeypatch, invalid):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    if invalid == 'missing':
+        module.SERVICE_ENV.unlink()
+    elif invalid == 'symlink':
+        original = tmp_path / 'original'
+        module.SERVICE_ENV.rename(original)
+        module.SERVICE_ENV.symlink_to(original)
+    elif invalid == 'permissions':
+        module.SERVICE_ENV.chmod(0o644)
+    else:
+        module.SERVICE_ENV.write_text('STREET_STORY_DEVICE_TOKEN=short\n')
+    with pytest.raises(module.DeployError):
+        module.install_preserving_config(sha)
+    assert calls == []
+
+
+def test_preserve_mode_configuration_race_stops_before_activation(tmp_path, monkeypatch):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    def changed(_):
+        module.PROVIDERS_ENV.write_text('external change')
+        return {}
+    monkeypatch.setattr(module, 'verify_live_resource_control', changed)
+    with pytest.raises(module.DeployError, match='changed before'):
+        module.install_preserving_config(sha)
+    assert calls == []
+
+
+def test_preserve_failed_health_restores_only_previous_unit_not_config(tmp_path, monkeypatch):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    before = module.existing_config_snapshot()
+    unit = module.UNIT_FILE.read_text()
+    monkeypatch.setattr(module, 'systemd_env', lambda: {})
+    commands = []
+    monkeypatch.setattr(module, 'run', lambda argv, **kw: commands.append(argv))
+    def fail(release_sha, *_):
+        if release_sha == sha:
+            raise module.DeployError('health mismatch')
+        assert release_sha == 'a' * 40
+        return {}, {}
+    monkeypatch.setattr(module, 'verify_runtime', fail)
+    with pytest.raises(module.DeployError, match='health mismatch'):
+        module.install_preserving_config(sha)
+    assert module.UNIT_FILE.read_text().strip() == unit
+    assert module.existing_config_snapshot() == before
+    assert all(call[0] != 'activate' for call in calls)
+    assert commands == [['systemctl', '--user', 'daemon-reload'],
+                        ['systemctl', '--user', '--job-mode=ignore-dependencies', 'restart', module.SERVICE]]
+
+
+def test_preserve_unit_overrides_stale_sha_without_other_service_activation(tmp_path, monkeypatch):
+    module = _load_installer()
+    data = tmp_path / 'data'
+    data.mkdir()
+    monkeypatch.setattr(module, 'DATA_ROOT', data)
+    monkeypatch.setattr(module, 'UNIT_ROOT', tmp_path / 'units')
+    monkeypatch.setattr(module, 'UNIT_FILE', tmp_path / 'units' / 'street-story.service')
+    monkeypatch.setattr(module, 'systemd_env', lambda: {})
+    commands = []
+    monkeypatch.setattr(module, 'run', lambda argv, **kw: commands.append(argv))
+    sha = 'b' * 40
+    module.install_service(tmp_path / sha, tmp_path / sha / 'venv', preserve_existing_config=True)
+    text = module.UNIT_FILE.read_text()
+    assert f'ExecStart=/usr/bin/env STREET_STORY_DEPLOY_SHA={sha} ' in text
+    assert 'Wants=' not in text
+    assert all('enable' not in cmd for cmd in commands)
+    assert 'Wants=network-online.target vibepublish.service' not in text
+    assert all('vibepublish.service' not in cmd for cmd in commands)
+
+
+@pytest.mark.parametrize('extra', [['--source-branch', 'feature'], ['--fact-agent-qualification', '/tmp/proof']])
+def test_preserve_cli_rejects_nonmain_or_qualification_before_actions(monkeypatch, extra):
+    import sys
+    module = _load_installer()
+    monkeypatch.setattr(sys, 'argv', ['installer', '--expected-sha', 'a' * 40, '--preserve-existing-config', *extra])
+    monkeypatch.setattr(module, 'install_preserving_config', lambda *_: pytest.fail('must not install'))
+    with pytest.raises(module.DeployError, match='requires main'):
+        module.main()
+
+
+def test_preserve_requires_compatible_environment_without_install_fallback(tmp_path, monkeypatch):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, 'reuse_compatible_environment', lambda *_: None)
+    with pytest.raises(module.DeployError, match='cannot install dependencies'):
+        module.install_preserving_config(sha)
+    assert calls == []
