@@ -50,6 +50,7 @@ data class ResearchProjectionSnapshot(
     val placeNavigationActive: Boolean = false,
     val appliedPlaceMapFocusRevision: Int? = null,
     val draftWriting: Boolean = false,
+    val draftAvailable: Boolean = false,
     val draftComposedBy: String? = null,
     val draftWritingFailed: Boolean = false,
 )
@@ -98,6 +99,7 @@ class ResearchProjectionStore(context: Context) {
             visualPhotoFormat = wire.visualPhotoFormat,
             publicationConcept = wire.publicationConcept?.takeIf { it.isNotBlank() },
             draftWriting = wire.draftWriting != null,
+            draftAvailable = !wire.draftText.isNullOrBlank(),
             draftComposedBy = wire.draftComposedBy?.takeIf { it.isNotBlank() },
             draftWritingFailed = wire.draftWriting == null && wire.draftWritingLast?.ok == false,
             publicationState = wire.publication?.state?.takeIf { it.isNotBlank() },

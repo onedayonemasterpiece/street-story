@@ -57,6 +57,8 @@ internal object FactPresentation {
         projection ?: return null
         if (projection.draftWriting) return "Пишу текст…"
         if (projection.draftWritingFailed) return "Текст написать не удалось · попросите Миру ещё раз"
+        if (!projection.draftAvailable && !projection.publicationConcept.isNullOrBlank())
+            return "Текст ещё не создан · задачи написания нет. Попросите Миру именно запустить создание текста."
         val composed = projection.draftComposedBy ?: return null
         if (!composed.startsWith("writer:")) return null
         return "Текст написала модель " + modelName(composed.removePrefix("writer:"))

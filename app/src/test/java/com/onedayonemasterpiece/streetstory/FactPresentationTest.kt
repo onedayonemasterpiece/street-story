@@ -30,6 +30,10 @@ class FactPresentationTest {
             FactPresentation.draftStatus(base.copy(draftComposedBy = "writer:gemini-3.5-flash")))
         assertEquals(null, FactPresentation.draftStatus(base.copy(draftComposedBy = "mira_live")))
         assertTrue(FactPresentation.draftStatus(base.copy(draftWritingFailed = true))!!.startsWith("Текст написать не удалось"))
+        val planned = base.copy(publicationConcept = "Замысел для проверенных фактов")
+        assertEquals("Текст ещё не создан · задачи написания нет. Попросите Миру именно запустить создание текста.",
+            FactPresentation.draftStatus(planned))
+        assertEquals(null, FactPresentation.draftStatus(planned.copy(draftAvailable = true)))
     }
 
     @Test fun partial_run_with_enough_facts_reads_as_ready() {

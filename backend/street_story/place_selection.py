@@ -676,12 +676,12 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
         if not center:
             raise ConflictError('photo_gps_required', 'В фото нет координат GPS — выберите снимок с геолокацией.')
         effective_zoom = zoom or focus.get('zoom') or saved_map.get('zoom') or 17
-        cache_key = digest(['related-map-observations-v1', scope, center['latitude'], center['longitude'], radius_m, effective_zoom])
+        cache_key = digest(['related-map-observations-v2-nearest-buildings', scope, center['latitude'], center['longitude'], radius_m, effective_zoom])
         cached = next((s for s in reversed(research.get('place_map_snapshots') or [])
                        if s.get('cache_key') == cache_key), None)
         if cached:
             return {**{k: v for k, v in cached.items() if k != 'candidates'},
-                    'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
+                    'map_schema_version': 2, 'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
     started = time.monotonic()
     MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=started', story_id, cache_key)
     received_primary = None
@@ -716,6 +716,7 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
                      story_id, cache_key, type(exc).__name__, round((time.monotonic() - started) * 1000))
         raise
     candidates, buildings, streets = [], [], []
+    building_options = []
     building_count = 0
     for item in expand_disjoint_building_components(raw.get('elements') or []):
         tags = item.get('tags') or {}
@@ -727,21 +728,32 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
             geometry = _geometry(candidate)
             if geometry:
                 building_count += 1
-            if geometry and len(buildings) < 250:
-                candidates.append(candidate)
-                buildings.append({'type': 'Feature', 'id': cid, 'geometry': geometry,
-                    'properties': {'candidate_id': cid, 'poi_id': cid, 'name': candidate['name'],
-                                   'label': candidate['name'], 'address': candidate.get('map_address') or {},
-                                   'search_anchor': candidate['search_anchor'],
-                                   'tags': {key: str(tags[key])[:180] for key in
-                                            ('name', 'building', 'addr:city', 'addr:street', 'addr:housenumber')
-                                            if tags.get(key)}}})
+                # The OSM Map API sends ways in identifier order, not geographic
+                # proximity. At Murarium the real 31-point water-tower footprint
+                # is way 303/406 and vanished under the old first-250 cap.
+                points = geometry['coordinates'][0]
+                mid_lon = (min(p[0] for p in points) + max(p[0] for p in points)) / 2
+                mid_lat = (min(p[1] for p in points) + max(p[1] for p in points)) / 2
+                dx = (mid_lon - center['longitude']) * math.cos(math.radians(center['latitude']))
+                dy = mid_lat - center['latitude']
+                building_options.append((dx * dx + dy * dy, str(cid), candidate, geometry, tags))
         elif tags.get('highway') and len(streets) < 150:
             lines = (candidate.get('map_geometry') or {}).get('lines') or []
             if lines and all(len(line) <= 1500 for line in lines):
                 streets.append({'type': 'Feature', 'id': cid, 'geometry': {'type': 'MultiLineString',
                     'coordinates': [[[p['lon'], p['lat']] for p in line] for line in lines]},
                     'properties': {'name': str(tags.get('name') or '')[:180]}})
+    # Keep the bounded payload but prioritize the author's visible map center.
+    # Only OSM-observed geometry is selectable; never substitute a nearby house.
+    for _distance, cid, candidate, geometry, tags in sorted(building_options)[:250]:
+        candidates.append(candidate)
+        buildings.append({'type': 'Feature', 'id': cid, 'geometry': geometry,
+            'properties': {'candidate_id': cid, 'poi_id': cid, 'name': candidate['name'],
+                           'label': candidate['name'], 'address': candidate.get('map_address') or {},
+                           'search_anchor': candidate['search_anchor'],
+                           'tags': {key: str(tags[key])[:180] for key in
+                                    ('name', 'building', 'addr:city', 'addr:street', 'addr:housenumber')
+                                    if tags.get(key)}}})
     city_objects = [_candidate(item) for item in raw.get('elements') or [] if (item.get('tags') or {}).get('addr:city')]
     address_objects = [_candidate(item) for item in raw.get('elements') or [] if (item.get('tags') or {}).get('entrance')
         and (item.get('tags') or {}).get('addr:street') and (item.get('tags') or {}).get('addr:housenumber')]
@@ -757,7 +769,8 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
         feature['properties'].update(name=c['name'], label=c['name'])
     snapshot = {'snapshot_id': 'map_' + uuid.uuid4().hex, 'photo_sha256': scope[0],
         'identity_generation': scope[1], 'center': {k: center[k] for k in ('latitude', 'longitude')},
-        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key, 'city_objects': city_objects, 'address_objects': address_objects,
+        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key,
+        'map_schema_version': 2, 'city_objects': city_objects, 'address_objects': address_objects,
         'organization_objects': organization_objects, 'map_observation': raw.get('map_observation'),
         'partial': building_count > len(buildings) or bool(raw.get('incomplete_building_ids')),
         'incomplete_building_count': len(raw.get('incomplete_building_ids') or []),

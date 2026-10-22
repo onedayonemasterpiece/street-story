@@ -446,6 +446,19 @@ class StreetStoryService:
         if processing_purpose and research_stopped(research, processing_purpose,
                 photo_sha256=row['photo_sha256'], identity_generation=generation):
             processing = {'status': 'research_paused', 'message': 'Исследование приостановлено', 'automatic_retry': False}
+        caption_writing = research.get('draft_writing')
+        caption_last = research.get('draft_writing_last')
+        if isinstance(caption_writing, dict):
+            job_id = caption_writing.get('job_id')
+            caption_job = (db.execute("SELECT state,last_error FROM jobs WHERE id=? AND story_id=? AND kind='caption'",
+                (job_id, row['id'])).fetchone() if job_id else None)
+            if not caption_job or caption_job['state'] not in {'ready', 'retry', 'running'}:
+                # Legacy in-memory writer was lost on restart (no durable job).
+                # Never represent its persisted flag as ongoing work for hours.
+                caption_writing = None
+                if not caption_last or not caption_last.get('ok'):
+                    caption_last = {'ok': False, 'error': (caption_job['last_error'] if caption_job else None)
+                        or 'caption_job_missing', 'job_id': job_id}
         return {
             "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
@@ -477,9 +490,9 @@ class StreetStoryService:
             "facts": facts, "destinations": [],
             "suggested_selection": [str(fid) for fid in research.get("suggested_selection") or []],
             # Owner request 20.10.2026: a predictable writing status and the model that wrote the text.
-            "draft_writing": research.get("draft_writing"),
+            "draft_writing": caption_writing,
             "draft_composed_by": research.get("draft_composed_by"),
-            "draft_writing_last": research.get("draft_writing_last"),
+            "draft_writing_last": caption_last,
             "strongest_fact": ({key: (research.get("strongest_fact") or {}).get(key) for key in
                 ("fact_id", "reason", "source", "agrees_with_researcher", "researcher")}
                 if any(f.get("strongest") for f in facts) else None),
@@ -974,6 +987,16 @@ class StreetStoryService:
         ).rowcount
         if not changed:
             return
+        if job['kind'] == 'caption':
+            row = self._story_row(db, job['story_id'])
+            research = json.loads(row['research_json'] or '{}')
+            if (research.get('draft_writing') or {}).get('job_id') == job['id']:
+                research['draft_writing'] = None
+                research['draft_writing_last'] = {'job_id': job['id'], 'ok': False,
+                    'error': 'caption_retry_exhausted', 'finished_at': now}
+                db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
+                    (canonical(research), now, job['story_id']))
+            return
         if not self._preserve_background_fact_value(db, job, error=last_error):
             db.execute(
                 "UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? "
@@ -1118,7 +1141,7 @@ class StreetStoryService:
             # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
                 "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) "
-                + kind_filter + " ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish') THEN 0 "
+                + kind_filter + " ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish','caption') THEN 0 "
                 "WHEN json_extract(payload_json,'$.queue_priority')='interactive' THEN 0 "
                 "WHEN kind='research' AND semantic_key NOT LIKE 'automatic-facts:%' "
                 "AND coalesce(json_extract(payload_json,'$.queue_priority'),'')<>'background' THEN 0 "
@@ -1357,6 +1380,67 @@ class StreetStoryService:
                                                            type(done.exception()).__name__)
         task.add_done_callback(settled)
 
+    async def _run_caption(self, job: dict[str, Any]) -> None:
+        """Recoverable text composition: the durable queue, not the Live socket, owns completion."""
+        from .live import StreetStoryLiveAdapter
+        adapter = StreetStoryLiveAdapter(self, lambda *_: None, lambda *_: None)
+        story_id = job["story_id"]
+        payload = json.loads(job["payload_json"])
+        args = payload["args"]
+        save_command_id = "caption-save:" + job["id"]
+        outcome = {"ok": False, "job_id": job["id"]}
+        try:
+            with self.store.connection() as db:
+                row = self._story_row(db, story_id)
+                research = json.loads(row["research_json"] or "{}")
+                if (row["photo_sha256"] != payload["photo_sha256"] or
+                        int(research.get("identity_generation") or 0) != payload["identity_generation"]):
+                    raise ConflictError("caption_scope_changed", "The photo/building changed while a caption was queued")
+                # A process may die after the draft transaction commits but before
+                # ACK/queue completion. Never send this composition to the model again.
+                prior = db.execute("SELECT tool_name,result_json FROM live_commands "
+                    "WHERE story_id=? AND command_id=?", (story_id, save_command_id)).fetchone()
+            if prior:
+                if prior["tool_name"] != "edit_text":
+                    raise ConflictError("caption_save_receipt_conflict", "Saved command has another tool")
+                saved = json.loads(prior["result_json"])
+                with self.store.connection() as db:
+                    stored = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
+                model = str(stored.get("draft_composed_by") or "").removeprefix("writer:") or "previous"
+                outcome.update(ok=True, model=model, text_revision=saved.get("text_revision"),
+                               recovered_existing=True)
+            else:
+                written = await adapter._write_caption(story_id, args)
+                rebased = await asyncio.to_thread(adapter._rebase_over_writer_draft, story_id, args)
+                saved = await asyncio.to_thread(adapter._edit_text, story_id, save_command_id,
+                    {**rebased, "new_text": written["text"]},
+                    composed_by="writer:" + written["model"],
+                    image_notes=written.get("image_notes") or [],
+                    image_note_arrows=written.get("image_note_arrows") or [])
+                outcome.update(ok=True, model=written["model"], text_revision=saved["text_revision"])
+        except Exception as exc:
+            outcome["error"] = str(getattr(exc, "code", type(exc).__name__))[:100]
+            logging.getLogger("uvicorn.error").warning("street_story_caption_background_failed %s",
+                canonical({"story_id": story_id, **outcome}))
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            pending = research.get("draft_writing") or {}
+            if pending.get("job_id") == job["id"]:
+                research["draft_writing"] = None
+                research["draft_writing_last"] = {**outcome, "finished_at": self.store.now()}
+                db.execute("UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                    (canonical(research), self.store.now(), story_id))
+            if not outcome["ok"]:
+                # A failed caption does not invalidate a verified place/fact selection
+                # or destroy an existing draft. It is a visible, terminal job failure.
+                db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? "
+                    "WHERE id=? AND state='running' AND attempts=?",
+                    (outcome["error"], self.store.now(), job["id"], job["attempts"]))
+        if outcome["ok"]:
+            logging.getLogger("uvicorn.error").info("street_story_caption_saved %s",
+                canonical({"story_id": story_id, **outcome}))
+
     async def _execute_job_with_deadline(self, job):
         from .research_budget import ResearchTerminated, require_remaining, RESEARCH_SEND_GUARD
         async def execute():
@@ -1370,6 +1454,8 @@ class StreetStoryService:
                 return await handler(job)
             elif job["kind"] in {"research", "refinement"}:
                 return await self._run_research(job)
+            elif job["kind"] == "caption":
+                return await self._run_caption(job)
             elif job["kind"] == "visual":
                 return await self._run_visual(job)
             elif job["kind"] == "publish":
