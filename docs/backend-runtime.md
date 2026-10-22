@@ -144,6 +144,12 @@ The shared SDK may use the mapped `AI_RESOURCE_CONTROL_FALLBACK_KEY` only when t
 
 The app must never borrow Wonderful Lections' `GOOGLE_API_KEY`, KenigEvents' `GOOGLE_API_KEY2`, Projects Hub's `GOOGLE_API_KEY4`, or shared reserve keys 5–6 for this fallback. Android never receives any provider key.
 
+## Real Gemini Live controller canary
+
+`backend/tools/devcoveer_real_live_canary.py --expected-sha <deployed-sha>` is the acceptance rail for the actual Live controller. It creates an isolated story, opens the production `/live-sessions` endpoint, requires `gemini-3.8-live` provider ready, sends one bounded text turn, observes model output and `turn_complete`, then closes the session.
+
+This canary distinguishes central resource-control success from mere provider availability: any `resource_fallback` event is a failure for this acceptance, even if the dedicated Street Story emergency key could keep the session alive. A pass therefore proves the normal `ai-resource-control` central lease path plus a real Gemini Live turn. The emergency fallback is tested separately by deterministic fault tests and is not used to claim central acceptance.
+
 ## DevCoveer fallback smoke runner
 
 If GitHub Actions accepts `live-e2e.yml` but never allocates a job, DevCoveer may run the same repository-owned smoke through `backend/tools/devcoveer_live_smoke.py --expected-sha <deployed-sha>`. The runner does not install host packages: it uses a disposable official Python/Debian Docker container, installs `espeak`, `ffmpeg`, ExifTool and `httpx` only inside that container, mounts repository source read-only and writes only the sanitized Live E2E diagnostic.
