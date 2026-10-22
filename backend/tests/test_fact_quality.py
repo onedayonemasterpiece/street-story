@@ -52,7 +52,7 @@ def test_noisy_multi_sentence_source_is_reduced_to_one_atomic_fact():
         "Королевские ворота снесли, а вместо них в 1843 году решили построить новые. "
         "На закладке первого камня присутствовал король. Далее следует длинное описание страницы."
     )
-    assert atomic_fact_text(text) == "Королевские ворота снесли, а вместо них в 1843 году решили построить новые."
+    assert atomic_fact_text(text) == "В 1843 году решили построить новые Королевские ворота."
 
 
 def test_personal_review_with_year_is_not_promoted_to_fact():
@@ -93,13 +93,13 @@ def test_location_and_status_still_require_a_real_predicate():
 def test_legacy_heading_glued_to_fact_is_stripped_not_dropped():
     assert atomic_fact_text(
         "История создания Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
-    ) == "построены в 1843-1850 годах как часть второго вального кольца."
+    ) == "Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
 
 
 def test_legacy_interesting_facts_heading_can_salvage_arrival_fact():
     assert atomic_fact_text(
         "Интересные факты Великое посольство прибыло в Кёнигсберг в 1697 году."
-    ) == "прибыло в Кёнигсберг в 1697 году."
+    ) == "Великое посольство прибыло в Кёнигсберг в 1697 году."
 
 
 def test_current_institutional_status_is_a_fact():
@@ -126,7 +126,7 @@ def test_architect_clause_is_extracted_as_its_own_fact():
         "Фридриха Августа Штюлера, известного своими работами."
     )
     facts = atomic_fact_texts(raw)
-    assert "По проекту архитектора Фридриха Августа Штюлера." in facts
+    assert "Проект архитектора Фридриха Августа Штюлера." in facts
     assert any("возведены в 1850 году" in fact for fact in facts)
 
 
@@ -136,10 +136,90 @@ def test_bad_caption_prefix_can_be_discarded_while_later_fact_survives():
         "Интересные факты: Великое посольство прибыло в Кёнигсберг в 1697 году."
     )
     facts = atomic_fact_texts(raw)
-    assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+    assert facts == ["Великое посольство прибыло в Кёнигсберг в 1697 году."]
 
 
 def test_documented_presence_event_is_a_fact():
     assert atomic_fact_text(
         "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
     ) == "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
+
+
+def test_anniversary_number_is_not_reused_as_calendar_year():
+    raw = (
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда. "
+        "С того же года в воротах размещается центр «Великое посольство»."
+    )
+    assert atomic_fact_texts(raw)[1].startswith("С 2005 года ")
+
+
+def test_long_photo_caption_before_arrival_does_not_hide_fact():
+    raw = (
+        "Королевские ворота вечером (Amber bracelet, CC BY-SA 4.0, via Wikimedia Commons) "
+        "Интересные факты Великое посольство, именем которого назван музейный центр, "
+        "прибыло в Кёнигсберг в 1697 году."
+    )
+    facts = atomic_fact_texts(raw)
+    assert facts == ["Великое посольство прибыло в Кёнигсберг в 1697 году."]
+
+
+def test_vague_anniversary_copy_is_not_fact():
+    assert atomic_fact_text(
+        "Именно они, отреставрированные к 750-у дню рождения города, и украшают собой Калининград."
+    ) is None
+
+
+def test_compound_demolition_and_new_construction_become_separate_facts():
+    facts = atomic_fact_texts(
+        "Королевские ворота снесли, а вместо них в 1843 году решили построить новые."
+    )
+    assert facts == [
+        "Королевские ворота снесли",
+        "В 1843 году решили построить новые Королевские ворота.",
+    ]
+
+
+def test_old_name_and_later_dismantling_are_separate_facts():
+    facts = atomic_fact_texts(
+        "История Самые ранние ворота имели название Кальтхофские, "
+        "однако в начале XVIII века их разобрали."
+    )
+    assert facts == [
+        "Самые ранние ворота имели название Кальтхофские",
+        "В начале XVIII века их разобрали.",
+    ]
+
+
+def test_reference_markers_are_removed_from_display_fact():
+    assert atomic_fact_text(
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда [1]."
+    ) == "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+
+
+def test_incomplete_ellipsis_fact_is_rejected():
+    assert atomic_fact_text(
+        "С 2005 года в воротах размещается Историко-культурный центр «Великое посольство», являющийся филиалом ..."
+    ) is None
+
+
+def test_temporal_prefix_is_kept_when_caption_prefix_is_removed():
+    raw = (
+        "Королевские ворота в Кёнигсберге в 1928 году "
+        "В начале XX столетия ворота потеряли оборонительную функцию и стали городской аркой."
+    )
+    assert atomic_fact_text(raw) == (
+        "В начале XX столетия ворота потеряли оборонительную функцию и стали городской аркой."
+    )
+
+
+def test_demolition_fact_drops_trailing_non_atomic_consequence():
+    assert atomic_fact_text(
+        "В начале XVIII века их разобрали, и почти четыре десятилетия здесь оставалось пустое место."
+    ) == "В начале XVIII века их разобрали"
+
+
+def test_reason_clause_after_existing_fact_is_not_kept_as_second_fact():
+    facts = atomic_fact_texts(
+        "На этом месте существовали более ранние ворота, поэтому история самого прохода старше нынешней постройки."
+    )
+    assert facts == ["На этом месте существовали более ранние ворота"]
