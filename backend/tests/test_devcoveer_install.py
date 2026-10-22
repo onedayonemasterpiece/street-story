@@ -1149,7 +1149,9 @@ def _preserve_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'exact_source', lambda expected, **kw: (expected, 'c' * 40))
     monkeypatch.setattr(module, 'deployed_release_sha', lambda: 'a' * 40)
     monkeypatch.setattr(module, 'materialize_release', lambda *_: release)
-    monkeypatch.setattr(module, 'ensure_venv', lambda r: r / 'venv')
+    monkeypatch.setattr(module, 'dependency_fingerprint', lambda r: {})
+    monkeypatch.setattr(module, 'reuse_compatible_environment', lambda r, _: r / 'venv')
+    monkeypatch.setattr(module, 'ensure_venv', lambda *_: pytest.fail('dependency bootstrap forbidden'))
     monkeypatch.setattr(module, 'verify_live_resource_control', lambda _: {'contract': 'ai_resource_leases_v1'})
     monkeypatch.setattr(module, 'install_service', lambda *a, **kw: calls.append(('install', kw)))
     monkeypatch.setattr(module, 'service_status', lambda: {'active': 'active'})
@@ -1216,8 +1218,11 @@ def test_preserve_failed_health_restores_only_previous_unit_not_config(tmp_path,
     monkeypatch.setattr(module, 'systemd_env', lambda: {})
     commands = []
     monkeypatch.setattr(module, 'run', lambda argv, **kw: commands.append(argv))
-    def fail(*_):
-        raise module.DeployError('health mismatch')
+    def fail(release_sha, *_):
+        if release_sha == sha:
+            raise module.DeployError('health mismatch')
+        assert release_sha == 'a' * 40
+        return {}, {}
     monkeypatch.setattr(module, 'verify_runtime', fail)
     with pytest.raises(module.DeployError, match='health mismatch'):
         module.install_preserving_config(sha)
@@ -1225,7 +1230,7 @@ def test_preserve_failed_health_restores_only_previous_unit_not_config(tmp_path,
     assert module.existing_config_snapshot() == before
     assert all(call[0] != 'activate' for call in calls)
     assert commands == [['systemctl', '--user', 'daemon-reload'],
-                        ['systemctl', '--user', 'restart', module.SERVICE]]
+                        ['systemctl', '--user', '--job-mode=ignore-dependencies', 'restart', module.SERVICE]]
 
 
 def test_preserve_unit_overrides_stale_sha_without_other_service_activation(tmp_path, monkeypatch):
@@ -1255,3 +1260,11 @@ def test_preserve_cli_rejects_nonmain_or_qualification_before_actions(monkeypatc
     monkeypatch.setattr(module, 'install_preserving_config', lambda *_: pytest.fail('must not install'))
     with pytest.raises(module.DeployError, match='requires main'):
         module.main()
+
+
+def test_preserve_requires_compatible_environment_without_install_fallback(tmp_path, monkeypatch):
+    module, sha, calls = _preserve_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, 'reuse_compatible_environment', lambda *_: None)
+    with pytest.raises(module.DeployError, match='cannot install dependencies'):
+        module.install_preserving_config(sha)
+    assert calls == []
