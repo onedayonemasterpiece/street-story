@@ -1473,7 +1473,7 @@ def install_service(release: Path, venv: Path, *, preserve_existing_config: bool
             "[Unit]",
             "Description=Street Story backend (exact DevCoveer release)",
             "After=network-online.target vibepublish.service",
-            ("Wants=network-online.target" if preserve_existing_config
+            ("" if preserve_existing_config
              else "Wants=network-online.target vibepublish.service"),
             "",
             "[Service]",
@@ -1503,7 +1503,8 @@ def install_service(release: Path, venv: Path, *, preserve_existing_config: bool
     private_write(UNIT_FILE, unit)
     env = systemd_env()
     run(["systemctl", "--user", "daemon-reload"], env=env, timeout=30)
-    run(["systemctl", "--user", "enable", SERVICE], env=env, timeout=30)
+    if not preserve_existing_config:
+        run(["systemctl", "--user", "enable", SERVICE], env=env, timeout=30)
     run(["systemctl", "--user", "restart", SERVICE], env=env, timeout=180)
 
 
