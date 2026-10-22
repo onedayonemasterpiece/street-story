@@ -1610,7 +1610,9 @@ def install_preserving_config(expected_sha: str) -> dict[str, Any]:
     if not previous_sha:
         raise DeployError("existing verified release is required")
     release = materialize_release(sha, tree_sha)
-    venv = ensure_venv(release)
+    venv = reuse_compatible_environment(release, dependency_fingerprint(release))
+    if venv is None:
+        raise DeployError("no verified compatible environment; preserve mode cannot install dependencies")
     # GET-only existing resource ledger attestation. No qualification/cache writes.
     resource = verify_live_resource_control(venv)
     if existing_config_snapshot() != before:
@@ -1621,16 +1623,20 @@ def install_preserving_config(expected_sha: str) -> dict[str, Any]:
         health, capabilities = verify_runtime(sha, device)
         if existing_config_snapshot() != before:
             raise DeployError("existing configuration changed during service activation")
+        if _tracked_status().strip():
+            raise DeployError("deployment changed the canonical repository checkout")
         activate_release_pointer(release)
     except Exception:
         # Restore only the prior unit, never overwrite externally changed config.
-        private_write(UNIT_FILE, previous_unit)
-        env = systemd_env()
-        run(["systemctl", "--user", "daemon-reload"], env=env, timeout=30)
-        run(["systemctl", "--user", "restart", SERVICE], env=env, timeout=180)
+        try:
+            private_write(UNIT_FILE, previous_unit)
+            env = systemd_env()
+            run(["systemctl", "--user", "daemon-reload"], env=env, timeout=30)
+            run(["systemctl", "--user", "--job-mode=ignore-dependencies", "restart", SERVICE], env=env, timeout=180)
+            verify_runtime(previous_sha, device)
+        except Exception:
+            raise DeployError("activation failed; previous release rollback health is NOT verified") from None
         raise
-    if _tracked_status().strip():
-        raise DeployError("deployment changed the canonical repository checkout")
     return {
         "schema_version": 2,
         "deployment_mode": "preserve_existing_config",
