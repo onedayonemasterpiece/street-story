@@ -1017,6 +1017,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'Do not call set_concept, edit_text or generate_visual to finish that selection request, '
                 'even when an earlier draft or image needs refreshing. An opening goal such as a better '
                 'city story does not override a later explicit instruction to save only the choice first. '
+                'Never say «готовлю», «почти готово», or promise a background caption merely from a voice turn: '
+                'only a successful edit_text response with a nonempty durable job_id permits an acknowledgement. '
+                'On reconnect read_topic and draft_writing/draft_writing_last; if no active job exists and no text is saved, '
+                'state explicitly that writing did not start and offer to submit the real edit_text request. '
+                'A saved draft is the only evidence of success. '
                 'When the owner requests saving or changing an angle, use set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
                 'change selection. Write text only when the author explicitly asks for it; a concept is not '
@@ -1919,6 +1924,18 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name != "literal_finish":
             replay = self._command_replay(story_id, command_id, name, args)
             if replay is not None:
+                if name == 'edit_text' and replay.get('job_id'):
+                    current = self.service.story(story_id)
+                    last = current.get('draft_writing_last') or {}
+                    if last.get('job_id') == replay['job_id']:
+                        return {'writing': 'completed' if last.get('ok') else 'failed',
+                            'job_id': replay['job_id'], 'text_revision': last.get('text_revision'),
+                            'error': last.get('error'),
+                            'instruction': 'This is the saved outcome of the original caption job. '
+                                'Read the current draft; do not generate it again.'}
+                    return {'writing': 'in_progress' if (current.get('draft_writing') or {}).get('job_id') == replay['job_id'] else 'interrupted',
+                        'job_id': replay['job_id'],
+                        'instruction': 'Read the durable job status and draft, never promise unobserved progress.'}
                 if name == 'continue_story' and 'research_action' in args:
                     current = self.service.story(story_id)
                     return self._model_result(name, {**replay, 'changed': [], 'story': current,
@@ -2810,6 +2827,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             'owner_map_candidates': [{key: (feature.get('properties') or {}).get(key) for key in
                 ('candidate_id', 'name', 'address')} for feature in (story.get('place_map') or {}).get('buildings', {}).get('features', [])[:64]],
             "draft_text": str(story.get("draft_text") or "")[:5000],
+            # Voice readback must reflect durable work, not a previous promise.
+            "draft_writing": story.get("draft_writing"),
+            "draft_writing_last": {key: (story.get("draft_writing_last") or {}).get(key) for key in
+                ("job_id", "ok", "error", "text_revision", "model", "finished_at")}
+                if story.get("draft_writing_last") else None,
+            "draft_composed_by": story.get("draft_composed_by"),
             "text_revision": state["editor"].get("text_revision"),
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
@@ -5863,54 +5886,65 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         return lead
 
     async def _start_background_writing(self, session, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """The writer composes in the background; the voice turn returns at once.
+        """Accept an author's caption request only after a durable job exists.
 
-        Owner test 20.10.2026: writing took 1.5-3.5 minutes while Gemini Flash was out of quota, the voice
-        socket dropped about 40 s into each wait, and Mira started the writer again after every reconnect
-        (four texts, none seen in the conversation). The draft is saved durably; the app shows the status.
+        Voice acknowledgement is not a job. The existing worker lease picks up this
+        job after Live disconnect/restart, without rerunning an already saved edit.
         """
         _bounded_text(args.get("writing_request"), 800, required=True)
-        tasks = self.__dict__.setdefault("_writing_tasks", {})
-        running = tasks.get(story_id)
-        if running is not None and not running.done():
-            return {"writing": "in_progress", "instruction": "The text is already being written. Tell the author it "
-                    "will appear in the draft shortly; do not call edit_text again."}
-        await asyncio.to_thread(self._set_draft_writing, story_id, {"started_at": self.service.store.now(),
-                                                                      "command_id": command_id})
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            active = db.execute("SELECT id,state FROM jobs WHERE story_id=? AND kind='caption' "
+                "AND state IN ('ready','retry','running') ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
+            if active:
+                return {"writing": "in_progress", "job_id": active["id"],
+                        "instruction": "A durable caption job exists; read_topic gives its current status. "
+                                       "Do not announce a new job or call edit_text again."}
+            job_id = self.service._enqueue_job(db, story_id, "caption",
+                f"caption:{story_id}:{command_id}", {
+                    "command_id": command_id, "args": args,
+                    "photo_sha256": row["photo_sha256"],
+                    "identity_generation": int(research.get("identity_generation") or 0)})
+            job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if job["state"] in {"done", "failed"}:
+                return {"writing": "completed" if job["state"] == "done" else "failed",
+                        "job_id": job_id, "instruction": "Read the saved draft and last job result. "
+                        "This request was already executed; do not start it again."}
+            research["draft_writing"] = {"job_id": job_id, "command_id": command_id,
+                                         "started_at": self.service.store.now()}
+            db.execute("UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                       (canonical(research), self.service.store.now(), story_id))
+            result = {"writing": "started", "job_id": job_id,
+                "instruction": "The caption job is durably queued. Tell the author it has been accepted "
+                               "only after this receipt; the app reads the saved draft or explicit failure. "
+                               "Do not invent progress or call edit_text again."}
+            self._store_command(db, story_id, command_id, "edit_text", args, result)
+        logger.info("street_story_caption_queued %s", canonical({"story_id": story_id, "job_id": job_id}))
 
-        async def write() -> None:
-            outcome: dict[str, Any] = {"ok": False}
-            try:
-                written = await self._write_caption(story_id, args)
-                rebased = await asyncio.to_thread(self._rebase_over_writer_draft, story_id, args)
-                saved = await asyncio.to_thread(functools.partial(
-                    self._edit_text, story_id, command_id, {**rebased, "new_text": written["text"]},
-                    composed_by="writer:" + written["model"], image_notes=written.get("image_notes") or [],
-                    image_note_arrows=written.get("image_note_arrows") or []))
-                outcome = {"ok": True, "model": written["model"], "text_revision": saved.get("text_revision")}
-                logger.info("street_story_caption_saved %s", canonical({"story_id": story_id,
-                    "text_revision": saved.get("text_revision"), "rebased": rebased is not args}))
-            except Exception as exc:  # the author sees the failure; the previous draft stays
-                outcome = {"ok": False, "error": getattr(exc, "code", type(exc).__name__)}
-                logger.warning("street_story_caption_background_failed %s", canonical({"story_id": story_id, **outcome}))
-            finally:
-                await asyncio.to_thread(self._set_draft_writing, story_id, None,
-                                        {**outcome, "finished_at": self.service.store.now()})
+        async def run_and_notify():
+            # This is a latency optimization, not the source of truth. The durable
+            # backend worker reclaims this job even if the Live socket/process dies.
+            await self.service.run_once(claim_kind="caption", claim_story_id=story_id)
             if getattr(session, "closed", False):
                 return
+            state = await asyncio.to_thread(self.service.story, story_id)
+            last = state.get("draft_writing_last") or {}
+            if last.get("job_id") != job_id:
+                return
             try:
-                state = await asyncio.to_thread(lambda: self._compact_context(self._topic_state(story_id)))
-                self.emit(session, {"type": "product_state", "state": state})
-                note = ("Текст готов и показан автору в черновике. Коротко скажи автору, что текст готов."
-                        if outcome["ok"] else "Текст написать не удалось; прежний черновик сохранён. Скажи автору.")
+                self.emit(session, {"type": "product_state", "state":
+                                   await asyncio.to_thread(lambda: self._compact_context(self._topic_state(story_id)))})
+                note = ("Текст сохранён в черновике. Сообщите автору, что его можно открыть."
+                        if last.get("ok") else
+                        "Создание текста завершилось ошибкой. Черновик сохранён без изменений; сообщите автору.")
                 self.write(session, {"type": "text", "text": "[Сообщение приложения] " + note})
-            except Exception:  # the session ended meanwhile; the app reads the saved draft
-                pass
+            except Exception:
+                pass  # GET story is the authoritative readback after reconnect.
 
-        tasks[story_id] = asyncio.create_task(write(), name="street-story-writer-" + story_id)
-        return {"writing": "started", "instruction": "The caption writer is composing the text in the background "
-                "(usually under a minute). Tell the author briefly that you are writing it; it will appear in the "
-                "draft and you will get a note. Do not call edit_text again for this request."}
+        self.__dict__.setdefault("_writing_tasks", {})[story_id] = asyncio.create_task(
+            run_and_notify(), name="street-story-caption-" + story_id)
+        return result
 
     def _set_draft_writing(self, story_id: str, writing: dict[str, Any] | None,
                            last: dict[str, Any] | None = None) -> None:

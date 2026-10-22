@@ -203,8 +203,9 @@ class PlaceMapPanel(
                 style.addLayer(CircleLayer("owner-house-dot", "owner-house").withProperties(circleColor("#d85d15"), circleRadius(8f), circleStrokeColor("#ffffff"), circleStrokeWidth(2f)))
                 style.addLayer(CircleLayer("owner-camera-dot", "owner-camera").withProperties(circleColor("#3569ae"), circleRadius(6f), circleStrokeColor("#ffffff"), circleStrokeWidth(2f)))
                 map.addOnMapClickListener { point ->
-                    val hit = map.queryRenderedFeatures(map.projection.toScreenLocation(point), "owner-buildings-fill").firstOrNull()
-                    android.util.Log.i("StreetStoryMap", "event=map_click hit=${hit != null} mode=$selectionMode disposed=$disposed")
+                    val exact = map.queryRenderedFeatures(map.projection.toScreenLocation(point), "owner-buildings-fill").firstOrNull()
+                    val hit = exact ?: tinyContourHit(map, point)
+                    android.util.Log.i("StreetStoryMap", "event=map_click hit=${hit != null} tiny_contour_fallback=${exact == null && hit != null} mode=$selectionMode disposed=$disposed")
                     if (hit != null) {
                         selectionDirty = true
                         if (selectionMode == "rough") {
@@ -298,6 +299,44 @@ class PlaceMapPanel(
             nativeMap?.cameraPosition = CameraPosition.Builder().target(target).zoom(focus.zoom).build()
             loadMap(target)
         }
+    }
+
+    private fun tinyContourHit(map: MapLibreMap, tap: LatLng): Feature? {
+        val touch = map.projection.toScreenLocation(tap)
+        val radius = dp(9f).toDouble()
+        val features = buildings()
+        val outlines = features.flatMap { feature ->
+            val geometry = feature.geometry() ?: return@flatMap emptyList<PlaceMapHitTest.Footprint>()
+            // Filter by the actual server-supplied geometry before probing any
+            // screen coordinates. Never choose a house visible only in basemap.
+            val interior = PlaceFootprintGeometry.interiorPoint(geometry)
+                ?: return@flatMap emptyList<PlaceMapHitTest.Footprint>()
+            val center = map.projection.toScreenLocation(LatLng(interior.latitude(), interior.longitude()))
+            if (kotlin.math.abs(center.x-touch.x) > radius * 3 ||
+                kotlin.math.abs(center.y-touch.y) > radius * 3)
+                return@flatMap emptyList<PlaceMapHitTest.Footprint>()
+            runCatching {
+                val obj = com.google.gson.JsonParser.parseString(geometry.toJson()).asJsonObject
+                val coords = obj.getAsJsonArray("coordinates")
+                val rings = when (obj["type"].asString) {
+                    "Polygon" -> listOf(coords[0].asJsonArray)
+                    "MultiPolygon" -> coords.map { it.asJsonArray[0].asJsonArray }
+                    else -> emptyList()
+                }
+                rings.map { ring ->
+                    val points = ring.map { coordinate ->
+                        val pair = coordinate.asJsonArray
+                        val position = map.projection.toScreenLocation(LatLng(pair[1].asDouble, pair[0].asDouble))
+                        PlaceMapHitTest.Pixel(position.x.toDouble(), position.y.toDouble())
+                    }
+                    PlaceMapHitTest.Footprint(candidateId(feature), points)
+                }
+            }.getOrDefault(emptyList())
+        }
+        val chosen = PlaceMapHitTest.nearestSmall(
+            PlaceMapHitTest.Pixel(touch.x.toDouble(), touch.y.toDouble()), outlines, radius
+        ) ?: return null
+        return features.firstOrNull { candidateId(it) == chosen }
     }
 
     private fun buildings(): List<Feature> = mapData?.buildings?.let {
