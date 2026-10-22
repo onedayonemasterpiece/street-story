@@ -1247,7 +1247,8 @@ def test_preserve_unit_overrides_stale_sha_without_other_service_activation(tmp_
     module.install_service(tmp_path / sha, tmp_path / sha / 'venv', preserve_existing_config=True)
     text = module.UNIT_FILE.read_text()
     assert f'ExecStart=/usr/bin/env STREET_STORY_DEPLOY_SHA={sha} ' in text
-    assert 'Wants=network-online.target\n' in text
+    assert 'Wants=' not in text
+    assert all('enable' not in cmd for cmd in commands)
     assert 'Wants=network-online.target vibepublish.service' not in text
     assert all('vibepublish.service' not in cmd for cmd in commands)
 
