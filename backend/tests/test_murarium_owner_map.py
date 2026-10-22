@@ -108,6 +108,7 @@ async def test_murarium_31_vertex_footprint_survives_250_limit_and_is_confirmabl
     features = {f['id']:f for f in snapshot['buildings']['features']}
     tower_id = 'osm:way:133724496'
     assert len(features) == 250
+    assert snapshot['map_schema_version'] == 2
     assert tower_id in features  # Regression: the old first-250 algorithm LOST it.
     assert 'osm:way:382545007' in features
     assert features[tower_id]['properties']['name'] == 'Мурариум'

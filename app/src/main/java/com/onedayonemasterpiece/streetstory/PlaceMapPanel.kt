@@ -48,6 +48,10 @@ class PlaceMapFocusWire {
 
 class PlaceMapWire {
     @SerializedName("snapshot_id") var snapshotId: String = ""
+    @SerializedName("map_schema_version") var mapSchemaVersion: Int = 0
+
+    /** A v1 cached viewport can omit an actual OSM way after ID-first truncation. */
+    fun needsNearestBuildingsRefresh(): Boolean = mapSchemaVersion < 2
     @SerializedName("identity_generation") var identityGeneration: Int = 0
     @SerializedName("photo_sha256") var photoSha256: String = ""
     var revision: Int = 0
@@ -236,7 +240,15 @@ class PlaceMapPanel(
         }
         val remote = projection.get(storyId)
         val saved = remote?.placeMap
-        if (!restored && saved != null) applyMap(saved, true)
+        if (!restored && saved != null) {
+            applyMap(saved, true)
+            // Historical server snapshots have no nearest-building schema marker.
+            // Reopen must replace their first-250-by-OSM-ID map, or the real
+            // Murarium contour remains invisible despite a fixed backend.
+            if (saved.needsNearestBuildingsRefresh() && nativeMap?.style != null &&
+                store.story(storyId)?.serverStoryId != null)
+                loadMap(nativeMap?.cameraPosition?.target)
+        }
         if (!restored && nativeMap?.style != null && store.story(storyId)?.serverStoryId != null) loadMap(null)
         if (restored && mapData != null && mapData!!.identityGeneration < (remote?.identityGeneration ?: 0)) {
             loadMap(nativeMap?.cameraPosition?.target)

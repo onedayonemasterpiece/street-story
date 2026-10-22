@@ -77,6 +77,14 @@ class PlaceMapHitTestTest {
             PlaceMapHitTest.Pixel(250.0, 250.0), listOf(circle, other, ordinary), 18.0))
     }
 
+    @Test fun legacyOwnerMapWireRefreshesWhileNearestBuildingV2DoesNot() {
+        val gson = com.google.gson.Gson()
+        val legacy = gson.fromJson("""{"snapshot_id":"old-first-250"}""", PlaceMapWire::class.java)
+        val current = gson.fromJson("""{"snapshot_id":"new-nearest","map_schema_version":2}""", PlaceMapWire::class.java)
+        assertTrue(legacy.needsNearestBuildingsRefresh())
+        assertFalse(current.needsNearestBuildingsRefresh())
+    }
+
     @Test fun ambiguousTinyContoursNeverGetSwappedByArbitraryProviderOrder() {
         val neighbor = PlaceMapHitTest.Footprint("osm:way:another", circle.outline.map { it.copy(x=2.0) })
         assertNull(PlaceMapHitTest.nearestSmall(

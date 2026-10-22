@@ -681,7 +681,7 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
                        if s.get('cache_key') == cache_key), None)
         if cached:
             return {**{k: v for k, v in cached.items() if k != 'candidates'},
-                    'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
+                    'map_schema_version': 2, 'revision': row['revision'], 'selected': research.get('place_selection'), 'camera': camera}
     started = time.monotonic()
     MAP_LOG.info('street_story_owner_map_read story_id=%s scope_key=%s outcome=started', story_id, cache_key)
     received_primary = None
@@ -769,7 +769,8 @@ async def _place_map(service, story_id, *, latitude=None, longitude=None, radius
         feature['properties'].update(name=c['name'], label=c['name'])
     snapshot = {'snapshot_id': 'map_' + uuid.uuid4().hex, 'photo_sha256': scope[0],
         'identity_generation': scope[1], 'center': {k: center[k] for k in ('latitude', 'longitude')},
-        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key, 'city_objects': city_objects, 'address_objects': address_objects,
+        'camera': camera, 'radius_m': radius_m, 'zoom': effective_zoom, 'cache_key': cache_key,
+        'map_schema_version': 2, 'city_objects': city_objects, 'address_objects': address_objects,
         'organization_objects': organization_objects, 'map_observation': raw.get('map_observation'),
         'partial': building_count > len(buildings) or bool(raw.get('incomplete_building_ids')),
         'incomplete_building_count': len(raw.get('incomplete_building_ids') or []),
