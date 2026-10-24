@@ -77,6 +77,8 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
             if gps_bias:
                 lat, lon = gps_bias['latitude'], gps_bias['longitude']
                 parameters['viewbox'] = f'{lon-.05},{lat+.035},{lon+.05},{lat-.035}'
+            else:
+                parameters['viewbox'] = '19.6,55.35,22.95,54.3'
             response = await client.get(
                 "https://nominatim.openstreetmap.org/search",
                 params=parameters,
