@@ -1,0 +1,10 @@
+﻿session_dir : C:\Projects\street-story\logs\20261030-adb-session-2
+started_at  : 2026-10-30 18:47:55 +02:00
+device      : samsung SM-G998B
+serial      : R5CNC1DQ23H
+android     : 15 (sdk 35)
+app_version :     versionName=0.1.1630
+app_pid_at_start : 
+capture_branch : logs/adb-session-20261030
+capture_commit : de3ce7f
+app_pid_at_stop=
