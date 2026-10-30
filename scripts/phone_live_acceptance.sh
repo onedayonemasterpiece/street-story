@@ -35,7 +35,7 @@ if [[ -z "$SERIAL" ]]; then
 fi
 ADB=(adb -s "$SERIAL")
 PKG=com.onedayonemasterpiece.streetstory
-RUNNER="$PKG.test/androidx.test.runner.AndroidJUnitRunner"
+RUNNER="$PKG.test/com.onedayonemasterpiece.streetstory.StreetStoryTestRunner"
 
 TOKEN_LEN="$(tr -d '\r\n' < "$TOKEN_FILE" | wc -c | tr -d ' ')"
 [[ "$TOKEN_LEN" -ge 32 && "$TOKEN_LEN" -le 256 ]] || {

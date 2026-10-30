@@ -115,7 +115,7 @@ adb shell am instrument -w \
   -e resumeIdentityResearch "$RESUME_IDENTITY_RESEARCH" \
   -e moreOnly "$MORE_ONLY" \
   "${resume_args[@]}" \
-  "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
+  "$PKG.test/com.onedayonemasterpiece.streetstory.StreetStoryTestRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
 adb exec-out "run-as $PKG cat files/live-golden/stage-progress.json" > "$ARTIFACT_DIR/android-stage-progress.json" || true
