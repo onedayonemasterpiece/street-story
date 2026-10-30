@@ -86,7 +86,7 @@ class SourceRecoveryInstrumentedTest {
                 store.createStory(photo)
                 store.setServerIdentity(photo.clientStoryId, "server-${photo.clientStoryId}")
                 store.writableDatabase.execSQL("UPDATE stories SET created_at=? WHERE client_story_id=?",
-                    arrayOf(createdAt + index, photo.clientStoryId))
+                    arrayOf<Any?>(createdAt + index, photo.clientStoryId))
                 PhotoImportTelemetry.pending(context, photo.clientStoryId)?.let {
                     PhotoImportTelemetry.acknowledge(context, photo.clientStoryId, it)
                 }
