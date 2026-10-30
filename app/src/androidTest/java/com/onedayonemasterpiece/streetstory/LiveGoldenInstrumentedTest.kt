@@ -604,12 +604,10 @@ class LiveGoldenInstrumentedTest {
                 .edit().putString("active_story_id", local.clientStoryId).apply()
             beginStage("publication", 8L * 60 * 1000)
             val publicDestinations = api.capabilities().destinations
-            assertEquals(
-                "Owner MVP must expose exactly the configured test Telegram group",
-                listOf(safeAlias),
-                publicDestinations.map { it.alias },
-            )
-            assertTrue(publicDestinations.single().status in setOf("supported", "needs_review"))
+            // Other owner destinations may exist. Only this test binding can be
+            // approved: the confirmation card below must contain this alias alone.
+            val testDestination = publicDestinations.single { it.alias == safeAlias }
+            assertTrue(testDestination.status in setOf("supported", "needs_review"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
                 .let { now ->
