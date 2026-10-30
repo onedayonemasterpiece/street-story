@@ -483,6 +483,7 @@ class LiveSessionController(context: Context) {
                 }
                 connectTransport(startedSession.socketUrl, startedSession.socketTicket, 0L, true)
             } catch (exc: Exception) {
+                Log.w("StreetStoryLive", "live_start_failed type=${exc.javaClass.simpleName} cause=${exc.cause?.javaClass?.simpleName} session_created=${!sessionId.isNullOrBlank()}")
                 if (generation.get() == gen) fail(gen, "Live недоступен: ${safeMessage(exc)}")
                 ready(false, safeMessage(exc))
             }

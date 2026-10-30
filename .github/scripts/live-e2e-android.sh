@@ -128,6 +128,8 @@ for extension in json xml png; do
 done
 adb logcat -d -v threadtime -s StreetStoryMap:V StreetStoryMapE2E:V '*:S' \
   | tail -n 1000 > "$ARTIFACT_DIR/android-owner-map-touch-logcat.txt" || true
+adb logcat -d -v threadtime -s StreetStoryLive:I '*:S' \
+  | tail -n 200 > "$ARTIFACT_DIR/android-live-logcat.txt" || true
 grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
 python - <<'PY'
