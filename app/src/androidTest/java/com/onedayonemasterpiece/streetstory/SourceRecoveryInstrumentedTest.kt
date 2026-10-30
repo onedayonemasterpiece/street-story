@@ -6,6 +6,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -18,6 +21,118 @@ import java.util.concurrent.CopyOnWriteArrayList
 @RunWith(AndroidJUnit4::class)
 class SourceRecoveryInstrumentedTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
+
+
+    @Test fun reopenedActivePreviewLoadsBeforeUnrelatedStoryAndKeepsPassOrder() = runBlocking {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        val priorToken = config.deviceToken
+        config.backendUrl = null
+        val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val priorActive = prefs.getString("active_story_id", null)
+        val store = AppGraph.store(context)
+        val priorStories = store.stories()
+        val photos = List(3) {
+            PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        }
+        val active = photos[1]
+        val newer = photos[2]
+        val assetPath = "/v1/assets/server-${active.clientStoryId}/processed"
+        val stalePreview = PhotoAssets.retainTemporary(PhotoGpsFixture.bytes())
+        PhotoAssets.releaseTemporary(stalePreview) // A reopened process has no previous RAM preview.
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        val blockedBackground = java.util.concurrent.CountDownLatch(1)
+        val releaseBackground = java.util.concurrent.CountDownLatch(1)
+        val blockOnce = java.util.concurrent.atomic.AtomicBoolean(true)
+        val wires = photos.associate { photo ->
+            val wire = StoryWire().apply {
+                id = "server-${photo.clientStoryId}"
+                clientStoryId = photo.clientStoryId
+                photoSha256 = photo.sha256
+                state = StoryStage.READY_TO_PUBLISH
+                sourceAvailable = true
+                visualIdentity = VisualIdentityWire().apply { status = "match"; candidateId = "fixture-poi" }
+                if (photo == active) processedImageUrl = assetPath
+            }
+            wire.id to wire
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    val path = request.path.orEmpty()
+                    if (path == "/v1/capabilities") return MockResponse().setBody("{}")
+                    if (path == assetPath) return MockResponse().setHeader("Content-Type", "image/jpeg")
+                        .setBody(okio.Buffer().write(PhotoGpsFixture.bytes()))
+                    if (path == "/v1/stories/server-${newer.clientStoryId}" && blockOnce.getAndSet(false)) {
+                        blockedBackground.countDown()
+                        releaseBackground.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                    val wire = wires[path.removePrefix("/v1/stories/")]
+                    return if (wire != null) MockResponse().setHeader("Content-Type", "application/json")
+                        .setBody(Gson().toJson(wire))
+                    else MockResponse().setResponseCode(404)
+                        .setBody("""{"error":{"code":"fixture_only","message":"Not part of this fixture"}}""")
+                }
+            }
+            start()
+        }
+        fun storyReads() = calls.filter { it.method == "GET" && it.path.orEmpty().startsWith("/v1/stories/") }
+            .map { it.path.orEmpty().removePrefix("/v1/stories/") }
+        suspend fun syncPass() = TestListenableWorkerBuilder<SyncWorker>(context).build().doWork()
+        try {
+            val createdAt = System.currentTimeMillis()
+            photos.forEachIndexed { index, photo ->
+                store.createStory(photo)
+                store.setServerIdentity(photo.clientStoryId, "server-${photo.clientStoryId}")
+                store.writableDatabase.execSQL("UPDATE stories SET created_at=? WHERE client_story_id=?",
+                    arrayOf(createdAt + index, photo.clientStoryId))
+                PhotoImportTelemetry.pending(context, photo.clientStoryId)?.let {
+                    PhotoImportTelemetry.acknowledge(context, photo.clientStoryId, it)
+                }
+            }
+            store.setServerSnapshot(active.clientStoryId, StoryStage.READY_TO_PUBLISH,
+                null, null, null, assetPath, null, null, null, 1)
+            store.setProcessedImagePath(active.clientStoryId, stalePreview, assetPath)
+            val normalOrder = store.stories().mapNotNull { it.serverStoryId }
+            val activeServerId = "server-${active.clientStoryId}"
+            prefs.edit().putString("active_story_id", active.clientStoryId).commit()
+            config.backendUrl = server.url("/").toString().trimEnd('/')
+            config.deviceToken = "instrumentation-only"
+            val work = async(Dispatchers.IO) { syncPass() }
+            try {
+                assertTrue("Fixture did not reach its unrelated story", blockedBackground.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                val preview = store.story(active.clientStoryId)?.processedImagePath
+                assertTrue("Active preview still waits behind an unrelated story", preview != null && PhotoAssets.available(preview))
+                val bitmap = preview?.let { ImagePreviewDecoder.decode(context, it, 1200, 1000) }
+                assertNotNull("Active preview is not decodable", bitmap)
+                bitmap?.recycle()
+            } finally {
+                releaseBackground.countDown()
+                work.await()
+            }
+            assertEquals(listOf(activeServerId) + normalOrder.filter { it != activeServerId }, storyReads())
+            for (missingActive in listOf(null, "missing-story")) {
+                calls.clear()
+                prefs.edit().putString("active_story_id", missingActive).commit()
+                syncPass()
+                assertEquals("Missing active story must preserve the existing pass order", normalOrder, storyReads())
+            }
+        } finally {
+            releaseBackground.countDown()
+            config.backendUrl = null
+            photos.forEach { photo ->
+                store.deleteStory(photo.clientStoryId)
+                ResearchProjectionStore(context).clear(photo.clientStoryId)
+                PhotoAssets.releaseTemporary(photo.path)
+            }
+            priorStories.forEach { store.setStage(it.clientStoryId, it.stage, it.lastError) }
+            prefs.edit().putString("active_story_id", priorActive).commit()
+            config.deviceToken = priorToken
+            server.shutdown()
+            config.backendUrl = priorBackend
+        }
+    }
 
     @Test fun unchangedSyncReadsOnceWhileMutationKeepsAuthoritativeReadback() {
         val config = AppGraph.config(context)

@@ -607,7 +607,18 @@ class LiveSessionController(context: Context) {
                 SyncScheduler.enqueue(app)
             }
             "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Выполняю действие…")) }
-            "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит")) }
+            "budget_wait", "resource_budget_wait", "capability_budget_wait" -> {
+                if (waitStage != "resource" || waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime()
+                waitStage = "resource"
+                updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит"))
+            }
+            "resource_budget_ready", "capability_ready" -> {
+                if (waitStage == "resource" && waitStarted > 0L && state.status.startsWith("Ожидаю доступный лимит")) {
+                    waitStage = "provider"
+                    waitStarted = SystemClock.elapsedRealtime()
+                    updateForGeneration(gen, state.copy(status = "Думаю"))
+                }
+            }
             "reconnecting" -> updateForGeneration(gen, state.copy(status = "Восстанавливаю соединение с моделью…"))
             "research_progress" -> {
                 val payload = event.state?.takeIf { it.isJsonObject }?.asJsonObject
