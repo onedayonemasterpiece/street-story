@@ -77,8 +77,12 @@ class SourceRecoveryInstrumentedTest {
             }
             start()
         }
+        // A story may need a final authoritative readback; verify contiguous story order.
         fun storyReads() = calls.filter { it.method == "GET" && it.path.orEmpty().startsWith("/v1/stories/") }
             .map { it.path.orEmpty().removePrefix("/v1/stories/") }
+            .fold(mutableListOf<String>()) { order, id ->
+                order.apply { if (lastOrNull() != id) add(id) }
+            }
         suspend fun syncPass() = TestListenableWorkerBuilder<SyncWorker>(context).build().doWork()
         try {
             val createdAt = System.currentTimeMillis()
