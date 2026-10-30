@@ -66,7 +66,10 @@ adb shell svc power stayon true
 adb shell settings put system screen_off_timeout 1800000
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard
-adb shell am instrument -w -r "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tee instrumentation.txt
+# Fixture tests drive SyncWorker explicitly; hold automatic constrained work.
+# Live/physical acceptance uses the same runner without this test-only argument.
+adb shell am instrument -w -r -e street_story_fixture_sync true \
+  "$pkg.test/$pkg.StreetStoryTestRunner" | tee instrumentation.txt
 grep -q 'OK (' instrumentation.txt
 mkdir -p ui-evidence
 adb pull "/sdcard/Android/data/$pkg/files/real-facts-ui.png" ui-evidence/real-facts-ui.png
