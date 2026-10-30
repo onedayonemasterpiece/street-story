@@ -1,0 +1,4 @@
+﻿# Keep pre-capture device buffers and local runner artifacts out of the public repo.
+logcat-presession.log
+capture.pid
+logcat-stderr.log
