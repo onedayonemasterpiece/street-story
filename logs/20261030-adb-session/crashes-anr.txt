@@ -1,0 +1,1 @@
+﻿No FATAL / ANR / native-signal entries detected in this session.
