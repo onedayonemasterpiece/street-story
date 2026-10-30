@@ -271,6 +271,7 @@ jobs:
           SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
           LIVE_E2E_SOURCE_URL: ${{ inputs.photo_url }}
+          LIVE_E2E_RESUME_STORY_ID: ${{ inputs.story_id }}
           LIVE_E2E_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           LIVE_E2E_OWNER_MAP_FIXTURE: ${{ inputs.owner_map_fixture && 'true' || 'false' }}
         run: |
@@ -290,10 +291,11 @@ jobs:
           root = pathlib.Path('live-android-fixtures')
           fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
           meta = json.loads((fixture / 'fixture.json').read_text(encoding='utf-8'))
-          source_url = os.environ.get('LIVE_E2E_SOURCE_URL') or (
+          resume_id = os.environ.get('LIVE_E2E_RESUME_STORY_ID', '')
+          source_url = os.environ.get('LIVE_E2E_SOURCE_URL') or ('' if resume_id else (
               'https://raw.githubusercontent.com/onedayonemasterpiece/street-story/' +
-              os.environ['LIVE_E2E_SOURCE_SHA'] + '/backend/tools/fixtures/zachheim-owner-20260928/' + meta['source_file'])
-          if not source_url.startswith('https://'):
+              os.environ['LIVE_E2E_SOURCE_SHA'] + '/backend/tools/fixtures/zachheim-owner-20260928/' + meta['source_file']))
+          if source_url and not source_url.startswith('https://'):
               raise SystemExit('SOURCE must use an approved public HTTPS URL')
           (root / 'config.json').write_text(
               json.dumps({
@@ -312,6 +314,8 @@ jobs:
               'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Сделай картинку чуть теплее, а текст оставь без изменений.',
+              'Мира, привет. Подготовь публикацию текущих текста и уже готовой картинки только в тестовую Телеграм группу стрит стори е два е, через пять минут по Калининграду. Ничего не меняй и не отправляй до моего отдельного подтверждения. Покажи карточку публикации.',
+              'Подтверждаю именно показанную карточку публикации в тестовую Телеграм группу. Отправь её в указанное в карточке время.',
           ]
           if os.environ.get('LIVE_E2E_OWNER_MAP_FIXTURE') == 'true':
               texts[3] = 'Оставь три самых надежных подтвержденных факта, остальные не используй в текущем посте.'
@@ -330,17 +334,17 @@ jobs:
           meta = json.loads(pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928/fixture.json').read_text(encoding='utf-8'))
           public = {
               'schema_version': 1,
-              'fixture_id': meta['fixture_id'],
-              'source': 'owner-supplied repository fixture',
-              'object': meta['expected_object'],
+              'fixture_id': os.environ.get('LIVE_E2E_RESUME_STORY_ID') or meta['fixture_id'],
+              'source': 'saved server topic' if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else 'owner-supplied repository fixture',
+              'object': None if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else meta['expected_object'],
               'license': meta['license'],
-              'photo_input_mode': 'public_url_raw_ram',
+              'photo_input_mode': 'saved_preview' if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else 'public_url_raw_ram',
               'photo_url': json.loads(pathlib.Path('live-android-fixtures/config.json').read_text())['photo_url'],
-              'photo_coordinates_source': 'owner_fixture_metadata',
+              'photo_coordinates_source': 'saved_topic' if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else 'owner_fixture_metadata',
               'photo_pixel_transforms': False,
               'photo_disk_copies': False,
-              'latitude': meta['latitude'],
-              'longitude': meta['longitude'],
+              'latitude': None if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else meta['latitude'],
+              'longitude': None if os.environ.get('LIVE_E2E_RESUME_STORY_ID') else meta['longitude'],
               'prepared_audio': os.environ.get('LIVE_E2E_IDENTITY_ONLY') != 'true',
               'physical_mic': False,
           }
