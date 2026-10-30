@@ -44,7 +44,7 @@ elif args[:1] == ['exec-in']:
     assert result.returncode == 91, result.stderr
     remote = json.loads(capture.read_text())
     assert remote[:3] == ['am', 'instrument', '-w']
-    component = 'com.onedayonemasterpiece.streetstory.test/androidx.test.runner.AndroidJUnitRunner'
+    component = 'com.onedayonemasterpiece.streetstory.test/com.onedayonemasterpiece.streetstory.StreetStoryTestRunner'
     assert remote[-1] == component
     extras = remote[3:-1]
     assert len(extras) % 3 == 0
@@ -53,6 +53,7 @@ elif args[:1] == ['exec-in']:
         flag, name, value = extras[offset:offset + 3]
         assert flag == '-e' and value and value != component
         decoded[name] = value
+    assert 'street_story_fixture_sync' not in decoded
     assert decoded['keepPublication'] == 'true'
     assert decoded['identityOnly'] == decoded['moreOnly'] == 'false'
     if resume_id:
