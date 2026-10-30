@@ -10,6 +10,7 @@ internal data class LiveInputSuppression(
 
 internal class LiveInputFocusGate {
     @Volatile private var researchActive = false
+    @Volatile private var capabilityPending = false
     private val inputEpoch = AtomicInteger(0)
 
     @Synchronized
@@ -22,9 +23,20 @@ internal class LiveInputFocusGate {
     }
 
     fun isResearchActive(): Boolean = researchActive
+    fun isCapabilityPending(): Boolean = capabilityPending
+
+    @Synchronized
+    fun setCapabilityPending(pending: Boolean): LiveInputSuppression {
+        if (capabilityPending != pending) {
+            capabilityPending = pending
+            inputEpoch.incrementAndGet()
+        }
+        return snapshot(playbackSuppressed = false)
+    }
 
     fun snapshot(playbackSuppressed: Boolean): LiveInputSuppression {
         val reason = when {
+            capabilityPending -> "capability"
             researchActive -> "research"
             playbackSuppressed -> "playback"
             else -> null
@@ -38,8 +50,9 @@ internal class LiveInputFocusGate {
 
     @Synchronized
     fun reset(): LiveInputSuppression {
-        if (researchActive) {
+        if (researchActive || capabilityPending) {
             researchActive = false
+            capabilityPending = false
             inputEpoch.incrementAndGet()
         }
         return snapshot(playbackSuppressed = false)

@@ -6,6 +6,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveInputFocusGateTest {
+    @Test fun capabilityReadinessDoesNotReleaseResearchOrPlaybackFocus() {
+        val gate = LiveInputFocusGate()
+        gate.setResearchActive(true)
+        val pending = gate.setCapabilityPending(true)
+        assertEquals("capability", pending.reason)
+        assertEquals(pending.epoch, gate.setCapabilityPending(true).epoch)
+        gate.setCapabilityPending(false)
+        assertEquals("research", gate.snapshot(false).reason)
+        gate.setResearchActive(false)
+        assertEquals("playback", gate.snapshot(true).reason)
+        assertFalse(gate.snapshot(false).active)
+        gate.setCapabilityPending(true)
+        gate.reset()
+        assertFalse(gate.isCapabilityPending())
+        assertFalse(gate.snapshot(false).active)
+    }
+
     @Test fun researchFocusOwnsSuppressionAndAdvancesEpochOnEachBoundary() {
         val gate = LiveInputFocusGate()
 

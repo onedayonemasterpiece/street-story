@@ -126,7 +126,6 @@ class LiveGoldenInstrumentedTest {
         assumeTrue("Live golden fixture is not provisioned", configFile.isFile)
         val config = JsonParser.parseString(configFile.readText()).asJsonObject
         val ownerMapSelection = config.get("owner_map_selection")?.asBoolean == true
-        val selectedCount = if (ownerMapSelection) 3 else 2
         val baseUrl = config.requireString("backend_url")
         val safeAlias = config.requireString("safe_alias")
         val token = File(root, "token.txt").readText().trim()
@@ -146,19 +145,31 @@ class LiveGoldenInstrumentedTest {
             "The owner-map fixture exercises a fresh full-social path only"
         }
 
+        val api = ApiClient(baseUrl, token) { PhotoAssets.open(context, it) }
+        val resumed = if (resumeStoryId.isBlank()) null else api.getStory(resumeStoryId)
+        val savedPreview = resumed?.sourceAvailable == true
+        val selectedCount = resumed?.facts?.count { it.selected }?.takeIf { it > 0 }
+            ?: if (ownerMapSelection) 3 else 2
+
         beginStage("photo", 120_000)
         val seededOwnerUri = if (ownerMapSelection) seedOwnerOriginal(config) else null
         val photoUri = seededOwnerUri?.toString() ?: config.get("photo_uri")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
         val photoUrl = config.get("photo_url")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-        require(photoUri.startsWith("content://") || photoUrl.startsWith("https://")) { "An approved gallery URI or public SOURCE URL is required" }
-        val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
+        require(savedPreview || photoUri.startsWith("content://") || photoUrl.startsWith("https://")) { "An approved gallery URI or public SOURCE URL is required" }
+        val pcmFiles = (1..8).map { File(root, "voice-$it.pcm") }
         require(identityOnly || pcmFiles.all(File::isFile))
 
         val appConfig = AppGraph.config(context)
         appConfig.backendUrl = baseUrl
         appConfig.deviceToken = token
 
-        val rawImported = if (photoUri.isNotBlank()) PhotoImporter.import(context, Uri.parse(photoUri)) else {
+        // Resume the addressed topic without substituting the default fixture photo.
+        // No local original is copied: the normal UI restores the server preview.
+        val rawImported = if (savedPreview) ImportedPhoto(
+            requireNotNull(resumed).clientStoryId, File(root, "unavailable-original").absolutePath,
+            requireNotNull(resumed.photoSha256), "image/jpeg",
+            resumed.cameraPoint?.latitude, resumed.cameraPoint?.longitude,
+        ) else if (photoUri.isNotBlank()) PhotoImporter.import(context, Uri.parse(photoUri)) else {
             val connection = (URL(photoUrl).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000; readTimeout = 35_000
             }
@@ -169,14 +180,14 @@ class LiveGoldenInstrumentedTest {
         // Only the selected provider's original EXIF supplies camera GPS.
         // A fixture without GPS is excluded instead of changing the input flow.
         val imported = rawImported
-        assertNotNull(imported.latitude)
-        assertNotNull(imported.longitude)
-        assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - config.get("latitude").asDouble) < 0.0025)
-        assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - config.get("longitude").asDouble) < 0.0025)
+        if (!savedPreview) {
+            assertNotNull(imported.latitude)
+            assertNotNull(imported.longitude)
+            assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - config.get("latitude").asDouble) < 0.0025)
+            assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - config.get("longitude").asDouble) < 0.0025)
+        }
 
         val store = AppGraph.store(context)
-        val api = ApiClient(baseUrl, token) { PhotoAssets.open(context, it) }
-        val resumed = if (resumeStoryId.isBlank()) null else api.getStory(resumeStoryId)
         if (resumed != null) {
             require(!resumed.photoSha256.isNullOrBlank()) { "Saved upload identity missing" }
             require(resumed.clientStoryId.isNotBlank())
@@ -221,9 +232,10 @@ class LiveGoldenInstrumentedTest {
             "destination_alias" to safeAlias,
             "physical_mic" to false,
             "prepared_owner_photo" to true,
-            "photo_coordinates_source" to "embedded_exif",
+            "photo_coordinates_source" to if (savedPreview) "saved_topic" else "embedded_exif",
             "owner_map_selection" to ownerMapSelection,
-            "source_input_uri_or_url" to photoUri.ifBlank { photoUrl },
+            "source_input_uri_or_url" to if (savedPreview) "saved:$resumeStoryId" else photoUri.ifBlank { photoUrl },
+            "server_preview_restored" to savedPreview,
             "discovery_seeded" to false,
             "owner_name_hint" to false,
             "seed_urls_supplied" to false,
@@ -265,6 +277,12 @@ class LiveGoldenInstrumentedTest {
                 evidence["identity_scope"] = mapOf("photo_sha256" to photoSha, "identity_generation" to story.identityGeneration)
                 evidence["one_physical_contour_tap"] = true
                 evidence["owner_selection_reopened"] = true
+            } else if (resumed?.visualIdentity?.status == "owner_confirmed") {
+                story = resumed
+                assertEquals(photoSha, story.photoSha256)
+                evidence["automatic_identity"] = false
+                evidence["owner_selection_history_reused"] = true
+                capture("01-saved-photo-before-live", story)
             } else {
             if (resumeIdentityResearch) {
                 val before = rawStory(baseUrl, token, storyId)
@@ -586,12 +604,10 @@ class LiveGoldenInstrumentedTest {
                 .edit().putString("active_story_id", local.clientStoryId).apply()
             beginStage("publication", 8L * 60 * 1000)
             val publicDestinations = api.capabilities().destinations
-            assertEquals(
-                "Owner MVP must expose exactly the configured test Telegram group",
-                listOf(safeAlias),
-                publicDestinations.map { it.alias },
-            )
-            assertTrue(publicDestinations.single().status in setOf("supported", "needs_review"))
+            // Other owner destinations may exist. Only this test binding can be
+            // approved: the confirmation card below must contain this alias alone.
+            val testDestination = publicDestinations.single { it.alias == safeAlias }
+            assertTrue(testDestination.status in setOf("supported", "needs_review"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
                 .let { now ->
@@ -601,7 +617,8 @@ class LiveGoldenInstrumentedTest {
                 .withNano(0)
             val preparationTurnAfter = live.snapshot().completedTurns
             val previousConfirmationId = live.snapshot().confirmation?.confirmationId
-            live.sendText(
+            val preparationStarted = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
+            if (keepPublication) speak(live, pcmFiles[6]) else live.sendText(
                 "Подготовь карточку публикации именно текущих текста и уже просмотренной картинки. " +
                     "Отправляем только в тестовую Telegram-группу street-story e2e (назначение $safeAlias) " +
                     "на ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
@@ -626,14 +643,21 @@ class LiveGoldenInstrumentedTest {
             assertEquals(story.draftText, confirmation.text)
             assertEquals(listOf(safeAlias), confirmation.destinations)
             assertEquals("Publication card changed the reviewed image", story.processedImageUrl, confirmation.imageUrl)
-            assertEquals("Publication card changed the requested time", scheduledAt.toInstant(),
-                OffsetDateTime.parse(requireNotNull(confirmation.scheduledFor)).toInstant())
+            val cardTime = OffsetDateTime.parse(requireNotNull(confirmation.scheduledFor)).toInstant()
+            if (keepPublication) {
+                // Spoken request: five minutes from now. Review before giving consent.
+                assertTrue("Voice card time is not within the requested near-term window",
+                    cardTime.isAfter(preparationStarted.plusMinutes(3).toInstant()) &&
+                        cardTime.isBefore(OffsetDateTime.now().plusMinutes(7).toInstant()))
+            } else assertEquals("Publication card changed the requested time", scheduledAt.toInstant(), cardTime)
             assertEquals("Europe/Kaliningrad", confirmation.timezone)
             evidence["confirmation_id"] = confirmation.confirmationId
             evidence["separate_confirmation_input"] = true
             evidence["exact_card_text_image_destination_time_review"] = true
 
-            live.sendText("Подтверждаю именно показанную карточку публикации.")
+            evidence["publication_input_mode"] = if (keepPublication) "prepared_pcm" else "text"
+            if (keepPublication) speak(live, pcmFiles[7])
+            else live.sendText("Подтверждаю именно показанную карточку публикации.")
             awaitAnswer(live, "publication confirmation")
             val scheduled = pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
                 rawStory(baseUrl, token, storyId)

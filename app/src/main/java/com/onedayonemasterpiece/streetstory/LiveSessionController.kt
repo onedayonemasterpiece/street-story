@@ -125,7 +125,8 @@ class LiveSessionController(context: Context) {
                         "resource" -> "Ожидаю доступный лимит"
                         else -> "Жду ответа модели"
                     }
-                    update(state.copy(status = "$label · ${elapsed / 60}:${(elapsed % 60).toString().padStart(2, '0')}"))
+                    val paused = if (inputFocusGate.isCapabilityPending()) " · микрофон на паузе" else ""
+                    update(state.copy(status = "$label · ${elapsed / 60}:${(elapsed % 60).toString().padStart(2, '0')}$paused"))
                 }
             }
         }, 1, 1, TimeUnit.SECONDS)
@@ -482,6 +483,7 @@ class LiveSessionController(context: Context) {
                 }
                 connectTransport(startedSession.socketUrl, startedSession.socketTicket, 0L, true)
             } catch (exc: Exception) {
+                Log.w("StreetStoryLive", "live_start_failed type=${exc.javaClass.simpleName} cause=${exc.cause?.javaClass?.simpleName} session_created=${!sessionId.isNullOrBlank()}")
                 if (generation.get() == gen) fail(gen, "Live недоступен: ${safeMessage(exc)}")
                 ready(false, safeMessage(exc))
             }
@@ -496,7 +498,7 @@ class LiveSessionController(context: Context) {
                 inputOpen = false
                 socket?.endSpeech()
                 diagnostic(
-                    if (suppression.reason == "research") "speech_closed_for_research" else "speech_closed_for_playback",
+                    "speech_closed_for_${suppression.reason}",
                     mapOf("input_epoch" to suppression.epoch),
                 )
             }
@@ -598,22 +600,39 @@ class LiveSessionController(context: Context) {
                 if (waitStarted > 0) updateForGeneration(gen, state.copy(status = "Думаю", inputActive = false))
             }
             "turn_complete" -> {
-                waitStarted = 0
+                if (!inputFocusGate.isCapabilityPending()) waitStarted = 0
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
-                val status = if (inputFocusGate.isResearchActive()) researchStatus(state.researchProgress) else "Слушаю"
+                val status = when {
+                    inputFocusGate.isCapabilityPending() -> state.status
+                    inputFocusGate.isResearchActive() -> researchStatus(state.researchProgress)
+                    else -> "Слушаю"
+                }
                 updateForGeneration(gen, state.copy(status = status, inputActive = false, completedTurns = state.completedTurns + 1, error = null))
                 persistMessages()
                 SyncScheduler.enqueue(app)
             }
             "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Выполняю действие…")) }
+            "capability_transition_acknowledged", "capability_transition_started" -> {
+                // The old turn is finished, but the new provider is not ready to
+                // consume speech. Reuse the capture gate; never queue stale PCM.
+                inputFocusGate.setCapabilityPending(true)
+                endSpeech()
+                waitStage = "provider"
+                if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime()
+                updateForGeneration(gen, state.copy(status = "Подключаю инструменты · микрофон на паузе", inputActive = false))
+            }
             "budget_wait", "resource_budget_wait", "capability_budget_wait" -> {
                 if (waitStage != "resource" || waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime()
                 waitStage = "resource"
-                updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит"))
+                val paused = if (inputFocusGate.isCapabilityPending()) " · микрофон на паузе" else ""
+                updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит$paused"))
             }
             "resource_budget_ready", "capability_ready" -> {
-                if (waitStage == "resource" && waitStarted > 0L && state.status.startsWith("Ожидаю доступный лимит")) {
+                val capabilityReady = event.type == "capability_ready" && inputFocusGate.isCapabilityPending()
+                if (capabilityReady) inputFocusGate.setCapabilityPending(false)
+                if (!inputFocusGate.isCapabilityPending() && waitStarted > 0L &&
+                    (capabilityReady || (waitStage == "resource" && state.status.startsWith("Ожидаю доступный лимит")))) {
                     waitStage = "provider"
                     waitStarted = SystemClock.elapsedRealtime()
                     updateForGeneration(gen, state.copy(status = "Думаю"))

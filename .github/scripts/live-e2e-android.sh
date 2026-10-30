@@ -96,7 +96,7 @@ adb shell wm dismiss-keyguard
 adb shell "run-as $PKG mkdir -p files/live-golden"
 fixture_names=(config.json token.txt)
 if [[ -f "$FIXTURE_DIR/source.original" ]]; then fixture_names+=(source.original); fi
-if [[ "$IDENTITY_ONLY" != true ]]; then fixture_names+=(voice-{1..6}.pcm); fi
+if [[ "$IDENTITY_ONLY" != true ]]; then fixture_names+=(voice-{1..8}.pcm); fi
 for name in "${fixture_names[@]}"; do
   test -s "$FIXTURE_DIR/$name"
   adb exec-in "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "$FIXTURE_DIR/$name"
@@ -128,6 +128,8 @@ for extension in json xml png; do
 done
 adb logcat -d -v threadtime -s StreetStoryMap:V StreetStoryMapE2E:V '*:S' \
   | tail -n 1000 > "$ARTIFACT_DIR/android-owner-map-touch-logcat.txt" || true
+adb logcat -d -v threadtime -s StreetStoryLive:I '*:S' \
+  | tail -n 200 > "$ARTIFACT_DIR/android-live-logcat.txt" || true
 grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
 python - <<'PY'
@@ -208,6 +210,8 @@ else:
     if evidence.get('publication_kept') is not keep:
         raise SystemExit('Android golden publication mode mismatch')
     if keep:
+        if evidence.get('publication_input_mode') != 'prepared_pcm' or evidence.get('prepared_pcm_turn_count', 0) < 2:
+            raise SystemExit('Kept publication requires separate real PCM preparation and confirmation')
         if evidence.get('destination_alias') != 'street_story_e2e_20260928_tg' or not evidence.get('publication_id'):
             raise SystemExit('Owner-visible mode lacks exact test-group publication receipt')
     elif evidence.get('cancel_confirmed') is not True:

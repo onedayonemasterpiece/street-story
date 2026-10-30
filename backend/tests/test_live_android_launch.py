@@ -13,7 +13,7 @@ def test_fresh_and_resume_launch_have_complete_remote_instrumentation_args(tmp_p
     fixtures = tmp_path / 'fixtures'
     fixtures.mkdir()
     (fixtures / 'config.json').write_text(json.dumps({'backend_url': 'https://street-story.kenigevents.ru'}))
-    for name in ['token.txt', 'photo.jpg', *(f'voice-{i}.pcm' for i in range(1, 7))]:
+    for name in ['token.txt', 'photo.jpg', *(f'voice-{i}.pcm' for i in range(1, 9))]:
         (fixtures / name).write_bytes(b'fixture')
     commands = tmp_path / 'bin'
     commands.mkdir()
