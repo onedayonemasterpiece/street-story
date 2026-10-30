@@ -1602,9 +1602,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                            canonical({'story_id': story_id, 'type': type(exc).__name__}))
         return None
 
-    def _send_visual_snapshot(self, session) -> None:
-        snapshot = self._visual_snapshot(session.resource_id, selected_format=
+    async def _send_visual_snapshot(self, session) -> None:
+        snapshot = await asyncio.to_thread(self._visual_snapshot, session.resource_id, selected_format=
             getattr(session, 'capability', None) in {'editor', 'photo_format', 'publication'})
+        if getattr(session, 'closed', False):
+            return
         if snapshot is None:
             self.emit(session, {"type": "visual_context", "status": "unavailable"})
             record_live_diagnostic(
@@ -1668,7 +1670,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             logger.warning('street_story_saved_visual_snapshot_failed story_id=%s type=%s',
                            session.resource_id, type(exc).__name__)
 
-    def on_started(self, session) -> None:
+    async def on_started(self, session) -> None:
         record_live_diagnostic(
             self.service,
             session.resource_id,
@@ -1677,11 +1679,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "voice_profile",
             {"voice": "Aoede", "model": str(session.model), "phase": "started"},
         )
-        self._send_visual_snapshot(session)
+        await self._send_visual_snapshot(session)
+        if getattr(session, 'closed', False):
+            return
 
         self._watch_identity_ready(session)
 
-    def on_resumed(self, session) -> None:
+    async def on_resumed(self, session) -> None:
         record_live_diagnostic(
             self.service,
             session.resource_id,
@@ -1690,10 +1694,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "voice_profile",
             {"voice": "Aoede", "model": str(session.model), "phase": "resumed"},
         )
-        self._send_visual_snapshot(session)
+        await self._send_visual_snapshot(session)
+        if getattr(session, 'closed', False):
+            return
         self._send_pending_comparison(session)
         self._watch_identity_ready(session)
-        self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
+        context = await asyncio.to_thread(lambda: self._compact_context(self._topic_state(session.resource_id)))
+        if not getattr(session, 'closed', False):
+            self.emit(session, {"type": "product_state", "state": context})
 
     def _pause_research(self, session, reason):
         session.state["research_cancelled"] = True
@@ -2037,7 +2045,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             payload = {**args, "expected_photo_sha256": photo_sha,
                 "expected_identity_generation": int(research.get("identity_generation") or 0)}
             result = {"story": set_photo_format(self.service, story_id, command_id, payload)}
-            self._send_visual_snapshot(session)
+            await self._send_visual_snapshot(session)
         elif name == "set_concept":
             # Editor tools build the full story projection (hundreds of KiB).
             # Run them off the loop that carries Live audio ACKs.

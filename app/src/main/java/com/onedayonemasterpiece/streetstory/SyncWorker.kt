@@ -51,8 +51,11 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         val research = ResearchProjectionStore(applicationContext)
         var pollAgain = false
         val capabilities = runCatching { api.capabilities() }.getOrNull()
+        // Restore the visible preview before syncing unrelated stories.
+        val activeStoryId = applicationContext.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+            .getString("active_story_id", null)
         try {
-            for (initial in store.stories()) {
+            for (initial in store.stories().sortedBy { it.clientStoryId != activeStoryId }) {
                 try {
                     if (syncStory(store, feed, research, api, initial, capabilities)) pollAgain = true
                 } catch (exc: SourceUnavailableException) {

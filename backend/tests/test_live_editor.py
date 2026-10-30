@@ -1892,7 +1892,101 @@ def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
     ]
 
 
-def test_live_start_prepares_source_orientation_and_budget_in_ram(tmp_path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocked_method', ['_visual_snapshot', '_topic_state'])
+@pytest.mark.parametrize('stop_during_prepare', [False, True])
+async def test_live_resume_preparation_keeps_audio_input_responsive_and_fences_stop(
+        tmp_path, monkeypatch, blocked_method, stop_during_prepare):
+    import asyncio
+    import inspect
+    import threading
+    from live_interaction import LiveSocketSessionHost
+
+    svc, _, fixture, _ = make_service(tmp_path)
+
+    async def provider(*, reader, on_event, **_kwargs):
+        await reader.readline()
+        on_event({'type': 'ready'})
+        while raw := await reader.readline():
+            if json.loads(raw).get('type') == 'stop':
+                return
+
+    adapters = []
+
+    def adapter_factory(**hooks):
+        adapter = StreetStoryLiveAdapter(svc, hooks['emit'], hooks['write'])
+        adapters.append(adapter)
+        return adapter
+
+    host = LiveSocketSessionHost(
+        adapter_factory=adapter_factory,
+        key_resolver=lambda *_: 'fixture-key-not-a-provider', provider_run=provider,
+    )
+    started = await host.start(resource_id=fixture.resource_id, actor=None, attempt_id='resume_fixture')
+    session = host.sessions[started['session_id']]
+    adapter = adapters[0]
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered, finished = asyncio.Event(), threading.Event()
+    release = threading.Event()
+    writes, events = [], []
+    original_prepare = getattr(adapter, blocked_method)
+    original_write, original_emit = adapter.write, adapter.emit
+
+    def prepare(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        release.wait(1)  # Also releases the old blocking implementation on failure.
+        try:
+            return original_prepare(*args, **kwargs)
+        finally:
+            finished.set()
+
+    def write(current, message):
+        assert threading.get_ident() == loop_thread
+        writes.append(message)
+        return original_write(current, message)
+
+    def emit(current, event):
+        assert threading.get_ident() == loop_thread
+        events.append(event)
+        return original_emit(current, event)
+
+    monkeypatch.setattr(adapter, blocked_method, prepare)
+    monkeypatch.setattr(adapter, 'write', write)
+    monkeypatch.setattr(adapter, 'emit', emit)
+
+    async def resume():
+        value = adapter.on_resumed(session)
+        if inspect.isawaitable(value):
+            await value
+
+    resumed = asyncio.create_task(resume())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        # This is the same admission path the WSS relay completes before audio_ack.
+        await host.input(session_id=session.id, resource_id=session.resource_id, actor=None,
+                         message={'activity_start': True})
+        ack = await host.input(session_id=session.id, resource_id=session.resource_id, actor=None,
+                               message={'audio_base64': base64.b64encode(bytes(3200)).decode()})
+        assert ack['ok'] and not finished.is_set(), 'Photo/state preparation blocked Live audio admission'
+        if stop_during_prepare:
+            await host.stop(session_id=session.id, resource_id=session.resource_id, actor=None)
+            after_stop = (len(writes), len(events))
+        release.set()
+        await asyncio.wait_for(resumed, 2)
+        if stop_during_prepare:
+            assert (len(writes), len(events)) == after_stop
+        else:
+            assert any(item['type'] == 'snapshot' for item in writes)
+            assert any(item['type'] == 'product_state' for item in events)
+    finally:
+        release.set()
+        await asyncio.gather(resumed, return_exceptions=True)
+        await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_live_start_prepares_source_orientation_and_budget_in_ram(tmp_path):
     from PIL import Image
     svc, _adapter, session, events = make_service(tmp_path)
     image = Image.new('RGB', (80, 40), 'white')
@@ -1908,7 +2002,7 @@ def test_live_start_prepares_source_orientation_and_budget_in_ram(tmp_path):
         lambda _session, event: events.append(event),
         lambda _session, message: writes.append(message),
     )
-    adapter.on_started(session)
+    await adapter.on_started(session)
 
     assert len(writes) == 1
     snapshot = writes[0]
