@@ -1490,6 +1490,11 @@ class StreetStoryService:
                 return await self._run_visual(job)
             elif job["kind"] == "publish":
                 return await self._run_publish(job)
+            elif job["kind"] == "publication_edit":
+                handler = getattr(self, "_run_publication_edit", None)
+                if not callable(handler):
+                    raise PermanentProviderError("Publication editing is not configured")
+                return await handler(job)
             else:
                 raise PermanentProviderError(f"Unknown job kind {job['kind']}")
         if job['kind'] not in RESEARCH_JOB_KINDS:
