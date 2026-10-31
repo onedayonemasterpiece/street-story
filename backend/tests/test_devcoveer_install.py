@@ -272,19 +272,23 @@ def test_cleanup_failure_is_reported_without_failing_verified_service(monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("alias_kind", "status", "accepted"),
+    ("tg_status", "tg_selected", "accepted"),
     [
-        ("test", "supported", True),
-        ("test", "needs_review", True),
-        ("production", "supported", False),
-        ("test", "blocked", False),
+        ("supported", True, True),
+        ("needs_review", True, True),
+        ("blocked", True, False),
+        ("supported", False, False),
     ],
 )
-def test_deployed_capability_gate_requires_test_group(monkeypatch, alias_kind, status, accepted):
+def test_deployed_capability_gate_requires_both_native_defaults(monkeypatch, tg_status, tg_selected, accepted):
     module = _load_installer()
     sha = "a" * 40
-    alias = module.TEST_VIBE_ALIAS if alias_kind == "test" else module.VIBE_ALIAS
-    rows = [{"alias": alias, "provider": "telegram", "status": status, "selected": alias_kind == "test"}]
+    rows = [
+        {"alias": "tg_8c5883ccfdb221a0f6c1", "provider": "telegram",
+         "status": tg_status, "selected": tg_selected},
+        {"alias": "vk_08231151e8c26f14cbb8", "provider": "vk",
+         "status": "supported", "selected": True},
+    ]
 
     def fake_http(url, **kwargs):
         return {"ok": True, "source_sha": sha} if url.endswith("healthz") else {"destinations": rows}
@@ -1116,15 +1120,27 @@ def test_ensure_changed_lock_creates_own_environment_and_leaves_donor(monkeypatc
     assert all(str(a / 'venv') not in str(argv) for argv in calls)
 
 
-def test_activation_accepts_the_test_chat_beside_real_channels_and_rejects_unsafe_projections():
-    # 2026-10-18: the deploy of «test chat + real channel» was rolled back by the old test-only check.
+def test_activation_requires_two_native_channels_and_keeps_test_chat_explicit():
     installer = _load_installer()
-    test = {"alias": installer.TEST_VIBE_ALIAS, "provider": "telegram", "status": "supported", "selected": True}
-    real = {"alias": "lovekenig_tg", "provider": "telegram", "status": "supported", "selected": False}
-    installer.check_destination_projection([test, real])
-    installer.check_destination_projection([test])
-    for rows in ([real], [dict(test, selected=False), real], [test, dict(real, selected=True)],
-                 [test, {"alias": "street_story_e2e_other_tg", "provider": "telegram", "status": "supported"}]):
+    test = {"alias": installer.TEST_VIBE_ALIAS, "provider": "telegram",
+            "status": "supported", "selected": False}
+    old_real = {"alias": "lovekenig_tg", "provider": "telegram",
+                "status": "supported", "selected": False}
+    tg = {"alias": "tg_8c5883ccfdb221a0f6c1", "provider": "telegram",
+          "status": "supported", "selected": True}
+    vk = {"alias": "vk_08231151e8c26f14cbb8", "provider": "vk",
+          "status": "needs_review", "selected": True}
+    installer.check_destination_projection([test, old_real, tg, vk])
+    installer.check_destination_projection([tg, vk])
+    for rows in (
+        [tg], [vk], [test, tg], [test, vk],
+        [tg, vk, dict(test, selected=True)],
+        [tg, vk, dict(old_real, selected=True)],
+        [dict(tg, provider="vk"), vk],
+        [tg, dict(vk, provider="telegram")],
+        [tg, dict(vk, status="blocked")],
+        [tg, vk, dict(tg)],
+    ):
         with pytest.raises(installer.DeployError):
             installer.check_destination_projection(rows)
 

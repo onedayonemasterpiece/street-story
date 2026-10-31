@@ -232,8 +232,12 @@ def exact_source(expected_sha: str, *, source_branch: str = BRANCH) -> tuple[str
 
 
 def check_destination_projection(rows: list) -> list[dict]:
-    """Owner decision 2026-10-18: the configured test group is «Тестовый чат», first and selected;
-    real channels follow and are never preselected; no other internal acceptance alias is shown."""
+    """Fail closed unless exactly the two owner-approved native channels are selected.
+
+    The old test chat remains an explicit destination, never the production default.
+    A missing/unsupported channel must block activation rather than silently choose
+    a single provider or publish immediately.
+    """
     safe_rows = [
         {
             "alias": str(row.get("alias") or ""),
@@ -244,15 +248,30 @@ def check_destination_projection(rows: list) -> list[dict]:
         for row in rows
         if isinstance(row, dict)
     ]
+    defaults = {
+        "tg_8c5883ccfdb221a0f6c1": "telegram",
+        "vk_08231151e8c26f14cbb8": "vk",
+    }
+    by_alias = {row["alias"]: row for row in safe_rows}
+    selected = {row["alias"] for row in safe_rows if row["selected"]}
     if (
-        not safe_rows
-        or safe_rows[0]["alias"] != TEST_VIBE_ALIAS
-        or not safe_rows[0]["selected"]
-        or any(row["provider"] != "telegram" or row["status"] not in {"supported", "needs_review"} for row in safe_rows)
-        or any(row["selected"] or row["alias"].startswith("street_story_e2e") for row in safe_rows[1:])
+        len(by_alias) != len(safe_rows)
+        or selected != set(defaults)
+        or any(
+            alias not in by_alias
+            or by_alias[alias]["provider"] != provider
+            or by_alias[alias]["status"] not in {"supported", "needs_review"}
+            for alias, provider in defaults.items()
+        )
+        or any(
+            row["provider"] not in {"telegram", "vk"}
+            or row["status"] not in {"supported", "needs_review"}
+            for row in safe_rows
+        )
     ):
         raise DeployError(f"unexpected Street Story destination projection: {safe_rows}")
     return safe_rows
+
 
 def materialize_release(sha: str, tree_sha: str) -> Path:
     RELEASES_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
