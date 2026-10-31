@@ -739,13 +739,10 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "publish_story",
-        "On the owner's explicit 'опубликуй', reserve the nearest available native scheduled slot and post to both standard Street Story channels. Never require another approval; day/period are optional; omit destinations for both standard channels.",
-        {
-            "day": {"type": "string", "description": "Optional: сегодня, завтра, today, tomorrow or YYYY-MM-DD; never compute a date yourself."},
-            "period": {"type": "string", "enum": ["morning", "evening"], "description": "Optional morning/evening constraint."},
-            "destinations": {"type": "array", "items": {"type": "string"},
-                             "description": "Only explicit nondefault channels named by the owner; omit for standard TG+VK."},
-        },
+        "Owner command: native delayed TG+VK, nearest free slot, no second approval.",
+        {"day": {"type": "string"},
+         "period": {"type": "string", "enum": ["morning", "evening"]},
+         "destinations": {"type": "array", "items": {"type": "string"}}},
     ),
     _tool_schema(
         "prepare_publication",
@@ -866,7 +863,7 @@ Concept, editing and publication:
 - Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 sends the whole photo and the image model composes 4:5 keeping the complete building. An explicit pixel crop (crop_rect) only on the author's specific request; check it against essential building/context and offer original if it cannot fit. Do not silently contain, stretch or outpaint.
 - On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. Plan caption and image together so they complement each other: pass in fact_ids only the selected facts that read well as short notes on this image (a date, a visible feature, a former use); the caption develops the others and their connections. When a draft exists, do not hand the image the same list the caption already tells; one shared central point is fine. The image should carry two or three short notes (dates, visible features, former uses), not just one. Every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
-- На ясную просьбу «опубликуй» сразу вызови publish_story: по умолчанию оба канала «История за поворотом», нативные отложенные, ближайший свободный слот. Не спрашивай каналы/время и не требуй второго подтверждения. Слова «завтра», «утром», «вечером» или указанный день передай как day/period, сам дату и абсолютное время не вычисляй. Если владелец явно просит посмотреть карточку до отправки, используй prepare_publication и затем confirm_publication только после его подтверждения. Правки текста/картинки уже отложенной или опубликованной истории централизованно отправляются во все её каналы.
+- На «опубликуй» вызови publish_story: по умолчанию оба канала «История за поворотом», ближайший нативный отложенный слот, без второго подтверждения. Передавай ограничения дня/утра/вечера, не рассчитывая время. Карточку prepare_publication и confirm_publication используй лишь по просьбе о предварительном просмотре. Правки истории синхронизируются во всех её каналах.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
 Answer briefly and concretely in Russian.
 """.strip()
