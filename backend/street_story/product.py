@@ -1076,18 +1076,27 @@ class ProductStreetStoryService(StreetStoryService):
         req_digest = digest({"story_id": story_id, **body})
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
-            intent = db.execute(
-                "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)
-            ).fetchone()
-            if not intent or not intent["vibepublish_publication_id"] or intent["vibepublish_revision"] is None:
+            rows = list(db.execute(
+                "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC,rowid DESC", (story_id,)
+            ))
+            if not rows:
                 raise InvalidStateError("publication_not_cancellable", "No scheduled VibePublish publication can be cancelled")
-            self._idem(db, key, "cancel", req_digest, "publish_intent", intent["id"])
-            cancel_key = "ss-vp-cancel-" + hashlib.sha256(f"{intent['id']}:{key}".encode()).hexdigest()[:48]
-            db.execute(
-                "UPDATE publish_intents SET cancel_request_key=COALESCE(cancel_request_key,?),state=CASE WHEN state='cancelled' THEN state ELSE 'cancel_pending' END,updated_at=? WHERE id=?",
-                (cancel_key, self.store.now(), intent["id"]),
-            )
-            self._enqueue_job(db, story_id, "cancel", f"cancel:{intent['id']}", {"intent_id": intent["id"]})
+            group = json.loads(rows[0]["request_json"] or "{}").get("publication_group")
+            members = ([item for item in rows
+                        if json.loads(item["request_json"] or "{}").get("publication_group") == group]
+                       if group else [rows[0]])
+            if any(not item["vibepublish_publication_id"] or item["vibepublish_revision"] is None
+                   for item in members):
+                raise InvalidStateError("publication_not_cancellable", "Both scheduled channels must be ready before cancellation")
+            self._idem(db, key, "cancel", req_digest, "publish_intent", rows[0]["id"])
+            for intent in members:
+                cancel_key = "ss-vp-cancel-" + hashlib.sha256(f"{intent['id']}:{key}".encode()).hexdigest()[:48]
+                db.execute(
+                    "UPDATE publish_intents SET cancel_request_key=COALESCE(cancel_request_key,?),"
+                    "state=CASE WHEN state='cancelled' THEN state ELSE 'cancel_pending' END,updated_at=? WHERE id=?",
+                    (cancel_key, self.store.now(), intent["id"]),
+                )
+                self._enqueue_job(db, story_id, "cancel", f"cancel:{intent['id']}", {"intent_id": intent["id"]})
             return self._story_repr(db, story)
 
     async def _run_cancel(self, job: dict[str, Any]) -> None:
