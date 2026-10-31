@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import settle_live_writes
 from test_facts_research_finish import fallback, findings, QUOTES
 from street_story.research_budget import PAGE_UNITS, response_units
 from tools.facts_research_acceptance import assess_gold, classify_failure
@@ -111,6 +112,7 @@ async def test_pending_operation_continues_same_lease_bounded_and_author_stop_wi
     session.awaiting_audio = False  # Actual model response/playback arrived.
     adapter.on_event(session, {'type': 'turn_complete'})
     assert written == []
+    await settle_live_writes()
     with svc.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE json_extract(payload_json,'$.resume_run_id')=?", (run_id,)).fetchone()[0] == 1
     adapter.on_event(session, {'type': 'turn_complete'})

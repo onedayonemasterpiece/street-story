@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from conftest import settle_live_writes
 from street_story.live_author_intent import (
     begin_turn, has_place_consent, suspected_noise_transcript, suspected_noise_turn,
 )
@@ -136,6 +137,7 @@ async def test_suspected_noise_turn_cannot_execute_product_mutation(tmp_path):
     )
     assert result["ignored"] is True
     assert svc.story(session.resource_id)["visual_identity"]["status"] != "owner_confirmed"
+    await settle_live_writes()
     with svc.store.connection() as db:
         blocked = db.execute(
             "SELECT payload_json FROM live_diagnostics "
