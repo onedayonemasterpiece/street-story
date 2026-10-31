@@ -904,29 +904,38 @@ class StreetStoryService:
         return True
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Persist one provider intent per native delivery time, atomically."""
         req_digest = digest({"story_id": story_id, **body})
-        scheduled_raw = str(body.get("scheduled_for") or "").strip()
-        if scheduled_raw:
-            try:
-                scheduled_dt = datetime.fromisoformat(scheduled_raw.replace("Z", "+00:00"))
-            except ValueError:
-                raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
-            if scheduled_dt.tzinfo is None:
-                raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
-            if scheduled_dt.astimezone(timezone.utc).microsecond:
-                raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
-            now_dt = datetime.now(timezone.utc)
-            scheduled_utc = scheduled_dt.astimezone(timezone.utc)
-            if scheduled_utc <= now_dt or scheduled_utc > now_dt + timedelta(days=90):
-                raise ConflictError("publish_time_invalid", "scheduled_for must be within the next 90 days")
-            scheduled_iso = scheduled_dt.isoformat()
-        else:
-            delay = int(body.get("delay_minutes", 60))
-            if delay < 1 or delay > 24 * 60:
-                raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
-            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        if datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=90):
-            raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
+        slot_intent = body.get("slot_intent")
+        if slot_intent is not None and (
+                not isinstance(slot_intent, dict) or
+                set(slot_intent) - {"day", "period"}):
+            raise ConflictError("publish_slot_invalid", "Use a day and/or morning/evening")
+        scheduled_iso = None
+        if slot_intent is None:
+            scheduled_raw = str(body.get("scheduled_for") or "").strip()
+            if scheduled_raw:
+                try:
+                    scheduled_dt = datetime.fromisoformat(scheduled_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
+                if scheduled_dt.tzinfo is None:
+                    raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
+                if scheduled_dt.astimezone(timezone.utc).microsecond:
+                    raise ConflictError('publish_time_precision', 'scheduled_for must use whole seconds without fractional precision')
+                now_dt = datetime.now(timezone.utc)
+                scheduled_utc = scheduled_dt.astimezone(timezone.utc)
+                if scheduled_utc <= now_dt or scheduled_utc > now_dt + timedelta(days=90):
+                    raise ConflictError("publish_time_invalid", "scheduled_for must be within the next 90 days")
+                scheduled_iso = scheduled_dt.isoformat()
+            else:
+                delay = int(body.get("delay_minutes", 60))
+                if delay < 1 or delay > 24 * 60:
+                    raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
+                scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            if datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=90):
+                raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
+
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
             from .fact_ledger import selected_eligibility_issues
@@ -934,7 +943,7 @@ class StreetStoryService:
             if issues:
                 raise InvalidStateError(
                     "fact_review_required",
-                    "Selected facts still need semantic review or arbitration before publication.",
+                    "Selected facts still need semantic review or arbitration before publication",
                 )
             existing = db.execute("SELECT * FROM publish_intents WHERE request_key=?", (key,)).fetchone()
             replay = self._idem(db, key, "publish", req_digest, "publish_intent", existing["id"] if existing else "pending")
@@ -948,24 +957,45 @@ class StreetStoryService:
             if not publish_ready or not story["vibepublish_asset_ref"]:
                 raise InvalidStateError("visual_not_ready", "A successful verified visual is required before photo publication")
             destinations = [str(x) for x in body.get("destinations", [])]
-            if not destinations:
-                raise ConflictError("publish_destinations_required", "At least one destination is required")
-            intent_id = "pubintent_" + uuid.uuid4().hex[:24]
-            vp_key = "ss-vp-publish-" + hashlib.sha256(f"{story_id}:{key}".encode()).hexdigest()[:48]
-            request = {
-                "destinations": destinations,
-                "text": body.get("text_override") if body.get("text_override") is not None else story["draft_text"],
-                "asset_ref": story["vibepublish_asset_ref"],
-                "scheduled_for": scheduled_iso,
-            }
+            if not destinations or len(set(destinations)) != len(destinations):
+                raise ConflictError("publish_destinations_required", "Unique destinations are required")
+
+            if slot_intent is not None:
+                from .publication_slots import choose_slot, delivery_time
+                try:
+                    slot = choose_slot(db, day=slot_intent.get("day"),
+                                       period=slot_intent.get("period"))
+                    plan = [([alias], delivery_time(slot, alias)) for alias in destinations]
+                except ValueError as exc:
+                    raise ConflictError("publish_slot_unavailable", str(exc)) from exc
+            else:
+                slot = None
+                plan = [(destinations, scheduled_iso)]
+
             now = self.store.now()
-            db.execute("UPDATE idempotency SET resource_id=? WHERE key=?", (intent_id, key))
-            db.execute(
-                "INSERT INTO publish_intents(id,story_id,request_key,vibepublish_request_key,request_json,state,scheduled_for,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (intent_id, story_id, key, vp_key, canonical(request), "pending", scheduled_iso, now, now),
-            )
-            self._enqueue_job(db, story_id, "publish", f"publish:{intent_id}", {"intent_id": intent_id})
-            db.execute("UPDATE stories SET state='scheduling',scheduled_for=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?", (scheduled_iso, now, story_id))
+            for index, (targets, due_at) in enumerate(plan):
+                # One logical command reserves both times inside this same write tx.
+                row_key = key if index == 0 else f"{key}:{index}"
+                intent_id = "pubintent_" + uuid.uuid4().hex[:24]
+                vp_key = "ss-vp-publish-" + hashlib.sha256(f"{story_id}:{row_key}".encode()).hexdigest()[:48]
+                request = {
+                    "destinations": targets,
+                    "text": body.get("text_override") if body.get("text_override") is not None else story["draft_text"],
+                    "asset_ref": story["vibepublish_asset_ref"],
+                    "scheduled_for": due_at,
+                }
+                if slot is not None:
+                    request["slot_at"] = slot.isoformat()
+                    request["publication_group"] = key
+                if index == 0:
+                    db.execute("UPDATE idempotency SET resource_id=? WHERE key=?", (intent_id, key))
+                db.execute(
+                    "INSERT INTO publish_intents(id,story_id,request_key,vibepublish_request_key,request_json,state,scheduled_for,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (intent_id, story_id, row_key, vp_key, canonical(request), "pending", due_at, now, now),
+                )
+                self._enqueue_job(db, story_id, "publish", f"publish:{intent_id}", {"intent_id": intent_id})
+            db.execute("UPDATE stories SET state='scheduling',scheduled_for=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?",
+                       (plan[0][1], now, story_id))
             return self._story_repr(db, self._story_row(db, story_id))
 
     async def capabilities(self) -> dict[str, Any]:
