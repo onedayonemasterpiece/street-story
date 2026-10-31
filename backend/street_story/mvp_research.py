@@ -1969,23 +1969,21 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         return result
 
     async def capabilities(self) -> dict[str, Any]:
-        """Owner decision 18.10.2026: the owner publishes first to the test chat, then to the real channel.
-
-        The configured test group is shown as «Тестовый чат» and selected by default; real channels are
-        listed beside it and chosen explicitly. Other internal acceptance aliases stay hidden.
-        """
+        """31.10 owner: real TG and VK selected by default; test chat is explicit."""
         result = await super().capabilities()
         test_alias = self.settings.publication_test_alias
+        from .publication_slots import DEFAULT_DESTINATIONS
         live = [item for item in result.get("destinations", [])
-                if item.get("provider") == "telegram" and item.get("status") in {"supported", "needs_review"}]
-        test = [dict(item, label="Тестовый чат", test=True, selected=True)
+                if item.get("provider") in {"telegram", "vk"}
+                and item.get("status") in {"supported", "needs_review"}]
+        test = [dict(item, label="Тестовый чат", test=True, selected=False)
                 for item in live if test_alias and item.get("alias") == test_alias]
         from .destination_names import CHANNEL_LABELS
-        real = [dict(item, test=False, selected=not test_alias,
+        real = [dict(item, test=False, selected=item.get("alias") in DEFAULT_DESTINATIONS,
                      label=CHANNEL_LABELS.get(item.get("alias"), item.get("label")))
                 for item in live if not _is_internal_acceptance_destination(item.get("alias"))]
         result["destinations"] = test + real
-        result["mvp_providers"] = {"telegram": "active", "vk": "deferred", "max": "deferred"}
+        result["mvp_providers"] = {"telegram": "active", "vk": "active", "max": "deferred"}
         return result
 
     def _check_publish_destinations(self, destinations: Any) -> None:
@@ -2057,10 +2055,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         result = super().mutate_publish(story_id, key, body)
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
-            intent = db.execute(
-                "SELECT * FROM publish_intents WHERE story_id=? AND request_key=?", (story_id, key)
-            ).fetchone()
-            if intent:
+            intents = list(db.execute(
+                "SELECT * FROM publish_intents WHERE story_id=? AND "
+                "(request_key=? OR request_key LIKE ?)", (story_id, key, key + ":%")
+            ))
+            for intent in intents:
                 request = json.loads(intent["request_json"] or "{}")
                 caption = str(request.get("text") or "")
                 if len(caption) > 1024:

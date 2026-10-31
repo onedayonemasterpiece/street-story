@@ -738,8 +738,16 @@ FUNCTIONS = [
         },
     ),
     _tool_schema(
+        "publish_story",
+        "Owner command: native delayed TG+VK, nearest free slot, no second approval.",
+        {"day": {"type": "string"},
+         "period": {"type": "string", "enum": ["morning", "evening"]},
+         "destinations": {"type": "array", "items": {"type": "string"}}},
+    ),
+    _tool_schema(
         "prepare_publication",
-        "Prepare an exact publication confirmation card. This does not publish.",
+        "Preview only on explicit request; normal publishing uses publish_story.",
+
         {
             "destinations": {
                 "type": "array",
@@ -855,7 +863,7 @@ Concept, editing and publication:
 - Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 sends the whole photo and the image model composes 4:5 keeping the complete building. An explicit pixel crop (crop_rect) only on the author's specific request; check it against essential building/context and offer original if it cannot fit. Do not silently contain, stretch or outpaint.
 - On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. Plan caption and image together so they complement each other: pass in fact_ids only the selected facts that read well as short notes on this image (a date, a visible feature, a former use); the caption develops the others and their connections. When a draft exists, do not hand the image the same list the caption already tells; one shared central point is fine. The image should carry two or three short notes (dates, visible features, former uses), not just one. Every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
-- публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
+- «Опубликуй» → publish_story: оба канала в ближайший нативный слот без второго вопроса. Передай day/period, не считай дату. Превью по просьбе: prepare_publication/confirm_publication. Правки → оба канала.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
 Answer briefly and concretely in Russian.
 """.strip()
@@ -870,7 +878,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         'photo_format': {'read_topic', 'set_photo_format', 'generate_visual'},
         'editor': {'read_topic', 'get_facts', 'get_evidence', 'select_facts', 'set_concept', 'edit_text', 'generate_visual', 'undo'},
         'dictation': {'read_topic', 'literal_begin', 'literal_finish', 'literal_cancel'},
-        'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
+        'publication': {'read_topic', 'generate_visual', 'publish_story', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
     }
 
     def _capability_configuration(self, configuration, capability):
@@ -2063,6 +2071,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = await self._generate_visual(story_id, command_id, args)
             if args.get("observe_existing_visual") is True:
                 await self._send_saved_visual_snapshot(session)
+        elif name == "publish_story":
+            result = await self._publish_story(story_id, command_id, args)
         elif name == "prepare_publication":
             result = await self._prepare_publication(story_id, command_id, args)
             self.emit(session, {"type": "publication_confirmation", **result["confirmation"]})
@@ -6065,6 +6075,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "change_summary": summary,
                 "revision": self.service._story_row(db, story_id)["revision"],
             }
+            queue_edits = getattr(self.service, "_queue_publication_edits", None)
+            if callable(queue_edits):
+                queue_edits(db, story_id, text=new_text,
+                            asset_ref=str(story["vibepublish_asset_ref"] or ""),
+                            change_id=f"text:{next_revision}")
             self._store_command(db, story_id, command_id, "edit_text", args, result)
         logger.info("street_story_text_saved %s", canonical({"story_id": story_id, "composed_by": composed_by,
             "text_revision": result.get("text_revision"), "change_summary": summary, "text": new_text}))
@@ -6292,8 +6307,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "fact_review_required",
                     "Selected facts still need semantic review or arbitration before publication.",
                 )
+        from .publication_slots import DEFAULT_DESTINATIONS, choose_slot
         destinations = [str(v).strip() for v in args.get("destinations", []) if str(v).strip()]
-        if not destinations or len(destinations) > 8:
+        if not destinations:
+            destinations = list(DEFAULT_DESTINATIONS)
+        if len(destinations) > 8:
             raise ConflictError("publish_destinations_required", "At least one bounded destination is required")
         if len(set(destinations)) != len(destinations):
             raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
@@ -6312,8 +6330,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if len(set(destinations)) != len(destinations):
             raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
 
-        scheduled_for = _bounded_text(args.get("scheduled_for"), 80, required=True)
-        tz_name = _bounded_text(args.get("timezone"), 80, required=True)
+        scheduled_for = _bounded_text(args.get("scheduled_for"), 80)
+        tz_name = _bounded_text(args.get("timezone"), 80) or "Europe/Kaliningrad"
+        if not scheduled_for:
+            try:
+                with self.service.store.connection() as db:
+                    slot = choose_slot(db, day=args.get("day"), period=args.get("period"))
+                scheduled_for = slot.isoformat()
+            except ValueError as exc:
+                raise ConflictError("publish_slot_unavailable", str(exc)) from exc
         try:
             parsed = datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
         except ValueError:
@@ -6454,6 +6479,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "scheduled_for": scheduled_for,
                 "timezone": tz_name,
                 "text_override": confirmation["text_value"],
+                **({"slot_intent": args["slot_intent"]} if "slot_intent" in args else {}),
             },
         )
         with self.service.store.connection() as db:
@@ -6473,6 +6499,19 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 (self.service.store.now(), confirmation_id),
             )
             self._store_command(db, story_id, command_id, "confirm_publication", args, result)
+        return result
+
+    async def _publish_story(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """A single explicit owner command authorizes native queued delivery."""
+        prepared = await self._prepare_publication(story_id, command_id + ":prepare", args)
+        confirm_id = prepared["confirmation"]["confirmation_id"]
+        result = await asyncio.to_thread(
+            self._confirm_publication, story_id, command_id + ":confirm",
+            {"confirmation_id": confirm_id,
+             "slot_intent": {"day": args.get("day"), "period": args.get("period")}},
+        )
+        with self.service.store.tx() as db:
+            self._store_command(db, story_id, command_id, "publish_story", args, result)
         return result
 
     def _cancel_publication(self, story_id: str, command_id: str) -> dict[str, Any]:
