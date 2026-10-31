@@ -96,6 +96,11 @@ def live_input_messages(message):
 
 
 def create_app(settings: Settings | None = None, service: StreetStoryService | None = None) -> FastAPI:
+    # Route application INFO traces through Uvicorn's existing journald handler.
+    app_logger = logging.getLogger("street_story")
+    app_logger.setLevel(logging.INFO)
+    app_logger.handlers = logging.getLogger("uvicorn.error").handlers
+    app_logger.propagate = False
     settings = settings or Settings.from_env()
     service = service or RuntimeStreetStoryService(settings)
     service.recover_jobs()
@@ -456,7 +461,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", event):
             raise HTTPException(status_code=400, detail="Invalid Live diagnostic event")
         fields = {key: value for key, value in body.items() if key != "event"}
-        record_live_diagnostic(service, story_id, session_id, "android", event, fields)
+        await asyncio.wrap_future(record_live_diagnostic(service, story_id, session_id, "android", event, fields))
         return {"ok": True, "session_id": session_id}
 
     @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/input", dependencies=[Depends(auth)])

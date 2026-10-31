@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import functools
+from concurrent.futures import ThreadPoolExecutor
 
 import base64
 import hashlib
@@ -77,6 +78,28 @@ from .service import ConflictError, InvalidStateError, StreetStoryService, canon
 
 logger = logging.getLogger("street_story.live")
 
+# The framework invokes synchronous adapter callbacks on its audio event loop.
+# SQLite writes share this one ordered worker, never the audio ACK loop.
+_live_db = ThreadPoolExecutor(max_workers=1, thread_name_prefix="street-story-live-db")
+
+
+def _run_live_db(callback, *args):
+    try:
+        return callback(*args)
+    except Exception:
+        logger.exception("street_story_live_db_write_failed operation=%s", callback.__name__)
+        raise
+
+
+def _enqueue_live_db(callback, *args):
+    saved = _live_db.submit(_run_live_db, callback, *args)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Non-async callers retain the original synchronous durability contract.
+        saved.result()
+    return saved
+
 
 LIVE_SCHEMA = review_packets.SCHEMA + r"""
 CREATE TABLE IF NOT EXISTS live_editor_state(
@@ -125,6 +148,8 @@ CREATE INDEX IF NOT EXISTS live_diagnostics_story_time_idx
   ON live_diagnostics(story_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS live_diagnostics_session_time_idx
   ON live_diagnostics(session_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS live_diagnostics_expiry_idx
+  ON live_diagnostics(created_at);
 """
 
 
@@ -286,7 +311,7 @@ def _diagnostic_value(value: Any, depth: int = 0) -> Any:
     return str(value)[:500]
 
 
-def record_live_diagnostic(
+def _record_live_diagnostic_sync(
     service: StreetStoryService,
     story_id: str,
     session_id: str,
@@ -312,6 +337,19 @@ def record_live_diagnostic(
             (story_id, session_id, source, event_type, canonical(safe), now),
         )
         db.execute("DELETE FROM live_diagnostics WHERE created_at < ?", (now - 7 * 24 * 3600,))
+
+
+def record_live_diagnostic(
+    service: StreetStoryService,
+    story_id: str,
+    session_id: str,
+    source: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+):
+    return _enqueue_live_db(
+        _record_live_diagnostic_sync, service, story_id, session_id, source, event_type, payload,
+    )
 
 
 def _bounded_text(value: Any, limit: int, *, required: bool = False) -> str:
@@ -1404,10 +1442,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             clean = text.strip()
             # Persist accepted author input before the provider sees it. Text input
             # is not guaranteed to be echoed back as provider input_transcript.
-            self._persist_live_message(session, "user", clean)
+            saved = self._persist_live_message(session, "user", clean)
             begin_turn(session, clean, origin="text")
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # Preserve direct synchronous callers outside the Live host.
+                saved.result()
+            else:
+                # The shared host awaits returned awaitables before delivery.
+                return asyncio.wrap_future(saved, loop=loop)
 
-    def _finalize_live_message(self, session) -> None:
+    def _finalize_live_message(self, session):
+        return _enqueue_live_db(self._finalize_live_message_sync, session)
+
+    def _finalize_live_message_sync(self, session) -> None:
         active = session.state.get("live_message")
         if not isinstance(active, dict) or not active.get("key"):
             session.state["live_message"] = None
@@ -1419,7 +1468,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
         session.state["live_message"] = None
 
-    def _persist_live_message(self, session, role: str, fragment: str) -> None:
+    def _persist_live_message(self, session, role: str, fragment: str):
+        return _enqueue_live_db(self._persist_live_message_sync, session, role, fragment)
+
+    def _persist_live_message_sync(self, session, role: str, fragment: str) -> None:
         if role not in {"user", "assistant"}:
             return
         fragment = str(fragment or "").strip()
@@ -1711,19 +1763,29 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if session.state.get("research_run_id"):
             owned.add(session.state["research_run_id"])
         if owned:
-            with self.service.store.tx() as db:
-                db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session.id,))
-                for run_id in owned:
-                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? "
-                               "WHERE run_id=? AND story_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (reason, self.service.store.now(), run_id, session.resource_id))
+            _enqueue_live_db(self._pause_research_sync, session.resource_id, session.id, reason, owned)
 
-    def on_stopped(self, session) -> None:
+    def _pause_research_sync(self, story_id, session_id, reason, owned):
+        with self.service.store.tx() as db:
+            db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session_id,))
+            for run_id in owned:
+                db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? "
+                           "WHERE run_id=? AND story_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (reason, self.service.store.now(), run_id, story_id))
+
+    def on_stopped(self, session):
         self._cancel_identity_waiter(session)
+        saved = _enqueue_live_db(self._on_stopped_sync, session)
+        try:
+            return asyncio.wrap_future(saved)
+        except RuntimeError:
+            return saved
+
+    def _on_stopped_sync(self, session):
         # Release only the closed client's local reading lock. Submitted/UNKNOWN
         # provider operations retain their original addresses and readback guard.
         with self.service.store.tx() as db:
             db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session.id,))
-        self._handoff_research(session)
+        self._handoff_research_sync(session)
 
     @staticmethod
     def _live_research_progress(db, story_id, run_id):
@@ -1739,6 +1801,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         self._handoff_research(session)
 
     def _handoff_research(self, session):
+        return _enqueue_live_db(self._handoff_research_sync, session)
+
+    def _handoff_research_sync(self, session):
         run_id = str(session.state.get("research_run_id") or "")
         if not run_id or session.state.get('headless_research'):
             return
@@ -1805,7 +1870,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 # Durable jobs continue while the owner edits.
                 session.state["research_author_interrupted"] = True
                 session.state["research_output_pending"] = False
-                self._handoff_research(session)
+                await asyncio.wrap_future(self._handoff_research(session))
                 topic = await asyncio.to_thread(self._topic_state, session.resource_id)
                 completed = (topic.get("research_run") or {}).get("state") == "completed"
                 self._emit_research_progress(session, stage="completed" if completed else "partial", active=False,
