@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from conftest import settle_live_writes
 from street_story.db import Store
 from street_story.fact_conflicts import record_fact_review_scan
 from street_story.fact_ledger import persist_fact_candidates, refresh_review_status
@@ -193,6 +194,7 @@ async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp
     adapter.write = lambda _, message: continuation_messages.append(message)
     adapter._continue_pending_research(session)
     assert continuation_messages == []
+    await settle_live_writes()
     with svc.store.connection() as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE json_extract(payload_json,'$.resume_run_id')=?", (run,)).fetchone()[0] == 1
     session.state['research_passages_seen'] = {}

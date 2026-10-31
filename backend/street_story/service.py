@@ -194,11 +194,13 @@ class StreetStoryService:
         return row
 
     def story(self, story_id: str) -> dict[str, Any]:
+        # Only POI hydration needs the writer lock. The large projection is a
+        # consistent WAL read snapshot, so it cannot stall Live diagnostic writes.
         with self.store.tx() as db:
-            row = self._story_row(db, story_id)
-            self._hydrate_poi_memory(db, row)
-            row = self._story_row(db, story_id)
-            return self._story_repr(db, row)
+            self._hydrate_poi_memory(db, self._story_row(db, story_id))
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            return self._story_repr(db, self._story_row(db, story_id))
 
     def _source_photo_bytes(self, story_id: str) -> bytes:
         data = self._temporary_photos.get(story_id)

@@ -7,6 +7,14 @@ import pytest
 from street_story import article_media
 
 
+async def settle_live_writes():
+    """Wait for the ordered Live DB executor before asserting durable rows."""
+    import asyncio
+    from street_story.live import _live_db
+
+    await asyncio.wrap_future(_live_db.submit(lambda: None))
+
+
 @pytest.fixture(autouse=True)
 def reserved_example_dns_for_mock_articles(monkeypatch):
     """Resolve reserved .example fixture hosts only behind MockTransport.
