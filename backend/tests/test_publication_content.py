@@ -1,4 +1,4 @@
-from street_story.publication_content import publication_content
+from street_story.publication_content import publication_content, publication_plain_content
 
 
 def test_named_links_preserve_label_target_and_surrounding_caption_exactly():
@@ -24,3 +24,16 @@ def test_rejected_link_between_valid_links_stays_literal():
     assert content['paragraphs'][0][2] == {'kind': 'link', 'label': 'Вторая', 'url': 'https://two.example'}
     assert content['paragraphs'][0][1] == {'kind': 'text', 'text': ' [Не ссылка](javascript:x) '}
     assert content['paragraphs'][0][-1] == {'kind': 'text', 'text': ' хвост'}
+
+
+def test_vk_plain_fallback_preserves_named_urls_while_telegram_keeps_entities():
+    text = ("Дом на улице.\n\n[ЯндексКарты](https://maps.example/house?a=1&b=2)"
+            " · [2ГИС](https://2gis.example/house)")
+    rich = publication_content(text)
+    plain = publication_plain_content(text)
+    assert rich["paragraphs"][0][1]["kind"] == "link"
+    assert plain == {"text": (
+        "Дом на улице.\n\nЯндексКарты (https://maps.example/house?a=1&b=2)"
+        " · 2ГИС (https://2gis.example/house)"
+    ), "format": "plain"}
+    assert publication_plain_content("Обычный текст.") == {"text": "Обычный текст.", "format": "plain"}

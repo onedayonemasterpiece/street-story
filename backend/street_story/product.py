@@ -12,7 +12,7 @@ import httpx
 from .config import Settings, reveal
 from .errors import ProviderRejected
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
-from .publication_content import publication_content
+from .publication_content import publication_content, publication_plain_content
 from .publication_slots import DEFAULT_DESTINATIONS
 from .service import (
     ConflictError,
@@ -653,14 +653,28 @@ class ProductStreetStoryService(StreetStoryService):
                 if str(row.get("destination") or "") == alias
                 and str(row.get("provider") or "").lower() == "telegram"
             ]
-            if (
-                state not in {"needs_approval", "verified"}
-                or current.get("dry_run") is not True
-                or not str(current.get("worker_seen_at") or "").strip()
-                or len(matches) != 1
-                or str(matches[0].get("state") or "") not in {"needs_approval", "verified"}
-                or str(matches[0].get("observed") or "") != "not_attempted"
-            ):
+            # Current VibePublish native preview responds with needs_approval,
+            # a review token, and an explicit not_attempted delivery, but does
+            # not expose worker_seen_at/dry_run on that receipt variant.
+            # Accept only this exact zero-dispatch proof (or the older dry-run
+            # receipt); afterwards the fresh bootstrap must say supported.
+            no_dispatch = (
+                state == "needs_approval"
+                and current.get("operation_complete") is True
+                and bool(str(current.get("review_token") or "").strip())
+                and len(matches) == 1
+                and str(matches[0].get("state") or "") == "needs_approval"
+                and str(matches[0].get("observed") or "") == "not_attempted"
+            )
+            legacy_dry_run = (
+                state in {"needs_approval", "verified"}
+                and current.get("dry_run") is True
+                and bool(str(current.get("worker_seen_at") or "").strip())
+                and len(matches) == 1
+                and str(matches[0].get("state") or "") in {"needs_approval", "verified"}
+                and str(matches[0].get("observed") or "") == "not_attempted"
+            )
+            if not (no_dispatch or legacy_dry_run):
                 raise PermanentProviderError(
                     "VibePublish Telegram preview did not prove no-dispatch capability"
                 )
@@ -901,6 +915,10 @@ class ProductStreetStoryService(StreetStoryService):
                     "mode": "execute",
                     "routing_revision": bootstrap["routing_revision"],
                 }
+                if any(by_alias[alias]["provider"] == "vk" for alias in requested_aliases):
+                    # VibePublish requires explicit plain semantic fallback on VK.
+                    # Telegram retains structured clickable named links.
+                    payload["renderings"] = {"vk": publication_plain_content(request.get("text") or "")}
             with self.store.tx() as db:
                 # Final check and durable intent share a transaction. Conflict
                 # arising during asynchronous bootstrap cannot slip past it.
@@ -1006,7 +1024,13 @@ class ProductStreetStoryService(StreetStoryService):
         if marker.get("key") != key:
             change = {"kind": "edit"}
             if payload["text"] != old_request.get("text"):
-                change["content"] = publication_content(payload["text"])
+                is_vk = DEFAULT_DESTINATIONS[1] in old_request.get("destinations", []) or any(
+                    detail.get("provider") == "vk"
+                    for detail in old_request.get("destination_details", [])
+                    if isinstance(detail, dict)
+                )
+                change["content"] = (publication_plain_content(payload["text"]) if is_vk
+                                     else publication_content(payload["text"]))
             if payload["asset_ref"] != old_request.get("asset_ref"):
                 change["media"] = [
                     {"source": {"kind": "asset", "id": payload["asset_ref"]}, "role": "image"}

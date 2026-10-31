@@ -127,7 +127,8 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
     svc.providers.vibepublish.publication_update = publication_update
     svc.providers.vibepublish.status = status
     adapter._edit_text(sid, "edit-owner-text", {
-        "expected_text_revision": 0, "new_text": "New BFU story text",
+        "expected_text_revision": 0,
+        "new_text": "New BFU story text [Карта](https://maps.example/place)",
         "change_summary": "Corrected owner wording"})
     with svc.store.connection() as db:
         jobs = [dict(j) for j in db.execute(
@@ -137,8 +138,13 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
         await svc._run_publication_edit(job)
     assert {x[0] for x in updates} == {"pub-provider-0", "pub-provider-1"}
     assert all(x[1] == 1 and x[2]["kind"] == "edit" and
-               x[2]["content"]["text"].startswith("New BFU story text") and
                "media" not in x[2] for x in updates)
+    by_pub = {pub_id: change for pub_id, _, change, _ in updates}
+    assert by_pub["pub-provider-0"]["content"]["paragraphs"][0][-1] == {
+        "kind": "link", "label": "Карта", "url": "https://maps.example/place"}
+    assert by_pub["pub-provider-1"]["content"] == {
+        "text": "New BFU story text Карта (https://maps.example/place)",
+        "format": "plain"}
     with svc.store.connection() as db:
         rows = list(db.execute("SELECT * FROM publish_intents"))
     assert all(row["vibepublish_revision"] == 2 and
@@ -233,3 +239,45 @@ def test_cancel_enqueues_both_provider_posts_of_one_slot(tmp_path):
         jobs = list(db.execute("SELECT * FROM jobs WHERE kind='cancel'"))
     assert len(rows) == len(jobs) == 2
     assert all(row["state"] == "cancel_pending" and row["cancel_request_key"] for row in rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [None, "attempted", "wrong_destination", "incomplete"])
+async def test_telegram_preview_new_receipt_proves_exact_zero_dispatch_before_supported(tmp_path, invalid):
+    svc, _, _, _ = live_ready(tmp_path)
+    alias = DEFAULT_DESTINATIONS[0]
+    observed = {"preview": 0, "bootstrap": 0}
+
+    async def bootstrap():
+        observed["bootstrap"] += 1
+        snap = default_bootstrap()
+        snap["capabilities"][0]["status"] = ("needs_review" if observed["bootstrap"] == 1
+                                                   else "supported")
+        return snap
+
+    async def publish(body, key):
+        assert body["mode"] == "preview" and body["to"] == [alias]
+        observed["preview"] += 1
+        return {"operation_id": "op_preview", "state": "accepted"}
+
+    async def status(operation_id):
+        assert operation_id == "op_preview"
+        return {"operation_id": operation_id, "state": "needs_approval",
+                "operation_complete": invalid != "incomplete", "review_token": "review-1",
+                "deliveries": [{"destination": ("other" if invalid == "wrong_destination" else alias),
+                                "provider": "telegram", "state": "needs_approval",
+                                "observed": ("attempted" if invalid == "attempted" else "not_attempted")}]}
+
+    svc.providers.vibepublish.bootstrap = bootstrap
+    svc.providers.vibepublish.publish = publish
+    svc.providers.vibepublish.status = status
+    if invalid is None:
+        result = await svc._publication_bootstrap([alias])
+        assert result["routing_revision"] == 1
+        assert observed == {"preview": 1, "bootstrap": 2}
+    else:
+        from street_story.providers import PermanentProviderError
+        with pytest.raises(PermanentProviderError, match="did not prove no-dispatch"):
+            await svc._publication_bootstrap([alias])
+        assert observed["preview"] == 1
+        assert observed["bootstrap"] == 1

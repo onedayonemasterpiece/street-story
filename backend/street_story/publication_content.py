@@ -31,3 +31,15 @@ def publication_content(text: str) -> dict:
     if cursor < len(text):
         runs.append({'kind': 'text', 'text': text[cursor:]})
     return {'paragraphs': [runs]}
+
+def publication_plain_content(text: str) -> dict:
+    """Explicit VK rendering: preserve link labels AND URLs, without Telegram entities."""
+    rich = publication_content(text)
+    if "paragraphs" not in rich:
+        return {"text": text, "format": "plain"}
+    runs = rich["paragraphs"][0]
+    return {"text": "".join(
+        run["text"] if run["kind"] == "text"
+        else f'{run["label"]} ({run["url"]})'
+        for run in runs
+    ), "format": "plain"}
