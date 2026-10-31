@@ -8,6 +8,7 @@ import json
 from datetime import date, datetime, time, timedelta, timezone
 
 KALININGRAD = timezone(timedelta(hours=2))
+DEFAULT_DESTINATIONS = ("tg_8c5883ccfdb221a0f6c1", "vk_08231151e8c26f14cbb8")
 SLOT_CLOCK = {"morning": time(9, 10), "evening": time(19, 10)}
 NETWORK_DELAY = {"telegram": 0, "vk": 10}
 
