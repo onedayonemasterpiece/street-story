@@ -13,6 +13,7 @@ from .config import Settings, reveal
 from .errors import ProviderRejected
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
 from .publication_content import publication_content
+from .publication_slots import DEFAULT_DESTINATIONS
 from .service import (
     ConflictError,
     InvalidStateError,
@@ -89,8 +90,7 @@ def project_destinations_v2(bootstrap: dict[str, Any]) -> list[dict[str, Any]]:
         if provider is None:
             continue
         status = str(cap.get("status", "unsupported"))
-        normalized = f"{alias} {label}".lower().replace("ё", "е")
-        primary = "полюбить калининград" in normalized and provider in {"telegram", "vk"}
+        primary = alias in DEFAULT_DESTINATIONS
         projected.append(
             {
                 "alias": alias,
@@ -499,48 +499,56 @@ class ProductStreetStoryService(StreetStoryService):
         if result["visual"]:
             result["visual"]["state"] = row["state"]
 
-        intent = db.execute(
-            "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (row["id"],)
-        ).fetchone()
-        if intent:
-            request = json.loads(intent["request_json"] or "{}")
-            receipt = json.loads(intent["receipt_json"] or "{}")
-            deliveries = _deliveries(receipt)
-            by_alias: dict[str, dict[str, Any]] = {}
-            for delivery in deliveries:
-                alias = str(
-                    delivery.get("destination")
-                    or delivery.get("alias")
-                    or delivery.get("destination_alias")
-                    or ""
-                )
-                if alias:
-                    by_alias[alias] = delivery
-            projected = []
-            for detail in request.get("destination_details", []):
-                if not isinstance(detail, dict):
-                    continue
-                alias = str(detail.get("alias", ""))
-                delivery = by_alias.get(alias, {})
-                observed = str(delivery.get("observed") or intent["state"] or detail.get("status") or "unknown")
-                projected.append(
-                    {
+        # A logical publication may consist of two provider-native deliveries.
+        intents = list(db.execute(
+            "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC,rowid DESC", (row["id"],)
+        ))
+        if intents:
+            newest = intents[0]
+            group = json.loads(newest["request_json"] or "{}").get("publication_group")
+            members = ([item for item in intents
+                        if json.loads(item["request_json"] or "{}").get("publication_group") == group]
+                       if group else [newest])
+            projected, targets = [], []
+            for intent in reversed(members):
+                request = json.loads(intent["request_json"] or "{}")
+                receipt = json.loads(intent["receipt_json"] or "{}")
+                deliveries = _deliveries(receipt)
+                by_alias = {str(item.get("destination") or item.get("alias") or item.get("destination_alias") or ""): item
+                            for item in deliveries}
+                for detail in request.get("destination_details", []):
+                    if not isinstance(detail, dict):
+                        continue
+                    alias = str(detail.get("alias") or "")
+                    delivery = by_alias.get(alias, {})
+                    projected.append({
                         "alias": alias,
                         "label": str(detail.get("label") or alias),
                         "provider": str(detail.get("provider") or "unknown"),
-                        "status": observed,
+                        "status": str(delivery.get("observed") or intent["state"] or detail.get("status") or "unknown"),
                         "capability_status": str(detail.get("status") or "unknown"),
                         "selected": True,
                         "scheduled_for": request.get("scheduled_for"),
-                    }
-                )
+                    })
+                targets.append({
+                    "destinations": request.get("destinations"),
+                    "state": intent["state"],
+                    "publication_id": intent["vibepublish_publication_id"],
+                    "revision": intent["vibepublish_revision"],
+                    "operation_id": intent["vibepublish_operation_id"],
+                    "scheduled_for": request.get("scheduled_for"),
+                    "edit": receipt.get("_publication_edit"),
+                })
             result["destinations"] = projected
             result["publication"] = {
-                "state": intent["state"],
-                "publication_id": intent["vibepublish_publication_id"],
-                "revision": intent["vibepublish_revision"],
-                "operation_id": intent["vibepublish_operation_id"],
-                "cancel_operation_id": intent["cancel_operation_id"],
+                "state": ("scheduled" if all(item["state"] in {"scheduled", "verified"} for item in targets)
+                          else "scheduling" if any(item["state"] in {"pending", "accepted", "running", "scheduled"} for item in targets)
+                          else newest["state"]),
+                "publication_id": newest["vibepublish_publication_id"],
+                "revision": newest["vibepublish_revision"],
+                "operation_id": newest["vibepublish_operation_id"],
+                "cancel_operation_id": newest["cancel_operation_id"],
+                "targets": targets,
             }
         return result
 
@@ -574,7 +582,7 @@ class ProductStreetStoryService(StreetStoryService):
         result: dict[str, Any] = {
             "destinations": [
                 item for item in projected
-                if item["provider"] == "telegram"
+                if item["provider"] in {"telegram", "vk"}
                 and item["status"] in {"supported", "needs_review"}
             ]
         }
@@ -586,21 +594,21 @@ class ProductStreetStoryService(StreetStoryService):
         return result
 
     async def _publication_bootstrap(self, aliases: list[str]) -> dict[str, Any]:
-        """Refresh only expired Telegram publish proof, never provider-dispatch in preflight."""
+        """Refresh Telegram proof; VK validates native rights at dispatch."""
         bootstrap = await self.providers.vibepublish.bootstrap()
         projected = project_destinations_v2(bootstrap)
         by_alias = {item["alias"]: item for item in projected}
         reviewable: list[str] = []
         for alias in aliases:
             item = by_alias.get(alias)
-            if not item or item["provider"] != "telegram":
-                raise PermanentProviderError("Requested destination is not a configured Telegram destination")
+            if not item or item["provider"] not in {"telegram", "vk"}:
+                raise PermanentProviderError("Requested destination is not a configured Telegram/VK destination")
             status = str(item.get("status") or "")
-            if status == "supported":
-                continue
+            if status == "supported" or (item["provider"] == "vk" and status == "needs_review"):
+                continue  # VK wall.post verifies native rights at execution.
             if status != "needs_review":
                 raise PermanentProviderError(
-                    f"Requested Telegram destination capability is {status or 'unavailable'}"
+                    f"Requested destination capability is {status or 'unavailable'}"
                 )
             reviewable.append(alias)
 
@@ -806,7 +814,8 @@ class ProductStreetStoryService(StreetStoryService):
                         db, self._story_row(db, story_id), context, job):
                     return
                 db.execute(
-                    "UPDATE stories SET state='ready_to_publish',processed_image_path=?,processed_image_url=?,"
+                    "UPDATE stories SET state=CASE WHEN state IN ('scheduling','scheduled','published') "
+                    "THEN state ELSE 'ready_to_publish' END,processed_image_path=?,processed_image_url=?,"
                     "vibepublish_asset_ref=?,visual_context_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                     (
                         None,
@@ -816,6 +825,10 @@ class ProductStreetStoryService(StreetStoryService):
                         self.store.now(),
                         story_id,
                     ),
+                )
+                self._queue_publication_edits(
+                    db, story_id, text=str(self._story_row(db, story_id)["draft_text"] or ""),
+                    asset_ref=selected_asset, change_id=f"visual:{operation_id}:{selected_asset}",
                 )
         except RetryableProviderError:
             raise
@@ -869,7 +882,9 @@ class ProductStreetStoryService(StreetStoryService):
                 projected = project_destinations_v2(bootstrap)
                 by_alias = {item["alias"]: item for item in projected}
                 eligible = {alias for alias, item in by_alias.items()
-                            if item["provider"] == "telegram" and item["status"] == "supported"}
+                            if item["provider"] in {"telegram", "vk"}
+                            and (item["status"] == "supported" or
+                                 (item["provider"] == "vk" and item["status"] == "needs_review"))}
                 if not set(requested_aliases).issubset(eligible):
                     raise PermanentProviderError("Requested destination is not eligible in current VibePublish bootstrap")
                 if not request.get("destination_details"):
@@ -947,22 +962,141 @@ class ProductStreetStoryService(StreetStoryService):
             raise PermanentProviderError(f"VibePublish publication operation ended in {state}")
         raise RetryableProviderError(f"VibePublish publication operation is {state or 'pending'}")
 
+    def _queue_publication_edits(self, db, story_id: str, *, text: str,
+                                 asset_ref: str, change_id: str) -> None:
+        """Reuse the durable job table; each provider publication is edited in place."""
+        for intent in db.execute(
+                "SELECT id,state FROM publish_intents WHERE story_id=?", (story_id,)):
+            if intent["state"] in {"cancelled", "deleted"}:
+                continue
+            self._enqueue_job(
+                db, story_id, "publication_edit",
+                f"publication_edit:{intent['id']}:{change_id}",
+                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref},
+            )
+
+    async def _run_publication_edit(self, job: dict[str, Any]) -> None:
+        """Idempotent CAS update; unknown network outcomes retain their original key."""
+        payload = json.loads(job["payload_json"])
+        intent_id = payload["intent_id"]
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM publish_intents WHERE id=?", (intent_id,)).fetchone()
+            if row is None:
+                return
+            intent = dict(row)
+            earlier = db.execute(
+                "SELECT id FROM jobs WHERE story_id=? AND kind='publication_edit' AND id<>? "
+                "AND state NOT IN ('done','cancelled') AND created_at<? "
+                "AND json_extract(payload_json,'$.intent_id')=? LIMIT 1",
+                (job["story_id"], job["id"], job["created_at"], intent_id),
+            ).fetchone()
+        if earlier:
+            raise RetryableProviderError("Earlier provider edit has not completed",
+                                         retry_at=self.store.now() + 10)
+        if intent["state"] in {"cancelled", "deleted", "failed", "blocked"}:
+            raise PermanentProviderError(f"Publication cannot be edited in state {intent['state']}")
+        if not intent.get("vibepublish_publication_id") or intent.get("vibepublish_revision") is None:
+            raise RetryableProviderError("Waiting for native publication receipt",
+                                         retry_at=self.store.now() + 15)
+        old_request = json.loads(intent["request_json"])
+        receipt_data = json.loads(intent.get("receipt_json") or "{}")
+        key = "ss-vp-edit-" + hashlib.sha256(
+            f"{intent_id}:{job['id']}".encode()).hexdigest()[:48]
+        marker = receipt_data.get("_publication_edit") or {}
+        if marker.get("key") != key:
+            change = {"kind": "edit"}
+            if payload["text"] != old_request.get("text"):
+                change["content"] = publication_content(payload["text"])
+            if payload["asset_ref"] != old_request.get("asset_ref"):
+                change["media"] = [
+                    {"source": {"kind": "asset", "id": payload["asset_ref"]}, "role": "image"}
+                ]
+            if len(change) == 1:
+                return
+            if marker and marker.get("phase") != "verified":
+                raise RetryableProviderError("An earlier provider edit has an unresolved outcome",
+                                             retry_at=self.store.now() + 60)
+            marker = {"key": key, "phase": "possibly_sent", "change": change,
+                      "expected_revision": intent["vibepublish_revision"]}
+            with self.store.tx() as db:
+                current = dict(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)).fetchone())
+                saved = json.loads(current["receipt_json"] or "{}")
+                previous = saved.get("_publication_edit") or {}
+                if previous and previous.get("phase") != "verified":
+                    raise RetryableProviderError("Another edit is not yet reconciled",
+                                                 retry_at=self.store.now() + 30)
+                db.execute("UPDATE publish_intents SET receipt_json=?,updated_at=? WHERE id=?",
+                           (canonical({**saved, "_publication_edit": marker}), self.store.now(), intent_id))
+
+        operation_id = marker.get("operation_id")
+        if not operation_id:
+            response = await self.providers.vibepublish.publication_update(
+                str(intent["vibepublish_publication_id"]),
+                int(marker["expected_revision"]),
+                marker["change"], key,
+            )
+            operation_id = str(response.get("operation_id") or "")
+            if not operation_id:
+                raise RetryableProviderError("VibePublish edit accepted without operation ID")
+            marker = {**marker, "operation_id": operation_id}
+            with self.store.tx() as db:
+                saved = json.loads(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)
+                ).fetchone()["receipt_json"] or "{}")
+                db.execute("UPDATE publish_intents SET receipt_json=?,updated_at=? WHERE id=?",
+                           (canonical({**saved, "_publication_edit": marker}), self.store.now(), intent_id))
+
+        current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
+        state = str(current.get("state") or "")
+        if current.get("operation_complete") is True and state == "verified":
+            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"]}
+            with self.store.tx() as db:
+                saved = json.loads(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)
+                ).fetchone()["receipt_json"] or "{}")
+                verified_marker = {**marker, "phase": "verified", "receipt": current}
+                db.execute(
+                    "UPDATE publish_intents SET request_json=?,receipt_json=?,"
+                    "vibepublish_revision=COALESCE(?,vibepublish_revision),updated_at=? WHERE id=?",
+                    (canonical(updated),
+                     canonical({**saved, **({"deliveries": _deliveries(current)}
+                                            if _deliveries(current) else {}),
+                                "_publication_edit": verified_marker}),
+                     current.get("revision") if isinstance(current.get("revision"), int) else None,
+                     self.store.now(), intent_id),
+                )
+            return
+        if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
+            raise PermanentProviderError(f"VibePublish edit ended in {state}")
+        raise RetryableProviderError(f"VibePublish edit is {state or 'pending'}",
+                                     retry_at=self.store.now() + 10)
+
     def mutate_cancel(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
-            intent = db.execute(
-                "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)
-            ).fetchone()
-            if not intent or not intent["vibepublish_publication_id"] or intent["vibepublish_revision"] is None:
+            rows = list(db.execute(
+                "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC,rowid DESC", (story_id,)
+            ))
+            if not rows:
                 raise InvalidStateError("publication_not_cancellable", "No scheduled VibePublish publication can be cancelled")
-            self._idem(db, key, "cancel", req_digest, "publish_intent", intent["id"])
-            cancel_key = "ss-vp-cancel-" + hashlib.sha256(f"{intent['id']}:{key}".encode()).hexdigest()[:48]
-            db.execute(
-                "UPDATE publish_intents SET cancel_request_key=COALESCE(cancel_request_key,?),state=CASE WHEN state='cancelled' THEN state ELSE 'cancel_pending' END,updated_at=? WHERE id=?",
-                (cancel_key, self.store.now(), intent["id"]),
-            )
-            self._enqueue_job(db, story_id, "cancel", f"cancel:{intent['id']}", {"intent_id": intent["id"]})
+            group = json.loads(rows[0]["request_json"] or "{}").get("publication_group")
+            members = ([item for item in rows
+                        if json.loads(item["request_json"] or "{}").get("publication_group") == group]
+                       if group else [rows[0]])
+            if any(not item["vibepublish_publication_id"] or item["vibepublish_revision"] is None
+                   for item in members):
+                raise InvalidStateError("publication_not_cancellable", "Both scheduled channels must be ready before cancellation")
+            self._idem(db, key, "cancel", req_digest, "publish_intent", rows[0]["id"])
+            for intent in members:
+                cancel_key = "ss-vp-cancel-" + hashlib.sha256(f"{intent['id']}:{key}".encode()).hexdigest()[:48]
+                db.execute(
+                    "UPDATE publish_intents SET cancel_request_key=COALESCE(cancel_request_key,?),"
+                    "state=CASE WHEN state='cancelled' THEN state ELSE 'cancel_pending' END,updated_at=? WHERE id=?",
+                    (cancel_key, self.store.now(), intent["id"]),
+                )
+                self._enqueue_job(db, story_id, "cancel", f"cancel:{intent['id']}", {"intent_id": intent["id"]})
             return self._story_repr(db, story)
 
     async def _run_cancel(self, job: dict[str, Any]) -> None:
