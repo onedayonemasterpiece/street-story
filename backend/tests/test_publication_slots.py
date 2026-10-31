@@ -35,6 +35,7 @@ def test_provider_times_differ_without_extra_slot_occupancy():
     tg, vk = [delivery_time(slot, alias) for alias in DEFAULT_DESTINATIONS]
     assert tg == "2026-11-01T09:10:00+02:00"
     assert vk == "2026-11-01T09:20:00+02:00"
+    assert delivery_time(slot, "street_story_e2e_20260928_tg") == tg
     db = ledger()
     for due in (tg, vk):
         db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
@@ -123,3 +124,44 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
     assert all(row["vibepublish_revision"] == 2 and
                json.loads(row["receipt_json"])["_publication_edit"]["phase"] == "verified"
                for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_image_edit_propagates_to_both_original_native_posts(tmp_path):
+    svc, _, session, _ = live_ready(tmp_path)
+    story_id = session.resource_id
+    svc.mutate_publish(story_id, "image-case", {
+        "destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow"}})
+    with svc.store.tx() as db:
+        rows = list(db.execute("SELECT id FROM publish_intents ORDER BY rowid"))
+        for index, row in enumerate(rows):
+            db.execute("UPDATE publish_intents SET state='scheduled',"
+                       "vibepublish_publication_id=?,vibepublish_revision=3,receipt_json=? WHERE id=?",
+                       (f"existing-post-{index}", canonical({"state": "scheduled"}), row["id"]))
+        story = svc._story_row(db, story_id)
+        svc._queue_publication_edits(db, story_id,
+                                     text=str(story["draft_text"]),
+                                     asset_ref="asset_verified_new_image", change_id="visual:2")
+    calls = []
+
+    async def publication_update(pub_id, rev, change, key):
+        calls.append((pub_id, rev, change))
+        return {"operation_id": "changed-" + pub_id}
+
+    async def status(op_id):
+        return {"operation_id": op_id, "state": "verified",
+                "operation_complete": True, "revision": 4}
+
+    svc.providers.vibepublish.publication_update = publication_update
+    svc.providers.vibepublish.status = status
+    with svc.store.connection() as db:
+        jobs = [dict(row) for row in db.execute(
+            "SELECT * FROM jobs WHERE kind='publication_edit' ORDER BY rowid")]
+    assert len(jobs) == 2
+    for job in jobs:
+        await svc._run_publication_edit(job)
+    assert {x[0] for x in calls} == {"existing-post-0", "existing-post-1"}
+    assert all(rev == 3 and change["kind"] == "edit" and
+               "content" not in change and
+               change["media"][0]["source"]["id"] == "asset_verified_new_image"
+               for _, rev, change in calls)
