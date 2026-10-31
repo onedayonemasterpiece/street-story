@@ -26,7 +26,8 @@ def test_nearest_slot_skips_occupied_evening_and_honors_daypart():
     assert slot.isoformat() == "2026-11-01T09:10:00+02:00"
     assert choose_slot(db, day="tomorrow", period="evening", now=now).isoformat() == (
         "2026-11-01T19:10:00+02:00")
-    assert choose_slot(db, day="today", period="evening", now=now) is None if False else True
+    with pytest.raises(ValueError, match="No free publication slot"):
+        choose_slot(db, day="today", period="evening", now=now)
 
 
 def test_provider_times_differ_without_extra_slot_occupancy():
@@ -38,8 +39,9 @@ def test_provider_times_differ_without_extra_slot_occupancy():
     for due in (tg, vk):
         db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
                    (due, canonical({"slot_at": tg}), "scheduled"))
-    assert choose_slot(db, day="tomorrow", period="morning",
-                       now=datetime(2026, 10, 31, 8, tzinfo=timezone(timedelta(hours=2))))
+    with pytest.raises(ValueError, match="No free publication slot"):
+        choose_slot(db, day="tomorrow", period="morning",
+                    now=datetime(2026, 10, 31, 8, tzinfo=timezone(timedelta(hours=2))))
 
 
 def default_bootstrap():
@@ -71,12 +73,11 @@ async def test_single_owner_publish_creates_two_independent_native_intents(tmp_p
     assert due[1] - due[0] == timedelta(minutes=10)
     assert requests[0]["publication_group"] == requests[1]["publication_group"]
     assert all(row["state"] == "pending" and row["vibepublish_operation_id"] is None for row in rows)
-    # Idempotent retry never consumes the next slot or inserts more rows.
-    svc.mutate_publish(session.resource_id, "ss-live-publish-" + __import__("hashlib").sha256(
-        f"{session.resource_id}:{response['confirmation_id']}".encode()).hexdigest()[:48],
-        {"destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow", "period": None},
-         "text_override": "Owner text", "timezone": "Europe/Kaliningrad",
-         "scheduled_for": requests[0]["scheduled_for"]})
+    # A replay of the same prepared owner command must never consume a second slot.
+    adapter._confirm_publication(session.resource_id, "same-command-retry", {
+        "confirmation_id": response["confirmation_id"],
+        "slot_intent": {"day": "tomorrow", "period": None},
+    })
     with svc.store.connection() as db:
         assert db.execute("SELECT count(*) FROM publish_intents").fetchone()[0] == 2
 
