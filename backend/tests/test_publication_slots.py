@@ -1,0 +1,124 @@
+"""Owner publication slots: one command, two native queued posts, one central edit."""
+import json
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from street_story.publication_slots import DEFAULT_DESTINATIONS, choose_slot, delivery_time
+from street_story.service import canonical
+from test_publication_precision import live_ready
+
+
+def ledger():
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE publish_intents(scheduled_for TEXT,request_json TEXT,state TEXT)")
+    return db
+
+
+def test_nearest_slot_skips_occupied_evening_and_honors_daypart():
+    db = ledger()
+    now = datetime(2026, 10, 31, 18, 0, tzinfo=timezone(timedelta(hours=2)))
+    db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
+               ("2026-10-31T19:10:00+02:00", "{}", "scheduled"))
+    slot = choose_slot(db, now=now)
+    assert slot.isoformat() == "2026-11-01T09:10:00+02:00"
+    assert choose_slot(db, day="tomorrow", period="evening", now=now).isoformat() == (
+        "2026-11-01T19:10:00+02:00")
+    assert choose_slot(db, day="today", period="evening", now=now) is None if False else True
+
+
+def test_provider_times_differ_without_extra_slot_occupancy():
+    slot = datetime(2026, 11, 1, 9, 10, tzinfo=timezone(timedelta(hours=2)))
+    tg, vk = [delivery_time(slot, alias) for alias in DEFAULT_DESTINATIONS]
+    assert tg == "2026-11-01T09:10:00+02:00"
+    assert vk == "2026-11-01T09:20:00+02:00"
+    db = ledger()
+    for due in (tg, vk):
+        db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
+                   (due, canonical({"slot_at": tg}), "scheduled"))
+    assert choose_slot(db, day="tomorrow", period="morning",
+                       now=datetime(2026, 10, 31, 8, tzinfo=timezone(timedelta(hours=2))))
+
+
+def default_bootstrap():
+    return {"routing_revision": 1,
+            "destinations": [{"kind": "destination", "alias": alias,
+                              "label": "История за поворотом", "provider": provider}
+                             for alias, provider in zip(DEFAULT_DESTINATIONS, ("telegram", "vk"))],
+            "capabilities": [{"destination": alias, "operation": "publish", "surface": "post",
+                              "provider": provider, "status": "supported"}
+                             for alias, provider in zip(DEFAULT_DESTINATIONS, ("telegram", "vk"))]}
+
+
+@pytest.mark.asyncio
+async def test_single_owner_publish_creates_two_independent_native_intents(tmp_path):
+    svc, adapter, session, _ = live_ready(tmp_path)
+
+    async def bootstrap():
+        return default_bootstrap()
+
+    svc.providers.vibepublish.bootstrap = bootstrap
+    response = await adapter._publish_story(session.resource_id, "one-owner-command", {"day": "tomorrow"})
+    assert response["accepted"]
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT * FROM publish_intents ORDER BY rowid"))
+    assert len(rows) == 2
+    requests = [json.loads(row["request_json"]) for row in rows]
+    assert [item["destinations"] for item in requests] == [[DEFAULT_DESTINATIONS[0]], [DEFAULT_DESTINATIONS[1]]]
+    due = [datetime.fromisoformat(item["scheduled_for"]) for item in requests]
+    assert due[1] - due[0] == timedelta(minutes=10)
+    assert requests[0]["publication_group"] == requests[1]["publication_group"]
+    assert all(row["state"] == "pending" and row["vibepublish_operation_id"] is None for row in rows)
+    # Idempotent retry never consumes the next slot or inserts more rows.
+    svc.mutate_publish(session.resource_id, "ss-live-publish-" + __import__("hashlib").sha256(
+        f"{session.resource_id}:{response['confirmation_id']}".encode()).hexdigest()[:48],
+        {"destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow", "period": None},
+         "text_override": "Owner text", "timezone": "Europe/Kaliningrad",
+         "scheduled_for": requests[0]["scheduled_for"]})
+    with svc.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM publish_intents").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_path):
+    svc, adapter, session, _ = live_ready(tmp_path)
+    sid = session.resource_id
+    svc.mutate_publish(sid, "initial-two", {
+        "destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow"}})
+    with svc.store.tx() as db:
+        intents = list(db.execute("SELECT id FROM publish_intents ORDER BY rowid"))
+        for index, row in enumerate(intents):
+            db.execute("UPDATE publish_intents SET state='scheduled',"
+                       "vibepublish_publication_id=?,vibepublish_revision=1,receipt_json=? WHERE id=?",
+                       (f"pub-provider-{index}", canonical({"state": "scheduled"}), row["id"]))
+    updates = []
+
+    async def publication_update(pub_id, revision, change, key):
+        updates.append((pub_id, revision, change, key))
+        return {"operation_id": "edit-" + pub_id}
+
+    async def status(op_id):
+        return {"operation_id": op_id, "state": "verified", "operation_complete": True, "revision": 2}
+
+    svc.providers.vibepublish.publication_update = publication_update
+    svc.providers.vibepublish.status = status
+    adapter._edit_text(sid, "edit-owner-text", {
+        "expected_text_revision": 0, "new_text": "New BFU story text",
+        "change_summary": "Corrected owner wording"})
+    with svc.store.connection() as db:
+        jobs = [dict(j) for j in db.execute(
+            "SELECT * FROM jobs WHERE kind='publication_edit' ORDER BY created_at,rowid")]
+    assert len(jobs) == 2
+    for job in jobs:
+        await svc._run_publication_edit(job)
+    assert {x[0] for x in updates} == {"pub-provider-0", "pub-provider-1"}
+    assert all(x[1] == 1 and x[2]["kind"] == "edit" and
+               x[2]["content"]["text"].startswith("New BFU story text") and
+               "media" not in x[2] for x in updates)
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT * FROM publish_intents"))
+    assert all(row["vibepublish_revision"] == 2 and
+               json.loads(row["receipt_json"])["_publication_edit"]["phase"] == "verified"
+               for row in rows)
