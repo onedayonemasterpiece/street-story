@@ -173,8 +173,8 @@ def test_cancel_enqueues_both_provider_posts_of_one_slot(tmp_path):
     svc.mutate_publish(story_id, "cancel-slot", {
         "destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow"}})
     with svc.store.tx() as db:
-        for index, row in enumerate(db.execute(
-                "SELECT id FROM publish_intents ORDER BY rowid")):
+        for index, row in enumerate(list(db.execute(
+                "SELECT id FROM publish_intents ORDER BY rowid"))):
             db.execute("UPDATE publish_intents SET state='scheduled',"
                        "vibepublish_publication_id=?,vibepublish_revision=1 WHERE id=?",
                        (f"native-post-{index}", row["id"]))
