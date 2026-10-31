@@ -660,7 +660,7 @@ async def test_mvp_capabilities_keep_reviewable_telegram_visible(tmp_path):
         "tg-safe", "vk-deferred", "tg-review",
     ]
     assert [item["status"] for item in capabilities["destinations"]] == [
-        "supported", "needs_review", "needs_review",
+        "supported", "supported", "needs_review",
     ]
     assert not any(item["selected"] for item in capabilities["destinations"])
     assert capabilities["mvp_providers"] == {

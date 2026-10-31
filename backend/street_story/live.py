@@ -1101,16 +1101,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'For ordinary selection, concept or text editing continue through editor in this same story.')
         else:
             overlay = (
-                "Use accepted identity, selected facts, concept and draft. Visual edits preserve text. "
-                "generate_visual is only for an explicit request, using the original photo and "
-                "a readable subset of owner-selected eligible facts; never use unselected facts. "
-                "Artistic creation/edits carry owner changes in visual_instruction; omit "
-                "preserve_source_frame, visual_copy and visual_layout. Original is framing, not that mode. "
-                "Preserve dates and essential qualifications in readable annotations. "
-                "Do not regenerate a reviewed image merely to publish it. "
-                "Prepare exact text/image/destinations/time with prepare_publication; confirm_publication "
-                "requires separate unambiguous author confirmation of that card. Copy the latest explicit owner "
-                "ISO time exactly. Preparation never publishes. Read state after unknown results."
+                "«Опубликуй» → publish_story: TG+VK in next free native slot; pass only owner day/period, no second confirmation. "
+                "Preview only on explicit request via prepare_publication; confirm_publication requires "
+                "separate unambiguous author confirmation of that card. Preview alone never posts. "
+                "generate_visual only on request with original photo and a readable subset of owner-selected eligible facts; "
+                "never use unselected facts. Preserve dates/qualifiers in visual_instruction. "
+                "Do not regenerate just to publish. Read state after unknown result."
             )
         if 'generate_visual' in self.CAPABILITY_TOOLS[capability]:
             overlay += (
