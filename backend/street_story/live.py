@@ -746,7 +746,7 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "prepare_publication",
-        "Show a preview card only when the owner explicitly asks to inspect before publishing. The ordinary 'опубликуй' uses publish_story.",
+        "Preview only on explicit request; normal publishing uses publish_story.",
 
         {
             "destinations": {
@@ -863,7 +863,7 @@ Concept, editing and publication:
 - Honor visual_photo_format throughout composition. Use set_photo_format only for an explicit owner format choice or an authorized crop adjustment. Original preserves oriented SOURCE proportions; crop_4_5 sends the whole photo and the image model composes 4:5 keeping the complete building. An explicit pixel crop (crop_rect) only on the author's specific request; check it against essential building/context and offer original if it cannot fit. Do not silently contain, stretch or outpaint.
 - On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. Plan caption and image together so they complement each other: pass in fact_ids only the selected facts that read well as short notes on this image (a date, a visible feature, a former use); the caption develops the others and their connections. When a draft exists, do not hand the image the same list the caption already tells; one shared central point is fine. The image should carry two or three short notes (dates, visible features, former uses), not just one. Every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
-- На «опубликуй» вызови publish_story: по умолчанию оба канала «История за поворотом», ближайший нативный отложенный слот, без второго подтверждения. Передавай ограничения дня/утра/вечера, не рассчитывая время. Карточку prepare_publication и confirm_publication используй лишь по просьбе о предварительном просмотре. Правки истории синхронизируются во всех её каналах.
+- «Опубликуй» → publish_story: оба канала в ближайший нативный слот без второго вопроса. Передай day/period, не считай дату. Превью по просьбе: prepare_publication/confirm_publication. Правки → оба канала.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
 Answer briefly and concretely in Russian.
 """.strip()
