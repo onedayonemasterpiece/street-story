@@ -6078,6 +6078,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "change_summary": summary,
                 "revision": self.service._story_row(db, story_id)["revision"],
             }
+            queue_edits = getattr(self.service, "_queue_publication_edits", None)
+            if callable(queue_edits):
+                queue_edits(db, story_id, text=new_text,
+                            asset_ref=str(story["vibepublish_asset_ref"] or ""),
+                            change_id=f"text:{next_revision}")
             self._store_command(db, story_id, command_id, "edit_text", args, result)
         logger.info("street_story_text_saved %s", canonical({"story_id": story_id, "composed_by": composed_by,
             "text_revision": result.get("text_revision"), "change_summary": summary, "text": new_text}))
