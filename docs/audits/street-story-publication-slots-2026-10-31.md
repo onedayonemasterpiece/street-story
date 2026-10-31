@@ -17,11 +17,11 @@
 - `docs/product/owner-decisions.md`: пять решений владельца и допущение 09:10; октябрьские указания про «Полюбить Калининград» помечены superseded, сохранены ради аудита.
 - `backend/tests/test_publication_slots.py`: разные часы двух нативных intents, отсутствие повторного бронирования, занятость, ограничение дня, две правки в первоначальные публикации.
 
-**Результат VibePublish owner resolve** (операции `op_53cd2a26367d4a998134a776e76c536b`, `op_f253a6d7f16d4c05a156106f0ea3021f`): TG alias `tg_8c5883ccfdb221a0f6c1`, native destination `-1003842605695`, VK alias `vk_08231151e8c26f14cbb8`, native destination `-242787935`. Обе операции `verified`. Этот owner-resolve **не равен** полномочиям технического `street-story-runtime-*`: scoped binding и право `publication.manage` ещё должны быть подтверждены отдельно.
+**Результат VibePublish owner resolve** (операции `op_53cd2a26367d4a998134a776e76c536b`, `op_f253a6d7f16d4c05a156106f0ea3021f`): TG alias `tg_8c5883ccfdb221a0f6c1`, native destination `-1003842605695`, VK alias `vk_08231151e8c26f14cbb8`, native destination `-242787935`. Обе операции `verified`. Этот owner-resolve **не равен** полномочиям технического `street-story-runtime-*`: scoped binding и право `publication.manage` ещё должны быть подтверждены отдельно. По исходникам VibePublish main проверены native edit-пути: Telegram `adapters/telegram.py:757–763` (MTProto edit, включая schedule_date и замену media), VK `adapters/vk.py:615–624` (`wall.edit` с сохранением attachment IDs и publish_date). Наличие кода **не заменяет** фактический provider readback.
 
 ## Размер и simplicity
 
-По первоначальному diff PR #306: **+515 / -91 = +424 net lines**, включая тесты и документацию; перед merge пересчитать. Лимит исходной оценки ~350 net production lines превышается с центральным редактированием и тестами; не упрощать за счёт потери provider receipts, идемпотентности или атомарного бронирования.
+По проверенному diff PR #306 относительно `main` на 31.10.2026: **+644 / -125 = +519 net lines** всего (включая тесты и документацию); **production `backend/street_story`: +389 / -104 = +285 net lines**, в пределах исходного ориентира 350 net production lines. Идемпотентность, provider receipts и атомарное бронирование не урезаны.
 
 | Проверка devserver-simplicity | Самопроверка |
 |---|---|
