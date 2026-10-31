@@ -814,7 +814,8 @@ class ProductStreetStoryService(StreetStoryService):
                         db, self._story_row(db, story_id), context, job):
                     return
                 db.execute(
-                    "UPDATE stories SET state='ready_to_publish',processed_image_path=?,processed_image_url=?,"
+                    "UPDATE stories SET state=CASE WHEN state IN ('scheduling','scheduled','published') "
+                    "THEN state ELSE 'ready_to_publish' END,processed_image_path=?,processed_image_url=?,"
                     "vibepublish_asset_ref=?,visual_context_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                     (
                         None,
