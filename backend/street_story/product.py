@@ -13,6 +13,7 @@ from .config import Settings, reveal
 from .errors import ProviderRejected
 from .providers import PermanentProviderError, RetryableProviderError, infer_provider
 from .publication_content import publication_content
+from .publication_slots import DEFAULT_DESTINATIONS
 from .service import (
     ConflictError,
     InvalidStateError,
@@ -90,7 +91,7 @@ def project_destinations_v2(bootstrap: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         status = str(cap.get("status", "unsupported"))
         normalized = f"{alias} {label}".lower().replace("ё", "е")
-        primary = "полюбить калининград" in normalized and provider in {"telegram", "vk"}
+        primary = alias in DEFAULT_DESTINATIONS
         projected.append(
             {
                 "alias": alias,
@@ -574,7 +575,7 @@ class ProductStreetStoryService(StreetStoryService):
         result: dict[str, Any] = {
             "destinations": [
                 item for item in projected
-                if item["provider"] == "telegram"
+                if item["provider"] in {"telegram", "vk"}
                 and item["status"] in {"supported", "needs_review"}
             ]
         }
@@ -586,21 +587,21 @@ class ProductStreetStoryService(StreetStoryService):
         return result
 
     async def _publication_bootstrap(self, aliases: list[str]) -> dict[str, Any]:
-        """Refresh only expired Telegram publish proof, never provider-dispatch in preflight."""
+        """Refresh Telegram proof; VK validates native rights at dispatch."""
         bootstrap = await self.providers.vibepublish.bootstrap()
         projected = project_destinations_v2(bootstrap)
         by_alias = {item["alias"]: item for item in projected}
         reviewable: list[str] = []
         for alias in aliases:
             item = by_alias.get(alias)
-            if not item or item["provider"] != "telegram":
-                raise PermanentProviderError("Requested destination is not a configured Telegram destination")
+            if not item or item["provider"] not in {"telegram", "vk"}:
+                raise PermanentProviderError("Requested destination is not a configured Telegram/VK destination")
             status = str(item.get("status") or "")
-            if status == "supported":
-                continue
+            if status == "supported" or (item["provider"] == "vk" and status == "needs_review"):
+                continue  # VK wall.post verifies native rights at execution.
             if status != "needs_review":
                 raise PermanentProviderError(
-                    f"Requested Telegram destination capability is {status or 'unavailable'}"
+                    f"Requested destination capability is {status or 'unavailable'}"
                 )
             reviewable.append(alias)
 
@@ -869,7 +870,9 @@ class ProductStreetStoryService(StreetStoryService):
                 projected = project_destinations_v2(bootstrap)
                 by_alias = {item["alias"]: item for item in projected}
                 eligible = {alias for alias, item in by_alias.items()
-                            if item["provider"] == "telegram" and item["status"] == "supported"}
+                            if item["provider"] in {"telegram", "vk"}
+                            and (item["status"] == "supported" or
+                                 (item["provider"] == "vk" and item["status"] == "needs_review"))}
                 if not set(requested_aliases).issubset(eligible):
                     raise PermanentProviderError("Requested destination is not eligible in current VibePublish bootstrap")
                 if not request.get("destination_details"):
