@@ -45,6 +45,9 @@ def _occupied(db) -> set[tuple[date, str]]:
     for row in db.execute("SELECT scheduled_for,request_json FROM publish_intents "
                           "WHERE state NOT IN ('cancelled','deleted')"):
         request = json.loads(row["request_json"] or "{}")
+        # Explicit test/legacy destinations share the table, not this channel's slots.
+        if not set(request.get("destinations") or ()).intersection(DEFAULT_DESTINATIONS):
+            continue
         raw = request.get("slot_at") or row["scheduled_for"]
         try:
             moment = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(KALININGRAD)

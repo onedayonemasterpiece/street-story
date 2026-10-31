@@ -779,8 +779,7 @@ FUNCTIONS = [
         "publish_story",
         "Owner command: native delayed TG+VK, nearest free slot, no second approval.",
         {"day": {"type": "string"},
-         "period": {"type": "string", "enum": ["morning", "evening"]},
-         "destinations": {"type": "array", "items": {"type": "string"}}},
+         "period": {"type": "string", "enum": ["morning", "evening"]}},
     ),
     _tool_schema(
         "prepare_publication",
@@ -6585,7 +6584,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     async def _publish_story(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         """A single explicit owner command authorizes native queued delivery."""
-        prepared = await self._prepare_publication(story_id, command_id + ":prepare", args)
+        # This one-step command is server-routed to the two owner-approved channels.
+        # Model arguments may retain an old test/prepared destination from history:
+        # only owner day/period intent belongs in this tool, never a target or clock.
+        slot_args = {key: args[key] for key in ("day", "period") if args.get(key)}
+        prepared = await self._prepare_publication(story_id, command_id + ":prepare", slot_args)
         confirm_id = prepared["confirmation"]["confirmation_id"]
         result = await asyncio.to_thread(
             self._confirm_publication, story_id, command_id + ":confirm",
@@ -6593,7 +6596,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
              "slot_intent": {"day": args.get("day"), "period": args.get("period")}},
         )
         with self.service.store.tx() as db:
-            self._store_command(db, story_id, command_id, "publish_story", args, result)
+            self._store_command(db, story_id, command_id, "publish_story", slot_args, result)
         return result
 
     def _cancel_publication(self, story_id: str, command_id: str) -> dict[str, Any]:

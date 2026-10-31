@@ -21,13 +21,30 @@ def test_nearest_slot_skips_occupied_evening_and_honors_daypart():
     db = ledger()
     now = datetime(2026, 10, 31, 18, 0, tzinfo=timezone(timedelta(hours=2)))
     db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
-               ("2026-10-31T19:10:00+02:00", "{}", "scheduled"))
+               ("2026-10-31T19:10:00+02:00",
+                canonical({"destinations": [DEFAULT_DESTINATIONS[0]]}), "scheduled"))
     slot = choose_slot(db, now=now)
     assert slot.isoformat() == "2026-11-01T09:10:00+02:00"
     assert choose_slot(db, day="tomorrow", period="evening", now=now).isoformat() == (
         "2026-11-01T19:10:00+02:00")
     with pytest.raises(ValueError, match="No free publication slot"):
         choose_slot(db, day="today", period="evening", now=now)
+
+
+
+def test_explicit_test_channel_does_not_occupy_production_slots():
+    db = ledger()
+    now = datetime(2026, 10, 31, 21, 0, tzinfo=timezone(timedelta(hours=2)))
+    db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
+               ("2026-11-01T09:10:00+02:00",
+                canonical({"destinations": ["street_story_e2e_20260928_tg"],
+                           "slot_at": "2026-11-01T09:10:00+02:00"}), "scheduled"))
+    assert choose_slot(db, now=now).isoformat() == "2026-11-01T09:10:00+02:00"
+    db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
+               ("2026-11-01T09:10:00+02:00",
+                canonical({"destinations": [DEFAULT_DESTINATIONS[0]],
+                           "slot_at": "2026-11-01T09:10:00+02:00"}), "scheduled"))
+    assert choose_slot(db, now=now).isoformat() == "2026-11-01T19:10:00+02:00"
 
 
 def test_provider_times_differ_without_extra_slot_occupancy():
@@ -39,7 +56,7 @@ def test_provider_times_differ_without_extra_slot_occupancy():
     db = ledger()
     for due in (tg, vk):
         db.execute("INSERT INTO publish_intents VALUES(?,?,?)",
-                   (due, canonical({"slot_at": tg}), "scheduled"))
+                   (due, canonical({"slot_at": tg, "destinations": [DEFAULT_DESTINATIONS[0]]}), "scheduled"))
     with pytest.raises(ValueError, match="No free publication slot"):
         choose_slot(db, day="tomorrow", period="morning",
                     now=datetime(2026, 10, 31, 8, tzinfo=timezone(timedelta(hours=2))))
@@ -63,7 +80,10 @@ async def test_single_owner_publish_creates_two_independent_native_intents(tmp_p
         return default_bootstrap()
 
     svc.providers.vibepublish.bootstrap = bootstrap
-    response = await adapter._publish_story(session.resource_id, "one-owner-command", {"day": "tomorrow"})
+    # Model may carry an old E2E target and absolute time. Ignore both for a bare publish.
+    response = await adapter._publish_story(session.resource_id, "one-owner-command", {
+        "day": "tomorrow", "destinations": ["street_story_e2e_20260928_tg"],
+        "scheduled_for": "2026-11-01T23:59:00+02:00"})
     assert response["accepted"]
     with svc.store.connection() as db:
         rows = list(db.execute("SELECT * FROM publish_intents ORDER BY rowid"))
