@@ -165,3 +165,22 @@ async def test_image_edit_propagates_to_both_original_native_posts(tmp_path):
                "content" not in change and
                change["media"][0]["source"]["id"] == "asset_verified_new_image"
                for _, rev, change in calls)
+
+
+def test_cancel_enqueues_both_provider_posts_of_one_slot(tmp_path):
+    svc, _, session, _ = live_ready(tmp_path)
+    story_id = session.resource_id
+    svc.mutate_publish(story_id, "cancel-slot", {
+        "destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow"}})
+    with svc.store.tx() as db:
+        for index, row in enumerate(db.execute(
+                "SELECT id FROM publish_intents ORDER BY rowid")):
+            db.execute("UPDATE publish_intents SET state='scheduled',"
+                       "vibepublish_publication_id=?,vibepublish_revision=1 WHERE id=?",
+                       (f"native-post-{index}", row["id"]))
+    svc.mutate_cancel(story_id, "cancel-both", {})
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT state,cancel_request_key FROM publish_intents ORDER BY rowid"))
+        jobs = list(db.execute("SELECT * FROM jobs WHERE kind='cancel'"))
+    assert len(rows) == len(jobs) == 2
+    assert all(row["state"] == "cancel_pending" and row["cancel_request_key"] for row in rows)
