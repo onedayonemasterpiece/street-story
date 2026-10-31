@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
@@ -1091,10 +1092,16 @@ def preview_preflight(token: str, sha: str) -> dict[str, str]:
     operation_id = str(receipt.get("operation_id") or "")
     if not operation_id:
         raise DeployError("VibePublish preview returned no operation_id")
+    cursor = (receipt.get("progress") or {}).get("cursor")
+    if not isinstance(cursor, str) or not cursor:
+        raise DeployError("VibePublish preview returned no signed event cursor")
+    detail_path = f"/v1/operations/{operation_id}?after_event={urllib.parse.quote(cursor, safe='')}"
     deadline = time.monotonic() + 120
     current: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        status = vibe_request(token, "GET", f"/v1/operations/{operation_id}")
+        # Bare GET is a brief publication view; only cursor-scoped GET includes
+        # the worker_seen_at and dry_run guarantees validated below.
+        status = vibe_request(token, "GET", detail_path)
         receipts = status.get("receipts")
         if isinstance(receipts, list):
             current = next(

@@ -837,8 +837,8 @@ def test_preview_preflight_accepts_claimed_dry_run_without_bootstrap_supported(m
         del token, kwargs
         calls.append((method, path))
         if method == "POST" and path == "/v1/publications":
-            return {"operation_id": "op_fixture"}
-        if method == "GET" and path == "/v1/operations/op_fixture":
+            return {"operation_id": "op_fixture", "progress": {"cursor": "signed+cursor/="}}
+        if method == "GET" and path == "/v1/operations/op_fixture?after_event=signed%2Bcursor%2F%3D":
             return {
                 "receipts": [
                     {
@@ -869,8 +869,22 @@ def test_preview_preflight_accepts_claimed_dry_run_without_bootstrap_supported(m
     }
     assert calls == [
         ("POST", "/v1/publications"),
-        ("GET", "/v1/operations/op_fixture"),
+        ("GET", "/v1/operations/op_fixture?after_event=signed%2Bcursor%2F%3D"),
     ]
+
+
+def test_preview_preflight_fails_closed_without_signed_cursor(monkeypatch) -> None:
+    module = _load_installer()
+    calls = []
+
+    def request(token, method, path, **kwargs):
+        calls.append((method, path))
+        return {"operation_id": "op_fixture"}
+
+    monkeypatch.setattr(module, "vibe_request", request)
+    with pytest.raises(module.DeployError, match="signed event cursor"):
+        module.preview_preflight("t" * 40, "a" * 40)
+    assert calls == [("POST", "/v1/publications")]
 
 
 @pytest.mark.parametrize(
@@ -930,7 +944,7 @@ def test_preview_preflight_fails_closed_on_unproved_preview(monkeypatch, mutatio
         module,
         "vibe_request",
         lambda token, method, path, **kwargs: (
-            {"operation_id": "op_fixture"}
+            {"operation_id": "op_fixture", "progress": {"cursor": "signed+cursor/="}}
             if method == "POST"
             else {"receipts": [current]}
         ),
