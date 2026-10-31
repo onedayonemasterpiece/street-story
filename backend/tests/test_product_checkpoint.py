@@ -350,7 +350,7 @@ async def test_mvp_projects_supported_telegram_vk_and_social_cancel_receipt(tmp_
     capabilities = await service.capabilities()
     assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main", "love-kld-vk"]
     assert [(d["provider"], d["status"]) for d in capabilities["destinations"]] == [
-        ("telegram", "supported"), ("vk", "supported")
+        ("telegram", "supported"), ("vk", "needs_review")
     ]
 
     story = create_story(service)
