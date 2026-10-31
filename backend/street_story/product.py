@@ -500,48 +500,56 @@ class ProductStreetStoryService(StreetStoryService):
         if result["visual"]:
             result["visual"]["state"] = row["state"]
 
-        intent = db.execute(
-            "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (row["id"],)
-        ).fetchone()
-        if intent:
-            request = json.loads(intent["request_json"] or "{}")
-            receipt = json.loads(intent["receipt_json"] or "{}")
-            deliveries = _deliveries(receipt)
-            by_alias: dict[str, dict[str, Any]] = {}
-            for delivery in deliveries:
-                alias = str(
-                    delivery.get("destination")
-                    or delivery.get("alias")
-                    or delivery.get("destination_alias")
-                    or ""
-                )
-                if alias:
-                    by_alias[alias] = delivery
-            projected = []
-            for detail in request.get("destination_details", []):
-                if not isinstance(detail, dict):
-                    continue
-                alias = str(detail.get("alias", ""))
-                delivery = by_alias.get(alias, {})
-                observed = str(delivery.get("observed") or intent["state"] or detail.get("status") or "unknown")
-                projected.append(
-                    {
+        # A logical publication may consist of two provider-native deliveries.
+        intents = list(db.execute(
+            "SELECT * FROM publish_intents WHERE story_id=? ORDER BY created_at DESC,rowid DESC", (row["id"],)
+        ))
+        if intents:
+            newest = intents[0]
+            group = json.loads(newest["request_json"] or "{}").get("publication_group")
+            members = ([item for item in intents
+                        if json.loads(item["request_json"] or "{}").get("publication_group") == group]
+                       if group else [newest])
+            projected, targets = [], []
+            for intent in reversed(members):
+                request = json.loads(intent["request_json"] or "{}")
+                receipt = json.loads(intent["receipt_json"] or "{}")
+                deliveries = _deliveries(receipt)
+                by_alias = {str(item.get("destination") or item.get("alias") or item.get("destination_alias") or ""): item
+                            for item in deliveries}
+                for detail in request.get("destination_details", []):
+                    if not isinstance(detail, dict):
+                        continue
+                    alias = str(detail.get("alias") or "")
+                    delivery = by_alias.get(alias, {})
+                    projected.append({
                         "alias": alias,
                         "label": str(detail.get("label") or alias),
                         "provider": str(detail.get("provider") or "unknown"),
-                        "status": observed,
+                        "status": str(delivery.get("observed") or intent["state"] or detail.get("status") or "unknown"),
                         "capability_status": str(detail.get("status") or "unknown"),
                         "selected": True,
                         "scheduled_for": request.get("scheduled_for"),
-                    }
-                )
+                    })
+                targets.append({
+                    "destinations": request.get("destinations"),
+                    "state": intent["state"],
+                    "publication_id": intent["vibepublish_publication_id"],
+                    "revision": intent["vibepublish_revision"],
+                    "operation_id": intent["vibepublish_operation_id"],
+                    "scheduled_for": request.get("scheduled_for"),
+                    "edit": receipt.get("_publication_edit"),
+                })
             result["destinations"] = projected
             result["publication"] = {
-                "state": intent["state"],
-                "publication_id": intent["vibepublish_publication_id"],
-                "revision": intent["vibepublish_revision"],
-                "operation_id": intent["vibepublish_operation_id"],
-                "cancel_operation_id": intent["cancel_operation_id"],
+                "state": ("scheduled" if all(item["state"] in {"scheduled", "verified"} for item in targets)
+                          else "scheduling" if any(item["state"] in {"pending", "accepted", "running", "scheduled"} for item in targets)
+                          else newest["state"]),
+                "publication_id": newest["vibepublish_publication_id"],
+                "revision": newest["vibepublish_revision"],
+                "operation_id": newest["vibepublish_operation_id"],
+                "cancel_operation_id": newest["cancel_operation_id"],
+                "targets": targets,
             }
         return result
 
