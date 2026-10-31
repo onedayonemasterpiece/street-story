@@ -3,6 +3,7 @@ from dataclasses import replace
 import pytest
 
 from street_story.service import ConflictError
+from street_story.publication_slots import DEFAULT_DESTINATIONS
 from test_mvp_research import NoopVP, service
 
 
@@ -26,21 +27,28 @@ class BothVP(TestDestinationVP):
         payload = await super().bootstrap()
         payload["destinations"].append({"alias": "lovekenig_tg", "kind": "destination", "label": "lovekenig Telegram", "provider": "telegram"})
         payload["capabilities"].append({"destination": "lovekenig_tg", "operation": "publish", "surface": "post", "provider": "telegram", "status": "supported"})
+        for alias, provider in zip(DEFAULT_DESTINATIONS, ("telegram", "vk")):
+            payload["destinations"].append({"alias": alias, "kind": "destination",
+                                            "label": "История за поворотом", "provider": provider})
+            payload["capabilities"].append({"destination": alias, "operation": "publish",
+                                            "surface": "post", "provider": provider, "status": "supported"})
         payload["destinations"].append({"alias": "street_story_e2e_other_tg", "kind": "destination", "label": "Other", "provider": "telegram"})
         payload["capabilities"].append({"destination": "street_story_e2e_other_tg", "operation": "publish", "surface": "post", "provider": "telegram", "status": "supported"})
         return payload
 
 
 @pytest.mark.asyncio
-async def test_the_owner_sees_the_test_chat_selected_and_the_real_channel_beside_it(tmp_path):
-    # Owner decision 18.10.2026: test chat first, then a scheduled post to the real channel.
+async def test_the_owner_sees_default_real_channels_and_explicit_test_chat(tmp_path):
+    # Owner decision 31.10.2026: default real channels, test chat only by name.
     svc, _, _ = service(tmp_path)
     svc.settings = replace(svc.settings, publication_test_alias=TEST_ALIAS)
     svc.providers.vibepublish = BothVP()
     result = await svc.capabilities()
     assert [(d["alias"], d["label"], d["selected"]) for d in result["destinations"]] == [
-        (TEST_ALIAS, "Тестовый чат", True), ("tg-safe", "Полюбить Калининград", False),
-        ("lovekenig_tg", "Полюбить Калининград", False)]
+        (TEST_ALIAS, "Тестовый чат", False), ("tg-safe", "Полюбить Калининград", False),
+        ("lovekenig_tg", "Полюбить Калининград", False),
+        (DEFAULT_DESTINATIONS[0], "История за поворотом", True),
+        (DEFAULT_DESTINATIONS[1], "История за поворотом", True)]
 
 
 @pytest.mark.asyncio
