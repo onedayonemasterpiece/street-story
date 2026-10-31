@@ -6170,6 +6170,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "literal_spans": literals,
                 "change_summary": summary,
             }
+            queue_edits = getattr(self.service, "_queue_publication_edits", None)
+            if callable(queue_edits):
+                queue_edits(db, story_id, text=new_text,
+                            asset_ref=str(story["vibepublish_asset_ref"] or ""),
+                            change_id=f"text:{next_revision}")
             self._store_command(db, story_id, command_id, "literal_finish", args, result)
         session.state["literal"] = None
         self.emit(session, {"type": "literal_mode", "active": False})
@@ -6209,6 +6214,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "literal_spans": literals,
                 "change_summary": summary,
             }
+            queue_edits = getattr(self.service, "_queue_publication_edits", None)
+            if callable(queue_edits):
+                queue_edits(db, story_id, text=text,
+                            asset_ref=str(story["vibepublish_asset_ref"] or ""),
+                            change_id=f"text:{next_revision}")
             self._store_command(db, story_id, command_id, "undo", args, result)
             return result
 

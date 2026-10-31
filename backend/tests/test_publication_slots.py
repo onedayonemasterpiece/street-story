@@ -126,6 +126,35 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
                for row in rows)
 
 
+def test_undo_and_verbatim_changes_propagate_to_both_native_posts(tmp_path):
+    svc, adapter, session, _ = live_ready(tmp_path)
+    sid = session.resource_id
+    svc.mutate_publish(sid, "published-edit-paths", {
+        "destinations": list(DEFAULT_DESTINATIONS),
+        "slot_intent": {"day": "tomorrow"},
+    })
+    with svc.store.tx() as db:
+        rows = list(db.execute("SELECT id FROM publish_intents ORDER BY rowid"))
+        for i, row in enumerate(rows):
+            db.execute("UPDATE publish_intents SET state='scheduled',"
+                       "vibepublish_publication_id=?,vibepublish_revision=1 WHERE id=?",
+                       (f"original-{i}", row["id"]))
+    adapter._edit_text(sid, "first-edit", {
+        "expected_text_revision": 0, "new_text": "First version",
+        "change_summary": "Owner edited the publication",
+    })
+    adapter._undo(sid, "undo-first-edit")
+    adapter._literal_begin(session, {"position": "end"})
+    session.state["literal"]["buffer"].append("Дословное дополнение автора")
+    adapter._literal_finish(session, "literal-after-schedule")
+    with svc.store.connection() as db:
+        jobs = [json.loads(row["payload_json"]) for row in db.execute(
+            "SELECT payload_json FROM jobs WHERE kind='publication_edit' ORDER BY rowid")]
+    assert len(jobs) == 6
+    assert all(sum(job["intent_id"] == row["id"] for job in jobs) == 3 for row in rows)
+    assert all("Дословное дополнение автора" in job["text"] for job in jobs[4:])
+
+
 @pytest.mark.asyncio
 async def test_image_edit_propagates_to_both_original_native_posts(tmp_path):
     svc, _, session, _ = live_ready(tmp_path)
