@@ -896,7 +896,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'A switch alone never edits, generates or publishes.'
             )
             router['parameters']['properties']['stage']['description'] = (
-                'Other story stage; use an available publication tool directly.'
+                'Other story stage; use a current tool directly; image creation does not require switching out of research or editor.'
             )
         configuration = dict(configuration)
         configuration['functions'] = [deepcopy(f) for f in configuration['functions']
