@@ -286,7 +286,7 @@ async def test_needs_review_telegram_stays_visible_and_refreshes_before_publish(
     service, _, _ = product_service(tmp_path, vp=vp)
 
     capabilities = await service.capabilities()
-    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main"]
+    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main", "love-kld-vk"]
     assert capabilities["destinations"][0]["status"] == "needs_review"
 
     story = create_story(service, client_id="stale-capability")
@@ -345,14 +345,13 @@ async def test_mvp_research_refreshes_needs_review_before_publish(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mvp_projects_only_supported_telegram_and_social_cancel_receipt(tmp_path):
+async def test_mvp_projects_supported_telegram_vk_and_social_cancel_receipt(tmp_path):
     service, _, vp = product_service(tmp_path)
     capabilities = await service.capabilities()
-    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main"]
-    assert all(
-        d["provider"] == "telegram" and d["status"] == "supported"
-        for d in capabilities["destinations"]
-    )
+    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main", "love-kld-vk"]
+    assert [(d["provider"], d["status"]) for d in capabilities["destinations"]] == [
+        ("telegram", "supported"), ("vk", "needs_review")
+    ]
 
     story = create_story(service)
     with service.store.tx() as db:

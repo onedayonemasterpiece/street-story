@@ -625,7 +625,7 @@ async def test_mvp_capabilities_hide_internal_e2e_destination(tmp_path):
     svc.providers.vibepublish = InternalE2EVP()
     capabilities = await svc.capabilities()
 
-    assert [item["alias"] for item in capabilities["destinations"]] == ["tg-safe"]
+    assert [item["alias"] for item in capabilities["destinations"]] == ["tg-safe", "vk-deferred"]
     assert capabilities["destinations"][0]["status"] == "supported"
 
 
@@ -657,17 +657,15 @@ async def test_mvp_capabilities_keep_reviewable_telegram_visible(tmp_path):
     svc.providers.vibepublish = ReviewableTelegramVP()
     capabilities = await svc.capabilities()
     assert [item["alias"] for item in capabilities["destinations"]] == [
-        "tg-safe",
-        "tg-review",
+        "tg-safe", "vk-deferred", "tg-review",
     ]
     assert [item["status"] for item in capabilities["destinations"]] == [
-        "supported",
-        "needs_review",
+        "supported", "supported", "needs_review",
     ]
-    assert all(item["selected"] is True for item in capabilities["destinations"])
+    assert not any(item["selected"] for item in capabilities["destinations"])
     assert capabilities["mvp_providers"] == {
         "telegram": "active",
-        "vk": "deferred",
+        "vk": "active",
         "max": "deferred",
     }
 
