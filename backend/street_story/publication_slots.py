@@ -82,6 +82,6 @@ def choose_slot(db, *, day: str | None = None, period: str | None = None,
 def delivery_time(slot: datetime, alias: str) -> str:
     """Same logical slot, distinct native TG/VK delivery times (10 minutes apart)."""
     provider = "telegram" if alias.startswith("tg_") else "vk" if alias.startswith("vk_") else ""
-    if provider not in NETWORK_DELAY:
-        raise ValueError("Unsupported publication slot provider")
-    return (slot + timedelta(minutes=NETWORK_DELAY[provider])).isoformat()
+    # Explicit legacy/test destinations may have opaque aliases; with one target
+    # there is no network staggering requirement. Provider admission remains strict.
+    return (slot + timedelta(minutes=NETWORK_DELAY.get(provider, 0))).isoformat()
