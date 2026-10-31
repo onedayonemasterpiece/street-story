@@ -90,7 +90,6 @@ def project_destinations_v2(bootstrap: dict[str, Any]) -> list[dict[str, Any]]:
         if provider is None:
             continue
         status = str(cap.get("status", "unsupported"))
-        normalized = f"{alias} {label}".lower().replace("ё", "е")
         primary = alias in DEFAULT_DESTINATIONS
         projected.append(
             {
