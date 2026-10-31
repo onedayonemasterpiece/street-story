@@ -887,6 +887,17 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                        'description': 'identity: identify the object; research: discover/save facts and image; review: evidence review; editor: fact selection, concept, text and image; dictation: protected verbatim input; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume', 'more']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
+        if capability == 'publication':
+            # This stage has a one-shot publish tool; repeating the generic
+            # multi-stage router policy in every Live setup wastes the transition grant.
+            router['description'] = (
+                'Switch stages only for the owner-requested work: editor for text, '
+                'research for more facts, review for corrections. '
+                'A switch alone never edits, generates or publishes.'
+            )
+            router['parameters']['properties']['stage']['description'] = (
+                'Other story stage; use an available publication tool directly.'
+            )
         configuration = dict(configuration)
         configuration['functions'] = [deepcopy(f) for f in configuration['functions']
                                       if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]

@@ -44,7 +44,7 @@ def test_uncertainty_is_not_an_order_to_name_the_object():
         assert 'подтвердите' not in label and 'уточните' not in label
     assert 'Не проси автора подтвердить объект' in SYSTEM_INSTRUCTION
     assert '«Опубликуй» → publish_story' in SYSTEM_INSTRUCTION
-    assert 'без второго подтверждения' in SYSTEM_INSTRUCTION
+    assert 'без второго вопроса' in SYSTEM_INSTRUCTION
 
 
 @pytest.mark.asyncio
