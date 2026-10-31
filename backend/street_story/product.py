@@ -826,6 +826,10 @@ class ProductStreetStoryService(StreetStoryService):
                         story_id,
                     ),
                 )
+                self._queue_publication_edits(
+                    db, story_id, text=str(self._story_row(db, story_id)["draft_text"] or ""),
+                    asset_ref=selected_asset, change_id=f"visual:{operation_id}:{selected_asset}",
+                )
         except RetryableProviderError:
             raise
         except (PermanentProviderError, ConflictError) as exc:
@@ -957,6 +961,116 @@ class ProductStreetStoryService(StreetStoryService):
         if state in {"failed", "blocked", "outcome_unknown", "cancelled"}:
             raise PermanentProviderError(f"VibePublish publication operation ended in {state}")
         raise RetryableProviderError(f"VibePublish publication operation is {state or 'pending'}")
+
+    def _queue_publication_edits(self, db, story_id: str, *, text: str,
+                                 asset_ref: str, change_id: str) -> None:
+        """Reuse the durable job table; each provider publication is edited in place."""
+        for intent in db.execute(
+                "SELECT id,state FROM publish_intents WHERE story_id=?", (story_id,)):
+            if intent["state"] in {"cancelled", "deleted"}:
+                continue
+            self._enqueue_job(
+                db, story_id, "publication_edit",
+                f"publication_edit:{intent['id']}:{change_id}",
+                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref},
+            )
+
+    async def _run_publication_edit(self, job: dict[str, Any]) -> None:
+        """Idempotent CAS update; unknown network outcomes retain their original key."""
+        payload = json.loads(job["payload_json"])
+        intent_id = payload["intent_id"]
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM publish_intents WHERE id=?", (intent_id,)).fetchone()
+            if row is None:
+                return
+            intent = dict(row)
+            earlier = db.execute(
+                "SELECT id FROM jobs WHERE story_id=? AND kind='publication_edit' AND id<>? "
+                "AND state NOT IN ('done','cancelled') AND created_at<? "
+                "AND json_extract(payload_json,'$.intent_id')=? LIMIT 1",
+                (job["story_id"], job["id"], job["created_at"], intent_id),
+            ).fetchone()
+        if earlier:
+            raise RetryableProviderError("Earlier provider edit has not completed",
+                                         retry_at=self.store.now() + 10)
+        if intent["state"] in {"cancelled", "deleted", "failed", "blocked"}:
+            raise PermanentProviderError(f"Publication cannot be edited in state {intent['state']}")
+        if not intent.get("vibepublish_publication_id") or intent.get("vibepublish_revision") is None:
+            raise RetryableProviderError("Waiting for native publication receipt",
+                                         retry_at=self.store.now() + 15)
+        old_request = json.loads(intent["request_json"])
+        receipt_data = json.loads(intent.get("receipt_json") or "{}")
+        key = "ss-vp-edit-" + hashlib.sha256(
+            f"{intent_id}:{job['id']}".encode()).hexdigest()[:48]
+        marker = receipt_data.get("_publication_edit") or {}
+        if marker.get("key") != key:
+            change = {"kind": "edit"}
+            if payload["text"] != old_request.get("text"):
+                change["content"] = publication_content(payload["text"])
+            if payload["asset_ref"] != old_request.get("asset_ref"):
+                change["media"] = [
+                    {"source": {"kind": "asset", "id": payload["asset_ref"]}, "role": "image"}
+                ]
+            if len(change) == 1:
+                return
+            if marker and marker.get("phase") != "verified":
+                raise RetryableProviderError("An earlier provider edit has an unresolved outcome",
+                                             retry_at=self.store.now() + 60)
+            marker = {"key": key, "phase": "possibly_sent", "change": change,
+                      "expected_revision": intent["vibepublish_revision"]}
+            with self.store.tx() as db:
+                current = dict(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)).fetchone())
+                saved = json.loads(current["receipt_json"] or "{}")
+                previous = saved.get("_publication_edit") or {}
+                if previous and previous.get("phase") != "verified":
+                    raise RetryableProviderError("Another edit is not yet reconciled",
+                                                 retry_at=self.store.now() + 30)
+                db.execute("UPDATE publish_intents SET receipt_json=?,updated_at=? WHERE id=?",
+                           (canonical({**saved, "_publication_edit": marker}), self.store.now(), intent_id))
+
+        operation_id = marker.get("operation_id")
+        if not operation_id:
+            response = await self.providers.vibepublish.publication_update(
+                str(intent["vibepublish_publication_id"]),
+                int(marker["expected_revision"]),
+                marker["change"], key,
+            )
+            operation_id = str(response.get("operation_id") or "")
+            if not operation_id:
+                raise RetryableProviderError("VibePublish edit accepted without operation ID")
+            marker = {**marker, "operation_id": operation_id}
+            with self.store.tx() as db:
+                saved = json.loads(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)
+                ).fetchone()["receipt_json"] or "{}")
+                db.execute("UPDATE publish_intents SET receipt_json=?,updated_at=? WHERE id=?",
+                           (canonical({**saved, "_publication_edit": marker}), self.store.now(), intent_id))
+
+        current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
+        state = str(current.get("state") or "")
+        if current.get("operation_complete") is True and state == "verified":
+            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"]}
+            with self.store.tx() as db:
+                saved = json.loads(db.execute(
+                    "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)
+                ).fetchone()["receipt_json"] or "{}")
+                verified_marker = {**marker, "phase": "verified", "receipt": current}
+                db.execute(
+                    "UPDATE publish_intents SET request_json=?,receipt_json=?,"
+                    "vibepublish_revision=COALESCE(?,vibepublish_revision),updated_at=? WHERE id=?",
+                    (canonical(updated),
+                     canonical({**saved, **({"deliveries": _deliveries(current)}
+                                            if _deliveries(current) else {}),
+                                "_publication_edit": verified_marker}),
+                     current.get("revision") if isinstance(current.get("revision"), int) else None,
+                     self.store.now(), intent_id),
+                )
+            return
+        if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
+            raise PermanentProviderError(f"VibePublish edit ended in {state}")
+        raise RetryableProviderError(f"VibePublish edit is {state or 'pending'}",
+                                     retry_at=self.store.now() + 10)
 
     def mutate_cancel(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
