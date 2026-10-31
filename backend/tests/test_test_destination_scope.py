@@ -46,6 +46,7 @@ async def test_the_owner_sees_default_real_channels_and_explicit_test_chat(tmp_p
     result = await svc.capabilities()
     assert [(d["alias"], d["label"], d["selected"]) for d in result["destinations"]] == [
         (TEST_ALIAS, "Тестовый чат", False), ("tg-safe", "Полюбить Калининград", False),
+        ("vk-deferred", "Полюбить Калининград", False),
         ("lovekenig_tg", "Полюбить Калининград", False),
         (DEFAULT_DESTINATIONS[0], "История за поворотом", True),
         (DEFAULT_DESTINATIONS[1], "История за поворотом", True)]
