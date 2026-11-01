@@ -179,7 +179,7 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
     assert writer.calls == 1
     assert plan["cards"][0]["notes"] == ["Театр", "В 1910 году здесь открылся театр.", "листай →"]
     assert plan["cards"][-1]["notes"] == ["История за поворотом Калининград",
-        "Светлогорск", "Светлогорск, улица Тестовая, 1"]
+        "Светлогорск, улица Тестовая, 1"]
     assert plan["cards"][0]["fact_ids"] == ["fact-1"]
     assert plan["cards"][1]["fact_ids"] == ["fact-2"]
     assert plan["cards"][2]["fact_ids"] == []
@@ -196,6 +196,30 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
         visual = json.loads(svc._story_row(db, sid)["visual_context_json"])
         assert [p["asset_ref"] for p in visual["comic"]["cards"]] == ["card-1", "card-2", "card-3"]
 
+
+
+@pytest.mark.asyncio
+async def test_failed_comic_job_exits_visual_processing_with_error(tmp_path):
+    from street_story.errors import PermanentProviderError
+    svc, sid, _, _ = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    svc.order_story_photos(sid, "order-failed", {"photo_ids": ["source", *ids]})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='visual_processing' WHERE id=?", (sid,))
+        svc._enqueue_job(db, sid, "visual", "visual:broken-card", {"content_revision": "broken"})
+
+    async def failed_visual(_job):
+        raise PermanentProviderError("visual_prompt_too_long")
+
+    svc._run_visual = failed_visual
+    assert await svc.run_once(claim_kind="visual", claim_story_id=sid)
+    with svc.store.connection() as db:
+        story = svc._story_row(db, sid)
+        job = db.execute("SELECT state FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone()
+    assert job["state"] == "failed"
+    assert story["state"] == "needs_review"
+    assert story["error_code"] == "visual_generation_failed"
+    assert "карточки" in story["error_message"]
 
 
 @pytest.mark.asyncio

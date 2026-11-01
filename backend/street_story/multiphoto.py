@@ -386,8 +386,12 @@ class StoryPhotosMixin:
                             arrows[-1] = ''
                 elif position == len(cards) - 1:
                     # Brand/footer text is a fixed product label, not writer prose.
+                    address_start = address_label.casefold().removeprefix('г. ').strip()
+                    city_start = city_label.casefold()
+                    city_in_address = (address_start == city_start or
+                                       address_start.startswith((city_start + ',', city_start + ' ')))
                     notes = list(dict.fromkeys(['История за поворотом Калининград',
-                                                city_label, address_label]))
+                                                *([] if city_in_address else [city_label]), address_label]))
                     arrows = [''] * len(notes)
                     fids = []
                 used.update(item['fact_ids'])
@@ -400,7 +404,8 @@ class StoryPhotosMixin:
             try:
                 result, model = await external_writers.write(contents[0], None, answer_instruction=(
                     '\n\nОтветь одним JSON-объектом: text (краткое название плана) и cards '
-                    '(ровно N объектов с полями notes, arrows, fact_ids, hook). Никаких пояснений.'))
+                    '(ровно N объектов с полями notes, arrows, fact_ids, hook). Никаких пояснений.'),
+                    validate=lambda answer: parse(json.dumps(answer, ensure_ascii=False), 'external'))
                 return parse(json.dumps(result, ensure_ascii=False), external_writers.DISPLAY.get(model, model))
             except (external_writers.ExternalWriterUnavailable, ValueError, KeyError, TypeError):
                 logging.getLogger(__name__).warning('street_story_comic_writer_fallback story_id=%s', story_id)

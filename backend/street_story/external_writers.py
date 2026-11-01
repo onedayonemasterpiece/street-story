@@ -107,12 +107,21 @@ async def sol(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str 
         return parse_answer(await _run(argv, timeout=SOL_TIMEOUT, output_file=last))
 
 
-async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER) -> tuple[dict[str, Any], str]:
+async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER,
+                validate=None) -> tuple[dict[str, Any], str]:
     """GLM up to GLM_ATTEMPTS times, then Sol. Raises when both are unavailable."""
+    def accepted(answer):
+        if validate is not None:
+            try:
+                validate(answer)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ExternalWriterUnavailable("writer_answer_invalid") from exc
+        return answer
+
     for attempt in range(1, GLM_ATTEMPTS + 1):
         started = time.monotonic()
         try:
-            answer = await glm(prompt, answer_instruction=answer_instruction)
+            answer = accepted(await glm(prompt, answer_instruction=answer_instruction))
             logger.info("street_story_external_writer model=%s attempt=%s outcome=written seconds=%.1f",
                         GLM_MODEL, attempt, time.monotonic() - started)
             return answer, GLM_MODEL
@@ -121,7 +130,7 @@ async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: st
                            GLM_MODEL, attempt, exc, time.monotonic() - started)
     started = time.monotonic()
     try:
-        answer = await sol(prompt, photo_jpeg, answer_instruction=answer_instruction)
+        answer = accepted(await sol(prompt, photo_jpeg, answer_instruction=answer_instruction))
     except ExternalWriterUnavailable as exc:
         logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
                        SOL_MODEL, exc, time.monotonic() - started)

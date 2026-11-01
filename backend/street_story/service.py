@@ -1391,10 +1391,13 @@ class StreetStoryService:
                 changed = db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.settings.redact(str(exc)), self.store.now(), job["id"], job['attempts'])).rowcount
                 if not changed:
                     return True
-                if job["kind"] != "visual" and not self._preserve_background_fact_value(db, job, error=self.settings.redact(str(exc))):
+                if not self._preserve_background_fact_value(db, job, error=self.settings.redact(str(exc))):
                     caption_limit = job['kind'] == 'publish' and str(exc) == 'telegram_caption_too_long'
+                    visual_failure = job['kind'] == 'visual'
                     db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?",
-                        ('telegram_caption_too_long' if caption_limit else 'provider_permanent_error',
+                        ('visual_generation_failed' if visual_failure else
+                         'telegram_caption_too_long' if caption_limit else 'provider_permanent_error',
+                         'Не удалось создать карточки истории. Попробуйте генерацию снова.' if visual_failure else
                          'Telegram отклонил длину подписи. Сократите текст или попробуйте позже.' if caption_limit
                          else 'Не удалось выполнить обработку. Требуется проверка настроек сервиса.',
                          self.store.now(), job['story_id']))

@@ -41,6 +41,29 @@ async def test_glm_three_times_then_sol_and_glm_stays_first(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invalid_comic_plan_tries_sol_before_gemini(monkeypatch):
+    calls = []
+
+    async def glm(prompt, *, answer_instruction=external_writers.ANSWER):
+        calls.append("glm")
+        return {"text": "План", "cards": []}
+
+    async def sol(prompt, photo, *, answer_instruction=external_writers.ANSWER):
+        calls.append("sol")
+        return {"text": "План", "cards": [{"notes": ["Факт"], "fact_ids": []}] * 3}
+
+    def validate(answer):
+        if len(answer["cards"]) != 3:
+            raise ValueError("incomplete cards")
+
+    monkeypatch.setattr(external_writers, "glm", glm)
+    monkeypatch.setattr(external_writers, "sol", sol)
+    plan, model = await external_writers.write("comic", None, validate=validate)
+    assert model == external_writers.SOL_MODEL and len(plan["cards"]) == 3
+    assert calls == ["glm", "glm", "glm", "sol"]
+
+
+@pytest.mark.asyncio
 async def test_writer_uses_external_first_and_gemini_when_both_fail(monkeypatch):
     async def external(prompt, photo):
         return json.loads(ANSWER), external_writers.GLM_MODEL
