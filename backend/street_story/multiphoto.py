@@ -368,148 +368,130 @@ class StoryPhotosMixin:
                 return
         plans = context["comic"]["plan"]["cards"]
         await self.providers.vibepublish.bootstrap()
-        if not all(card.get("asset_ref") for card in context["comic"]["cards"]):
-            # Original image preparation/ingress remains per photo; only the
-            # durable imagegen request is batched. Nothing is generated twice.
-            for position, photo_id in enumerate(photo_ids):
-                with self.store.connection() as db:
-                    if not self._comic_current(db, story_id, revision, photo_ids):
-                        return
-                    story = dict(self._story_row(db, story_id))
-                    context = json.loads(story["visual_context_json"] or "{}")
-                card = context["comic"]["cards"][position]
-                if (card.get("brief") and card.get("transform")
-                        and card.get("source_asset_ref") and card.get("source_sha256")):
-                    continue
-                if not card.get("brief"):
-                    brief, data, mime, transform = self._comic_brief(
-                        story, context, position, {"photo_id": photo_id}, plans[position])
-                    context = self._comic_patch(story_id, revision, photo_ids, position,
-                                                brief=brief, transform=transform)
-                    if context is None:
-                        return
-                    card = context["comic"]["cards"][position]
-                else:
-                    data, mime = self._comic_photo_bytes(story_id, photo_id)
-                    from .visual_source import photo_transform
-                    transform = card["transform"]
-                    data, mime, current = photo_transform(data, mime, transform["mode"],
-                        transform.get("crop_rect") if transform["mode"] == "crop_4_5" else None,
-                        contract=transform["contract"])
-                    if current != transform:
-                        raise PermanentProviderError("visual_source_transform_changed")
-                if not card.get("source_asset_ref") or not card.get("source_sha256"):
-                    ingress_key = "ss-vp-asset-" + digest([story_id, photo_id, card["transform"]])[:48]
-                    ingress = await self.providers.vibepublish.ingress_asset(data, mime, ingress_key)
-                    source_asset = str(ingress.get("asset_id") or "")
-                    source_sha = str(ingress.get("sha256") or "")
-                    if not source_asset or len(source_sha) != 64 or any(c not in '0123456789abcdef' for c in source_sha):
-                        raise RetryableProviderError("VibePublish ingress lacks asset ID or verified SHA")
-                    context = self._comic_patch(story_id, revision, photo_ids, position,
-                        source_asset_ref=source_asset, source_sha256=source_sha)
-                    if context is None:
-                        return
+        inflight = 0
+        for position, photo_id in enumerate(photo_ids):
             with self.store.connection() as db:
                 if not self._comic_current(db, story_id, revision, photo_ids):
                     return
-                context = json.loads(self._story_row(db, story_id)["visual_context_json"] or "{}")
-            cards = context["comic"]["cards"]
-            if any(card.get("operation_id") for card in cards) and not context["comic"].get("batch_operation_id"):
-                # In-flight legacy individual jobs must not be regenerated.
-                raise PermanentProviderError("visual_legacy_card_operation_requires_review")
-            operation = context["comic"].get("batch_operation_id")
-            formats = ["original" if card["transform"]["mode"] == "original" else "post_4_5"
-                       for card in cards]
-            ordered = [[photo_id, card["source_asset_ref"], card["source_sha256"],
-                        card["brief"], card["transform"]]
-                       for photo_id, card in zip(photo_ids, cards)]
-            if not operation:
-                # All comic briefs share the owner-approved versioned prompt
-                # template. Include it once, retaining every per-card factual
-                # instruction, caption, frame rule and source-specific constraint.
-                template, _ = self._prompt_template()
-                prefix, suffix = template.split(self.PROMPT_TOKEN)
-                card_sections = []
-                for i, card in enumerate(cards):
-                    brief = card["brief"]
-                    if not brief.startswith(prefix) or (suffix and suffix not in brief[len(prefix):]):
-                        raise PermanentProviderError("visual_prompt_template_mismatch")
-                    dynamic = brief[len(prefix):]
-                    if suffix:
-                        dynamic = dynamic.replace(suffix, "", 1)
-                    card_sections.append(
-                        f"[CARD {i+1}/{len(cards)}] source-{i}, format={formats[i]}\n{dynamic}")
-                batch_brief = (
-                    "Единый стиль скетч-комикса для всех кадров. Каждый раздел относится "
-                    "только к одноимённому исходному фото. Генерируй отдельную "
-                    "картинку на каждое source-N в заданном порядке.\n\n"
-                    + prefix + suffix + "\n\n" + "\n\n".join(card_sections))
-                if len(batch_brief) > 32000:
-                    raise PermanentProviderError("visual_prompt_too_long")
-                visual_key = "ss-vp-visual-" + digest([story_id, revision, ordered])[:48]
-                command = {"command": {"kind": "tune",
-                    "sources": [{"source": {"kind": "asset", "id": card["source_asset_ref"]}}
-                                for card in cards],
-                    "brief": batch_brief, "candidates": len(cards), "formats": formats,
-                    "selection": "human", "copy": {}}}
-                response = await self.providers.vibepublish.visual(command, visual_key)
-                operation = str(response.get("operation_id") or "")
-                if not operation:
-                    raise RetryableProviderError("VibePublish batch accepted no recoverable operation_id")
-                context = self._comic_patch(story_id, revision, photo_ids,
-                                            batch_operation_id=operation)
+                story = dict(self._story_row(db, story_id))
+                context = json.loads(story["visual_context_json"] or "{}")
+            card = context["comic"]["cards"][position]
+            if card.get("asset_ref"):
+                continue
+            if inflight >= 3:
+                break
+            if not card.get("brief"):
+                brief, data, mime, transform = self._comic_brief(
+                    story, context, position, {"photo_id": photo_id}, plans[position])
+                context = self._comic_patch(story_id, revision, photo_ids, position,
+                    brief=brief, transform=transform)
                 if context is None:
                     return
+                card = context["comic"]["cards"][position]
+            else:
+                data, mime = self._comic_photo_bytes(story_id, photo_id)
+                from .visual_source import photo_transform
+                transform = card["transform"]
+                data, mime, current = photo_transform(data, mime, transform["mode"],
+                    transform.get("crop_rect") if transform["mode"] == "crop_4_5" else None,
+                    contract=transform["contract"])
+                if current != transform:
+                    raise PermanentProviderError("visual_source_transform_changed")
+            source_asset = card.get("source_asset_ref")
+            if not source_asset:
+                ingress_key = "ss-vp-asset-" + digest([story_id, photo_id, card["transform"]])[:48]
+                ingress = await self.providers.vibepublish.ingress_asset(data, mime, ingress_key)
+                source_asset = str(ingress.get("asset_id") or "")
+                if not source_asset:
+                    raise RetryableProviderError("VibePublish asset ingress returned no asset ID")
+                context = self._comic_patch(story_id, revision, photo_ids, position,
+                                            source_asset_ref=source_asset)
+                if context is None:
+                    return
+                card = context["comic"]["cards"][position]
+            visual_key = "ss-vp-visual-" + digest([story_id, revision, photo_id, source_asset])[:48]
+            operation = card.get("operation_id")
+            if not operation:
+                cmd = {"command": {"kind": "tune",
+                       "source": {"source": {"kind": "asset", "id": source_asset}},
+                       "brief": card["brief"], "candidates": 1,
+                       "formats": ["original" if card["transform"]["mode"] == "original" else "post_4_5"],
+                       "selection": "human", "copy": {}}}
+                response = await self.providers.vibepublish.visual(cmd, visual_key)
+                operation = str(response.get("operation_id") or "")
+                if not operation:
+                    raise RetryableProviderError("VibePublish visual accepted no recoverable operation_id")
+                context = self._comic_patch(story_id, revision, photo_ids, position, operation_id=operation)
+                if context is None:
+                    return
+                card = context["comic"]["cards"][position]
+            inflight += 1
+        # Poll the launched batch; VibePublish handles its concurrent imagegen jobs.
+        pending = False
+        for position, photo_id in enumerate(photo_ids):
+            with self.store.connection() as db:
+                if not self._comic_current(db, story_id, revision, photo_ids):
+                    return
+                context = json.loads(self._story_row(db, story_id)['visual_context_json'] or '{}')
+            card = context['comic']['cards'][position]
+            if card.get('asset_ref'):
+                continue
+            operation = card.get('operation_id')
+            if not operation:
+                pending = True  # Remaining members launch in the next batch.
+                continue
             receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
             state = receipt.get("state")
             if state in {"accepted", "running", "queued", "processing"}:
-                raise RetryableProviderError("VibePublish comic batch is processing")
+                pending = True
+                continue
             if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
-                raise PermanentProviderError("VibePublish comic batch ended in " + str(state))
-            if state not in {"needs_selection", "verified"}:
-                raise RetryableProviderError("VibePublish comic batch receipt pending")
-            choices = receipt.get("candidates")
-            if not isinstance(choices, list) or len(choices) != len(cards):
-                raise PermanentProviderError("Comic batch has incomplete candidate receipt")
-            seen_assets, seen_hashes, seen_ids = set(), set(), set()
-            for position, candidate in enumerate(choices):
-                card = cards[position]
-                sha = candidate.get("sha256") if isinstance(candidate, dict) else None
-                asset_ref = candidate.get("asset_ref") if isinstance(candidate, dict) else None
-                candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
-                if (not isinstance(candidate, dict) or type(candidate.get("source_index")) is not int
-                        or candidate["source_index"] != position
-                        or candidate.get("source_asset_ref") != card["source_asset_ref"]
-                        or candidate.get("source_sha256") != card["source_sha256"]
-                        or candidate.get("format") != formats[position]
-                        or not isinstance(asset_ref, str) or not asset_ref
-                        or not isinstance(candidate_id, str) or not candidate_id
-                        or not isinstance(sha, str) or len(sha) != 64
-                        or any(c not in "0123456789abcdef" for c in sha)
-                        or asset_ref in seen_assets or sha in seen_hashes or candidate_id in seen_ids
-                        or type(candidate.get("width")) is not int
-                        or type(candidate.get("height")) is not int
-                        or not self._frame_dimensions_match({
-                            "output_frame_contract": (POST_4_5_FRAME_CONTRACT if card["transform"]["mode"] == "crop_4_5"
-                                                      else ORIGINAL_ART_FRAME_CONTRACT),
-                            "source_image_transform": card["transform"]
-                        }, candidate["width"], candidate["height"])):
-                    raise PermanentProviderError("visual_batch_source_or_format_unverified")
-                if card.get("asset_ref") and card["asset_ref"] != asset_ref:
-                    raise PermanentProviderError("visual_batch_candidate_changed")
-                seen_assets.add(asset_ref)
-                seen_hashes.add(sha)
-                seen_ids.add(candidate_id)
-            # Candidate bytes were already verified by VibePublish. This does NOT
-            # call legacy single-candidate select and pretend it selected N;
-            # the complete comic still requires Street Story's human review.
-            for position, candidate in enumerate(choices):
-                if not cards[position].get("asset_ref"):
-                    context = self._comic_patch(story_id, revision, photo_ids, position,
-                        asset_ref=candidate["asset_ref"], candidate=candidate,
-                        selected_sha256=candidate["sha256"])
-                    if context is None:
-                        return
+                raise PermanentProviderError("VibePublish comic card ended in " + str(state))
+            candidate = card.get("candidate") or {}
+            if state == "needs_selection":
+                choices = receipt.get("candidates")
+                if not isinstance(choices, list) or len(choices) != 1:
+                    raise PermanentProviderError("Comic card requires exactly one VibePublish candidate")
+                candidate = choices[0]
+                visual_job_id = receipt.get("visual_job_id")
+                provider_revision = receipt.get("visual_revision")
+                token = candidate.get("selection_token")
+                if (not isinstance(visual_job_id, str) or not isinstance(provider_revision, int)
+                        or not isinstance(token, str) or not candidate.get("id")):
+                    raise PermanentProviderError("VibePublish candidate selection receipt is incomplete")
+                select_key = "ss-vp-select-" + digest([operation, candidate["id"], provider_revision])[:48]
+                context = self._comic_patch(story_id, revision, photo_ids, position,
+                    candidate=candidate, select_request_key=select_key)
+                if context is None:
+                    return
+                await self.providers.vibepublish.visual({"command": {
+                    "kind": "select", "job_id": visual_job_id, "candidate_id": candidate["id"],
+                    "expected_revision": provider_revision, "token": token}}, select_key)
+                # Provider select reply may omit immutable candidate identity;
+                # use the same authoritative status receipt as the single-image path.
+                receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
+            if receipt.get("state") != "verified":
+                raise RetryableProviderError("VibePublish comic card selection pending")
+            asset_ref = str(receipt.get("selected_asset_ref") or "")
+            if not asset_ref:
+                raise PermanentProviderError("VibePublish comic card lacks verified asset")
+            # The provider's immutable candidate dimension proof is the same as for one photo.
+            evidence = candidate or (receipt.get("candidates") or [{}])[0]
+            if (not isinstance(evidence, dict) or evidence.get("asset_ref") != asset_ref
+                    or not isinstance(evidence.get("width"), int)
+                    or not isinstance(evidence.get("height"), int)
+                    or not self._frame_dimensions_match({
+                        "output_frame_contract": (POST_4_5_FRAME_CONTRACT if card["transform"]["mode"] == "crop_4_5"
+                                                  else ORIGINAL_ART_FRAME_CONTRACT),
+                        "source_image_transform": card["transform"]
+                    }, evidence["width"], evidence["height"])):
+                raise PermanentProviderError("visual_format_unverified")
+            context = self._comic_patch(story_id, revision, photo_ids, position, asset_ref=asset_ref,
+                candidate=candidate or evidence, selected_sha256=receipt.get("selected_sha256"))
+            if context is None:
+                return
+        if pending:
+            raise RetryableProviderError('VibePublish comic cards are processing')
         with self.store.tx() as db:
             if not self._comic_current(db, story_id, revision, photo_ids):
                 return
