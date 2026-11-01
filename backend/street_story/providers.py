@@ -780,71 +780,47 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
 
 def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
                           facts: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
-    """Mechanical writer-output boundary; semantic grounding remains the writer's responsibility."""
-    if not isinstance(cards, list) or len(cards) != photo_count:
-        raise ValueError("card_notes_count_invalid")
-    allowed_latin = set(re.findall(r"[A-Za-z]+", " ".join(
-        [place_name, *(str(f.get("text") or "") for f in facts)]).casefold()))
-    punctuation = " .,;:!?…-—–«»„“”\\\"'()[]№%/+&→_#"
+    """Normalize the writer's card lettering; never reject it.
+
+    Owner decision 01.11.2026: a mechanical format slip must not discard the post (one rejected
+    74-character cover hook cost 13 minutes of fallbacks). Meaning stays with the writer and with the
+    owner, who sees the lettering before any image is generated.
+    """
+    del facts  # kept for callers; grounding is not checked mechanically
+    raw = cards if isinstance(cards, list) else []
+
+    def clean(value: Any, limit: int) -> str:
+        text = "".join(ch for ch in str(value or "") if not ch.isalpha()
+                       or unicodedata.name(ch, "").split(" ", 1)[0] in ("CYRILLIC", "LATIN"))
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > limit:
+            text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—–-")
+        return text
+
+    def same_title(text: str) -> str:
+        return re.sub(r"[\s№]+", "", text.casefold())
+
     result = []
-    for position, card in enumerate(cards):
-        if not isinstance(card, dict):
-            raise ValueError("card_notes_item_invalid")
-        notes, arrows = card.get("notes"), card.get("arrows")
-        if not isinstance(notes, list) or not isinstance(arrows, list) or len(notes) != len(arrows):
-            raise ValueError("card_notes_arrows_invalid")
-        if position == photo_count - 1:
-            if notes or arrows:
-                raise ValueError("card_notes_final_must_be_empty")
-            result.append({"notes": [], "arrows": []})
+    for position in range(photo_count):
+        card = raw[position] if position < len(raw) and isinstance(raw[position], dict) else {}
+        if position == photo_count - 1 and photo_count > 1:
+            result.append({"notes": [], "arrows": []})  # brand, city and address come from the server
             continue
-        if not 1 <= len(notes) <= 4:
-            raise ValueError("card_notes_length_invalid")
-        cleaned = []
-        for index, (note, arrow) in enumerate(zip(notes, arrows)):
-            if not isinstance(note, str) or not isinstance(arrow, str):
-                raise ValueError("card_notes_type_invalid")
-            note, arrow = note.strip(), arrow.strip()
-            if (not note and not (position == 0 and index == len(notes) - 1)) or len(note) > 70 or len(arrow) > 80:
-                raise ValueError("card_notes_limit_invalid")
-            for value in (note, arrow):
-                if any(not (ch in punctuation or (ch.isascii() and ch.isalnum())
-                            or (ch.isalpha() and unicodedata.name(ch, "").split(" ", 1)[0]
-                                in ("CYRILLIC", "LATIN"))) for ch in value):
-                    raise ValueError("card_notes_script_invalid")
-                if any(word.casefold() not in allowed_latin
-                       for word in re.findall(r"[A-Za-z]+", value)):
-                    raise ValueError("card_notes_foreign_text_invalid")
-            cleaned.append(note)
-        clean_arrows = [arrow.strip() for arrow in arrows]
+        notes = card.get("notes") if isinstance(card.get("notes"), list) else []
+        arrows = card.get("arrows") if isinstance(card.get("arrows"), list) else []
+        pairs = [(clean(note, 70), clean(arrows[i] if i < len(arrows) else "", 80))
+                 for i, note in enumerate(notes)]
+        pairs = [(note, arrow) for note, arrow in pairs
+                 if note and not re.fullmatch(r"(?i)листай\s*→?", note)]
+        pairs = [(re.sub(r"(?i)\s*листай\s*→\s*$", "", note), arrow) for note, arrow in pairs]
+        pairs = [(note, arrow) for note, arrow in pairs if note]
         if position == 0:
-            # Typography in the writer's heading (№ 3 vs №3) is not a reason to
-            # discard the whole caption; the server can supply absent labels.
-            def same_title(text: str) -> str:
-                return re.sub(r"\s+", "", text.casefold())
-            if same_title(cleaned[0]) != same_title(place_name):
-                if len(cleaned) < 4:
-                    cleaned.insert(0, place_name)
-                    clean_arrows.insert(0, "")
-                else:
-                    cleaned[0], clean_arrows[0] = place_name, ""
-            if not re.search(r"листай\s*→\s*$", cleaned[-1], re.I):
-                if not cleaned[-1]:
-                    cleaned[-1] = "листай →"
-                elif len(cleaned) < 4:
-                    cleaned.append("листай →")
-                    clean_arrows.append("")
-                elif len(cleaned[-1] + " листай →") <= 70:
-                    cleaned[-1] += " листай →"
-                else:
-                    cleaned[-1] = "листай →"
-            clean_arrows[0] = clean_arrows[-1] = ""
-        if any(len(note) > 70 for note in cleaned):
-            raise ValueError("card_notes_limit_invalid")
-        if any("листай" in note.casefold() for note in cleaned[:-1] if position == 0) or (
-                position and any("листай" in note.casefold() for note in cleaned)):
-            raise ValueError("card_notes_cta_invalid")
-        result.append({"notes": cleaned, "arrows": clean_arrows})
+            if place_name and not any(same_title(note) == same_title(place_name) for note, _ in pairs):
+                pairs.insert(0, (clean(place_name, 70), ""))
+            pairs = pairs[:3] + [("листай →", "")]
+        else:
+            pairs = pairs[:4]
+        result.append({"notes": [note for note, _ in pairs], "arrows": [arrow for _, arrow in pairs]})
     return result
 
 

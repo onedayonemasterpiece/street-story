@@ -266,7 +266,7 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(tmp_path):
+async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path):
     from street_story.providers import _validated_card_notes
     svc, sid, _, _ = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
@@ -296,8 +296,8 @@ async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(
         assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
     bad = json.loads(json.dumps(notes, ensure_ascii=False))
     bad[1]["notes"][0] = "Очень " * 20 + "длинное сообщение"
-    with pytest.raises(ValueError):
-        _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
+    normalized = _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
+    assert all(len(n) <= 70 for card in normalized for n in card["notes"])
 
 
 @pytest.mark.asyncio

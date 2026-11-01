@@ -124,21 +124,21 @@ def test_card_notes_writer_validation():
     ]
     facts = [{"text": "Театр открылся в 1910 году, здание перестроили после 1920 года."}]
     assert _validated_card_notes(cards, 3, "Театр", facts) == cards
-    for field, value in [
-        ((1, 0), "健康新 здание открылось в 1915 году"),
-        ((1, 0), "После 1920 года листай →"),
-        ((1, 0), "После 1920 года здание перестроили иностранныйUNKNOWN"),
-        ((1, 0), "Очень " * 20 + "длинный текст"),
-    ]:
+    # Owner decision 01.11: format slips are normalized, never rejected.
+    def second(value):
         broken = copy.deepcopy(cards)
-        broken[field[0]]["notes"][field[1]] = value
-        with pytest.raises(ValueError):
-            _validated_card_notes(broken, 3, "Театр", facts)
+        broken[1]["notes"][0] = value
+        return _validated_card_notes(broken, 3, "Театр", facts)[1]["notes"][0]
+    assert second("健康新 здание открылось в 1915 году") == "здание открылось в 1915 году"
+    assert second("После 1920 года листай →") == "После 1920 года"
+    assert second("Hufenschule, Königsberger Straße") == "Hufenschule, Königsberger Straße"
+    long_note = second("Очень " * 20 + "длинный текст")
+    assert len(long_note) <= 70 and long_note.startswith("Очень")
     broken = copy.deepcopy(cards)
-    broken[-1]["notes"] = ["Финальная лишняя надпись"]
-    broken[-1]["arrows"] = [""]
-    with pytest.raises(ValueError, match="final"):
-        _validated_card_notes(broken, 3, "Театр", facts)
+    broken[-1]["notes"], broken[-1]["arrows"] = ["Финальная лишняя надпись"], [""]
+    assert _validated_card_notes(broken, 3, "Театр", facts)[-1] == {"notes": [], "arrows": []}
+    assert len(_validated_card_notes(cards[:1], 3, "Театр", facts)) == 3  # missing cards padded
+    assert _validated_card_notes(None, 2, "Театр", facts)[0]["notes"] == ["Театр", "листай →"]
 
 
 def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
