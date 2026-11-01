@@ -820,7 +820,8 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
         if position == 0:
             # Typography in the writer's heading (№ 3 vs №3) is not a reason to
             # discard the whole caption; the server can supply absent labels.
-            same_title = lambda s: re.sub(r"\s+", "", s.casefold())
+            def same_title(text: str) -> str:
+                return re.sub(r"\s+", "", text.casefold())
             if same_title(cleaned[0]) != same_title(place_name):
                 if len(cleaned) < 4:
                     cleaned.insert(0, place_name)
