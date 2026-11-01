@@ -1017,7 +1017,7 @@ class ProductStreetStoryService(StreetStoryService):
             intent = dict(row)
             earlier = db.execute(
                 "SELECT id FROM jobs WHERE story_id=? AND kind='publication_edit' AND id<>? "
-                "AND state NOT IN ('done','cancelled') AND created_at<? "
+                "AND state NOT IN ('done','cancelled','failed') AND created_at<? "
                 "AND json_extract(payload_json,'$.intent_id')=? LIMIT 1",
                 (job["story_id"], job["id"], job["created_at"], intent_id),
             ).fetchone()
@@ -1066,6 +1066,25 @@ class ProductStreetStoryService(StreetStoryService):
                 ]
             if len(change) == 1:
                 return
+            if marker and marker.get("phase") != "verified" and marker.get("operation_id"):
+                # A failed earlier job may have left its edit applied: resolve it from the ledger.
+                earlier_op = str(marker["operation_id"])
+                earlier = _receipt(await self.providers.vibepublish.status(earlier_op), earlier_op)
+                if (earlier.get("operation_complete") is True
+                        and earlier.get("state") in {"scheduled", "verified"}):
+                    revision = earlier.get("revision")
+                    with self.store.tx() as db:
+                        saved = json.loads(db.execute(
+                            "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)
+                        ).fetchone()["receipt_json"] or "{}")
+                        db.execute(
+                            "UPDATE publish_intents SET receipt_json=?,"
+                            "vibepublish_revision=COALESCE(?,vibepublish_revision),updated_at=? WHERE id=?",
+                            (canonical({**saved, "_publication_edit": {**marker, "phase": "verified"}}),
+                             revision if isinstance(revision, int) else None, self.store.now(), intent_id))
+                        intent = dict(db.execute("SELECT * FROM publish_intents WHERE id=?",
+                                                 (intent_id,)).fetchone())
+                    marker = {**marker, "phase": "verified"}
             if marker and marker.get("phase") != "verified":
                 raise RetryableProviderError("An earlier provider edit has an unresolved outcome",
                                              retry_at=self.store.now() + 60)
