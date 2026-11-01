@@ -248,7 +248,8 @@ class PhonePhotoNearbyInstrumentedTest {
 
                 projection.replace(storyId, wire(2, true))
                 context.sendBroadcast(android.content.Intent(SyncWorker.ACTION_STATE_CHANGED).setPackage(context.packageName))
-                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                // A broadcast is delivered asynchronously; idleSync alone can run before its receiver.
+                assertNotNull("Cards should appear after the projection update", device.wait(Until.findObject(By.desc("story-card-0")), 6_000))
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val scroll = find(root, "topic-scroll") as ScrollView
