@@ -197,6 +197,82 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
         assert [p["asset_ref"] for p in visual["comic"]["cards"]] == ["card-1", "card-2", "card-3"]
 
 
+
+@pytest.mark.asyncio
+async def test_comic_cover_footer_survive_writer_variation_without_map_address(tmp_path):
+    """Writer prose is not an exact-string API; publisher labels are mechanical."""
+    svc, sid, writer, _ = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+
+    async def loose_plan(contents, config, parse):
+        writer.calls += 1
+        assert len(contents) == 4
+        return parse(json.dumps({"text": "Комикс", "cards": [
+            {"notes": ["В начале XX века открылся первый зал.", "Уцелел фасад.", "История продолжилась."],
+             "fact_ids": ["fact-2"]},  # no title/CTA, strongest not first, no arrows or hook
+            {"notes": ["Городская хроника"], "arrows": [], "fact_ids": ["fact-1"]},
+            {"notes": ["До новых встреч!"], "arrows": [""], "fact_ids": []},
+        ]}, ensure_ascii=False), "writer")
+    writer._lite_chain = loose_plan
+    snapshot = {
+        "comic": {"photo_ids": ["source", *ids]}, "place_name": "Театр",
+        "place_selection": {}, "selected_facts": [
+            {"fact_id": "fact-1", "text": "Открыт театр."},
+            {"fact_id": "fact-2", "text": "Сохранился фасад."}],
+        "strongest_fact": "fact-1"}
+    planned = await svc._plan_comic(sid, snapshot)
+    assert writer.calls == 1
+    cover = planned["cards"][0]
+    assert len(cover["notes"]) == len(cover["arrows"]) == 3
+    assert cover["notes"][0].startswith("Театр\n")
+    assert cover["notes"][-1].endswith("\nлистай →")
+    assert cover["fact_ids"] == ["fact-2"]  # strongest is advice, never a rejection
+    assert planned["cards"][-1] == {"notes": ["История за поворотом Калининград", "Театр"],
+                                    "arrows": ["", ""], "fact_ids": []}
+
+
+@pytest.mark.asyncio
+async def test_comic_footer_uses_known_city_without_inventing_address(tmp_path):
+    svc, sid, writer, _ = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    async def short_plan(contents, config, parse):
+        writer.calls += 1
+        return parse(json.dumps({"text": "Комикс", "cards": [
+            {"notes": ["Театр", "Репетиции шли здесь.", "листай →"], "fact_ids": []},
+            {"notes": ["Архитектурная деталь"], "fact_ids": []},
+            {"notes": ["Писательский финал"], "fact_ids": []}
+        ]}, ensure_ascii=False), "writer")
+    writer._lite_chain = short_plan
+    planned = await svc._plan_comic(sid, {"comic": {"photo_ids": ["source", *ids]},
+        "place_name": "Театр", "place_selection": {"city": "Пионерский"},
+        "selected_facts": [], "strongest_fact": None})
+    assert planned["cards"][-1]["notes"] == [
+        "История за поворотом Калининград", "Пионерский", "Театр"]
+
+
+def test_text_refinement_during_caption_job_rejects_without_losing_instruction(tmp_path):
+    svc, sid, _, _ = make_runtime(tmp_path)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text='Подпись' WHERE id=?", (sid,))
+    first = {"instruction": "Напиши основную подпись"}
+    next_text = {"instruction": "Сократи подпись Telegram до 1000 символов"}
+    svc.mutate_refinement(sid, "first-caption", first)
+    with pytest.raises(ConflictError) as exc:
+        svc.mutate_refinement(sid, "later-caption", next_text)
+    assert exc.value.code == "caption_busy"
+    with svc.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE story_id=? AND kind='caption'", (sid,)).fetchone()[0] == 1
+        assert db.execute("SELECT key FROM idempotency WHERE key='later-caption'").fetchone() is None
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET state='done' WHERE story_id=? AND kind='caption'", (sid,))
+    svc.mutate_refinement(sid, "later-caption", next_text)
+    with svc.store.connection() as db:
+        jobs = list(db.execute("SELECT state,payload_json FROM jobs WHERE story_id=? AND kind='caption' ORDER BY rowid", (sid,)))
+    assert len(jobs) == 2
+    assert jobs[-1]["state"] == "ready"
+    assert json.loads(jobs[-1]["payload_json"])["args"]["writing_request"] == next_text["instruction"]
+
+
 def test_empty_http_publish_body_uses_same_native_slots_and_assets(tmp_path):
     base, _adapter, session, _ = live_ready(tmp_path)
     sid = session.resource_id

@@ -298,8 +298,9 @@ class StoryPhotosMixin:
             parts = [part.strip() for part in address.split(',') if part.strip()]
             city = (parts[1] if len(parts) > 1 and 'област' in parts[0].casefold() else parts[0])
             city = city.removeprefix('г. ').removeprefix('город ')
-        if not city or not address:
-            raise InvalidStateError('comic_location_unknown', 'Нужен подтверждённый город и адрес выбранного дома.')
+        # Missing map address must not prevent an otherwise supported comic.
+        # The cover's place label is the available fallback, not an invented city.
+        city_label, address_label = city or place, address or place
         rules = (
             "Ты писатель скетч-комикса о выбранном объекте Калининградской области. "
             "Один ответ — полный план всех N карточек в порядке присланных N фотографий. "
@@ -312,11 +313,11 @@ class StoryPhotosMixin:
             "Утраченное, невидимое и то, что происходило внутри, нельзя дорисовывать; стрелки "
             "только на отчётливо видимую сейчас часть дома, остальные arrows — пустая строка. "
             "Заметки только для приложенных фактов, без дат источников, заглушек, оценок вне замысла. "
-            "Первый кадр — обложка: напиши название объекта отдельной заметкой, сильнейший факт как сцену-зачин "
-            "(тот же текст укажи в hook) и отдельное «листай →». Первый fact_id — strongest_fact_id; "
-            "не заменяй собственные надписи шаблонными. "
-            "Последний — завершение: отдельные надписи «История за поворотом Калининград», "
-            "точный город из city и адрес из address; у финала fact_ids всегда пустой список. "
+            "Первый кадр — обложка: назови объект, начни со сцены по сильнейшему факту "
+            "(strongest_fact_id желательно поставить первым) и добавь «листай →». "
+            "Не заменяй собственные надписи шаблонными. "
+            "Последний — завершение: фирменную строку, город и адрес добавит сервер, "
+            "поэтому у финала fact_ids оставь пустым списком. "
             "Верни ровно N записей; по 1–3 notes на кадр, arrows той же длины, fact_ids без дублей. "
             "Верни поле text с коротким служебным названием плана (не надпись на карточке)."
         )
@@ -326,10 +327,10 @@ class StoryPhotosMixin:
                 "arrows": {"type": "array", "items": {"type": "string"}},
                 "fact_ids": {"type": "array", "items": {"type": "string"}},
                 "hook": {"type": "string"}},
-            "required": ["notes", "arrows", "fact_ids", "hook"]}}},
+            "required": ["notes", "fact_ids"]}}},
             "required": ["text", "cards"]}
         payload = {"photo_count": len(photo_ids), "photo_ids": photo_ids, "place": place,
-                   "address": address, "city": city, "strongest_fact_id": context.get("strongest_fact"),
+                   "address": address or None, "city": city or None, "strongest_fact_id": context.get("strongest_fact"),
                    "strongest_fact_text": next((f['text'] for f in facts if f['id'] == context.get('strongest_fact')), None),
                    "concept": context.get("publication_concept"), "facts": facts}
         contents = [rules + "\n\n" + json.dumps(payload, ensure_ascii=False)]
@@ -353,26 +354,43 @@ class StoryPhotosMixin:
                 if not isinstance(item, dict):
                     raise ValueError("Invalid card plan")
                 notes = item.get("notes")
-                arrows = item.get("arrows")
                 fids = item.get("fact_ids")
-                if (not isinstance(notes, list) or not isinstance(arrows, list)
-                        or not isinstance(fids, list) or len(notes) != len(arrows)
-                        or any(not isinstance(v, str) for v in notes + arrows + fids)
-                        or any(fid not in allowed_ids or fid in used for fid in fids)):
+                if (not isinstance(notes, list) or not 1 <= len(notes) <= 3
+                        or any(not isinstance(v, str) or not v.strip() for v in notes)
+                        or not isinstance(fids, list)
+                        or any(not isinstance(fid, str) or fid not in allowed_ids
+                               or fid in used for fid in fids)
+                        or len(set(fids)) != len(fids)):
                     raise ValueError("Comic card plan does not match the selected evidence")
-                if not 1 <= len(notes) <= 3:
-                    raise ValueError('Every comic card must have one to three notes')
+                # Arrow placement is editorial and may be absent; absence means no arrow.
+                raw_arrows = item.get('arrows')
+                raw_arrows = raw_arrows if isinstance(raw_arrows, list) else []
+                arrows = [a if isinstance(a, str) else '' for a in raw_arrows[:len(notes)]]
+                arrows += [''] * (len(notes) - len(arrows))
+                notes = [note.strip() for note in notes]
                 if position == 0:
-                    hook = str(item.get('hook') or '').strip()
-                    if (not hook or hook not in notes or place not in notes or 'листай →' not in notes
-                            or (context.get('strongest_fact') in allowed_ids
-                                and (not fids or fids[0] != context['strongest_fact']))):
-                        raise ValueError('Comic cover lacks the strongest-fact scene, title or CTA')
+                    # Add missing product labels without rejecting the writer's scene.
+                    if not any(place.casefold() in note.casefold() for note in notes):
+                        if len(notes) < 3:
+                            notes.insert(0, place)
+                            arrows.insert(0, '')
+                        else:
+                            notes[0] = place + '\n' + notes[0]
+                            arrows[0] = ''
+                    if not any('листай →' in note.casefold() for note in notes):
+                        if len(notes) < 3:
+                            notes.append('листай →')
+                            arrows.append('')
+                        else:
+                            notes[-1] += '\nлистай →'
+                            arrows[-1] = ''
                 elif position == len(cards) - 1:
-                    if fids or not all(value in notes for value in
-                            ('История за поворотом Калининград', city, address)):
-                        raise ValueError('Comic finale must show city/address without consuming facts')
-                used.update(fids)
+                    # Brand/footer text is a fixed product label, not writer prose.
+                    notes = list(dict.fromkeys(['История за поворотом Калининград',
+                                                city_label, address_label]))
+                    arrows = [''] * len(notes)
+                    fids = []
+                used.update(item['fact_ids'])
                 result.append({'notes': notes, 'arrows': arrows, 'fact_ids': fids})
             return {"cards": result, "model": str(model)}
         # Same owner-approved GLM -> Sol -> Gemini ladder as the caption writer.
@@ -412,7 +430,8 @@ class StoryPhotosMixin:
         brief = self._visual_brief(dict(story), brief_context)
         brief += ("\n\nЭто ОБЛОЖКА комикса: название, зачин и «листай →» обязательны."
                   if position == 0 else
-                  "\n\nЭто ФИНАЛ комикса: фирменная строка, город и адрес обязательны."
+                  "\n\nЭто ФИНАЛ комикса: точно передай фирменную строку и доступное местоположение. "
+                  "Если город или адрес не указаны, не выдумывай их; используй название места."
                   if position == len(context["comic"]["photo_ids"]) - 1 else
                   "\n\nЭто ПРОМЕЖУТОЧНЫЙ кадр комикса. Не повторяй другие карточки.")
         if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:

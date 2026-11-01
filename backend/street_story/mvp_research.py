@@ -154,7 +154,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 active = db.execute("SELECT id FROM jobs WHERE story_id=? AND kind='caption' "
                     "AND state IN ('ready','retry','running') ORDER BY created_at DESC LIMIT 1",
                     (story_id,)).fetchone()
-                job_id = active["id"] if active else self._enqueue_job(
+                if active:
+                    # Do not ACK an instruction that the already-running writer never received.
+                    # This failed transaction also releases the new idempotency key for retry.
+                    raise ConflictError('caption_busy', 'Редактор занят. Повторите поручение после завершения текущего текста.')
+                job_id = self._enqueue_job(
                     db, story_id, "caption", f"caption:{story_id}:refinement:{key}", {
                         "command_id": f"refinement:{key}",
                         "args": {"writing_request": instruction.strip()},
