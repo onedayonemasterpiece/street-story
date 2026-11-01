@@ -375,11 +375,16 @@ class OwnerReviewUiInstrumentedTest {
                     assertTrue(text.indexOf("Карточка 2") < text.indexOf("Здание сохранилось"))
                     assertTrue((post.text as Spanned)
                         .getSpans(0, post.text.length, ClickableSpan::class.java).isNotEmpty())
-                    val scroll = requireNotNull(findByDescription(content, "topic-scroll")) as android.widget.ScrollView
-                    val location = Rect(0, 0, post.width, post.height)
-                    scroll.offsetDescendantRectToMyCoords(post, location)
-                    scroll.scrollTo(0, (location.top - 100).coerceAtLeast(0))
                 }
+                val target = androidx.test.uiautomator.By.desc("publication-preview-chat")
+                if (device.findObject(target) == null) {
+                    val scroll = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("topic-scroll")))
+                    assertTrue("Scroll to visible card notes before screenshot", scroll.scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(target),
+                    ))
+                }
+                assertNotNull("Screenshot must show the actual post block", device.findObject(target))
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 assertTrue(device.takeScreenshot(
                     File(context.getExternalFilesDir(null), "owner-card-notes-before-visual.png"),
