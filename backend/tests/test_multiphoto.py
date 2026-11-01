@@ -206,6 +206,41 @@ def test_mira_edit_text_saves_ordered_card_notes_before_visual(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path):
+    svc, sid, writer, _vp = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    photo_ids = ["source", *ids]
+    svc.order_story_photos(sid, "caption-photos", {"photo_ids": photo_ids})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET place_name='Театр',draft_text='Старый текст' WHERE id=?",
+                   (sid,))
+    calls = []
+
+    async def writer_response(**kwargs):
+        calls.append(kwargs)
+        return {"text": "Новый пост о театре.\n\nКалининград\n#Калининград",
+                "model": "gpt-6.1-sol",
+                "card_notes": [
+                    {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
+                     "arrows": ["", "", ""]},
+                    {"notes": ["В 1920 году здание перестроили"], "arrows": [""]},
+                    {"notes": [], "arrows": []}]}
+    svc.providers.gemini.write_caption = writer_response
+    pending = svc.mutate_refinement(sid, "caption-for-cards", {
+        "instruction": "Сохрани текст, добавь надписи для выбранных фото"})
+    assert pending["card_notes"] == []
+    assert pending["research_pending"] is not None
+    assert await svc.run_once(claim_kind="caption", claim_story_id=sid)
+    stored = svc.story(sid)
+    assert stored["draft_text"].startswith("Новый пост о театре.")
+    assert [card["position"] for card in stored["card_notes"]] == [0, 1, 2]
+    assert stored["card_notes"][-1]["notes"] == []
+    assert stored["cards"] == []
+    assert calls and calls[0]["photo_count"] == 3 and calls[0]["place_name"] == "Театр"
+    assert stored["draft_writing_last"]["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
     svc, sid, writer, vp = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
