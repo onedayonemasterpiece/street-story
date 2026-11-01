@@ -210,7 +210,7 @@ class NearbyPhotosPanel(
                 val label = text(if (index == 0) "1 · Обложка" else (index + 1).toString(), 12, true)
                 label.setTextColor(Color.WHITE)
                 label.setBackgroundColor(0x99000000.toInt())
-                tile.addView(label, FrameLayout.LayoutParams(-1, dp(22), Gravity.BOTTOM))
+                tile.addView(label, FrameLayout.LayoutParams(-1, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
                 tile.contentDescription = "order-tile-" + index
                 tile.setOnLongClickListener {
                     it.startDragAndDrop(

@@ -257,6 +257,13 @@ class PhonePhotoNearbyInstrumentedTest {
                 }
                 assertEquals(3, store.selectedStoryPhotos(storyId).size)
                 assertNotNull(device.wait(Until.findObject(By.desc("order-tile-0")), 4000))
+                scenario.onActivity { activity ->
+                    val tile = requireNotNull(find(activity.window.decorView, "order-tile-0")) as ViewGroup
+                    val label = tile.getChildAt(1) as android.widget.TextView
+                    assertTrue("Puzzle label must fit text and padding",
+                        label.height >= requireNotNull(label.layout).height +
+                            label.compoundPaddingTop + label.compoundPaddingBottom)
+                }
                 screenshot("multiphoto-puzzle.png")
 
                 val first = device.wait(Until.findObject(By.desc("order-tile-0")), 4000)
