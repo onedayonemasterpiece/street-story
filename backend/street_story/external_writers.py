@@ -89,13 +89,13 @@ async def _run(argv: list[str], *, timeout: float, output_file: Path | None = No
         return text
 
 
-async def glm(prompt: str) -> dict[str, Any]:
+async def glm(prompt: str, *, answer_instruction: str = ANSWER) -> dict[str, Any]:
     # A fixed title: otherwise OpenCode asks a paid model to name the session, and that call fails.
     return parse_answer(await _run([OPENCODE, "run", "--title", "Street Story caption", "--variant", GLM_VARIANT,
-                                    "-m", GLM_MODEL, prompt + NO_PHOTO + ANSWER], timeout=GLM_TIMEOUT))
+                                    "-m", GLM_MODEL, prompt + NO_PHOTO + answer_instruction], timeout=GLM_TIMEOUT))
 
 
-async def sol(prompt: str, photo_jpeg: bytes | None) -> dict[str, Any]:
+async def sol(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="street-story-sol-") as scratch:
         argv = [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", "-m", SOL_MODEL]
         if photo_jpeg:
@@ -103,16 +103,16 @@ async def sol(prompt: str, photo_jpeg: bytes | None) -> dict[str, Any]:
             photo.write_bytes(photo_jpeg)
             argv += ["-i", str(photo)]
         last = Path(scratch) / "answer.txt"
-        argv += ["-o", str(last), prompt + ("" if photo_jpeg else NO_PHOTO) + ANSWER]
+        argv += ["-o", str(last), prompt + ("" if photo_jpeg else NO_PHOTO) + answer_instruction]
         return parse_answer(await _run(argv, timeout=SOL_TIMEOUT, output_file=last))
 
 
-async def write(prompt: str, photo_jpeg: bytes | None) -> tuple[dict[str, Any], str]:
+async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER) -> tuple[dict[str, Any], str]:
     """GLM up to GLM_ATTEMPTS times, then Sol. Raises when both are unavailable."""
     for attempt in range(1, GLM_ATTEMPTS + 1):
         started = time.monotonic()
         try:
-            answer = await glm(prompt)
+            answer = await glm(prompt, answer_instruction=answer_instruction)
             logger.info("street_story_external_writer model=%s attempt=%s outcome=written seconds=%.1f",
                         GLM_MODEL, attempt, time.monotonic() - started)
             return answer, GLM_MODEL
@@ -121,7 +121,7 @@ async def write(prompt: str, photo_jpeg: bytes | None) -> tuple[dict[str, Any], 
                            GLM_MODEL, attempt, exc, time.monotonic() - started)
     started = time.monotonic()
     try:
-        answer = await sol(prompt, photo_jpeg)
+        answer = await sol(prompt, photo_jpeg, answer_instruction=answer_instruction)
     except ExternalWriterUnavailable as exc:
         logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
                        SOL_MODEL, exc, time.monotonic() - started)

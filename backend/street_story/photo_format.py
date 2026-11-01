@@ -36,11 +36,16 @@ def set_photo_format(service, story_id, key, body):
             raise ConflictError('photo_format_source_changed', 'Исходное фото или выбранный дом изменились.')
         from .visual_source import photo_transform
         # Validate the actual pixel window now; no network or provider work.
-        _raw, _mime, transform = photo_transform(service._source_photo_for_job(story_id),
-            row['photo_mime_type'], mode, crop)
+        cover = db.execute("SELECT photo_id,mime_type FROM story_photos WHERE story_id=? AND position=0",
+                           (story_id,)).fetchone() if hasattr(service, '_comic_photo_bytes') else None
+        cover_id = cover['photo_id'] if cover else 'source'
+        pixels, mime = (service._comic_photo_bytes(story_id, cover_id) if cover
+                        else (service._source_photo_for_job(story_id), row['photo_mime_type']))
+        _raw, _mime, transform = photo_transform(pixels, mime, mode, crop)
         previous = choice(research)
         research['visual_photo_format'] = {'mode': mode, 'crop_rect': transform['crop_rect'] if mode == 'crop_4_5' else None,
             'revision': previous['revision']+1, 'source_photo_sha256': row['photo_sha256'],
+            'photo_id': cover_id,
             'oriented_size': transform['oriented_size']}
         db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
             (canonical(research), service.store.now(), story_id))

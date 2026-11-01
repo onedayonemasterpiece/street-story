@@ -637,6 +637,8 @@ class ProductStreetStoryService(StreetStoryService):
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 120
             while current.get("operation_complete") is not True:
+                if current.get('state') == 'needs_approval' and current.get('operation_complete') is False:
+                    raise PermanentProviderError('VibePublish Telegram preview did not prove no-dispatch capability')
                 if loop.time() >= deadline:
                     raise RetryableProviderError("VibePublish Telegram preview preflight timed out")
                 await asyncio.sleep(0.5)
@@ -909,7 +911,8 @@ class ProductStreetStoryService(StreetStoryService):
                 payload = {
                     "to": requested_aliases,
                     "content": publication_content(request.get("text") or ""),
-                    "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
+                    "media": [{"source": {"kind": "asset", "id": asset}, "role": "image"}
+                              for asset in request.get('asset_refs') or [request['asset_ref']]],
                     "surface": "post",
                     "delivery": {"kind": "at", "at": request["scheduled_for"]},
                     "mode": "execute",
@@ -977,6 +980,13 @@ class ProductStreetStoryService(StreetStoryService):
                     )
             return
         if state in {"failed", "blocked", "outcome_unknown", "cancelled"}:
+            errors = [current.get('error') or {}] + [item.get('error') or {}
+                for item in _deliveries(current)]
+            codes = {str(error.get('code') or '') for error in errors if isinstance(error, dict)}
+            codes.update(str(code) for item in _deliveries(current)
+                for code in (item.get('missing_checks') or []))
+            if 'provider_text_limit' in codes:
+                raise PermanentProviderError('telegram_caption_too_long')
             raise PermanentProviderError(f"VibePublish publication operation ended in {state}")
         raise RetryableProviderError(f"VibePublish publication operation is {state or 'pending'}")
 
@@ -990,7 +1000,10 @@ class ProductStreetStoryService(StreetStoryService):
             self._enqueue_job(
                 db, story_id, "publication_edit",
                 f"publication_edit:{intent['id']}:{change_id}",
-                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref},
+                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref,
+                 "asset_refs": [card['asset_ref'] for card in (
+                     (json.loads(self._story_row(db, story_id)['visual_context_json'] or '{}').get('comic') or {}).get('cards') or [])]
+                     or [asset_ref]},
             )
 
     async def _run_publication_edit(self, job: dict[str, Any]) -> None:
@@ -1031,9 +1044,25 @@ class ProductStreetStoryService(StreetStoryService):
                 )
                 change["content"] = (publication_plain_content(payload["text"]) if is_vk
                                      else publication_content(payload["text"]))
-            if payload["asset_ref"] != old_request.get("asset_ref"):
+            new_refs = payload.get('asset_refs') or [payload['asset_ref']]
+            old_refs = old_request.get('asset_refs') or [old_request.get('asset_ref')]
+            is_telegram_album = len(old_refs) > 1 and (
+                any(str(alias).startswith('tg_') for alias in old_request.get('destinations', []))
+                or any(detail.get('provider') == 'telegram' for detail in
+                       old_request.get('destination_details', []) if isinstance(detail, dict)))
+            if new_refs != old_refs and is_telegram_album:
+                # VibePublish cannot replace several members of a scheduled TG album.
+                # Preserve its native IDs; text-only edits still use the same operation.
+                with self.store.tx() as db:
+                    db.execute('UPDATE stories SET error_code=?,error_message=?,updated_at=? WHERE id=?',
+                               ('telegram_album_edit_needs_review',
+                                'Картинки запланированного альбома не обновляются. '
+                                'Отмените публикацию и опубликуйте заново.',
+                                self.store.now(), job['story_id']))
+                new_refs = old_refs
+            if new_refs != old_refs:
                 change["media"] = [
-                    {"source": {"kind": "asset", "id": payload["asset_ref"]}, "role": "image"}
+                    {"source": {"kind": "asset", "id": asset}, "role": "image"} for asset in new_refs
                 ]
             if len(change) == 1:
                 return
@@ -1074,7 +1103,11 @@ class ProductStreetStoryService(StreetStoryService):
         current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
         state = str(current.get("state") or "")
         if current.get("operation_complete") is True and state == "verified":
-            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"]}
+            verified_refs = ([item['source']['id'] for item in marker['change']['media']]
+                             if 'media' in marker['change'] else
+                             old_request.get('asset_refs') or [old_request['asset_ref']])
+            updated = {**old_request, "text": payload["text"], "asset_ref": verified_refs[0],
+                       "asset_refs": verified_refs}
             with self.store.tx() as db:
                 saved = json.loads(db.execute(
                     "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)

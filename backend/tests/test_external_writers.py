@@ -23,13 +23,13 @@ async def test_glm_three_times_then_sol_and_glm_stays_first(monkeypatch):
     calls = []
     outcomes = iter(["fail", "fail", "fail", "fail", "ok"])
 
-    async def glm(prompt):
+    async def glm(prompt, *, answer_instruction=external_writers.ANSWER):
         calls.append("glm")
         if next(outcomes) == "fail":
             raise external_writers.ExternalWriterUnavailable("writer_timeout")
         return json.loads(ANSWER)
 
-    async def sol(prompt, photo):
+    async def sol(prompt, photo, *, answer_instruction=external_writers.ANSWER):
         calls.append("sol")
         return json.loads(ANSWER)
 

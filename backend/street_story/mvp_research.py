@@ -138,7 +138,37 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             return self._voice_receipt(db, session_id)
 
     def mutate_refinement(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Accept legacy refinement sync without implicitly starting research."""
+        """Legacy voice sync or an explicit owner text instruction via the existing caption job."""
+        if isinstance(body, dict) and "instruction" in body and "voice_session_id" not in body:
+            instruction = body["instruction"]
+            if (set(body) != {"instruction"} or not isinstance(instruction, str)
+                    or not 1 <= len(instruction.strip()) <= 800):
+                raise ConflictError("refinement_instruction_invalid", "Укажите короткое поручение редактору.")
+            with self.store.tx() as db:
+                row = self._story_row(db, story_id)
+                if self._idem(db, key, "refinement", digest({"story_id": story_id, **body}), "story", story_id):
+                    return self._story_repr(db, row)
+                if not str(row["draft_text"] or "").strip():
+                    raise InvalidStateError("publication_text_missing", "Сначала подготовьте текст публикации.")
+                research = json.loads(row["research_json"] or "{}")
+                active = db.execute("SELECT id FROM jobs WHERE story_id=? AND kind='caption' "
+                    "AND state IN ('ready','retry','running') ORDER BY created_at DESC LIMIT 1",
+                    (story_id,)).fetchone()
+                if active:
+                    # Do not ACK an instruction that the already-running writer never received.
+                    # This failed transaction also releases the new idempotency key for retry.
+                    raise ConflictError('caption_busy', 'Редактор занят. Повторите поручение после завершения текущего текста.')
+                job_id = self._enqueue_job(
+                    db, story_id, "caption", f"caption:{story_id}:refinement:{key}", {
+                        "command_id": f"refinement:{key}",
+                        "args": {"writing_request": instruction.strip()},
+                        "photo_sha256": row["photo_sha256"],
+                        "identity_generation": int(research.get("identity_generation") or 0)})
+                research["draft_writing"] = {"job_id": job_id, "command_id": f"refinement:{key}",
+                                            "started_at": self.store.now()}
+                db.execute("UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
+                           (canonical(research), self.store.now(), story_id))
+                return self._story_repr(db, self._story_row(db, story_id))
         session_id = str(body.get("voice_session_id") or "")
         req_digest = digest({"story_id": story_id, **body})
         with self.store.tx() as db:
@@ -2002,10 +2032,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         self._check_publish_destinations(body.get("destinations"))
         text = body.get("text_override")
         from .publication_content import visible_text
-        if text is not None and len(visible_text(str(text))) > 1024:
+        if text is not None and len(visible_text(str(text))) > 4096:
             raise ConflictError(
-                "publish_text_too_long",
-                "Telegram photo caption exceeds the current VibePublish 1024-character limit",
+                "telegram_caption_too_long",
+                "Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.",
             )
         with self.store.connection() as db:
             story = self._story_row(db, story_id)
@@ -2052,6 +2082,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
                 )
+        from .publication_content import visible_text
+        with self.store.connection() as db:
+            draft = str(self._story_row(db, story_id)['draft_text'] or '')
+        if len(visible_text(str(body.get('text_override') if body.get('text_override') is not None else draft))) > 4096:
+            raise ConflictError('telegram_caption_too_long',
+                'Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.')
         result = super().mutate_publish(story_id, key, body)
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
@@ -2062,10 +2098,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for intent in intents:
                 request = json.loads(intent["request_json"] or "{}")
                 caption = str(request.get("text") or "")
-                if len(caption) > 1024:
+                if len(caption) > 4096:
                     raise ConflictError(
-                        "publish_text_too_long",
-                        "Telegram photo caption exceeds the current VibePublish 1024-character limit",
+                        "telegram_caption_too_long",
+                        "Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.",
                     )
                 visual = json.loads(story["visual_context_json"] or "{}")
                 research = json.loads(story["research_json"] or "{}")
