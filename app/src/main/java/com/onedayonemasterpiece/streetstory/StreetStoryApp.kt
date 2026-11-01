@@ -7,5 +7,7 @@ class StreetStoryApp : Application() {
         super.onCreate()
         AppGraph.store(this).markInterruptedRecordingsPaused()
         SyncScheduler.enqueue(this)
+        PhonePhotoIndex.start(this)
+        PhonePhotoIndex.observe(this)
     }
 }

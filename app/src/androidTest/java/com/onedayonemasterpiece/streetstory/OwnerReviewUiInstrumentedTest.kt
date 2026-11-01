@@ -324,7 +324,8 @@ class OwnerReviewUiInstrumentedTest {
                 assertTrue(isDescendant(draft!!, chat))
                 assertTrue(isDescendant(publication!!, chat))
                 assertTrue(!isDescendant(bento!!, chat))
-                assertEquals("Запланировано · ТГ", (publication as TextView).text.toString())
+                assertTrue((publication as TextView).text.toString().contains("02.10.2026 12:00"))
+                assertTrue(publication.text.toString().contains("Telegram"))
             }
         }
     }

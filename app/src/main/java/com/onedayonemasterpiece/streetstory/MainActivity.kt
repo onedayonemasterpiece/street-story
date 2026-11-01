@@ -66,6 +66,9 @@ class MainActivity : Activity() {
     private lateinit var dock: LinearLayout
 
     private var placeMapPanel: PlaceMapPanel? = null
+    private var nearbyPhotosPanel: NearbyPhotosPanel? = null
+    private var photoIndexProgressView: TextView? = null
+    private var photoAccessButton: Button? = null
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
     private var ownerConversation: OwnerConversationScope? = null
@@ -99,6 +102,7 @@ class MainActivity : Activity() {
     private var sourceButton: Button? = null
     private var undoButton: Button? = null
     private var publishButton: Button? = null
+    private var captionErrorBox: LinearLayout? = null
     private var ownerVisualButton: Button? = null
     private var ownerVisualRequest: OwnerVisualRequest? = null
     private var ownerVisualSent = false
@@ -136,6 +140,11 @@ class MainActivity : Activity() {
 
     private val changedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == PhonePhotoIndex.ACTION_UPDATED) {
+                updatePhoneIndexProgress()
+                nearbyPhotosPanel?.refresh()
+                return
+            }
             intent?.getStringExtra(RecordingService.EXTRA_MESSAGE)
                 ?.takeIf { it.isNotBlank() }
                 ?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_SHORT).show() }
@@ -193,12 +202,15 @@ class MainActivity : Activity() {
         val filter = IntentFilter().apply {
             addAction(RecordingService.ACTION_STATE_CHANGED)
             addAction(SyncWorker.ACTION_STATE_CHANGED)
+            addAction(PhonePhotoIndex.ACTION_UPDATED)
         }
         ContextCompat.registerReceiver(this, changedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
         placeMapPanel?.start()
         live.addListener(liveListener)
         SyncScheduler.enqueue(this)
+        requestGalleryAccessOnce()
+        PhonePhotoIndex.enqueue(this)
         resumeUpdateAfterPermission()
         maybeCheckForUpdate()
     }
@@ -221,6 +233,8 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         placeMapPanel?.dispose()
         placeMapPanel = null
+        nearbyPhotosPanel?.dispose()
+        nearbyPhotosPanel = null
         super.onDestroy()
     }
 
@@ -311,6 +325,16 @@ class MainActivity : Activity() {
         heading.addView(label("Темы", 30, INK, Typeface.DEFAULT_BOLD), LinearLayout.LayoutParams(0, -2, 1f))
         heading.addView(secondaryButton("Настройки") { showSettings() })
         column.addView(heading)
+        photoIndexProgressView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+            contentDescription = "phone-photo-index-progress"
+            setPadding(dp(6), dp(8), dp(6), dp(8))
+        }
+        column.addView(photoIndexProgressView)
+        photoAccessButton = secondaryButton("Расширить доступ к фото") { requestGalleryAccess(true) }.apply {
+            contentDescription = "expand-gallery-access"
+        }
+        column.addView(photoAccessButton)
+        updatePhoneIndexProgress()
 
         buildNewTopicFab()
 
@@ -430,6 +454,8 @@ class MainActivity : Activity() {
         setActiveStory(storyId)
         placeMapPanel?.dispose()
         placeMapPanel = null
+        nearbyPhotosPanel?.dispose()
+        nearbyPhotosPanel = null
         contentHost.removeAllViews()
         shownImagePath = null
         previewExpanded = true
@@ -516,6 +542,8 @@ class MainActivity : Activity() {
             requestOwnerConversation(storyId, "Сохрани мой выбранный дом. Если сведений для исследования недостаточно, задай один короткий вопрос голосом о названии или адресе. Не распознавай и не меняй выбранный объект.", "Это мой дом.")
         })
         column.addView(placeMapPanel, blockMargins(top = 8))
+        nearbyPhotosPanel = NearbyPhotosPanel(this, storyId, store, research, config)
+        column.addView(nearbyPhotosPanel, blockMargins(top = 8))
         column.addView(identityLinkView, blockMargins(top = 8))
         column.addView(topicStatusView)
         identityProgressView = label("", 13, INK, Typeface.DEFAULT).apply {
@@ -631,22 +659,23 @@ class MainActivity : Activity() {
 
         publishButton = primaryButton("Опубликовать") {
             val current = store.story(storyId) ?: return@primaryButton
-            if (!live.isActiveFor(storyId)) {
-                Toast.makeText(this, "Включите Live, чтобы продолжить голосом", Toast.LENGTH_SHORT).show()
-            } else if (current.stage == StoryStage.SCHEDULED) {
-                live.sendText("Отмени текущую запланированную публикацию.")
+            if (current.stage == StoryStage.SCHEDULED) {
+                // Preserve the existing voice cancellation path.
+                if (live.isActiveFor(storyId)) live.sendText("Отмени текущую запланированную публикацию.")
+                else Toast.makeText(this, "Для отмены включите Live", Toast.LENGTH_SHORT).show()
             } else {
-                // The destination chosen in the app goes with the request, by its name.
-                val chosen = store.destinations(storyId).filter { it.selected }.joinToString(", ") { "«${it.label}»" }
-                val where = if (chosen.isBlank()) "" else " в $chosen"
-                live.sendText(
-                    "Хочу опубликовать именно этот текущий вариант$where. " +
-                        "Если не хватает канала, даты или времени — коротко спроси меня.",
-                    "Опубликуй$where.",
-                )
+                enqueueDefaultPublication(storyId)
             }
         }.apply { contentDescription = "publish-action" }
         column.addView(publishButton, blockMargins(top = 14))
+        captionErrorBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(0xffffeee8.toInt(), 16)
+            visibility = View.GONE
+            contentDescription = "telegram-caption-too-long"
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+        column.addView(captionErrorBox, blockMargins(top = 8))
 
         confirmationBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -693,6 +722,7 @@ class MainActivity : Activity() {
     private fun refreshTopicDetail() {
         val id = activeStoryId ?: return
         placeMapPanel?.refresh()
+        nearbyPhotosPanel?.refresh()
         continueOwnerConversation()
         live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
@@ -818,9 +848,26 @@ class MainActivity : Activity() {
 
         publishButton?.apply {
             val hasResult = !story.draftText.isNullOrBlank() &&
-                (!story.processedImagePath.isNullOrBlank() || story.stage == StoryStage.SCHEDULED)
+                (projection?.cards?.isNotEmpty() == true ||
+                 !story.processedImagePath.isNullOrBlank() || story.stage == StoryStage.SCHEDULED)
             visibility = if (hasResult) View.VISIBLE else View.GONE
-            text = if (story.stage == StoryStage.SCHEDULED) "Отменить публикацию" else "Опубликовать"
+            val awaiting = store.pendingOperations(id).any { it.kind == "publish" }
+            isEnabled = !awaiting
+            text = when {
+                awaiting -> "Планируем публикацию…"
+                story.stage == StoryStage.SCHEDULED -> "Отменить публикацию"
+                else -> "Опубликовать"
+            }
+        }
+        captionErrorBox?.apply {
+            removeAllViews()
+            val tooLong = story.lastError?.contains("telegram_caption_too_long") == true
+            visibility = if (tooLong) View.VISIBLE else View.GONE
+            if (tooLong) {
+                addView(label("Telegram отказал: подпись слишком длинная. Без подписи не публикуем.", 14, INK, Typeface.DEFAULT))
+                addView(secondaryButton("Сократить текст") { shortenTelegramCaption(id) })
+                addView(secondaryButton("Попробовать позже") { enqueueDefaultPublication(id) })
+            }
         }
         applyLiveState(live.snapshot())
     }
@@ -1015,6 +1062,12 @@ class MainActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_GALLERY_ACCESS) {
+            PhonePhotoIndex.enqueue(this)
+            updatePhoneIndexProgress()
+            nearbyPhotosPanel?.refresh()
+            return
+        }
         if (requestCode == REQUEST_PHOTO_LOCATION) {
             photoLocationRequestInFlight = false
             continuePhotoIntake()
@@ -1033,6 +1086,45 @@ class MainActivity : Activity() {
             clearOwnerConversation()
             Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
         }
+    }
+
+
+    private fun requestGalleryAccessOnce() {
+        val prefs = getSharedPreferences("street_story_gallery_permission", MODE_PRIVATE)
+        if (!prefs.getBoolean("asked", false)) requestGalleryAccess(false)
+    }
+
+    private fun requestGalleryAccess(force: Boolean) {
+        val galleryPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES
+            else Manifest.permission.READ_EXTERNAL_STORAGE
+        val permissions = mutableListOf<String>()
+        if (force || !PhonePhotoIndex.galleryGranted(this)) permissions += galleryPermission
+        if (Build.VERSION.SDK_INT >= 34 && (force || !PhonePhotoIndex.galleryGranted(this)))
+            permissions += Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_MEDIA_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED)
+            permissions += Manifest.permission.ACCESS_MEDIA_LOCATION
+        getSharedPreferences("street_story_gallery_permission", MODE_PRIVATE)
+            .edit().putBoolean("asked", true).apply()
+        if (permissions.isNotEmpty()) requestPermissions(permissions.distinct().toTypedArray(), REQUEST_GALLERY_ACCESS)
+        else PhonePhotoIndex.enqueue(this)
+    }
+
+    private fun updatePhoneIndexProgress() {
+        photoIndexProgressView?.text = when {
+            !PhonePhotoIndex.galleryGranted(this) -> "Для поиска фото рядом нужен доступ к галерее."
+            else -> {
+                val progress = PhonePhotoIndex.progress
+                val count = if (progress.running) progress.withGps else store.phonePhotoGpsCount()
+                "обработано " + progress.processed + " из " + progress.total + " · с координатами " + count +
+                    (if (progress.running) " · индексируется" else "")
+            }
+        }
+        photoAccessButton?.visibility = if (PhonePhotoIndex.partialAccess(this) ||
+            !PhonePhotoIndex.galleryGranted(this)) View.VISIBLE else View.GONE
+        if (PhonePhotoIndex.partialAccess(this)) photoIndexProgressView?.append(
+            "\nДоступ только к выбранным фото."
+        )
     }
 
     private fun launchPhotoPicker() {
@@ -1507,6 +1599,10 @@ class MainActivity : Activity() {
     private fun clearTopicRefs() {
         placeMapPanel?.dispose()
         placeMapPanel = null
+        nearbyPhotosPanel?.dispose()
+        nearbyPhotosPanel = null
+        photoIndexProgressView = null
+        photoAccessButton = null
         previewImage?.apply {
             animate().cancel()
             alpha = 1f
@@ -1537,6 +1633,7 @@ class MainActivity : Activity() {
         sourceButton = null
         undoButton = null
         publishButton = null
+        captionErrorBox = null
         ownerVisualButton = null
         confirmationBox = null
         dockTopic = null
@@ -1768,6 +1865,22 @@ class MainActivity : Activity() {
         val island = stickyIsland ?: return
         val target = stickyImage ?: return
         if (image.height <= 0) return
+
+        // The floating bento otherwise covers the first row of the interactive
+        // "Фото рядом" grid, as observed in the Android 15 UI screenshot.
+        val nearby = nearbyPhotosPanel
+        val visibleNearby = android.graphics.Rect()
+        if (nearby?.visibility == View.VISIBLE &&
+            nearby.getGlobalVisibleRect(visibleNearby) && visibleNearby.top < dp(180)) {
+            stickyVisible = false
+            island.visibility = View.INVISIBLE
+            island.alpha = 0f
+            floatingImageProxy?.visibility = View.GONE
+            image.alpha = 1f
+            image.scaleX = 1f
+            image.scaleY = 1f
+            return
+        }
 
         val state = FloatingIslandTransition.state(scroll.scrollY, image.top, image.height, dp(114))
         stickyVisible = state.progress > 0f
@@ -2209,6 +2322,30 @@ class MainActivity : Activity() {
         SyncScheduler.enqueue(this)
     }
 
+
+    private fun enqueueDefaultPublication(storyId: String) {
+        val story = store.story(storyId) ?: return
+        if (store.pendingOperations(storyId).any { it.kind == "publish" }) return
+        store.enqueueOperation(storyId, "publish",
+            newRequestKey("publish-button", storyId + "-" + java.util.UUID.randomUUID()), "")
+        store.setStage(storyId, story.stage)
+        SyncScheduler.enqueue(this)
+        refreshTopicDetail()
+        Toast.makeText(this, "Запрашиваем ближайший свободный слот Telegram + VK", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shortenTelegramCaption(storyId: String) {
+        // Uses the existing /refinements job; the voice-free instruction body
+        // is coordinated with backend window B in the owner thread.
+        store.enqueueOperation(storyId, "refinements",
+            newRequestKey("caption-shorten", storyId + "-" + java.util.UUID.randomUUID()),
+            gson.toJson(mapOf("instruction" to
+                "Сократи подпись Telegram до 1000 символов, сохрани факты и ссылки")),
+        )
+        SyncScheduler.enqueue(this)
+        Toast.makeText(this, "Поручение сократить подпись отправлено", Toast.LENGTH_SHORT).show()
+    }
+
     private fun publicationLabel(projection: ResearchProjectionSnapshot?): String {
         val state = projection?.publicationState.orEmpty()
         val channels = projection?.publicationChannels
@@ -2216,6 +2353,19 @@ class MainActivity : Activity() {
             ?.distinct()
             ?.joinToString(" · ")
             .orEmpty()
+        if (state == "scheduled") {
+            val timestamp = projection?.publicationScheduledFor
+            val whenText = timestamp?.let { value ->
+                runCatching { DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                    .withZone(ZoneId.of("Europe/Kaliningrad"))
+                    .format(Instant.parse(value)) }.getOrDefault(value)
+            }
+            val destinations = projection?.publicationChannels.orEmpty().mapNotNull { alias ->
+                when (shortChannel(alias)) { "ТГ" -> "Telegram"; "ВК" -> "VK"; else -> null }
+            }.distinct().joinToString(" + ")
+            return "Запланировано: " + (whenText ?: "в ближайший слот") +
+                (if (destinations.isNotBlank()) " · " + destinations else "")
+        }
         val prefix = when (state) {
             "published", "verified" -> "Опубликовано"
             "scheduled" -> "Запланировано"
@@ -2359,6 +2509,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_PHOTO_LOCATION = 714
+        private const val REQUEST_GALLERY_ACCESS = 715
         private const val REQUEST_PHOTO = 710
         private const val REQUEST_MIC = 711
         private const val UPDATE_INTERVAL_MS = 6L * 60L * 60L * 1000L
