@@ -427,15 +427,13 @@ class StoryPhotosMixin:
             "place_name": context.get("place_name"),
             "source_image_transform": transform,
         }
-        brief = self._visual_brief(dict(story), brief_context)
-        brief += ("\n\nЭто ОБЛОЖКА комикса: название, зачин и «листай →» обязательны."
+        suffix = ("\n\nЭто ОБЛОЖКА комикса: название, зачин и «листай →» обязательны."
                   if position == 0 else
                   "\n\nЭто ФИНАЛ комикса: точно передай фирменную строку и доступное местоположение. "
                   "Если город или адрес не указаны, не выдумывай их; используй название места."
                   if position == len(context["comic"]["photo_ids"]) - 1 else
                   "\n\nЭто ПРОМЕЖУТОЧНЫЙ кадр комикса. Не повторяй другие карточки.")
-        if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
-            raise InvalidStateError('visual_prompt_too_long', 'Краткое описание карточки превышает лимит.')
+        brief = self._visual_brief(dict(story), brief_context, reserve_chars=len(suffix)) + suffix
         return brief, data, mime, transform
 
     async def _run_visual(self, job):
