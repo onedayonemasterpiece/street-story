@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Point
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -16,6 +17,7 @@ import android.provider.MediaStore
 import android.view.View
 import android.view.ViewGroup
 import android.widget.GridView
+import android.widget.ImageView
 import android.widget.ScrollView
 import androidx.exifinterface.media.ExifInterface
 import androidx.test.core.app.ActivityScenario
@@ -162,11 +164,14 @@ class PhonePhotoNearbyInstrumentedTest {
         val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
         val priorActive = prefs.getString("active_story_id", null)
         val server = MockWebServer()
-        val jpeg = PhotoGpsFixture.withoutGps()
+        val cardJpegs = listOf(15.0, 55.0, 95.0).map { imageBytes(point(it)) }
         server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse =
-                MockResponse().setResponseCode(200).setHeader("Content-Type", "image/jpeg")
-                    .setBody(okio.Buffer().write(jpeg))
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val card = request.path?.substringAfterLast("/")?.toIntOrNull()
+                    ?.takeIf { it in cardJpegs.indices } ?: 0
+                return MockResponse().setResponseCode(200).setHeader("Content-Type", "image/jpeg")
+                    .setBody(okio.Buffer().write(cardJpegs[card]))
+            }
         }
         server.start()
         config.backendUrl = server.url("/").toString()
@@ -209,6 +214,23 @@ class PhonePhotoNearbyInstrumentedTest {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), name)))
         }
+        fun screenshotWithRenderedCarousel(name: String) {
+            val file = File(context.getExternalFilesDir(null), name)
+            val deadline = android.os.SystemClock.elapsedRealtime() + 6_000
+            var painted = false
+            do {
+                screenshot(name)
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath,
+                    BitmapFactory.Options().apply { inSampleSize = 4 })
+                if (bitmap != null) {
+                    val pixel = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+                    painted = Color.red(pixel) + Color.green(pixel) + Color.blue(pixel) > 120
+                    bitmap.recycle()
+                }
+                if (!painted) Thread.sleep(80)
+            } while (!painted && android.os.SystemClock.elapsedRealtime() < deadline)
+            assertTrue("Carousel screenshot must contain the rendered card, not an empty frame", painted)
+        }
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
@@ -225,6 +247,9 @@ class PhonePhotoNearbyInstrumentedTest {
                     requireNotNull(grid.getChildAt(1)).performClick()
                     requireNotNull(grid.getChildAt(2)).performClick()
                     assertEquals(3, store.selectedStoryPhotos(storyId).size)
+                    val scroll = find(root, "topic-scroll") as ScrollView
+                    val panel = requireNotNull(find(root, "nearby-photos"))
+                    scroll.scrollTo(0, panel.top)
                 }
                 screenshot("multiphoto-selection.png")
                 scenario.onActivity { activity ->
@@ -257,6 +282,16 @@ class PhonePhotoNearbyInstrumentedTest {
                     assertEquals(View.VISIBLE, cards.visibility)
                     scroll.scrollTo(0, cards.top)
                 }
+                val deadline = android.os.SystemClock.elapsedRealtime() + 6_000
+                var cardImageReady = false
+                do {
+                    scenario.onActivity { activity ->
+                        val card = find(activity.window.decorView, "story-card-0") as? ViewGroup
+                        cardImageReady = (card?.getChildAt(0) as? ImageView)?.drawable != null
+                    }
+                    if (!cardImageReady) Thread.sleep(80)
+                } while (!cardImageReady && android.os.SystemClock.elapsedRealtime() < deadline)
+                assertTrue("Rendered card thumbnail must be visible", cardImageReady)
                 screenshot("multiphoto-cards.png")
                 scenario.onActivity { activity ->
                     requireNotNull(find(activity.window.decorView, "story-card-0")).performClick()
@@ -264,7 +299,7 @@ class PhonePhotoNearbyInstrumentedTest {
                 val next = device.wait(Until.findObject(By.desc("card-next")), 4000)
                 assertNotNull(next)
                 next!!.click()
-                screenshot("multiphoto-carousel.png")
+                screenshotWithRenderedCarousel("multiphoto-carousel.png")
                 device.findObject(By.desc("card-close"))?.click()
             }
         } finally {
