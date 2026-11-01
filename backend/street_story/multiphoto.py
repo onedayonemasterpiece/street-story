@@ -320,7 +320,8 @@ class StoryPhotosMixin:
             selection = selection if isinstance(selection, dict) else {}
             anchor = ((selection.get("candidate") or {}).get("search_anchor") or {})
             city = str(anchor.get("city") or selection.get("city") or "").strip()
-            address = str(selection.get("address") or selection.get("display_address") or "").strip()
+            address = str(selection.get("address") or selection.get("display_address")
+                          or anchor.get("address") or "").strip()
             if not address:
                 address = ", ".join(str(anchor.get(k) or "").strip() for k in
                                     ("city", "street", "house_number") if str(anchor.get(k) or "").strip())
