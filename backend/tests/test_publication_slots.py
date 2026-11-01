@@ -154,6 +154,51 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
                for row in rows)
 
 
+@pytest.mark.asyncio
+async def test_failed_edit_applied_by_provider_does_not_block_next_edit(tmp_path):
+    """Live 01.11: an earlier edit job failed although VibePublish applied it (state=scheduled)."""
+    svc, adapter, session, _ = live_ready(tmp_path)
+    sid = session.resource_id
+    svc.mutate_publish(sid, "stuck-edit", {
+        "destinations": list(DEFAULT_DESTINATIONS), "slot_intent": {"day": "tomorrow"}})
+    with svc.store.tx() as db:
+        for index, row in enumerate(list(db.execute("SELECT id FROM publish_intents ORDER BY rowid"))):
+            stuck = {"key": "old-key", "phase": "possibly_sent", "operation_id": f"old-op-{index}",
+                     "change": {"kind": "edit"}, "expected_revision": 1}
+            db.execute("UPDATE publish_intents SET state='scheduled',vibepublish_publication_id=?,"
+                       "vibepublish_revision=1,receipt_json=? WHERE id=?",
+                       (f"pub-{index}", canonical({"state": "scheduled", "_publication_edit": stuck}),
+                        row["id"]))
+            svc._enqueue_job(db, sid, "publication_edit", f"publication_edit:{row['id']}:old",
+                             {"intent_id": row["id"], "text": "old", "asset_ref": "a"})
+        db.execute("UPDATE jobs SET state='failed' WHERE kind='publication_edit'")
+    updates = []
+
+    async def publication_update(pub_id, revision, change, key):
+        updates.append((pub_id, revision))
+        return {"operation_id": "new-" + pub_id}
+
+    async def status(op_id):
+        return {"operation_id": op_id, "state": "scheduled", "operation_complete": True,
+                "revision": 2 if op_id.startswith("old-") else 3}
+
+    svc.providers.vibepublish.publication_update = publication_update
+    svc.providers.vibepublish.status = status
+    adapter._edit_text(sid, "edit-after-stuck", {
+        "expected_text_revision": 0, "new_text": "Новый текст после сбоя",
+        "change_summary": "retry after failed edit"})
+    with svc.store.connection() as db:
+        jobs = [dict(j) for j in db.execute(
+            "SELECT * FROM jobs WHERE kind='publication_edit' AND state<>'failed' ORDER BY rowid")]
+    assert len(jobs) == 2
+    for job in jobs:
+        await svc._run_publication_edit(job)
+    assert sorted(updates) == [("pub-0", 2), ("pub-1", 2)]  # CAS on the reconciled revision
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT * FROM publish_intents"))
+    assert all(row["vibepublish_revision"] == 3 for row in rows)
+
+
 def test_undo_and_verbatim_changes_propagate_to_both_native_posts(tmp_path):
     svc, adapter, session, _ = live_ready(tmp_path)
     sid = session.resource_id
