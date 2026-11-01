@@ -73,7 +73,7 @@ async def test_invalid_sol_card_notes_falls_through_to_glm(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invalid_sol_reason_logged_without_model_text_and_one_glm(monkeypatch, capfd):
+async def test_invalid_sol_reason_logged_without_model_text_and_one_glm(monkeypatch, capfd, caplog):
     calls = []
 
     async def sol(prompt, photo, *, answer_instruction=external_writers.ANSWER):
@@ -93,7 +93,9 @@ async def test_invalid_sol_reason_logged_without_model_text_and_one_glm(monkeypa
     with pytest.raises(external_writers.ExternalWriterUnavailable,
                        match="all_external_writers_unavailable"):
         await external_writers.write("story", None, validate=validate)
-    output = capfd.readouterr().err
+    # Local uvicorn handler writes to stderr; CI's pytest handler captures
+    # logging records. Both must retain the same bounded failure code.
+    output = capfd.readouterr().err + caplog.text
     assert calls == ["sol", "glm"]
     assert "writer_answer_invalid:card_notes_count_invalid" in output
     assert "PRIVATE GENERATED TEXT" not in output
