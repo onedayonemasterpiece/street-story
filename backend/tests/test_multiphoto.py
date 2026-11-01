@@ -177,34 +177,66 @@ def test_invalid_order_rejects_before_state_change(tmp_path):
         assert svc.story(sid)["photos"] == before
 
 
+def test_mira_edit_text_saves_ordered_card_notes_before_visual(tmp_path):
+    from street_story.live import StreetStoryLiveAdapter, ensure_live_schema
+    svc, sid, _, _ = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    ordered = ["source", *ids]
+    svc.order_story_photos(sid, "owner-order", {"photo_ids": ordered})
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET place_name='Театр' WHERE id=?", (sid,))
+    ensure_live_schema(svc)
+    adapter = StreetStoryLiveAdapter(svc, lambda *_: None, lambda *_: None)
+    notes = [
+        {"position": 0, "notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
+         "arrows": ["", "", ""]},
+        {"position": 1, "notes": ["В 1920 году здание перестроили"], "arrows": [""]},
+        {"position": 2, "notes": [], "arrows": []},
+    ]
+    result = adapter._edit_text(sid, "owner-notes", {
+        "expected_text_revision": 0, "new_text": "Сохранённый текст поста",
+        "change_summary": "Проверенные надписи", "card_notes": notes})
+    assert result["text_revision"] == 1
+    preview = svc.story(sid)
+    assert preview["card_notes"] == notes
+    assert preview["cards"] == []
+    # A new photo order invalidates this preview rather than misassigning old labels.
+    svc.order_story_photos(sid, "reorder-notes", {"photo_ids": [ids[1], "source", ids[0]]})
+    assert svc.story(sid)["card_notes"] == []
+
+
 @pytest.mark.asyncio
-async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
+async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
     svc, sid, writer, vp = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
-    svc.order_story_photos(sid, "order-comic", {"photo_ids": ["source", *ids]})
-    snapshot = {"comic": {"photo_ids": ["source", *ids],
-                          "cards": [{"photo_id": photo_id} for photo_id in ["source", *ids]]},
-                "selected_facts": [{"fact_id": "fact-1", "text": "В 1910 году открылся театр."},
-                                   {"fact_id": "fact-2", "text": "В 1920 году была реконструкция."}],
-                "place_name": "Театр", "place_selection": {"address": "Светлогорск, улица Тестовая, 1"},
-                "strongest_fact": "fact-1", "photo_format": {}, "content_revision": "comic-1", "stale": False}
+    photos = ["source", *ids]
+    svc.order_story_photos(sid, "order-comic", {"photo_ids": photos})
+    notes = [
+        {"notes": ["Театр", "В 1910 году открылся театр", "листай →"], "arrows": ["", "", ""]},
+        {"notes": ["В 1920 году была реконструкция"], "arrows": [""]},
+        {"notes": [], "arrows": []},
+    ]
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text='Пост готов',research_json=? WHERE id=?",
+                   (canonical({"caption_image_notes": {"cards": notes, "photo_ids": photos,
+                                                        "fact_ids": ["fact-1", "fact-2"]}}), sid))
+    preview = svc.story(sid)
+    assert preview["cards"] == []
+    assert preview["draft_text"] == "Пост готов"
+    assert preview["card_notes"] == [{"position": i, **card} for i, card in enumerate(notes)]
+    snapshot = {
+        "comic": {"photo_ids": photos, "cards": [{"photo_id": p} for p in photos],
+                  "plan": {"cards": notes}},
+        "selected_facts": [{"fact_id": "fact-1", "text": "В 1910 году открылся театр."},
+                           {"fact_id": "fact-2", "text": "В 1920 году была реконструкция."}],
+        "place_name": "Театр", "place_selection": {"address": "Светлогорск, улица Тестовая, 1"},
+        "photo_format": {}, "content_revision": "comic-1", "stale": False}
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?",
                    (canonical(snapshot), sid))
         svc._enqueue_job(db, sid, "visual", "visual:test-comic",
                          {"content_revision": "comic-1", "selected_fact_ids": ["fact-1", "fact-2"]})
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
-    plan = await svc._plan_comic(sid, snapshot)
-    assert writer.calls == 1
-    assert plan["cards"][0]["notes"] == ["Театр", "В 1910 году здесь открылся театр.", "листай →"]
-    assert plan["cards"][-1]["notes"] == ["История за поворотом Калининград",
-        "Светлогорск, улица Тестовая, 1"]
-    assert plan["cards"][0]["fact_ids"] == ["fact-1"]
-    assert plan["cards"][1]["fact_ids"] == ["fact-2"]
-    assert plan["cards"][2]["fact_ids"] == []
-    with svc.store.tx() as db:
-        snapshot["comic"]["plan"] = plan
-        db.execute("UPDATE stories SET visual_context_json=? WHERE id=?", (canonical(snapshot), sid))
     await svc._run_visual(job)
     result = svc.story(sid)
     assert result["state"] == "ready_to_publish"
@@ -212,70 +244,46 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
     assert [cmd["kind"] for cmd in vp.commands].count("tune") == 1
     assert len(vp.commands[0]["sources"]) == 3
     assert len(vp.operations) == 1
-    assert writer.calls == 1
+    assert writer.calls == 0  # visual never invokes a second writer
+    assert result["card_notes"] == preview["card_notes"]
     with svc.store.connection() as db:
         visual = json.loads(svc._story_row(db, sid)["visual_context_json"])
         assert [p["asset_ref"] for p in visual["comic"]["cards"]] == ["card-1", "card-2", "card-3"]
 
 
-
 @pytest.mark.asyncio
 async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(tmp_path):
-    svc, sid, writer, _ = make_runtime(tmp_path)
+    from street_story.providers import _validated_card_notes
+    svc, sid, _, _ = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
-    photo_ids = ["source", *ids]
+    photos = ["source", *ids]
     facts = [
-        {"fact_id": f"fact-{i}", "text": text} for i, text in enumerate([
-            "В 1944 и 1945 годах гимназия избежала серьёзных повреждений, несмотря на бомбардировки и штурм города.",
-            "Здание возвели для Хуфенской гимназии, после открытия нового здания помещения использовали иначе.",
-            "Окна старого актового зала гимназии украшало свинцовое декоративное остекление с видами города.",
-            "Крутую крышу первоначального здания завершала высокая башня, увенчанная барочным куполом.",
-            "Писатель Эрнст Вихерт преподавал в Хуфенской гимназии в Кёнигсберге в двадцатые годы.",
-            "Новое здание Хуфенской гимназии открылось для учеников в 1915 году.",
-        ], 1)
+        {"fact_id": "1", "text": "В 1944 и 1945 годах гимназия избежала серьёзных повреждений."},
+        {"fact_id": "2", "text": "В 1915 году открылось новое здание Хуфенской гимназии."},
+        {"fact_id": "3", "text": "Свинцовое остекление украшало окна актового зала."},
     ]
-    context = {"comic": {"photo_ids": photo_ids}, "place_name": "Университетский колледж БФУ",
-               "place_selection": {"address": "Калининград, Зоологическая улица, 2", "city": "Калининград"},
-               "selected_facts": facts, "strongest_fact": "fact-1", "photo_format": {}}
-    async def short_plan(contents, config, parse):
-        writer.calls += 1
-        assert "3–8 слов" in contents[0] and "12 слов" in contents[0]
-        assert "«листай →» — отдельная подпись ТОЛЬКО обложки" in contents[0]
-        cards = [
-            {"notes": ["Университетский колледж БФУ", "Гимназия пережила бомбардировки и штурм.", "листай →"],
-             "fact_ids": ["fact-1", "fact-2"]},
-            {"notes": ["Здание строили для Хуфенской гимназии.", "Витражи зала показывали виды города.",
-                       "Башню венчал барочный купол."], "fact_ids": ["fact-3", "fact-4", "fact-5", "fact-6"]},
-            {"notes": ["До новых историй!"], "fact_ids": []},
-        ]
-        verbose = json.loads(json.dumps(cards, ensure_ascii=False))
-        verbose[1]["notes"][0] = "Здание Хуфенской гимназии и его великолепная архитектурная история, подробно изложенная в этом очень длинном предложении."
-        with pytest.raises(ValueError):
-            parse(json.dumps({"text": "Слишком длинно", "cards": verbose}, ensure_ascii=False), "writer")
-        cjk = json.loads(json.dumps(cards, ensure_ascii=False))
-        cjk[1]["notes"][0] = "健康新 здание гимназии открылось в 1915 году"
-        with pytest.raises(ValueError, match="selected evidence"):
-            parse(json.dumps({"text": "Посторонние символы", "cards": cjk}, ensure_ascii=False), "writer")
-        cta = json.loads(json.dumps(cards, ensure_ascii=False))
-        cta[1]["notes"][0] += "\nлистай →"
-        cta[1]["notes"][-1] = "листай →"
-        sanitized = parse(json.dumps({"text": "CTA только на обложке", "cards": cta}, ensure_ascii=False), "writer")
-        assert len(sanitized["cards"][1]["notes"]) == 2
-        assert sanitized["cards"][1]["notes"][0] == cards[1]["notes"][0]
-        assert all("листай" not in note for note in sanitized["cards"][1]["notes"])
-        assert all("листай" not in note for note in sanitized["cards"][2]["notes"])
-        return parse(json.dumps({"text": "Короткие надписи", "cards": cards}, ensure_ascii=False), "writer")
-    writer._lite_chain = short_plan
-    plan = await svc._plan_comic(sid, context)
-    assert writer.calls == 1 and len(plan["cards"]) == 3
+    notes = [
+        {"notes": ["Университетский колледж БФУ",
+                   "В 1945 году гимназия избежала повреждений", "листай →"],
+         "arrows": ["", "", ""]},
+        {"notes": ["В 1915 году открылась Хуфенская гимназия",
+                   "Свинцовое остекление украшало окна зала"], "arrows": ["", ""]},
+        {"notes": [], "arrows": []},
+    ]
+    assert _validated_card_notes(notes, 3, "Университетский колледж БФУ", facts) == notes
+    context = {"comic": {"photo_ids": photos}, "place_name": "Университетский колледж БФУ",
+               "place_selection": {"address": "Калининград, Зоологическая улица, 2",
+                                   "city": "Калининград"},
+               "selected_facts": facts, "publication_concept": "История гимназии"}
     with svc.store.connection() as db:
         story = dict(svc._story_row(db, sid))
-    for position, card in enumerate(plan["cards"]):
-        brief, *_ = svc._comic_brief(story, context, position,
-                                    {"photo_id": photo_ids[position]}, card)
+    for position, note in enumerate(notes):
+        brief, *_ = svc._comic_brief(story, context, position, {"photo_id": photos[position]}, note)
         assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
-    assert plan["cards"][0]["notes"][-1] == "листай →"
-    assert plan["cards"][-1]["notes"] == ["История за поворотом Калининград", "Калининград, Зоологическая улица, 2"]
+    bad = json.loads(json.dumps(notes, ensure_ascii=False))
+    bad[1]["notes"][0] = "Очень " * 20 + "длинное сообщение"
+    with pytest.raises(ValueError):
+        _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
 
 
 @pytest.mark.asyncio
@@ -304,54 +312,41 @@ async def test_failed_comic_job_exits_visual_processing_with_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_comic_cover_footer_survive_writer_variation_without_map_address(tmp_path):
-    """Writer prose is not an exact-string API; publisher labels are mechanical."""
     svc, sid, writer, _ = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
-
-    async def loose_plan(contents, config, parse):
-        writer.calls += 1
-        assert len(contents) == 4
-        return parse(json.dumps({"text": "Комикс", "cards": [
-            {"notes": ["В начале XX века открылся первый зал.", "Уцелел фасад.", "История продолжилась."],
-             "fact_ids": ["fact-2"]},  # no title/CTA, strongest not first, no arrows or hook
-            {"notes": ["Городская хроника"], "arrows": [], "fact_ids": ["fact-1"]},
-            {"notes": ["До новых встреч!"], "arrows": [""], "fact_ids": []},
-        ]}, ensure_ascii=False), "writer")
-    writer._lite_chain = loose_plan
-    snapshot = {
-        "comic": {"photo_ids": ["source", *ids]}, "place_name": "Театр",
-        "place_selection": {}, "selected_facts": [
-            {"fact_id": "fact-1", "text": "Открыт театр."},
-            {"fact_id": "fact-2", "text": "Сохранился фасад."}],
-        "strongest_fact": "fact-1"}
-    planned = await svc._plan_comic(sid, snapshot)
-    assert writer.calls == 1
-    cover = planned["cards"][0]
-    assert len(cover["notes"]) == len(cover["arrows"]) == 3
-    assert cover["notes"][0].startswith("Театр\n")
-    assert cover["notes"][-1].endswith("\nлистай →")
-    assert cover["fact_ids"] == ["fact-2"]  # strongest is advice, never a rejection
-    assert planned["cards"][-1] == {"notes": ["История за поворотом Калининград", "Театр"],
-                                    "arrows": ["", ""], "fact_ids": []}
+    photos = ["source", *ids]
+    notes = [
+        {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
+         "arrows": ["", "", ""]},
+        {"notes": ["В 1920 году здесь был ремонт"], "arrows": [""]},
+        {"notes": [], "arrows": []}]
+    context = {"comic": {"photo_ids": photos}, "place_name": "Театр",
+               "place_selection": {}, "selected_facts": []}
+    with svc.store.connection() as db:
+        story = dict(svc._story_row(db, sid))
+    cover, *_ = svc._comic_brief(story, context, 0, {"photo_id": "source"}, notes[0])
+    final, *_ = svc._comic_brief(story, context, 2, {"photo_id": photos[-1]}, notes[-1])
+    assert "В 1910 году здесь открылся театр" in cover
+    assert "листай →" in cover
+    assert "История за поворотом Калининград" in final
+    assert "Театр" in final
+    assert writer.calls == 0
 
 
 @pytest.mark.asyncio
 async def test_comic_footer_uses_known_city_without_inventing_address(tmp_path):
     svc, sid, writer, _ = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
-    async def short_plan(contents, config, parse):
-        writer.calls += 1
-        return parse(json.dumps({"text": "Комикс", "cards": [
-            {"notes": ["Театр", "Репетиции шли здесь.", "листай →"], "fact_ids": []},
-            {"notes": ["Архитектурная деталь"], "fact_ids": []},
-            {"notes": ["Писательский финал"], "fact_ids": []}
-        ]}, ensure_ascii=False), "writer")
-    writer._lite_chain = short_plan
-    planned = await svc._plan_comic(sid, {"comic": {"photo_ids": ["source", *ids]},
-        "place_name": "Театр", "place_selection": {"city": "Пионерский"},
-        "selected_facts": [], "strongest_fact": None})
-    assert planned["cards"][-1]["notes"] == [
-        "История за поворотом Калининград", "Пионерский", "Театр"]
+    with svc.store.connection() as db:
+        story = dict(svc._story_row(db, sid))
+    context = {"comic": {"photo_ids": ["source", *ids]},
+               "place_name": "Театр", "place_selection": {"city": "Пионерский"},
+               "selected_facts": []}
+    final, *_ = svc._comic_brief(story, context, 2, {"photo_id": ids[-1]},
+                                {"notes": [], "arrows": []})
+    assert "История за поворотом Калининград" in final
+    assert "Пионерский" in final
+    assert writer.calls == 0
 
 
 def test_text_refinement_during_caption_job_rejects_without_losing_instruction(tmp_path):
@@ -412,7 +407,8 @@ def test_instruction_only_refinement_uses_existing_caption_job_without_voice(tmp
     with svc.store.connection() as db:
         jobs = list(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='caption'", (sid,)))
     assert len(jobs) == 1
-    assert json.loads(jobs[0]["payload_json"])["args"] == {"writing_request": body["instruction"]}
+    assert json.loads(jobs[0]["payload_json"])["args"]["writing_request"] == body["instruction"]
+    assert json.loads(jobs[0]["payload_json"])["args"]["expected_text_revision"] == 0
     svc.mutate_refinement(sid, "shorten-1000", body)
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='caption'",
