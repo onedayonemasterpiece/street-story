@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -307,10 +309,15 @@ class StoryPhotosMixin:
             "Для каждого кадра верни короткие русские надписи (notes), цели стрелок (arrows), "
             "использованные ID фактов (fact_ids), а для первой карточки сильный конкретный зачин (hook). "
             "События, годы, люди и причинные связи только из переданных проверенных фактов. "
+            "Каждая надпись пересказывает ТОЛЬКО факты из fact_ids именно этой карточки: "
+            "никаких новых деталей, эпитетов, оценок, статусов, причин или выводов "
+            "(например, «главной», «пережила всё», «не барьер»), которых нет в факте. "
+            "Не используй иностранных слов, кроме имён собственных из самих фактов. "
             "Факты распределяй между карточками без повторения; самый сильный факт — сцена на обложке. "
             "Несколько заметок на одном фото допускаются, 2–3 кратких подписи по возможности. "
             "Каждая надпись — короткая заметка своими словами в 3–8 слов (не более 70 символов), "
-            "а зачин обложки — до 12 слов. «листай →» ставь отдельной подписью. "
+            "а зачин обложки — до 12 слов. «листай →» — отдельная подпись ТОЛЬКО обложки; "
+            "на остальных карточках её быть не должно. "
             "Не переписывай длинные предложения из фактов в надписи дословно. "
             "Прошлое — только в прошедшем времени с собственной датой или периодом. "
             "Утраченное, невидимое и то, что происходило внутри, нельзя дорисовывать; стрелки "
@@ -347,6 +354,12 @@ class StoryPhotosMixin:
         allowed_ids = {item["id"] for item in facts}
 
         def parse(raw, model):
+            allowed_punct = " .,;:!?…-—–«»„“”\"'()[]№%/+&→_#\n"
+            def valid_letters(note):
+                return all(ch in allowed_punct or (ch.isascii() and ch.isalnum())
+                           or (ch.isalpha() and unicodedata.name(ch, '').split(' ', 1)[0]
+                               in ('CYRILLIC', 'LATIN')) for ch in note)
+
             answer = json.loads(raw or "{}")
             cards = answer.get("cards")
             if not isinstance(cards, list) or len(cards) != len(photo_ids):
@@ -359,7 +372,8 @@ class StoryPhotosMixin:
                 notes = item.get("notes")
                 fids = item.get("fact_ids")
                 if (not isinstance(notes, list) or not 1 <= len(notes) <= 3
-                        or any(not isinstance(v, str) or not v.strip() or len(v.strip()) > 70 for v in notes)
+                        or any(not isinstance(v, str) or not v.strip() or len(v.strip()) > 70
+                               or not valid_letters(v) for v in notes)
                         or not isinstance(fids, list)
                         or any(not isinstance(fid, str) or fid not in allowed_ids
                                or fid in used for fid in fids)
@@ -371,6 +385,15 @@ class StoryPhotosMixin:
                 arrows = [a if isinstance(a, str) else '' for a in raw_arrows[:len(notes)]]
                 arrows += [''] * (len(notes) - len(arrows))
                 notes = [note.strip() for note in notes]
+                if position > 0:
+                    # A swipe CTA is only allowed on the cover, including embedded CTA lines.
+                    retained = [(re.sub(r'(?i)листай\s*→', '', note).strip(), arrow)
+                                for note, arrow in zip(notes, arrows)]
+                    retained = [(note, arrow) for note, arrow in retained if note]
+                    if not retained and position != len(cards) - 1:
+                        raise ValueError('Comic inner card contains no fact note after swipe removal')
+                    notes, arrows = ([note for note, _ in retained],
+                                     [arrow for _, arrow in retained])
                 if position == 0:
                     # Add missing product labels without rejecting the writer's scene.
                     if not any(place.casefold() in note.casefold() for note in notes):

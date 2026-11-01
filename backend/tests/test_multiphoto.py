@@ -219,7 +219,7 @@ async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(
     async def short_plan(contents, config, parse):
         writer.calls += 1
         assert "3–8 слов" in contents[0] and "12 слов" in contents[0]
-        assert "«листай →» ставь отдельной" in contents[0]
+        assert "«листай →» — отдельная подпись ТОЛЬКО обложки" in contents[0]
         cards = [
             {"notes": ["Университетский колледж БФУ", "Гимназия пережила бомбардировки и штурм.", "листай →"],
              "fact_ids": ["fact-1", "fact-2"]},
@@ -231,6 +231,18 @@ async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(
         verbose[1]["notes"][0] = "Здание Хуфенской гимназии и его великолепная архитектурная история, подробно изложенная в этом очень длинном предложении."
         with pytest.raises(ValueError):
             parse(json.dumps({"text": "Слишком длинно", "cards": verbose}, ensure_ascii=False), "writer")
+        cjk = json.loads(json.dumps(cards, ensure_ascii=False))
+        cjk[1]["notes"][0] = "健康新 здание гимназии открылось в 1915 году"
+        with pytest.raises(ValueError, match="selected evidence"):
+            parse(json.dumps({"text": "Посторонние символы", "cards": cjk}, ensure_ascii=False), "writer")
+        cta = json.loads(json.dumps(cards, ensure_ascii=False))
+        cta[1]["notes"][0] += "\nлистай →"
+        cta[1]["notes"][-1] = "листай →"
+        sanitized = parse(json.dumps({"text": "CTA только на обложке", "cards": cta}, ensure_ascii=False), "writer")
+        assert len(sanitized["cards"][1]["notes"]) == 2
+        assert sanitized["cards"][1]["notes"][0] == cards[1]["notes"][0]
+        assert all("листай" not in note for note in sanitized["cards"][1]["notes"])
+        assert all("листай" not in note for note in sanitized["cards"][2]["notes"])
         return parse(json.dumps({"text": "Короткие надписи", "cards": cards}, ensure_ascii=False), "writer")
     writer._lite_chain = short_plan
     plan = await svc._plan_comic(sid, context)
