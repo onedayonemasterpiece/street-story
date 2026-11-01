@@ -119,6 +119,7 @@ jobs:
             provisioning-logcat.txt
             instrumentation-crash-logcat.txt
             owner-place-map-logcat.txt
+            phone-photo-index-logcat.txt
             emulator-platform-state.txt
             emulator-platform-logcat.txt
             ui-evidence/
