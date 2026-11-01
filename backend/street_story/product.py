@@ -636,9 +636,9 @@ class ProductStreetStoryService(StreetStoryService):
             current = _receipt(receipt, operation_id)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 120
-            if current.get('state') == 'needs_approval' and current.get('operation_complete') is False:
-                raise PermanentProviderError('VibePublish Telegram preview did not prove no-dispatch capability')
             while current.get("operation_complete") is not True:
+                if current.get('state') == 'needs_approval' and current.get('operation_complete') is False:
+                    raise PermanentProviderError('VibePublish Telegram preview did not prove no-dispatch capability')
                 if loop.time() >= deadline:
                     raise RetryableProviderError("VibePublish Telegram preview preflight timed out")
                 await asyncio.sleep(0.5)
