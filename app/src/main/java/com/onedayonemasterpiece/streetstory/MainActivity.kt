@@ -21,6 +21,7 @@ import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ClickableSpan
+import android.text.style.StyleSpan
 import android.text.method.LinkMovementMethod
 import android.text.util.Linkify
 import android.view.Gravity
@@ -769,15 +770,29 @@ class MainActivity : Activity() {
             if (preview == null) listOfNotNull(previewImage, stickyImage).forEach { showServerThumbnail(story, it) }
         }
 
+        val projection = research.get(id)
         previewText?.apply {
             val draft = story.draftText?.takeIf { it.isNotBlank() }
-            // Named map links show as their labels, as in the published post.
-            text = draft?.let(MarkdownLite::render) ?: ""
+            val preview = SpannableStringBuilder()
+            projection?.cardNotes.orEmpty().sortedBy { it.position }.forEach { card ->
+                val notes = card.notes.orEmpty().map { it.trim() }.filter { it.isNotBlank() }
+                if (notes.isNotEmpty()) {
+                    if (preview.isNotEmpty()) preview.append("\n\n")
+                    val headingStart = preview.length
+                    preview.append("Карточка ${card.position + 1}")
+                    preview.setSpan(StyleSpan(Typeface.BOLD), headingStart, preview.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    notes.forEach { preview.append("\n— ").append(it) }
+                }
+            }
+            if (draft != null) {
+                if (preview.isNotEmpty()) preview.append("\n\n")
+                // Preserve clickable Markdown links from the original post.
+                preview.append(MarkdownLite.render(draft))
+            }
+            text = preview
             movementMethod = LinkMovementMethod.getInstance()
-            visibility = if (draft == null) View.GONE else View.VISIBLE
+            visibility = if (preview.isEmpty()) View.GONE else View.VISIBLE
         }
-
-        val projection = research.get(id)
         draftStatusView?.apply {
             val status = FactPresentation.draftStatus(projection)
             text = status ?: ""
