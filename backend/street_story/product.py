@@ -1102,7 +1102,8 @@ class ProductStreetStoryService(StreetStoryService):
 
         current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
         state = str(current.get("state") or "")
-        if current.get("operation_complete") is True and state == "verified":
+        # A native scheduled post stays "scheduled" after its edit is applied; published posts verify.
+        if current.get("operation_complete") is True and state in {"scheduled", "verified"}:
             verified_refs = ([item['source']['id'] for item in marker['change']['media']]
                              if 'media' in marker['change'] else
                              old_request.get('asset_refs') or [old_request['asset_ref']])
