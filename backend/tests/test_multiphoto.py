@@ -32,14 +32,17 @@ class ComicWriter:
     async def _lite_chain(self, contents, config, parse):
         self.calls += 1
         assert len(contents) == 4  # one prompt and three photos, not three model plans
+        payload = json.loads(contents[0].rsplit("\n\n", 1)[-1])
         cards = [
-            {"notes": ["Из факта о доме"], "arrows": [""], "fact_ids": ["fact-1"],
+            {"notes": [payload["place"], "В 1910 году здесь открылся театр.", "листай →"],
+             "arrows": ["", "", ""], "fact_ids": ["fact-1"],
              "hook": "В 1910 году здесь открылся театр."},
             {"notes": ["В 1920 году была реконструкция"], "arrows": [""],
              "fact_ids": ["fact-2"], "hook": ""},
-            {"notes": [], "arrows": [], "fact_ids": [], "hook": ""},
+            {"notes": ["История за поворотом Калининград", payload["city"], payload["address"]],
+             "arrows": ["", "", ""], "fact_ids": [], "hook": ""},
         ]
-        return parse(json.dumps({"cards": cards}, ensure_ascii=False), "test-writer")
+        return parse(json.dumps({"text": "Комикс об объекте", "cards": cards}, ensure_ascii=False), "test-writer")
 
 
 class ComicVibe:
@@ -76,6 +79,7 @@ class ComicVibe:
         return {"state": "verified"}
 
     async def status(self, operation):
+        assert len(self.operations) >= 3, 'all first-batch imagegens must launch before status polling'
         state = self.operations[operation]
         index = operation.removeprefix("visual-")
         choice = {"id": "choice-" + index, "asset_ref": state["asset"],
@@ -163,8 +167,8 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
                           "cards": [{"photo_id": photo_id} for photo_id in ["source", *ids]]},
                 "selected_facts": [{"fact_id": "fact-1", "text": "В 1910 году открылся театр."},
                                    {"fact_id": "fact-2", "text": "В 1920 году была реконструкция."}],
-                "place_name": "Театр", "place_selection": {"address": "Калининград, улица Тестовая, 1"},
-                "photo_format": {}, "content_revision": "comic-1", "stale": False}
+                "place_name": "Театр", "place_selection": {"address": "Светлогорск, улица Тестовая, 1"},
+                "strongest_fact": "fact-1", "photo_format": {}, "content_revision": "comic-1", "stale": False}
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?",
                    (canonical(snapshot), sid))
@@ -173,10 +177,12 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
     plan = await svc._plan_comic(sid, snapshot)
     assert writer.calls == 1
-    assert plan["cards"][0]["notes"][-1] == "листай →"
+    assert plan["cards"][0]["notes"] == ["Театр", "В 1910 году здесь открылся театр.", "листай →"]
     assert plan["cards"][-1]["notes"] == ["История за поворотом Калининград",
-        "Калининград", "Калининград, улица Тестовая, 1"]
-    assert plan["cards"][0]["fact_ids"] != plan["cards"][1]["fact_ids"]
+        "Светлогорск", "Светлогорск, улица Тестовая, 1"]
+    assert plan["cards"][0]["fact_ids"] == ["fact-1"]
+    assert plan["cards"][1]["fact_ids"] == ["fact-2"]
+    assert plan["cards"][2]["fact_ids"] == []
     with svc.store.tx() as db:
         snapshot["comic"]["plan"] = plan
         db.execute("UPDATE stories SET visual_context_json=? WHERE id=?", (canonical(snapshot), sid))
@@ -213,3 +219,84 @@ def test_empty_http_publish_body_uses_same_native_slots_and_assets(tmp_path):
             "SELECT request_json FROM publish_intents WHERE story_id=? ORDER BY rowid", (sid,))]
     assert [row["destinations"] for row in rows] == [[DEFAULT_DESTINATIONS[0]], [DEFAULT_DESTINATIONS[1]]]
     assert all(row["asset_refs"] == ["album-cover"] for row in rows)
+
+
+
+def test_instruction_only_refinement_uses_existing_caption_job_without_voice(tmp_path):
+    svc, sid, _writer, _vp = make_runtime(tmp_path)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text=? WHERE id=?", ("Подпись на 1500 знаков. " * 80, sid))
+    body = {"instruction": "Сократи подпись Telegram до 1000 символов, сохрани факты и ссылки"}
+    response = svc.mutate_refinement(sid, "shorten-1000", body)
+    assert response["research_pending"] is not None
+    with svc.store.connection() as db:
+        jobs = list(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='caption'", (sid,)))
+    assert len(jobs) == 1
+    assert json.loads(jobs[0]["payload_json"])["args"] == {"writing_request": body["instruction"]}
+    svc.mutate_refinement(sid, "shorten-1000", body)
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='caption'",
+                          (sid,)).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
+    from street_story.errors import RetryableProviderError
+    svc, sid, _writer, vp = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    ids += [str(uuid.uuid4()) for _ in range(5)]
+    for i, photo_id in enumerate(ids[2:]):
+        svc.add_story_photo(sid, "extra-" + str(i), photo_id, shot("yellow"), "image/jpeg")
+    all_ids = ["source", *ids]
+    svc.order_story_photos(sid, "order-eight", {"photo_ids": all_ids})
+    snapshot = {"comic": {"photo_ids": all_ids, "cards": [{"photo_id": photo_id} for photo_id in all_ids],
+                           "plan": {"cards": [
+                               {"notes": ["История дома"], "arrows": [""], "fact_ids": []}
+                               for _ in all_ids]}},
+                "selected_facts": [], "place_name": "Тестовый дом",
+                "photo_format": {}, "content_revision": "eight-1", "stale": False}
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?",
+                   (canonical(snapshot), sid))
+        svc._enqueue_job(db, sid, "visual", "visual:test-eight",
+                         {"content_revision": "eight-1", "selected_fact_ids": []})
+        job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    for expected in (3, 6):
+        with pytest.raises(RetryableProviderError):
+            await svc._run_visual(job)
+        assert len(vp.operations) == expected  # Existing VibePublish still owns its queue.
+    await svc._run_visual(job)
+    assert len(vp.operations) == 8
+    assert len(svc.story(sid)["cards"]) == 8
+
+
+@pytest.mark.asyncio
+async def test_scheduled_telegram_album_media_change_keeps_native_assets_and_shows_owner_notice(tmp_path):
+    svc, sid, _writer, vp = make_runtime(tmp_path)
+    now = svc.store.now()
+    original = {"destinations": [DEFAULT_DESTINATIONS[0]], "text": "Подпись",
+                "asset_ref": "old-cover", "asset_refs": ["old-cover", "old-finale"],
+                "scheduled_for": "2026-11-03T09:10:00+02:00"}
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='scheduled',visual_context_json=? WHERE id=?",
+                   (canonical({"comic": {"cards": [
+                       {"asset_ref": "new-cover"}, {"asset_ref": "new-finale"}]}}), sid))
+        db.execute("INSERT INTO publish_intents(id,story_id,request_key,vibepublish_request_key,"
+                   "request_json,state,scheduled_for,created_at,updated_at,"
+                   "vibepublish_publication_id,vibepublish_revision,receipt_json) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("intent-album", sid, "button", "vp-album", canonical(original),
+                    "scheduled", original["scheduled_for"], now, now, "native-id", 1,
+                    canonical({"state": "scheduled"})))
+        svc._queue_publication_edits(db, sid, text="Подпись",
+                                     asset_ref="new-cover", change_id="regenerated")
+        job = dict(db.execute("SELECT * FROM jobs WHERE kind='publication_edit'", ()).fetchone())
+    # The fake intentionally has no publication_update: attempting media-edit would fail.
+    await svc._run_publication_edit(job)
+    with svc.store.connection() as db:
+        row = svc._story_row(db, sid)
+        req = json.loads(db.execute("SELECT request_json FROM publish_intents WHERE id='intent-album'").fetchone()[0])
+    assert row["error_code"] == "telegram_album_edit_needs_review"
+    assert row["error_message"] == ("Картинки запланированного альбома не обновляются. "
+                                    "Отмените публикацию и опубликуйте заново.")
+    assert req["asset_refs"] == original["asset_refs"]

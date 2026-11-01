@@ -636,6 +636,8 @@ class ProductStreetStoryService(StreetStoryService):
             current = _receipt(receipt, operation_id)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 120
+            if current.get('state') == 'needs_approval' and current.get('operation_complete') is False:
+                raise PermanentProviderError('VibePublish Telegram preview did not prove no-dispatch capability')
             while current.get("operation_complete") is not True:
                 if loop.time() >= deadline:
                     raise RetryableProviderError("VibePublish Telegram preview preflight timed out")
@@ -1044,6 +1046,20 @@ class ProductStreetStoryService(StreetStoryService):
                                      else publication_content(payload["text"]))
             new_refs = payload.get('asset_refs') or [payload['asset_ref']]
             old_refs = old_request.get('asset_refs') or [old_request.get('asset_ref')]
+            is_telegram_album = len(old_refs) > 1 and (
+                any(str(alias).startswith('tg_') for alias in old_request.get('destinations', []))
+                or any(detail.get('provider') == 'telegram' for detail in
+                       old_request.get('destination_details', []) if isinstance(detail, dict)))
+            if new_refs != old_refs and is_telegram_album:
+                # VibePublish cannot replace several members of a scheduled TG album.
+                # Preserve its native IDs; text-only edits still use the same operation.
+                with self.store.tx() as db:
+                    db.execute('UPDATE stories SET error_code=?,error_message=?,updated_at=? WHERE id=?',
+                               ('telegram_album_edit_needs_review',
+                                'Картинки запланированного альбома не обновляются. '
+                                'Отмените публикацию и опубликуйте заново.',
+                                self.store.now(), job['story_id']))
+                new_refs = old_refs
             if new_refs != old_refs:
                 change["media"] = [
                     {"source": {"kind": "asset", "id": asset}, "role": "image"} for asset in new_refs
@@ -1087,8 +1103,11 @@ class ProductStreetStoryService(StreetStoryService):
         current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
         state = str(current.get("state") or "")
         if current.get("operation_complete") is True and state == "verified":
-            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"],
-                       "asset_refs": payload.get('asset_refs') or [payload['asset_ref']]}
+            verified_refs = ([item['source']['id'] for item in marker['change']['media']]
+                             if 'media' in marker['change'] else
+                             old_request.get('asset_refs') or [old_request['asset_ref']])
+            updated = {**old_request, "text": payload["text"], "asset_ref": verified_refs[0],
+                       "asset_refs": verified_refs}
             with self.store.tx() as db:
                 saved = json.loads(db.execute(
                     "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)

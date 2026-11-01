@@ -287,8 +287,19 @@ class StoryPhotosMixin:
         facts = [{"id": f["fact_id"], "text": f["text"]} for f in context["selected_facts"]]
         place = context.get("place_name") or "Выбранный объект"
         selection = context.get("place_selection") or {}
-        address = (selection.get("address") or selection.get("display_address") or ""
-                   if isinstance(selection, dict) else "")
+        selection = selection if isinstance(selection, dict) else {}
+        anchor = ((selection.get('candidate') or {}).get('search_anchor') or {})
+        city = str(anchor.get('city') or selection.get('city') or '').strip()
+        address = str(selection.get('address') or selection.get('display_address') or '').strip()
+        if not address:
+            address = ', '.join(str(anchor.get(key) or '').strip() for key in ('city', 'street', 'house_number')
+                                if str(anchor.get(key) or '').strip())
+        if not city and address:
+            parts = [part.strip() for part in address.split(',') if part.strip()]
+            city = (parts[1] if len(parts) > 1 and 'област' in parts[0].casefold() else parts[0])
+            city = city.removeprefix('г. ').removeprefix('город ')
+        if not city or not address:
+            raise InvalidStateError('comic_location_unknown', 'Нужен подтверждённый город и адрес выбранного дома.')
         rules = (
             "Ты писатель скетч-комикса о выбранном объекте Калининградской области. "
             "Один ответ — полный план всех N карточек в порядке присланных N фотографий. "
@@ -301,20 +312,25 @@ class StoryPhotosMixin:
             "Утраченное, невидимое и то, что происходило внутри, нельзя дорисовывать; стрелки "
             "только на отчётливо видимую сейчас часть дома, остальные arrows — пустая строка. "
             "Заметки только для приложенных фактов, без дат источников, заглушек, оценок вне замысла. "
-            "Первый кадр — обложка: название объекта, сцена-зачин и обязательное «листай →». "
-            "Последний — завершение: «История за поворотом Калининград», город и адрес дома. "
-            "Верни ровно N записей; в каждой notes и arrows одинаковой длины, fact_ids без дублей."
+            "Первый кадр — обложка: напиши название объекта отдельной заметкой, сильнейший факт как сцену-зачин "
+            "(тот же текст укажи в hook) и отдельное «листай →». Первый fact_id — strongest_fact_id; "
+            "не заменяй собственные надписи шаблонными. "
+            "Последний — завершение: отдельные надписи «История за поворотом Калининград», "
+            "точный город из city и адрес из address; у финала fact_ids всегда пустой список. "
+            "Верни ровно N записей; по 1–3 notes на кадр, arrows той же длины, fact_ids без дублей. "
+            "Верни поле text с коротким служебным названием плана (не надпись на карточке)."
         )
-        schema = {"type": "object", "properties": {"cards": {"type": "array", "items": {
+        schema = {"type": "object", "properties": {"text": {"type": "string"}, "cards": {"type": "array", "items": {
             "type": "object", "properties": {
                 "notes": {"type": "array", "items": {"type": "string"}},
                 "arrows": {"type": "array", "items": {"type": "string"}},
                 "fact_ids": {"type": "array", "items": {"type": "string"}},
                 "hook": {"type": "string"}},
             "required": ["notes", "arrows", "fact_ids", "hook"]}}},
-            "required": ["cards"]}
+            "required": ["text", "cards"]}
         payload = {"photo_count": len(photo_ids), "photo_ids": photo_ids, "place": place,
-                   "address": address, "city": "Калининград", "strongest_fact_id": context.get("strongest_fact"),
+                   "address": address, "city": city, "strongest_fact_id": context.get("strongest_fact"),
+                   "strongest_fact_text": next((f['text'] for f in facts if f['id'] == context.get('strongest_fact')), None),
                    "concept": context.get("publication_concept"), "facts": facts}
         contents = [rules + "\n\n" + json.dumps(payload, ensure_ascii=False)]
         for photo_id in photo_ids:
@@ -344,20 +360,32 @@ class StoryPhotosMixin:
                         or any(not isinstance(v, str) for v in notes + arrows + fids)
                         or any(fid not in allowed_ids or fid in used for fid in fids)):
                     raise ValueError("Comic card plan does not match the selected evidence")
-                used.update(fids)
+                if not 1 <= len(notes) <= 3:
+                    raise ValueError('Every comic card must have one to three notes')
                 if position == 0:
-                    hook = str(item.get("hook") or "").strip()
-                    if not hook:
-                        raise ValueError("Comic cover has no hook")
-                    notes = [place, hook[:240], "листай →"]
-                    arrows = ["", "", ""]
+                    hook = str(item.get('hook') or '').strip()
+                    if (not hook or hook not in notes or place not in notes or 'листай →' not in notes
+                            or (context.get('strongest_fact') in allowed_ids
+                                and (not fids or fids[0] != context['strongest_fact']))):
+                        raise ValueError('Comic cover lacks the strongest-fact scene, title or CTA')
                 elif position == len(cards) - 1:
-                    notes = ["История за поворотом Калининград", "Калининград", str(address or place)[:120]]
-                    arrows = ["", "", ""]
-                else:
-                    notes, arrows = notes[:3], arrows[:3]
-                result.append({"notes": notes, "arrows": arrows, "fact_ids": fids})
+                    if fids or not all(value in notes for value in
+                            ('История за поворотом Калининград', city, address)):
+                        raise ValueError('Comic finale must show city/address without consuming facts')
+                used.update(fids)
+                result.append({'notes': notes, 'arrows': arrows, 'fact_ids': fids})
             return {"cards": result, "model": str(model)}
+        # Same owner-approved GLM -> Sol -> Gemini ladder as the caption writer.
+        # The lite route remains its existing fallback, not a new semantic writer.
+        if getattr(self.settings, 'external_writers', False):
+            from . import external_writers
+            try:
+                result, model = await external_writers.write(contents[0], None, answer_instruction=(
+                    '\n\nОтветь одним JSON-объектом: text (краткое название плана) и cards '
+                    '(ровно N объектов с полями notes, arrows, fact_ids, hook). Никаких пояснений.'))
+                return parse(json.dumps(result, ensure_ascii=False), external_writers.DISPLAY.get(model, model))
+            except (external_writers.ExternalWriterUnavailable, ValueError, KeyError, TypeError):
+                logging.getLogger(__name__).warning('street_story_comic_writer_fallback story_id=%s', story_id)
         return await self.providers.gemini._lite_chain(contents, config, parse)
 
     def _comic_brief(self, story, context, position, photo, plan):
@@ -412,6 +440,7 @@ class StoryPhotosMixin:
                 return
         plans = context["comic"]["plan"]["cards"]
         await self.providers.vibepublish.bootstrap()
+        inflight = 0
         for position, photo_id in enumerate(photo_ids):
             with self.store.connection() as db:
                 if not self._comic_current(db, story_id, revision, photo_ids):
@@ -421,6 +450,8 @@ class StoryPhotosMixin:
             card = context["comic"]["cards"][position]
             if card.get("asset_ref"):
                 continue
+            if inflight >= 3:
+                break
             if not card.get("brief"):
                 brief, data, mime, transform = self._comic_brief(
                     story, context, position, {"photo_id": photo_id}, plans[position])
@@ -452,9 +483,7 @@ class StoryPhotosMixin:
                 card = context["comic"]["cards"][position]
             visual_key = "ss-vp-visual-" + digest([story_id, revision, photo_id, source_asset])[:48]
             operation = card.get("operation_id")
-            if operation:
-                response = await self.providers.vibepublish.status(operation)
-            else:
+            if not operation:
                 cmd = {"command": {"kind": "tune",
                        "source": {"source": {"kind": "asset", "id": source_asset}},
                        "brief": card["brief"], "candidates": 1,
@@ -468,10 +497,26 @@ class StoryPhotosMixin:
                 if context is None:
                     return
                 card = context["comic"]["cards"][position]
+            inflight += 1
+        # Poll the launched batch; VibePublish handles its concurrent imagegen jobs.
+        pending = False
+        for position, photo_id in enumerate(photo_ids):
+            with self.store.connection() as db:
+                if not self._comic_current(db, story_id, revision, photo_ids):
+                    return
+                context = json.loads(self._story_row(db, story_id)['visual_context_json'] or '{}')
+            card = context['comic']['cards'][position]
+            if card.get('asset_ref'):
+                continue
+            operation = card.get('operation_id')
+            if not operation:
+                pending = True  # Remaining members launch in the next batch.
+                continue
             receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
             state = receipt.get("state")
             if state in {"accepted", "running", "queued", "processing"}:
-                raise RetryableProviderError("VibePublish comic card is processing")
+                pending = True
+                continue
             if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
                 raise PermanentProviderError("VibePublish comic card ended in " + str(state))
             candidate = card.get("candidate") or {}
@@ -491,13 +536,12 @@ class StoryPhotosMixin:
                     candidate=candidate, select_request_key=select_key)
                 if context is None:
                     return
-                selected = await self.providers.vibepublish.visual({"command": {
+                await self.providers.vibepublish.visual({"command": {
                     "kind": "select", "job_id": visual_job_id, "candidate_id": candidate["id"],
                     "expected_revision": provider_revision, "token": token}}, select_key)
-                if selected.get("state") == "verified":
-                    receipt = selected
-                else:
-                    receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
+                # Provider select reply may omit immutable candidate identity;
+                # use the same authoritative status receipt as the single-image path.
+                receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
             if receipt.get("state") != "verified":
                 raise RetryableProviderError("VibePublish comic card selection pending")
             asset_ref = str(receipt.get("selected_asset_ref") or "")
@@ -518,6 +562,8 @@ class StoryPhotosMixin:
                 candidate=candidate or evidence, selected_sha256=receipt.get("selected_sha256"))
             if context is None:
                 return
+        if pending:
+            raise RetryableProviderError('VibePublish comic cards are processing')
         with self.store.tx() as db:
             if not self._comic_current(db, story_id, revision, photo_ids):
                 return
