@@ -309,6 +309,9 @@ class StoryPhotosMixin:
             "События, годы, люди и причинные связи только из переданных проверенных фактов. "
             "Факты распределяй между карточками без повторения; самый сильный факт — сцена на обложке. "
             "Несколько заметок на одном фото допускаются, 2–3 кратких подписи по возможности. "
+            "Каждая надпись — короткая заметка своими словами в 3–8 слов (не более 70 символов), "
+            "а зачин обложки — до 12 слов. «листай →» ставь отдельной подписью. "
+            "Не переписывай длинные предложения из фактов в надписи дословно. "
             "Прошлое — только в прошедшем времени с собственной датой или периодом. "
             "Утраченное, невидимое и то, что происходило внутри, нельзя дорисовывать; стрелки "
             "только на отчётливо видимую сейчас часть дома, остальные arrows — пустая строка. "
@@ -356,7 +359,7 @@ class StoryPhotosMixin:
                 notes = item.get("notes")
                 fids = item.get("fact_ids")
                 if (not isinstance(notes, list) or not 1 <= len(notes) <= 3
-                        or any(not isinstance(v, str) or not v.strip() for v in notes)
+                        or any(not isinstance(v, str) or not v.strip() or len(v.strip()) > 70 for v in notes)
                         or not isinstance(fids, list)
                         or any(not isinstance(fid, str) or fid not in allowed_ids
                                or fid in used for fid in fids)

@@ -199,6 +199,53 @@ async def test_one_writer_plan_and_three_vibepublish_cards(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(tmp_path):
+    svc, sid, writer, _ = make_runtime(tmp_path)
+    ids = upload_three(svc, sid)
+    photo_ids = ["source", *ids]
+    facts = [
+        {"fact_id": f"fact-{i}", "text": text} for i, text in enumerate([
+            "В 1944 и 1945 годах гимназия избежала серьёзных повреждений, несмотря на бомбардировки и штурм города.",
+            "Здание возвели для Хуфенской гимназии, после открытия нового здания помещения использовали иначе.",
+            "Окна старого актового зала гимназии украшало свинцовое декоративное остекление с видами города.",
+            "Крутую крышу первоначального здания завершала высокая башня, увенчанная барочным куполом.",
+            "Писатель Эрнст Вихерт преподавал в Хуфенской гимназии в Кёнигсберге в двадцатые годы.",
+            "Новое здание Хуфенской гимназии открылось для учеников в 1915 году.",
+        ], 1)
+    ]
+    context = {"comic": {"photo_ids": photo_ids}, "place_name": "Университетский колледж БФУ",
+               "place_selection": {"address": "Калининград, Зоологическая улица, 2", "city": "Калининград"},
+               "selected_facts": facts, "strongest_fact": "fact-1", "photo_format": {}}
+    async def short_plan(contents, config, parse):
+        writer.calls += 1
+        assert "3–8 слов" in contents[0] and "12 слов" in contents[0]
+        assert "«листай →» ставь отдельной" in contents[0]
+        cards = [
+            {"notes": ["Университетский колледж БФУ", "Гимназия пережила бомбардировки и штурм.", "листай →"],
+             "fact_ids": ["fact-1", "fact-2"]},
+            {"notes": ["Здание строили для Хуфенской гимназии.", "Витражи зала показывали виды города.",
+                       "Башню венчал барочный купол."], "fact_ids": ["fact-3", "fact-4", "fact-5", "fact-6"]},
+            {"notes": ["До новых историй!"], "fact_ids": []},
+        ]
+        verbose = json.loads(json.dumps(cards, ensure_ascii=False))
+        verbose[1]["notes"][0] = "Здание Хуфенской гимназии и его великолепная архитектурная история, подробно изложенная в этом очень длинном предложении."
+        with pytest.raises(ValueError):
+            parse(json.dumps({"text": "Слишком длинно", "cards": verbose}, ensure_ascii=False), "writer")
+        return parse(json.dumps({"text": "Короткие надписи", "cards": cards}, ensure_ascii=False), "writer")
+    writer._lite_chain = short_plan
+    plan = await svc._plan_comic(sid, context)
+    assert writer.calls == 1 and len(plan["cards"]) == 3
+    with svc.store.connection() as db:
+        story = dict(svc._story_row(db, sid))
+    for position, card in enumerate(plan["cards"]):
+        brief, *_ = svc._comic_brief(story, context, position,
+                                    {"photo_id": photo_ids[position]}, card)
+        assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+    assert plan["cards"][0]["notes"][-1] == "листай →"
+    assert plan["cards"][-1]["notes"] == ["История за поворотом Калининград", "Калининград, Зоологическая улица, 2"]
+
+
+@pytest.mark.asyncio
 async def test_failed_comic_job_exits_visual_processing_with_error(tmp_path):
     from street_story.errors import PermanentProviderError
     svc, sid, _, _ = make_runtime(tmp_path)
