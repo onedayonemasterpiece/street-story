@@ -26,6 +26,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import androidx.work.ListenableWorker
+import androidx.work.WorkManager
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.google.gson.JsonObject
 import kotlinx.coroutines.runBlocking
@@ -129,11 +130,19 @@ class PhonePhotoNearbyInstrumentedTest {
             val found = PhonePhotoIndex.nearby(store, camera, objectPoint).map { it.mediaId }.toSet()
             assertEquals("All five near photos, including the POI-only point and 149m", nearIds, found.intersect(nearIds + outside))
             assertTrue("151m, no GPS, far away excluded", found.intersect(outside).isEmpty())
+            // On the unchanged second pass the worker logs exif_opened=0.
+            indexPass()
             val initialVersions = store.phonePhotoVersions()
             assertTrue(initialVersions.keys.containsAll(nearIds + outside))
             assertEquals("No GPS is distinct from invalid reading", "none", initialVersions[id(created.last())]?.gpsState)
 
-            val justTaken = insertImage(point(80.0), "new-while-open").also(created::add)
+            // A new photo made while the activity was closed must be discovered
+            // by the immediate one-time job on the next app opening.
+            val justTaken = insertImage(point(80.0), "new-while-closed").also(created::add)
+            assertFalse(PhonePhotoIndex.nearby(store, camera, objectPoint).any { it.mediaId == id(justTaken) })
+            PhonePhotoIndex.enqueue(context)
+            assertTrue(WorkManager.getInstance(context)
+                .getWorkInfosForUniqueWork("street-story-phone-index-now").get().isNotEmpty())
             indexPass()
             assertTrue(PhonePhotoIndex.nearby(store, camera, objectPoint).any { it.mediaId == id(justTaken) })
             context.contentResolver.delete(justTaken, null, null)

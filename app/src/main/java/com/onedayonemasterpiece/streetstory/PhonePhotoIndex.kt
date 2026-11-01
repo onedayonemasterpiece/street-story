@@ -15,8 +15,11 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -62,28 +65,31 @@ object PhonePhotoIndex {
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
 
-    fun enqueue(context: Context) {
+    /** Immediate at app open / permission grant; observer batches camera bursts for five seconds. */
+    fun enqueue(context: Context, delaySeconds: Long = 0L) {
         if (!galleryGranted(context)) return
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            "street-story-phone-index", ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
-            PeriodicWorkRequestBuilder<PhonePhotoIndexWorker>(6, TimeUnit.HOURS).build(),
+        val request = OneTimeWorkRequestBuilder<PhonePhotoIndexWorker>()
+            .apply { if (delaySeconds > 0) setInitialDelay(delaySeconds, TimeUnit.SECONDS) }
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "street-story-phone-index-now", ExistingWorkPolicy.REPLACE, request,
         )
     }
 
     fun start(context: Context) {
         if (!galleryGranted(context)) return
-        // WorkManager starts the application for background jobs. KEEP must not
-        // cancel the periodic worker that started its own process.
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            "street-story-phone-index", ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<PhonePhotoIndexWorker>(6, TimeUnit.HOURS).build(),
+            "street-story-phone-index-periodic", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<PhonePhotoIndexWorker>(6, TimeUnit.HOURS)
+                .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
+                .build(),
         )
     }
 
-    /** Only while this app process is alive; the same unique worker performs both scans. */
+    /** Only while the process is alive. MediaStore bursts coalesce into one delayed scan. */
     fun observe(context: Context): ContentObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
-        override fun onChange(selfChange: Boolean, uri: Uri?) { enqueue(context) }
-        override fun onChange(selfChange: Boolean) { enqueue(context) }
+        override fun onChange(selfChange: Boolean, uri: Uri?) { enqueue(context, 5) }
+        override fun onChange(selfChange: Boolean) { enqueue(context, 5) }
     }.also {
         context.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, it)
     }
@@ -158,6 +164,8 @@ class PhonePhotoIndexWorker(context: Context, params: WorkerParameters) : Corout
             cursor.use {
                 val total = it.count
                 var processed = 0
+                var exifOpened = 0
+                val startedAt = android.os.SystemClock.elapsedRealtime()
                 var gps = versions.values.count { v -> v.hasGps }
                 var lastReportedAt = android.os.SystemClock.elapsedRealtime()
                 PhonePhotoIndex.report(context, 0, total, gps, true)
@@ -177,6 +185,7 @@ class PhonePhotoIndexWorker(context: Context, params: WorkerParameters) : Corout
                         var state = if (grantedLocation) "none" else "hidden"
                         try {
                             val original = if (grantedLocation) MediaStore.setRequireOriginal(uri) else uri
+                            exifOpened++
                             context.contentResolver.openInputStream(original).use { stream ->
                                 requireNotNull(stream) { "No readable photo stream" }
                                 coords = ExifInterface(stream).latLong?.takeIf { pair ->
@@ -203,6 +212,7 @@ class PhonePhotoIndexWorker(context: Context, params: WorkerParameters) : Corout
                     }
                 }
                 store.removeMissingPhonePhotos(versions.keys - seen)
+                Log.i("PhonePhotoIndex", "scan_complete photos=$total exif_opened=$exifOpened elapsed_ms=${android.os.SystemClock.elapsedRealtime() - startedAt}")
                 PhonePhotoIndex.report(context, total, total, store.phonePhotoGpsCount(), false)
             }
             Result.success()
