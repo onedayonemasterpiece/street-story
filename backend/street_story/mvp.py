@@ -40,8 +40,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
         return template, hashlib.sha256(template.encode("utf-8")).hexdigest()
 
-    def _visual_brief(self, story: dict[str, Any], context: dict[str, Any]) -> str:
+    def _visual_brief(self, story: dict[str, Any], context: dict[str, Any], *, reserve_chars: int = 0) -> str:
         template, _ = self._prompt_template()
+        brief_limit = self.VIBEPUBLISH_BRIEF_LIMIT - reserve_chars
         selected = context.get("selected_facts") if isinstance(context.get("selected_facts"), list) else []
         notes: list[str] = []
         optional_notes: list[str] = []
@@ -111,7 +112,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         frame_instruction += (' Never outpaint, stretch, correct perspective or invent architecture. '
             'No hidden contain fields, blank padding or borders. Keep all supplied frame boundaries. '
             'Artistic sketch surroundings within this frame are allowed.')
-        dynamic_budget = (self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+        dynamic_budget = (brief_limit - len(base) - len(language_rule)
                           - len(frame_instruction))
         if dynamic_budget <= 0:
             raise InvalidStateError(
@@ -135,7 +136,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             themes += ("\n" if themes else "") + note[:remaining]
 
         brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule + frame_instruction
-        if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
+        if len(brief) > brief_limit:
             raise InvalidStateError(
                 "visual_prompt_too_long",
                 "Street Story visual prompt exceeds the VibePublish brief contract",

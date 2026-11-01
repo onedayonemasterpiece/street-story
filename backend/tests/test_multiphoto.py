@@ -376,3 +376,28 @@ async def test_scheduled_telegram_album_media_change_keeps_native_assets_and_sho
     assert row["error_message"] == ("Картинки запланированного альбома не обновляются. "
                                     "Отмените публикацию и опубликуйте заново.")
     assert req["asset_refs"] == original["asset_refs"]
+
+
+def test_comic_card_reserves_brief_capacity_for_cover_and_final_instructions(tmp_path):
+    """Live regression: optional editorial context must not crowd out comic labels."""
+    svc, sid, _, _ = make_runtime(tmp_path)
+    with svc.store.connection() as db:
+        story = dict(svc._story_row(db, sid))
+    context = {
+        "comic": {"photo_ids": ["source", "other", "last"]},
+        "place_name": "Хуфенская гимназия",
+        "publication_concept": "Городская история с проверенными фактами. " * 100,
+        "selected_facts": [],
+    }
+    plans = (
+        {"notes": ["Хуфенская гимназия", "1915 год: открылось здание.", "листай →"],
+         "arrows": ["", "", ""], "fact_ids": []},
+        {"notes": ["История за поворотом Калининград", "Калининград", "Зоологическая улица, 2"],
+         "arrows": ["", "", ""], "fact_ids": []},
+    )
+    for position, plan in ((0, plans[0]), (2, plans[1])):
+        brief, _data, _mime, _transform = svc._comic_brief(
+            story, context, position, {"photo_id": "source"}, plan)
+        assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+        assert ("листай →" if position == 0 else "Это ФИНАЛ комикса") in brief
+        assert "Городская история" in brief
