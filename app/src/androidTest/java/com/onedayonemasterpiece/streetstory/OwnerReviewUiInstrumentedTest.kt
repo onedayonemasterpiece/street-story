@@ -330,6 +330,90 @@ class OwnerReviewUiInstrumentedTest {
         }
     }
 
+    @Test
+    fun cardNotesShowInExistingPostBlockBeforeVisualAndHideForLegacyStory() {
+        val storyId = "card-notes-preview-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(
+            context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId,
+        )
+        val config = AppGraph.config(context)
+        val previousBackend = config.backendUrl
+        val preferences = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val previousActive = preferences.getString("active_story_id", null)
+        val projection = ResearchProjectionStore(context)
+        val draft = "Здание сохранилось. [Источник](https://example.com/story)"
+        config.backendUrl = null
+        try {
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.setDraftText(storyId, draft)
+            }
+            val wire = com.google.gson.Gson().fromJson(
+                """{"revision":1,"photo_sha256":"${imported.sha256}","identity_generation":1,
+                "cards":[],"card_notes":[
+                {"position":1,"notes":["Гимназия открылась в 1915 году"],"arrows":[{"target":"door"}]},
+                {"position":0,"notes":["Витражи над входом","Листай →"],"arrows":[]}]}""",
+                StoryWire::class.java,
+            )
+            projection.replace(storyId, wire)
+            assertEquals(2, projection.get(storyId)?.cardNotes?.size)
+            assertTrue(projection.get(storyId)?.cards.isNullOrEmpty())
+            preferences.edit().putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "card-notes-preview")
+                scenario.onActivity { activity ->
+                    val content = activity.findViewById<ViewGroup>(android.R.id.content)
+                    val chat = requireNotNull(findByDescription(content, "live-chat"))
+                    val post = requireNotNull(findByDescription(content, "publication-preview-chat")) as TextView
+                    assertTrue(isDescendant(post, chat))
+                    assertEquals(View.VISIBLE, post.visibility)
+                    val text = post.text.toString()
+                    assertTrue(text.contains("Карточка 1\n— Витражи над входом\n— Листай →"))
+                    assertTrue(text.contains("Карточка 2\n— Гимназия открылась в 1915 году"))
+                    assertTrue(text.indexOf("Карточка 1") < text.indexOf("Карточка 2"))
+                    assertTrue(text.indexOf("Карточка 2") < text.indexOf("Здание сохранилось"))
+                    assertTrue((post.text as Spanned)
+                        .getSpans(0, post.text.length, ClickableSpan::class.java).isNotEmpty())
+                }
+                val target = androidx.test.uiautomator.By.desc("publication-preview-chat")
+                if (device.findObject(target) == null) {
+                    val scroll = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("topic-scroll")))
+                    assertTrue("Scroll to visible card notes before screenshot", scroll.scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(target),
+                    ))
+                }
+                assertNotNull("Screenshot must show the actual post block", device.findObject(target))
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                assertTrue(device.takeScreenshot(
+                    File(context.getExternalFilesDir(null), "owner-card-notes-before-visual.png"),
+                ))
+                // Old or not-yet-upgraded server: no card_notes -> unchanged post UI.
+                projection.replace(storyId, com.google.gson.Gson().fromJson(
+                    """{"revision":2,"photo_sha256":"${imported.sha256}","identity_generation":1}""",
+                    StoryWire::class.java,
+                ))
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    val content = activity.findViewById<ViewGroup>(android.R.id.content)
+                    val post = requireNotNull(findByDescription(content, "publication-preview-chat")) as TextView
+                    assertEquals(View.VISIBLE, post.visibility)
+                    assertEquals("Здание сохранилось. Источник", post.text.toString().trim())
+                }
+            }
+        } finally {
+            preferences.edit().apply {
+                if (previousActive == null) remove("active_story_id") else putString("active_story_id", previousActive)
+            }.commit()
+            projection.clear(storyId)
+            StoryStore(context).use { it.deleteStory(storyId) }
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            config.backendUrl = previousBackend
+        }
+    }
+
     private fun findByDescription(root: View, description: String): View? {
         if (root.contentDescription?.toString() == description) return root
         if (root is ViewGroup) {

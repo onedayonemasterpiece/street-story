@@ -62,6 +62,10 @@ class StoryCardWire {
     var position: Int = 0
     var url: String = ""
 }
+class CardNotesWire {
+    var position: Int = 0
+    var notes: ArrayList<String> = arrayListOf()
+}
 class PhotoFormatWire {
     var mode: String = "original"
     var revision: Int = 0
@@ -73,6 +77,7 @@ class PhotoFormatWire {
 class StoryWire {
     var photos: ArrayList<StoryPhotoWire> = arrayListOf()
     var cards: ArrayList<StoryCardWire> = arrayListOf()
+    @SerializedName("card_notes") var cardNotes: ArrayList<CardNotesWire> = arrayListOf()
     @SerializedName("visual_photo_format") var visualPhotoFormat: PhotoFormatWire? = null
     @SerializedName("identity_mode") var identityMode: String? = null
     @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
