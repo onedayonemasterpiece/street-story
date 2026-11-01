@@ -1,5 +1,7 @@
 package com.onedayonemasterpiece.streetstory
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import java.io.BufferedInputStream
@@ -341,8 +343,12 @@ class ApiClient(private val baseUrl: String, private val token: String,
 
     /** Stable client ID and idempotency key make a lost HTTP receipt safe to replay. */
     fun uploadStoryPhoto(serverStoryId: String, photoId: String, uri: String, mime: String, requestKey: String): PhotoUploadReceipt {
-        val boundary = "street-story-" + UUID.randomUUID()
+        val boundary = "street-story-" + photoId.replace("-", "")
         require(mime.startsWith("image/"))
+        // Backend accepts JPEG/PNG/WebP, while Android's MediaStore also has HEIC/HEIF.
+        // Keep the original on the phone; transcode only the outgoing multipart bytes.
+        val heif = mime.substringBefore(';').lowercase() in setOf("image/heic", "image/heif")
+        val uploadMime = if (heif) "image/jpeg" else mime
         val connection = open("POST", "/v1/stories/" + segment(serverStoryId) + "/photos", requestKey).apply {
             setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
             setRequestProperty("X-Photo-Id", photoId)
@@ -352,8 +358,17 @@ class ApiClient(private val baseUrl: String, private val token: String,
         DataOutputStream(BufferedOutputStream(connection.outputStream)).use { out ->
             out.writeBytes("--" + boundary + "\r\n")
             out.writeBytes("Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\n")
-            out.writeBytes("Content-Type: " + mime + "\r\n\r\n")
-            photoInput(uri).use { it.copyTo(out, 64 * 1024) }
+            out.writeBytes("Content-Type: " + uploadMime + "\r\n\r\n")
+            if (heif) {
+                val bitmap = photoInput(uri).use { BitmapFactory.decodeStream(it) }
+                    ?: throw ApiProtocolException("Не удалось прочитать HEIC/HEIF на телефоне")
+                try {
+                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out))
+                        throw ApiProtocolException("Не удалось преобразовать HEIC/HEIF в JPEG")
+                } finally { bitmap.recycle() }
+            } else {
+                photoInput(uri).use { it.copyTo(out, 64 * 1024) }
+            }
             out.writeBytes("\r\n--" + boundary + "--\r\n")
         }
         return readJson(connection, PhotoUploadReceipt::class.java).also {

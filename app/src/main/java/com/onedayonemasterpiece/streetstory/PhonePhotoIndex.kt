@@ -70,7 +70,15 @@ object PhonePhotoIndex {
         )
     }
 
-    fun start(context: Context) = enqueue(context)
+    fun start(context: Context) {
+        if (!galleryGranted(context)) return
+        // WorkManager starts the application for background jobs. KEEP must not
+        // cancel the periodic worker that started its own process.
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            "street-story-phone-index", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<PhonePhotoIndexWorker>(6, TimeUnit.HOURS).build(),
+        )
+    }
 
     /** Only while this app process is alive; the same unique worker performs both scans. */
     fun observe(context: Context): ContentObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -151,6 +159,7 @@ class PhonePhotoIndexWorker(context: Context, params: WorkerParameters) : Corout
                 val total = it.count
                 var processed = 0
                 var gps = versions.values.count { v -> v.hasGps }
+                var lastReportedAt = android.os.SystemClock.elapsedRealtime()
                 PhonePhotoIndex.report(context, 0, total, gps, true)
                 while (it.moveToNext()) {
                     if (isStopped) return@withContext Result.retry()
@@ -186,8 +195,12 @@ class PhonePhotoIndexWorker(context: Context, params: WorkerParameters) : Corout
                         if (coords != null) gps++
                     }
                     processed++
-                    if (processed % 100 == 0 || processed == total)
+                    if (processed == total ||
+                        (processed % 100 == 0 &&
+                         android.os.SystemClock.elapsedRealtime() - lastReportedAt >= 2_000L)) {
                         PhonePhotoIndex.report(context, processed, total, gps, true)
+                        lastReportedAt = android.os.SystemClock.elapsedRealtime()
+                    }
                 }
                 store.removeMissingPhonePhotos(versions.keys - seen)
                 PhonePhotoIndex.report(context, total, total, store.phonePhotoGpsCount(), false)

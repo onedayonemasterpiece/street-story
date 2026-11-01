@@ -210,6 +210,7 @@ class MainActivity : Activity() {
         live.addListener(liveListener)
         SyncScheduler.enqueue(this)
         requestGalleryAccessOnce()
+        PhonePhotoIndex.enqueue(this)
         resumeUpdateAfterPermission()
         maybeCheckForUpdate()
     }
@@ -1864,6 +1865,22 @@ class MainActivity : Activity() {
         val island = stickyIsland ?: return
         val target = stickyImage ?: return
         if (image.height <= 0) return
+
+        // The floating bento otherwise covers the first row of the interactive
+        // "Фото рядом" grid, as observed in the Android 15 UI screenshot.
+        val nearby = nearbyPhotosPanel
+        val visibleNearby = android.graphics.Rect()
+        if (nearby?.visibility == View.VISIBLE &&
+            nearby.getGlobalVisibleRect(visibleNearby) && visibleNearby.top < dp(180)) {
+            stickyVisible = false
+            island.visibility = View.INVISIBLE
+            island.alpha = 0f
+            floatingImageProxy?.visibility = View.GONE
+            image.alpha = 1f
+            image.scaleX = 1f
+            image.scaleY = 1f
+            return
+        }
 
         val state = FloatingIslandTransition.state(scroll.scrollY, image.top, image.height, dp(114))
         stickyVisible = state.progress > 0f

@@ -4,6 +4,10 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Point
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.location.Location
 import android.net.Uri
 import android.os.Build
@@ -33,6 +37,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.cos
 import kotlin.math.sqrt
@@ -60,7 +65,21 @@ class PhonePhotoNearbyInstrumentedTest {
     private fun imageBytes(point: PhotoPoint?): ByteArray {
         val file = File(context.cacheDir, "street-story-exif-" + System.nanoTime() + ".jpg")
         try {
-            file.writeBytes(PhotoGpsFixture.withoutGps())
+            // Distinct synthetic test photos make 3-column thumbnails inspectable
+            // in captured Android 15 screenshots; GPS still lives in real EXIF.
+            val bitmap = Bitmap.createBitmap(240, 320, Bitmap.Config.ARGB_8888)
+            val hue = kotlin.math.abs(((point?.lat ?: 0.0) * 100_000).toInt() % 360).toFloat()
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(Color.HSVToColor(floatArrayOf(hue, .55f, .85f)))
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE; textSize = 30f
+            }
+            canvas.drawText("Street Story", 20f, 140f, paint)
+            canvas.drawText(if (point == null) "NO GPS" else "GPS", 20f, 190f, paint)
+            val bytes = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, bytes)
+            bitmap.recycle()
+            file.writeBytes(bytes.toByteArray())
             if (point != null) {
                 val exif = ExifInterface(file.absolutePath)
                 exif.setGpsInfo(Location("test").apply {
@@ -178,6 +197,7 @@ class PhonePhotoNearbyInstrumentedTest {
             return null
         }
         fun screenshot(name: String) {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), name)))
         }
         try {
@@ -202,16 +222,20 @@ class PhonePhotoNearbyInstrumentedTest {
                     requireNotNull(find(activity.window.decorView, "nearby-photo-done")).performClick()
                 }
                 assertEquals(3, store.selectedStoryPhotos(storyId).size)
+                assertNotNull(device.wait(Until.findObject(By.desc("order-tile-0")), 4000))
                 screenshot("multiphoto-puzzle.png")
 
                 val first = device.wait(Until.findObject(By.desc("order-tile-0")), 4000)
                 val second = device.wait(Until.findObject(By.desc("order-tile-1")), 4000)
                 assertNotNull(first)
                 assertNotNull(second)
+                val orderBefore = store.selectedStoryPhotos(storyId).map { it.photoId }
                 first!!.drag(second!!.visibleCenter, 35)
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 screenshot("multiphoto-reordered.png")
-                assertEquals(3, store.selectedStoryPhotos(storyId).size)
+                val orderAfter = store.selectedStoryPhotos(storyId).map { it.photoId }
+                assertEquals(3, orderAfter.size)
+                assertNotEquals("Drag must durably change card order", orderBefore, orderAfter)
 
                 projection.replace(storyId, wire(2, true))
                 context.sendBroadcast(android.content.Intent(SyncWorker.ACTION_STATE_CHANGED).setPackage(context.packageName))

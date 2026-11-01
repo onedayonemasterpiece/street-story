@@ -40,7 +40,10 @@ class NearbyPhotosPanel(
     private val config: ConfigStore,
 ) : LinearLayout(activity) {
     private data class Candidate(val id: String, val uri: String, val source: Boolean)
-    private val thumbCache = LruCache<String, Bitmap>(48)
+    private val thumbCache = object : LruCache<String, Bitmap>(24 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.byteCount / 1024).coerceAtLeast(1)
+    }
     private val workers = Executors.newFixedThreadPool(2)
     private var mode = "choose"
     private var lastCandidateSignature: String? = null
@@ -251,6 +254,11 @@ class NearbyPhotosPanel(
                 val image = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
                 tile.addView(image, FrameLayout.LayoutParams(-1, -1))
                 loadCard(image, card.url)
+                val number = text((index + 1).toString(), 12, true).apply {
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(0x99000000.toInt())
+                }
+                tile.addView(number, FrameLayout.LayoutParams(dp(26), dp(30), Gravity.TOP or Gravity.START))
                 tile.contentDescription = "story-card-" + index
                 tile.setOnClickListener { showCardCarousel(cards, index) }
             }
@@ -262,6 +270,8 @@ class NearbyPhotosPanel(
         val dialog = Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val frame = LinearLayout(activity).apply {
             orientation = VERTICAL; setBackgroundColor(Color.BLACK)
+            // The full-screen window draws behind Android navigation. Keep carousel controls visible.
+            setPadding(0, dp(8), 0, dp(42))
         }
         val photo = ImageView(activity).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
         frame.addView(photo, LayoutParams(-1, 0, 1f))
@@ -281,7 +291,8 @@ class NearbyPhotosPanel(
             counter.text = (current + 1).toString() + " / " + cards.size
             previous.isEnabled = current > 0
             next.isEnabled = current < cards.lastIndex
-            loadCard(photo, cards[current].url)
+            loadCard(photo, cards[current].url,
+                maxOf(activity.resources.displayMetrics.widthPixels, activity.resources.displayMetrics.heightPixels))
         }
         previous.setOnClickListener { if (current > 0) { current--; display() } }
         next.setOnClickListener { if (current < cards.lastIndex) { current++; display() } }
@@ -290,17 +301,25 @@ class NearbyPhotosPanel(
         display()
     }
 
-    private fun loadCard(image: ImageView, url: String) {
-        image.tag = url
-        thumbCache.get(url)?.let { image.setImageBitmap(it); return }
+    private fun loadCard(image: ImageView, url: String, targetPixels: Int = tileWidth()) {
+        val key = "card:" + url + ":" + targetPixels
+        image.tag = key
+        thumbCache.get(key)?.let { image.setImageBitmap(it); return }
+        image.setImageDrawable(null)
         val base = config.backendUrl ?: return
         val token = config.deviceToken ?: return
         if (workers.isShutdown) return
         workers.execute {
             val bytes = runCatching { ApiClient(base, token).readAsset(url) }.getOrNull() ?: return@execute
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@execute
-            thumbCache.put(url, bitmap)
-            activity.runOnUiThread { if (image.tag == url) image.setImageBitmap(bitmap) }
+            val info = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, info)
+            val maxDimension = maxOf(info.outWidth, info.outHeight).coerceAtLeast(1)
+            var sample = 1
+            while (maxDimension / sample > targetPixels * 2) sample *= 2
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sample }) ?: return@execute
+            thumbCache.put(key, bitmap)
+            activity.runOnUiThread { if (image.tag == key) image.setImageBitmap(bitmap) }
         }
     }
 
