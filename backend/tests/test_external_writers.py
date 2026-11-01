@@ -20,7 +20,7 @@ def test_answer_is_found_inside_client_banners():
 @pytest.mark.asyncio
 async def test_sol_first_then_glm_on_failure_or_invalid_output(monkeypatch):
     calls = []
-    glm_outcomes = iter(["fail", "fail", "ok"])
+    glm_outcomes = iter(["fail", "ok"])
 
     async def sol(prompt, photo, *, answer_instruction=external_writers.ANSWER):
         calls.append("sol")
@@ -37,8 +37,11 @@ async def test_sol_first_then_glm_on_failure_or_invalid_output(monkeypatch):
     monkeypatch.setattr(external_writers, "glm", glm)
     monkeypatch.setattr(external_writers, "sol", sol)
     assert (await external_writers.write("prompt", b"jpeg"))[1] == external_writers.SOL_MODEL
+    with pytest.raises(external_writers.ExternalWriterUnavailable,
+                       match="all_external_writers_unavailable"):
+        await external_writers.write("prompt", b"jpeg")
     assert (await external_writers.write("prompt", b"jpeg"))[1] == external_writers.GLM_MODEL
-    assert calls == ["sol", "sol", "glm", "glm", "glm"]
+    assert calls == ["sol", "sol", "glm", "sol", "glm"]
 
 
 @pytest.mark.asyncio
@@ -67,6 +70,33 @@ async def test_invalid_sol_card_notes_falls_through_to_glm(monkeypatch):
     plan, model = await external_writers.write("comic", None, validate=validate)
     assert model == external_writers.GLM_MODEL and len(plan["card_notes"]) == 3
     assert calls == ["sol", "glm"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_sol_reason_logged_without_model_text_and_one_glm(monkeypatch, capfd):
+    calls = []
+
+    async def sol(prompt, photo, *, answer_instruction=external_writers.ANSWER):
+        calls.append("sol")
+        return {"text": "PRIVATE GENERATED TEXT", "card_notes": []}
+
+    async def glm(prompt, *, answer_instruction=external_writers.ANSWER):
+        calls.append("glm")
+        raise external_writers.ExternalWriterUnavailable("writer_timeout")
+
+    def validate(answer):
+        if len(answer["card_notes"]) != 2:
+            raise ValueError("card_notes_count_invalid")
+
+    monkeypatch.setattr(external_writers, "sol", sol)
+    monkeypatch.setattr(external_writers, "glm", glm)
+    with pytest.raises(external_writers.ExternalWriterUnavailable,
+                       match="all_external_writers_unavailable"):
+        await external_writers.write("story", None, validate=validate)
+    output = capfd.readouterr().err
+    assert calls == ["sol", "glm"]
+    assert "writer_answer_invalid:card_notes_count_invalid" in output
+    assert "PRIVATE GENERATED TEXT" not in output
 
 
 @pytest.mark.asyncio
@@ -138,6 +168,7 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     async def external(prompt, photo, *, answer_instruction, validate):
         calls.append(prompt)
         assert "photo_count" in prompt and "card_notes" in answer_instruction
+        assert "зачин по lead_fact не длиннее 70 символов" in prompt
         answer = {"text": "История театра.\n\nУлица 1\n#калининград",
                   "card_notes": [
                       {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
