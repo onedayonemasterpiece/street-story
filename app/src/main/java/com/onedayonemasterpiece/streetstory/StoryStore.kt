@@ -32,6 +32,13 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         db.execSQL("CREATE INDEX idx_story_feed ON stories(created_at DESC)")
         db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
         db.execSQL("ALTER TABLE facts ADD COLUMN strongest INTEGER NOT NULL DEFAULT 0")
+        createPhonePhotoTables(db)
+    }
+
+    private fun createPhonePhotoTables(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE phone_photos(media_id INTEGER PRIMARY KEY,uri TEXT NOT NULL,modified INTEGER NOT NULL,size INTEGER NOT NULL,captured_at INTEGER NOT NULL,mime_type TEXT NOT NULL,latitude REAL,longitude REAL,gps_state TEXT NOT NULL)")
+        db.execSQL("CREATE INDEX idx_phone_photos_gps ON phone_photos(gps_state,latitude,longitude)")
+        db.execSQL("CREATE TABLE story_photo_choices(story_id TEXT NOT NULL,photo_id TEXT NOT NULL,uri TEXT NOT NULL,position INTEGER NOT NULL,PRIMARY KEY(story_id,photo_id),FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -42,6 +49,10 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         }
         if (oldVersion < 3) db.execSQL("ALTER TABLE facts ADD COLUMN eligibility_reason TEXT")
         if (oldVersion < 4) db.execSQL("ALTER TABLE facts ADD COLUMN strongest INTEGER NOT NULL DEFAULT 0")
+        if (oldVersion < 5) {
+            createPhonePhotoTables(db)
+            db.execSQL("INSERT INTO story_photo_choices(story_id,photo_id,uri,position) SELECT client_story_id,'source',photo_path,0 FROM stories")
+        }
     }
 
     @Synchronized
@@ -58,6 +69,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
             put("stage", StoryStage.PHOTO_READY)
             put("updated_at", now)
         })
+        saveStoryPhotos(photo.clientStoryId, listOf(LocalStoryPhoto("source", photo.path, 0)))
         return requireNotNull(story(photo.clientStoryId))
     }
 
@@ -563,6 +575,136 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         }, "id=?", arrayOf(id))
     }
 
+    /** MediaStore reconciliation: scan every id, timestamp and size, EXIF only when changed. */
+    @Synchronized
+    fun phonePhotoVersions(): Map<Long, PhonePhotoVersion> = readableDatabase.query(
+        "phone_photos", arrayOf("media_id", "modified", "size", "gps_state"), null, null, null, null, null,
+    ).use { cursor ->
+        buildMap {
+            while (cursor.moveToNext()) {
+                put(cursor.getLong(0), PhonePhotoVersion(cursor.getLong(1), cursor.getLong(2), cursor.getString(3)))
+            }
+        }
+    }
+
+    @Synchronized
+    fun upsertPhonePhoto(
+        id: Long, modified: Long, size: Long, capturedAt: Long, mime: String,
+        coordinates: DoubleArray?, gpsState: String,
+    ) {
+        writableDatabase.insertWithOnConflict("phone_photos", null, ContentValues().apply {
+            put("media_id", id)
+            put("uri", android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id).toString())
+            put("modified", modified)
+            put("size", size)
+            put("captured_at", capturedAt)
+            put("mime_type", mime)
+            if (coordinates != null) {
+                put("latitude", coordinates[0]); put("longitude", coordinates[1])
+            } else { putNull("latitude"); putNull("longitude") }
+            put("gps_state", gpsState)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    @Synchronized
+    fun removeMissingPhonePhotos(missing: Set<Long>) {
+        if (missing.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            missing.forEach { id -> db.delete("phone_photos", "media_id=?", arrayOf(id.toString())) }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
+    fun phonePhotoGpsCount(): Int = readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM phone_photos WHERE gps_state='gps'", null,
+    ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    /**
+     * Bounding rectangles in SQLite before exact Location.distanceBetween.
+     * Longitude bounds handle the date line and poles. Never LIMIT before distance.
+     */
+    @Synchronized
+    fun photosInBoundingBox(center: PhotoPoint, radiusMeters: Double): List<PhonePhoto> {
+        val b = PhonePhotoIndex.bounds(center, radiusMeters)
+        val selection = StringBuilder("gps_state='gps' AND latitude BETWEEN ? AND ?")
+        val args = mutableListOf(b[0].toString(), b[1].toString())
+        when {
+            b[3] - b[2] >= 360.0 -> Unit
+            b[2] < -180.0 -> {
+                selection.append(" AND (longitude >= ? OR longitude <= ?)")
+                args += (b[2] + 360.0).toString(); args += b[3].toString()
+            }
+            b[3] > 180.0 -> {
+                selection.append(" AND (longitude >= ? OR longitude <= ?)")
+                args += b[2].toString(); args += (b[3] - 360.0).toString()
+            }
+            else -> {
+                selection.append(" AND longitude BETWEEN ? AND ?")
+                args += b[2].toString(); args += b[3].toString()
+            }
+        }
+        return readableDatabase.query(
+            "phone_photos", arrayOf("media_id", "uri", "captured_at", "latitude", "longitude"),
+            selection.toString(), args.toTypedArray(), null, null, null,
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(PhonePhoto(
+                    cursor.getLong(0), cursor.getString(1), cursor.getLong(2),
+                    cursor.getDouble(3), cursor.getDouble(4),
+                ))
+            }
+        }
+    }
+
+    @Synchronized
+    fun selectedStoryPhotos(storyId: String): List<LocalStoryPhoto> = readableDatabase.query(
+        "story_photo_choices", arrayOf("photo_id", "uri", "position"), "story_id=?",
+        arrayOf(storyId), null, null, "position",
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) add(LocalStoryPhoto(cursor.getString(0), cursor.getString(1), cursor.getInt(2)))
+        }
+    }
+
+    /** Every owner toggle persists the selection, including order. */
+    @Synchronized
+    fun saveStoryPhotos(storyId: String, photos: List<LocalStoryPhoto>) {
+        require(photos.size <= 8 && photos.map { it.photoId }.distinct().size == photos.size)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("story_photo_choices", "story_id=?", arrayOf(storyId))
+            photos.forEachIndexed { index, photo ->
+                db.insertOrThrow("story_photo_choices", null, ContentValues().apply {
+                    put("story_id", storyId); put("photo_id", photo.photoId)
+                    put("uri", photo.uri); put("position", index)
+                })
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    /** Queue uploads before order, retaining a stable UUID and request key. */
+    @Synchronized
+    fun enqueueStoryPhotoOrder(storyId: String, photos: List<LocalStoryPhoto>) {
+        require(photos.size in 1..8)
+        val gson = com.google.gson.Gson()
+        pendingOperations(storyId).filter { it.kind == "photo-order" }.forEach { markOperationDone(it.id) }
+        photos.filter { it.photoId != "source" }.forEach { photo ->
+            enqueueOperation(
+                storyId, "photo-upload", newRequestKey("photo", storyId + "-" + photo.photoId),
+                gson.toJson(mapOf("photo_id" to photo.photoId, "uri" to photo.uri)),
+            )
+        }
+        enqueueOperation(
+            storyId, "photo-order", newRequestKey("order", storyId + "-" + java.util.UUID.randomUUID()),
+            gson.toJson(mapOf("photo_ids" to photos.map { it.photoId })),
+        )
+    }
+
     private fun StorySnapshot.withDraftOverride(): StorySnapshot =
         draftOverrides.getString(clientStoryId, null)?.let { copy(draftText = it) } ?: this
 
@@ -591,7 +733,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     companion object {
         private const val DB_NAME = "street-story.db"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         private val STORY_COLUMNS = arrayOf(
             "client_story_id", "server_story_id", "created_at", "photo_path", "photo_sha256", "photo_mime_type",
             "latitude", "longitude", "stage", "place_name", "summary", "draft_text", "processed_image_path",

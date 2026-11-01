@@ -168,9 +168,29 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             // and continue selection/text/voice sync while access is restored.
             if (sourceUnavailable && operation.kind == "visual") continue
             try {
-                remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
-                validateStoryIdentity(story, remote)
-                applyRemote(store, feed, research, story.clientStoryId, remote)
+                when (operation.kind) {
+                    "photo-upload" -> {
+                        val payload = com.google.gson.JsonParser.parseString(operation.payloadJson).asJsonObject
+                        val uri = payload["uri"].asString
+                        val mime = applicationContext.contentResolver.getType(android.net.Uri.parse(uri)) ?: "image/jpeg"
+                        api.uploadStoryPhoto(serverId, payload["photo_id"].asString, uri, mime, operation.requestKey)
+                    }
+                    "photo-order" -> {
+                        val payload = com.google.gson.JsonParser.parseString(operation.payloadJson).asJsonObject
+                        api.setStoryPhotoOrder(serverId, payload.getAsJsonArray("photo_ids").map { it.asString }, operation.requestKey)
+                    }
+                    "publish" -> {
+                        remote = if (operation.payloadJson.isBlank()) api.publishDefault(serverId, operation.requestKey)
+                            else api.mutate(serverId, "publish", operation.payloadJson, operation.requestKey)
+                        validateStoryIdentity(story, remote)
+                        applyRemote(store, feed, research, story.clientStoryId, remote)
+                    }
+                    else -> {
+                        remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
+                        validateStoryIdentity(story, remote)
+                        applyRemote(store, feed, research, story.clientStoryId, remote)
+                    }
+                }
                 needsFinalReadback = true
                 store.markOperationDone(operation.id)
             } catch (exc: ApiException) {
@@ -179,7 +199,9 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     return true
                 }
                 store.markOperationDone(operation.id)
-                store.setStage(story.clientStoryId, StoryStage.NEEDS_REVIEW, exc.message)
+                val error = if (operation.kind == "publish" && exc.code == "telegram_caption_too_long")
+                    "telegram_caption_too_long: " + exc.message else exc.message
+                store.setStage(story.clientStoryId, StoryStage.NEEDS_REVIEW, error)
                 return false
             }
         }

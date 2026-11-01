@@ -48,6 +48,18 @@ class PublicationWire {
     @SerializedName("scheduled_for") var scheduledFor: String? = null
 }
 
+class PhotoUploadReceipt {
+    @SerializedName("photo_id") var photoId: String = ""
+}
+class StoryPhotoWire {
+    @SerializedName("photo_id") var photoId: String = ""
+    var position: Int = 0
+    @SerializedName("thumbnail_url") var thumbnailUrl: String? = null
+}
+class StoryCardWire {
+    var position: Int = 0
+    var url: String = ""
+}
 class PhotoFormatWire {
     var mode: String = "original"
     var revision: Int = 0
@@ -57,6 +69,8 @@ class PhotoFormatWire {
 }
 
 class StoryWire {
+    var photos: ArrayList<StoryPhotoWire> = arrayListOf()
+    var cards: ArrayList<StoryCardWire> = arrayListOf()
     @SerializedName("visual_photo_format") var visualPhotoFormat: PhotoFormatWire? = null
     @SerializedName("identity_mode") var identityMode: String? = null
     @SerializedName("place_map_focus") var placeMapFocus: PlaceMapFocusWire? = null
@@ -320,6 +334,47 @@ class ApiClient(private val baseUrl: String, private val token: String,
     }
 
     fun getStory(serverStoryId: String): StoryWire = requestJson("GET", "/v1/stories/${segment(serverStoryId)}", null, null, StoryWire::class.java)
+
+    fun publishDefault(serverStoryId: String, requestKey: String): StoryWire = requestJson(
+        "POST", "/v1/stories/${segment(serverStoryId)}/publish", null, requestKey, StoryWire::class.java,
+    )
+
+    /** Stable client ID and idempotency key make a lost HTTP receipt safe to replay. */
+    fun uploadStoryPhoto(serverStoryId: String, photoId: String, uri: String, mime: String, requestKey: String): PhotoUploadReceipt {
+        val boundary = "street-story-" + UUID.randomUUID()
+        require(mime.startsWith("image/"))
+        val connection = open("POST", "/v1/stories/" + segment(serverStoryId) + "/photos", requestKey).apply {
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
+            setRequestProperty("X-Photo-Id", photoId)
+            doOutput = true
+            setChunkedStreamingMode(64 * 1024)
+        }
+        DataOutputStream(BufferedOutputStream(connection.outputStream)).use { out ->
+            out.writeBytes("--" + boundary + "\r\n")
+            out.writeBytes("Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\n")
+            out.writeBytes("Content-Type: " + mime + "\r\n\r\n")
+            photoInput(uri).use { it.copyTo(out, 64 * 1024) }
+            out.writeBytes("\r\n--" + boundary + "--\r\n")
+        }
+        return readJson(connection, PhotoUploadReceipt::class.java).also {
+            if (it.photoId != photoId) throw ApiProtocolException("Backend photo ID changed")
+        }
+    }
+
+    fun setStoryPhotoOrder(serverStoryId: String, photoIds: List<String>, requestKey: String) {
+        require(photoIds.size in 1..8 && photoIds.distinct().size == photoIds.size)
+        val connection = open("PUT", "/v1/stories/" + segment(serverStoryId) + "/photos/order", requestKey).apply {
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            doOutput = true
+        }
+        connection.outputStream.use {
+            it.write(gson.toJson(mapOf("photo_ids" to photoIds)).toByteArray(StandardCharsets.UTF_8))
+        }
+        val status = connection.responseCode
+        if (status !in 200..299) throw apiError(connection, status)
+        connection.inputStream.close()
+    }
+
 
     fun conflictJournal(serverStoryId: String, cursor: Long? = null): ConflictJournalWire = requestJson(
         "GET", "/v1/stories/${segment(serverStoryId)}/fact-conflicts" + (cursor?.let { "?cursor=$it" } ?: ""),
