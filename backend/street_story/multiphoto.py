@@ -544,11 +544,26 @@ class StoryPhotosMixin:
                         card["brief"], card["transform"]]
                        for photo_id, card in zip(photo_ids, cards)]
             if not operation:
-                batch_brief = ("Единый стиль скетч-комикса для всех кадров. Каждый раздел "
-                    "относится только к одноимённому исходному фото. Сделай отдельную "
-                    "картинку для каждого номера, строго в порядке source-0, source-1, ...\n\n"
-                    + "\n\n".join(f"[CARD {i+1}/{len(cards)}] source-{i}, format={formats[i]}\n{card['brief']}"
-                                   for i, card in enumerate(cards)))
+                # All comic briefs share the owner-approved versioned prompt
+                # template. Include it once, retaining every per-card factual
+                # instruction, caption, frame rule and source-specific constraint.
+                template, _ = self._prompt_template()
+                prefix, suffix = template.split(self.PROMPT_TOKEN)
+                card_sections = []
+                for i, card in enumerate(cards):
+                    brief = card["brief"]
+                    if not brief.startswith(prefix) or (suffix and suffix not in brief[len(prefix):]):
+                        raise PermanentProviderError("visual_prompt_template_mismatch")
+                    dynamic = brief[len(prefix):]
+                    if suffix:
+                        dynamic = dynamic.replace(suffix, "", 1)
+                    card_sections.append(
+                        f"[CARD {i+1}/{len(cards)}] source-{i}, format={formats[i]}\n{dynamic}")
+                batch_brief = (
+                    "Единый стиль скетч-комикса для всех кадров. Каждый раздел относится "
+                    "только к одноимённому исходному фото. Генерируй отдельную "
+                    "картинку на каждое source-N в заданном порядке.\n\n"
+                    + prefix + suffix + "\n\n" + "\n\n".join(card_sections))
                 if len(batch_brief) > 32000:
                     raise PermanentProviderError("visual_prompt_too_long")
                 visual_key = "ss-vp-visual-" + digest([story_id, revision, ordered])[:48]
