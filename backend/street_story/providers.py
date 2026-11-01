@@ -801,11 +801,11 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
         if not 1 <= len(notes) <= 4:
             raise ValueError("card_notes_length_invalid")
         cleaned = []
-        for note, arrow in zip(notes, arrows):
+        for index, (note, arrow) in enumerate(zip(notes, arrows)):
             if not isinstance(note, str) or not isinstance(arrow, str):
                 raise ValueError("card_notes_type_invalid")
             note, arrow = note.strip(), arrow.strip()
-            if not note or len(note) > 70 or len(arrow) > 80:
+            if (not note and not (position == 0 and index == len(notes) - 1)) or len(note) > 70 or len(arrow) > 80:
                 raise ValueError("card_notes_limit_invalid")
             for value in (note, arrow):
                 if any(not (ch in punctuation or (ch.isascii() and ch.isalnum())
@@ -816,17 +816,34 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
                        for word in re.findall(r"[A-Za-z]+", value)):
                     raise ValueError("card_notes_foreign_text_invalid")
             cleaned.append(note)
+        clean_arrows = [arrow.strip() for arrow in arrows]
         if position == 0:
-            if (len(cleaned) < 3 or cleaned[0] != place_name or cleaned[-1] != "листай →"
-                    or arrows[0].strip() or arrows[-1].strip()
-                    or not 3 <= len(cleaned[1].split()) <= 12):
-                raise ValueError("card_notes_cover_invalid")
-        elif any(not 3 <= len(note.split()) <= 8 for note in cleaned):
-            raise ValueError("card_notes_words_invalid")
+            # Typography in the writer's heading (№ 3 vs №3) is not a reason to
+            # discard the whole caption; the server can supply absent labels.
+            same_title = lambda s: re.sub(r"\s+", "", s.casefold())
+            if same_title(cleaned[0]) != same_title(place_name):
+                if len(cleaned) < 4:
+                    cleaned.insert(0, place_name)
+                    clean_arrows.insert(0, "")
+                else:
+                    cleaned[0], clean_arrows[0] = place_name, ""
+            if not re.search(r"листай\s*→\s*$", cleaned[-1], re.I):
+                if not cleaned[-1]:
+                    cleaned[-1] = "листай →"
+                elif len(cleaned) < 4:
+                    cleaned.append("листай →")
+                    clean_arrows.append("")
+                elif len(cleaned[-1] + " листай →") <= 70:
+                    cleaned[-1] += " листай →"
+                else:
+                    cleaned[-1] = "листай →"
+            clean_arrows[0] = clean_arrows[-1] = ""
+        if any(len(note) > 70 for note in cleaned):
+            raise ValueError("card_notes_limit_invalid")
         if any("листай" in note.casefold() for note in cleaned[:-1] if position == 0) or (
                 position and any("листай" in note.casefold() for note in cleaned)):
             raise ValueError("card_notes_cta_invalid")
-        result.append({"notes": cleaned, "arrows": [arrow.strip() for arrow in arrows]})
+        result.append({"notes": cleaned, "arrows": clean_arrows})
     return result
 
 

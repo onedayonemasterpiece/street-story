@@ -109,6 +109,28 @@ def test_card_notes_writer_validation():
         _validated_card_notes(broken, 3, "Театр", facts)
 
 
+def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
+    from street_story.providers import _validated_card_notes
+    place = "Поликлиника городской больницы №3"
+    facts = [{"text": "В 1954 году здесь открылась поликлиника городской больницы."}]
+    rest = [{"notes": ["В 1954 году открылась городская поликлиника"], "arrows": [""]},
+            {"notes": [], "arrows": []}]
+    spaced = {"notes": ["Поликлиника городской больницы № 3",
+                        "В 1954 году здесь открылась поликлиника", "листай →"],
+              "arrows": ["", "", ""]}
+    assert _validated_card_notes([spaced, *rest], 3, place, facts)[0] == spaced
+
+    missing = {"notes": ["В 1954 году здесь открылась поликлиника"], "arrows": [""]}
+    restored = _validated_card_notes([missing, *rest], 3, place, facts)[0]
+    assert restored == {"notes": [place, missing["notes"][0], "листай →"],
+                        "arrows": ["", "", ""]}
+
+    four = {"notes": [place, "В 1954 году здесь открылась поликлиника",
+                       "На фасаде видны большие окна", ""],
+            "arrows": ["", "", "", ""]}
+    assert _validated_card_notes([four, *rest], 3, place, facts)[0]["notes"][-1] == "листай →"
+
+
 @pytest.mark.asyncio
 async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     calls = []
