@@ -28,7 +28,6 @@ SOL_MODEL = "gpt-6.1-sol"
 # Owner decision 01.11.2026: Sol medium first, GLM as fallback.
 # GLM variant low prevents excessive thinking; generous timeouts only catch non-answers.
 GLM_VARIANT = "low"
-GLM_ATTEMPTS = 3
 GLM_TIMEOUT = 240
 SOL_TIMEOUT = 240
 # The status line in the app names a model the author recognises.
@@ -114,7 +113,12 @@ async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: st
             try:
                 validate(answer)
             except (ValueError, KeyError, TypeError) as exc:
-                raise ExternalWriterUnavailable("writer_answer_invalid") from exc
+                # Mechanical validation emits stable error codes; never log the
+                # generated text or unrestricted exception arguments.
+                code = str(exc).strip()
+                if not re.fullmatch(r"[a-z][a-z0-9_]{2,79}", code):
+                    code = type(exc).__name__.lower()
+                raise ExternalWriterUnavailable(f"writer_answer_invalid:{code}") from exc
         return answer
 
     started = time.monotonic()
@@ -126,14 +130,13 @@ async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: st
     except ExternalWriterUnavailable as exc:
         logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
                        SOL_MODEL, exc, time.monotonic() - started)
-    for attempt in range(1, GLM_ATTEMPTS + 1):
-        started = time.monotonic()
-        try:
-            answer = accepted(await glm(prompt, answer_instruction=answer_instruction))
-            logger.info("street_story_external_writer model=%s attempt=%s outcome=written seconds=%.1f",
-                        GLM_MODEL, attempt, time.monotonic() - started)
-            return answer, GLM_MODEL
-        except ExternalWriterUnavailable as exc:
-            logger.warning("street_story_external_writer model=%s attempt=%s outcome=%s seconds=%.1f",
-                           GLM_MODEL, attempt, exc, time.monotonic() - started)
-    raise ExternalWriterUnavailable("all_external_writers_unavailable")
+    started = time.monotonic()
+    try:
+        answer = accepted(await glm(prompt, answer_instruction=answer_instruction))
+        logger.info("street_story_external_writer model=%s outcome=written seconds=%.1f",
+                    GLM_MODEL, time.monotonic() - started)
+        return answer, GLM_MODEL
+    except ExternalWriterUnavailable as exc:
+        logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
+                       GLM_MODEL, exc, time.monotonic() - started)
+        raise ExternalWriterUnavailable("all_external_writers_unavailable") from exc

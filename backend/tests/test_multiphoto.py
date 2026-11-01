@@ -51,8 +51,6 @@ class ComicVibe:
         self.commands = []
         self.operations = {}
         self.published = []
-        self.mutate_candidates = None
-        self.pending_once = False
 
     async def bootstrap(self):
         return {"routing_revision": 3,
@@ -64,52 +62,35 @@ class ComicVibe:
                                  for alias, network in zip(DEFAULT_DESTINATIONS, ("telegram", "vk"))]}
 
     async def ingress_asset(self, data, mime, key):
-        previous = next((item for item in self.ingresses if item["key"] == key), None)
-        if previous:
-            assert previous["source_bytes_sha"] == hashlib.sha256(data).hexdigest()
-            return {"asset_id": previous["asset_id"], "sha256": previous["sha256"]}
-        asset_id = "original-" + str(len(self.ingresses) + 1)
-        sha = hashlib.sha256(data).hexdigest()
-        self.ingresses.append({"key": key, "asset_id": asset_id, "sha256": sha,
-                               "source_bytes_sha": sha})
-        return {"asset_id": asset_id, "sha256": sha}
+        self.ingresses.append(key)
+        return {"asset_id": "original-" + str(len(self.ingresses))}
 
     async def visual(self, payload, key):
         command = payload["command"]
         self.commands.append(command)
-        assert command["kind"] == "tune", "batch must not invoke legacy single-candidate select"
-        previous = next((item for item in self.operations.values() if item["key"] == key), None)
-        if previous:
-            assert previous["command"] == command
-            return {"operation_id": previous["id"], "state": "accepted"}
-        op = "visual-" + str(len(self.operations) + 1)
-        self.operations[op] = {"id": op, "key": key, "command": command}
-        return {"operation_id": op, "state": "accepted"}
+        if command["kind"] == "tune":
+            op = "visual-" + str(len(self.operations) + 1)
+            self.operations[op] = {"asset": "card-" + str(len(self.operations) + 1), "done": False}
+            return {"operation_id": op, "state": "accepted"}
+        assert command["kind"] == "select"
+        for op in self.operations.values():
+            if op["asset"] == "card-" + command["candidate_id"].removeprefix("choice-"):
+                op["done"] = True
+        return {"state": "verified"}
 
     async def status(self, operation):
-        assert len(self.operations) == 1, "one imagegen operation for the entire album"
-        if self.pending_once:
-            self.pending_once = False
-            return {"receipts": [{"operation_id": operation, "state": "processing"}]}
-        command = self.operations[operation]["command"]
-        assert len(command["sources"]) == command["candidates"] == len(command["formats"])
-        choices = []
-        for i, item in enumerate(command["sources"]):
-            source_asset_ref = item["source"]["id"]
-            source = next(item for item in self.ingresses if item["asset_id"] == source_asset_ref)
-            fmt = command["formats"][i]
-            choices.append({"id": f"choice-{i+1}", "asset_ref": f"card-{i+1}",
-                "sha256": hashlib.sha256(f"card-{i+1}".encode()).hexdigest(),
-                "source_index": i, "source_asset_ref": source_asset_ref,
-                "source_sha256": source["sha256"],
-                "width": 1080 if fmt == "post_4_5" else 40,
-                "height": 1350 if fmt == "post_4_5" else 30,
-                "format": fmt, "selection_token": "test-token"})
-        if self.mutate_candidates:
-            choices = self.mutate_candidates(choices)
-        return {"receipts": [{"operation_id": operation, "state": "needs_selection",
-                "visual_job_id": "job-album", "visual_revision": 1,
-                "candidates": choices}]}
+        assert len(self.operations) >= 3, 'all first-batch imagegens must launch before status polling'
+        state = self.operations[operation]
+        index = operation.removeprefix("visual-")
+        choice = {"id": "choice-" + index, "asset_ref": state["asset"],
+                  "sha256": "a" * 64, "width": 40, "height": 30,
+                  "selection_token": "test-token"}
+        return {"receipts": [{"operation_id": operation,
+                "state": "verified" if state["done"] else "needs_selection",
+                "visual_job_id": "job-" + index, "visual_revision": 1,
+                "candidates": [choice],
+                **({"selected_asset_ref": state["asset"], "selected_sha256": "a" * 64}
+                   if state["done"] else {})}]}
 
     async def read_asset(self, ref):
         return shot("blue"), "image/jpeg"
@@ -276,9 +257,7 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
     result = svc.story(sid)
     assert result["state"] == "ready_to_publish"
     assert len(result["cards"]) == 3
-    assert [cmd["kind"] for cmd in vp.commands].count("tune") == 1
-    assert len(vp.commands[0]["sources"]) == 3
-    assert len(vp.operations) == 1
+    assert [cmd["kind"] for cmd in vp.commands].count("tune") == 3
     assert writer.calls == 0  # visual never invokes a second writer
     assert result["card_notes"] == preview["card_notes"]
     with svc.store.connection() as db:
@@ -287,7 +266,7 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(tmp_path):
+async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path):
     from street_story.providers import _validated_card_notes
     svc, sid, _, _ = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
@@ -317,8 +296,8 @@ async def test_six_facts_fit_three_briefs_and_long_notes_fail_writer_validation(
         assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
     bad = json.loads(json.dumps(notes, ensure_ascii=False))
     bad[1]["notes"][0] = "Очень " * 20 + "длинное сообщение"
-    with pytest.raises(ValueError):
-        _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
+    normalized = _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
+    assert all(len(n) <= 70 for card in normalized for n in card["notes"])
 
 
 @pytest.mark.asyncio
@@ -451,7 +430,8 @@ def test_instruction_only_refinement_uses_existing_caption_job_without_voice(tmp
 
 
 @pytest.mark.asyncio
-async def test_eight_photo_dispatch_uses_one_luna_task(tmp_path):
+async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
+    from street_story.errors import RetryableProviderError
     svc, sid, _writer, vp = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
     ids += [str(uuid.uuid4()) for _ in range(5)]
@@ -471,86 +451,14 @@ async def test_eight_photo_dispatch_uses_one_luna_task(tmp_path):
         svc._enqueue_job(db, sid, "visual", "visual:test-eight",
                          {"content_revision": "eight-1", "selected_fact_ids": []})
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    for expected in (3, 6):
+        with pytest.raises(RetryableProviderError):
+            await svc._run_visual(job)
+        assert len(vp.operations) == expected  # Existing VibePublish still owns its queue.
     await svc._run_visual(job)
-    assert len(vp.operations) == 1
-    assert len(vp.commands) == 1 and vp.commands[0]["candidates"] == 8
-    assert len(vp.commands[0]["sources"]) == 8
+    assert len(vp.operations) == 8
     assert len(svc.story(sid)["cards"]) == 8
 
-
-
-def setup_batch_visual(svc, sid, photo_ids, key):
-    snapshot = {"comic": {"photo_ids": photo_ids,
-                          "cards": [{"photo_id": photo_id} for photo_id in photo_ids],
-                          "plan": {"cards": [{"notes": ["История здания"], "arrows": [""],
-                                               "fact_ids": []} for _ in photo_ids]}},
-                "selected_facts": [], "place_name": "Тестовый дом",
-                "photo_format": {}, "content_revision": key, "stale": False}
-    with svc.store.tx() as db:
-        db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?",
-                   (canonical(snapshot), sid))
-        svc._enqueue_job(db, sid, "visual", "visual:" + key,
-                         {"content_revision": key, "selected_fact_ids": []})
-        return dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'",
-                               (sid,)).fetchone())
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["missing", "reorder", "source_hash", "source_ref",
-                                    "duplicate_asset", "duplicate_output_hash",
-                                    "wrong_format", "dimensions"])
-async def test_batch_rejects_any_ambiguous_candidate_before_saving_a_card(tmp_path, fault):
-    from street_story.errors import PermanentProviderError
-    svc, sid, _writer, vp = make_runtime(tmp_path)
-    ids = upload_three(svc, sid)
-    photo_ids = ["source", *ids]
-    svc.order_story_photos(sid, "order-fault", {"photo_ids": photo_ids})
-    job = setup_batch_visual(svc, sid, photo_ids, "batch-fault")
-
-    def corrupt(candidates):
-        if fault == "missing":
-            return candidates[:-1]
-        if fault == "reorder":
-            return list(reversed(candidates))
-        if fault == "source_hash":
-            candidates[1]["source_sha256"] = "0" * 64
-        elif fault == "source_ref":
-            candidates[0]["source_asset_ref"] = "asset-foreign"
-        elif fault == "duplicate_asset":
-            candidates[2]["asset_ref"] = candidates[0]["asset_ref"]
-        elif fault == "duplicate_output_hash":
-            candidates[1]["sha256"] = candidates[0]["sha256"]
-        elif fault == "wrong_format":
-            candidates[0]["format"] = "story_9_16"
-        elif fault == "dimensions":
-            candidates[2]["width"] = 1
-        return candidates
-
-    vp.mutate_candidates = corrupt
-    with pytest.raises(PermanentProviderError):
-        await svc._run_visual(job)
-    assert len(vp.operations) == 1 and len(vp.commands) == 1
-    with svc.store.connection() as db:
-        context = json.loads(svc._story_row(db, sid)["visual_context_json"])
-    assert context["comic"]["batch_operation_id"] == "visual-1"
-    assert not any(card.get("asset_ref") for card in context["comic"]["cards"])
-
-
-@pytest.mark.asyncio
-async def test_batch_pending_status_retries_same_operation_without_second_tune(tmp_path):
-    from street_story.errors import RetryableProviderError
-    svc, sid, _writer, vp = make_runtime(tmp_path)
-    ids = upload_three(svc, sid)
-    photo_ids = ["source", *ids]
-    svc.order_story_photos(sid, "order-pending", {"photo_ids": photo_ids})
-    job = setup_batch_visual(svc, sid, photo_ids, "batch-pending")
-    vp.pending_once = True
-    with pytest.raises(RetryableProviderError):
-        await svc._run_visual(job)
-    assert len(vp.operations) == 1
-    await svc._run_visual(job)
-    assert len(vp.operations) == 1 and len(vp.commands) == 1
-    assert len(svc.story(sid)["cards"]) == 3
 
 @pytest.mark.asyncio
 async def test_scheduled_telegram_album_media_change_keeps_native_assets_and_shows_owner_notice(tmp_path):

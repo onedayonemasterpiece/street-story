@@ -2,14 +2,6 @@
 
 Status: the Android client and backend source are implemented on `work/street-story-mvp-20260908`. Deployment/redeployment is a separate physical runtime step on DevCoveer and must use the exact source SHA exposed by `/healthz`.
 
-## Multi-photo sketch-comic generation · owner decision 2026-11-01
-
-When a user selects 2–8 photographs, Street Story builds the original transformed source assets and per-card briefs using the existing SQLite job and local service-to-service VibePublish HTTP connection. The **imagegen** phase submits a **single** VibePublish standalone `tune` command with `sources` ordered by selected photo order, `candidates=N`, N positional `formats`, a numbered N-section `brief` and `selection=human`. It persists one `comic.batch_operation_id` and deterministic request key in the pre-existing visual context. A lost response replays the same key/operation; no second imagegen task or per-card semaphore is created.
-
-VibePublish returns N `needs_selection` candidates from one Codex Luna thread/turn. Each card must match its exact `source_index`, immutable VibePublish ingress `sha256`/`asset_id`, output format and dimension contract, and unique output asset/hash before any result is recorded. The full comic is still subject to the existing owner publication review; the backend does **not** call the legacy one-candidate `select` N times on a shared job or claim that a single selection approved all outputs. Native ordered generation is not independent semantic verification of source fidelity; review actual PNGs. Old in-flight per-card operations are **not** blindly reissued as a new batch.
-
-Single-photo stories retain their existing standalone path. No new service, external OAuth, Android API, network route, storage table, queue, or social publishing permission is introduced. Rollout order is VibePublish first and Street Story second, from reviewed/merged `main` only.
-
 ## Deployment boundary
 
 - **DevCoveer only** for Street Story backend and its persistent worker.
