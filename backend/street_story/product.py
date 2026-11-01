@@ -909,7 +909,8 @@ class ProductStreetStoryService(StreetStoryService):
                 payload = {
                     "to": requested_aliases,
                     "content": publication_content(request.get("text") or ""),
-                    "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
+                    "media": [{"source": {"kind": "asset", "id": asset}, "role": "image"}
+                              for asset in request.get('asset_refs') or [request['asset_ref']]],
                     "surface": "post",
                     "delivery": {"kind": "at", "at": request["scheduled_for"]},
                     "mode": "execute",
@@ -977,6 +978,13 @@ class ProductStreetStoryService(StreetStoryService):
                     )
             return
         if state in {"failed", "blocked", "outcome_unknown", "cancelled"}:
+            errors = [current.get('error') or {}] + [item.get('error') or {}
+                for item in _deliveries(current)]
+            codes = {str(error.get('code') or '') for error in errors if isinstance(error, dict)}
+            codes.update(str(code) for item in _deliveries(current)
+                for code in (item.get('missing_checks') or []))
+            if 'provider_text_limit' in codes:
+                raise PermanentProviderError('telegram_caption_too_long')
             raise PermanentProviderError(f"VibePublish publication operation ended in {state}")
         raise RetryableProviderError(f"VibePublish publication operation is {state or 'pending'}")
 
@@ -990,7 +998,10 @@ class ProductStreetStoryService(StreetStoryService):
             self._enqueue_job(
                 db, story_id, "publication_edit",
                 f"publication_edit:{intent['id']}:{change_id}",
-                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref},
+                {"intent_id": intent["id"], "text": text, "asset_ref": asset_ref,
+                 "asset_refs": [card['asset_ref'] for card in (
+                     (json.loads(self._story_row(db, story_id)['visual_context_json'] or '{}').get('comic') or {}).get('cards') or [])]
+                     or [asset_ref]},
             )
 
     async def _run_publication_edit(self, job: dict[str, Any]) -> None:
@@ -1031,9 +1042,11 @@ class ProductStreetStoryService(StreetStoryService):
                 )
                 change["content"] = (publication_plain_content(payload["text"]) if is_vk
                                      else publication_content(payload["text"]))
-            if payload["asset_ref"] != old_request.get("asset_ref"):
+            new_refs = payload.get('asset_refs') or [payload['asset_ref']]
+            old_refs = old_request.get('asset_refs') or [old_request.get('asset_ref')]
+            if new_refs != old_refs:
                 change["media"] = [
-                    {"source": {"kind": "asset", "id": payload["asset_ref"]}, "role": "image"}
+                    {"source": {"kind": "asset", "id": asset}, "role": "image"} for asset in new_refs
                 ]
             if len(change) == 1:
                 return
@@ -1074,7 +1087,8 @@ class ProductStreetStoryService(StreetStoryService):
         current = _receipt(await self.providers.vibepublish.status(operation_id), operation_id)
         state = str(current.get("state") or "")
         if current.get("operation_complete") is True and state == "verified":
-            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"]}
+            updated = {**old_request, "text": payload["text"], "asset_ref": payload["asset_ref"],
+                       "asset_refs": payload.get('asset_refs') or [payload['asset_ref']]}
             with self.store.tx() as db:
                 saved = json.loads(db.execute(
                     "SELECT receipt_json FROM publish_intents WHERE id=?", (intent_id,)

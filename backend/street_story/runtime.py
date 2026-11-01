@@ -6,6 +6,7 @@ from typing import Any
 from .config import Settings
 from .mvp_location import MvpLocationStreetStoryService
 from .product import VibePublishBoundary
+from .multiphoto import StoryPhotosMixin
 from .agent_evidence import (
     AgentEvidenceMixin, CONTRACT, NETWORK_CONTRACT, confirmation_consistency_error, confirmation_excerpt,
 )
@@ -57,7 +58,7 @@ class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
         return await super().ingress_asset(data, mime_type, request_key)
 
 
-class RuntimeStreetStoryService(AgentEvidenceMixin, MvpLocationStreetStoryService):
+class RuntimeStreetStoryService(StoryPhotosMixin, AgentEvidenceMixin, MvpLocationStreetStoryService):
     """MVP product service plus bounded live/readback evidence; durable core stays unchanged."""
 
     def __init__(self, settings: Settings, providers=None):

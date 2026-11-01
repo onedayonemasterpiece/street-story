@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS stories(
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS story_photos(
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  photo_id TEXT NOT NULL,
+  position INTEGER,
+  path TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  PRIMARY KEY(story_id, photo_id),
+  UNIQUE(story_id, position)
+);
 CREATE TABLE IF NOT EXISTS idempotency(
   key TEXT PRIMARY KEY,
   action TEXT NOT NULL,
@@ -795,6 +805,10 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
+            # Existing originals remain in place; source is the first selected photo.
+            db.execute("INSERT OR IGNORE INTO story_photos(story_id,photo_id,position,path,mime_type,sha256) "
+                       "SELECT id,'source',0,photo_path,photo_mime_type,photo_sha256 FROM stories "
+                       "WHERE NOT EXISTS (SELECT 1 FROM story_photos WHERE story_id=stories.id)")
             for table, name, declaration in (
                 ('research_runs', 'extraction_scope', "TEXT NOT NULL DEFAULT ''"),
                 ('source_versions', 'access_scope', "TEXT NOT NULL DEFAULT 'story'"),

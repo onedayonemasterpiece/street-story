@@ -298,6 +298,20 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         ensure_identity = getattr(service, "ensure_identity", None)
         return ensure_identity(created["id"]) if callable(ensure_identity) else created
 
+    @app.post('/v1/stories/{story_id}/photos', dependencies=[Depends(auth)])
+    async def add_story_photo(story_id: str, request: Request,
+                              x_photo_id: str | None = Header(default=None, alias='X-Photo-Id'),
+                              idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        _, data, mime = await photo_form(request)
+        return await asyncio.to_thread(service.add_story_photo, story_id, idem(idempotency_key),
+                                       x_photo_id, data, mime)
+
+    @app.put('/v1/stories/{story_id}/photos/order', dependencies=[Depends(auth)])
+    async def order_story_photos(story_id: str, request: Request,
+                                 idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        body = await request.json()
+        return await asyncio.to_thread(service.order_story_photos, story_id, idem(idempotency_key), body)
+
     @app.get("/v1/stories", dependencies=[Depends(auth)])
     async def list_stories():
         # Story projections are heavy synchronous SQLite work. The same event
@@ -518,7 +532,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         return service.complete_voice(story_id, session_id, idem(idempotency_key), await request.json())
 
     async def mutation(story_id: str, request: Request, kind: str, key: str | None):
-        body = await request.json()
+        body = ({} if kind == 'publish' and not (await request.body()).strip()
+                else await request.json())
         actual_key = idem(key)
         if kind == "facts":
             return await asyncio.to_thread(service.mutate_facts, story_id, actual_key, body)
@@ -583,13 +598,25 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             with service.store.connection() as db:
                 service._story_row(db, story_id)
             try:
-                return topic_thumbnail(service._source_photo_bytes(story_id))
+                photo_bytes = (service._cover_photo_bytes(story_id) if hasattr(service, '_cover_photo_bytes')
+                               else service._source_photo_bytes(story_id))
+                return topic_thumbnail(photo_bytes)
             except ValueError:
                 raise ConflictError("thumbnail_unavailable", "Миниатюру не удалось построить из исходного фото") from None
 
         data = await asyncio.to_thread(build)
         return Response(data, media_type="image/jpeg",
                         headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+    @app.get('/v1/stories/{story_id}/photos/{photo_id}/thumbnail', dependencies=[Depends(auth)])
+    async def photo_thumbnail(story_id: str, photo_id: str):
+        data = await asyncio.to_thread(service.photo_thumbnail, story_id, photo_id)
+        return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=86400'})
+
+    @app.get('/v1/stories/{story_id}/cards/{position}', dependencies=[Depends(auth)])
+    async def comic_card(story_id: str, position: int):
+        data, mime = await service.comic_card(story_id, position)
+        return Response(data, media_type=mime, headers={'Cache-Control': 'no-store'})
 
     @app.get("/v1/assets/{story_id}/processed", dependencies=[Depends(auth)])
     async def asset(story_id: str):

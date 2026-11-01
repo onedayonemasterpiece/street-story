@@ -2002,10 +2002,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         self._check_publish_destinations(body.get("destinations"))
         text = body.get("text_override")
         from .publication_content import visible_text
-        if text is not None and len(visible_text(str(text))) > 1024:
+        if text is not None and len(visible_text(str(text))) > 4096:
             raise ConflictError(
-                "publish_text_too_long",
-                "Telegram photo caption exceeds the current VibePublish 1024-character limit",
+                "telegram_caption_too_long",
+                "Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.",
             )
         with self.store.connection() as db:
             story = self._story_row(db, story_id)
@@ -2052,6 +2052,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
                 )
+        from .publication_content import visible_text
+        with self.store.connection() as db:
+            draft = str(self._story_row(db, story_id)['draft_text'] or '')
+        if len(visible_text(str(body.get('text_override') if body.get('text_override') is not None else draft))) > 4096:
+            raise ConflictError('telegram_caption_too_long',
+                'Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.')
         result = super().mutate_publish(story_id, key, body)
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
@@ -2062,10 +2068,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for intent in intents:
                 request = json.loads(intent["request_json"] or "{}")
                 caption = str(request.get("text") or "")
-                if len(caption) > 1024:
+                if len(caption) > 4096:
                     raise ConflictError(
-                        "publish_text_too_long",
-                        "Telegram photo caption exceeds the current VibePublish 1024-character limit",
+                        "telegram_caption_too_long",
+                        "Подпись Telegram длиннее 4096 символов. Сократите текст или попробуйте позже.",
                     )
                 visual = json.loads(story["visual_context_json"] or "{}")
                 research = json.loads(story["research_json"] or "{}")

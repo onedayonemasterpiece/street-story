@@ -271,6 +271,12 @@ class StreetStoryService:
         finally:
             part.unlink(missing_ok=True)
         db.execute('UPDATE stories SET photo_path=? WHERE id=?', (str(path), story_id))
+        db.execute("INSERT INTO story_photos(story_id,photo_id,position,path,mime_type,sha256) "
+                   "SELECT id,'source',CASE WHEN EXISTS(SELECT 1 FROM story_photos WHERE story_id=? AND photo_id='source') THEN (SELECT position FROM story_photos WHERE story_id=? AND photo_id='source') ELSE 0 END,"
+                   "photo_path,photo_mime_type,photo_sha256 FROM stories WHERE id=? "
+                   "ON CONFLICT(story_id,photo_id) DO UPDATE SET path=excluded.path,"
+                   "mime_type=excluded.mime_type,sha256=excluded.sha256",
+                   (story_id, story_id, story_id))
         self._temporary_photos.put(story_id, data)
         logging.getLogger(__name__).info('street_story_original_retained story_id=%s bytes=%s', story_id, len(data))
         # A normal reupload wakes only tasks waiting for source photo bytes.
@@ -563,6 +569,8 @@ class StreetStoryService:
                 # Reupload refreshes only source transport, including a new
                 # encoding; accumulated editorial/location state is authoritative.
                 db.execute('UPDATE stories SET photo_mime_type=? WHERE id=?', (photo_mime_type, story_id))
+                db.execute("UPDATE story_photos SET mime_type=? WHERE story_id=? AND photo_id='source'",
+                           (photo_mime_type, story_id))
                 return self._story_repr(db, self._story_row(db, story_id))
             replay = self._idem(db, key, "create_story", req_digest, "story", story_id)
             if replay:
@@ -984,6 +992,9 @@ class StreetStoryService:
                     "destinations": targets,
                     "text": body.get("text_override") if body.get("text_override") is not None else story["draft_text"],
                     "asset_ref": story["vibepublish_asset_ref"],
+                    "asset_refs": [card['asset_ref'] for card in (
+                        (json.loads(story['visual_context_json'] or '{}').get('comic') or {}).get('cards') or [])]
+                        or [story["vibepublish_asset_ref"]],
                     "scheduled_for": due_at,
                 }
                 if slot is not None:
@@ -1381,7 +1392,12 @@ class StreetStoryService:
                 if not changed:
                     return True
                 if job["kind"] != "visual" and not self._preserve_background_fact_value(db, job, error=self.settings.redact(str(exc))):
-                    db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", "Не удалось выполнить обработку. Требуется проверка настроек сервиса.", self.store.now(), job["story_id"]))
+                    caption_limit = job['kind'] == 'publish' and str(exc) == 'telegram_caption_too_long'
+                    db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?",
+                        ('telegram_caption_too_long' if caption_limit else 'provider_permanent_error',
+                         'Telegram отклонил длину подписи. Сократите текст или попробуйте позже.' if caption_limit
+                         else 'Не удалось выполнить обработку. Требуется проверка настроек сервиса.',
+                         self.store.now(), job['story_id']))
                 if job['kind'] in {'research', 'refinement'}:
                     self._resume_joined_fact_request(db, job['story_id'])
             return True

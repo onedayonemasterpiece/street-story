@@ -676,9 +676,9 @@ def test_publish_caption_limit_fails_before_silent_truncation(tmp_path):
         svc.mutate_publish(
             story["id"],
             "too-long",
-            {"destinations": ["tg-safe"], "delay_minutes": 60, "text_override": "x" * 1025},
+            {"destinations": ["tg-safe"], "delay_minutes": 60, "text_override": "x" * 4097},
         )
-    assert exc.value.code == "publish_text_too_long"
+    assert exc.value.code == "telegram_caption_too_long"
 
 
 @pytest.mark.asyncio
