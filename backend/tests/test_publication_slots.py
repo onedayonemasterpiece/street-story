@@ -122,7 +122,9 @@ async def test_text_edit_propagates_to_both_existing_provider_publications(tmp_p
         return {"operation_id": "edit-" + pub_id}
 
     async def status(op_id):
-        return {"operation_id": op_id, "state": "verified", "operation_complete": True, "revision": 2}
+        # Live 01.11: an applied edit of a native scheduled post completes as "scheduled".
+        state = "scheduled" if op_id.endswith("-0") else "verified"
+        return {"operation_id": op_id, "state": state, "operation_complete": True, "revision": 2}
 
     svc.providers.vibepublish.publication_update = publication_update
     svc.providers.vibepublish.status = status

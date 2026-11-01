@@ -294,6 +294,11 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
     for position, note in enumerate(notes):
         brief, *_ = svc._comic_brief(story, context, position, {"photo_id": photos[position]}, note)
         assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+    # Live 01.11: the confirmed map anchor carries the full address; the finale shows it.
+    anchored = {**context, "place_name": "Комсомольская, 3", "place_selection": {"candidate": {
+        "search_anchor": {"city": "Калининград", "address": "Калининград, Комсомольская улица, 3"}}}}
+    final_brief, *_ = svc._comic_brief(story, anchored, 2, {"photo_id": photos[2]}, notes[2])
+    assert "Калининград, Комсомольская улица, 3" in final_brief
     bad = json.loads(json.dumps(notes, ensure_ascii=False))
     bad[1]["notes"][0] = "Очень " * 20 + "длинное сообщение"
     normalized = _validated_card_notes(bad, 3, "Университетский колледж БФУ", facts)
