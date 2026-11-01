@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -775,6 +776,76 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
     except (KeyError, TypeError, ValueError, UnicodeError):
         return {}
 
+
+
+def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
+                          facts: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
+    """Mechanical writer-output boundary; semantic grounding remains the writer's responsibility."""
+    if not isinstance(cards, list) or len(cards) != photo_count:
+        raise ValueError("card_notes_count_invalid")
+    allowed_latin = set(re.findall(r"[A-Za-z]+", " ".join(
+        [place_name, *(str(f.get("text") or "") for f in facts)]).casefold()))
+    punctuation = " .,;:!?…-—–«»„“”\\\"'()[]№%/+&→_#"
+    result = []
+    for position, card in enumerate(cards):
+        if not isinstance(card, dict):
+            raise ValueError("card_notes_item_invalid")
+        notes, arrows = card.get("notes"), card.get("arrows")
+        if not isinstance(notes, list) or not isinstance(arrows, list) or len(notes) != len(arrows):
+            raise ValueError("card_notes_arrows_invalid")
+        if position == photo_count - 1:
+            if notes or arrows:
+                raise ValueError("card_notes_final_must_be_empty")
+            result.append({"notes": [], "arrows": []})
+            continue
+        if not 1 <= len(notes) <= 4:
+            raise ValueError("card_notes_length_invalid")
+        cleaned = []
+        for index, (note, arrow) in enumerate(zip(notes, arrows)):
+            if not isinstance(note, str) or not isinstance(arrow, str):
+                raise ValueError("card_notes_type_invalid")
+            note, arrow = note.strip(), arrow.strip()
+            if (not note and not (position == 0 and index == len(notes) - 1)) or len(note) > 70 or len(arrow) > 80:
+                raise ValueError("card_notes_limit_invalid")
+            for value in (note, arrow):
+                if any(not (ch in punctuation or (ch.isascii() and ch.isalnum())
+                            or (ch.isalpha() and unicodedata.name(ch, "").split(" ", 1)[0]
+                                in ("CYRILLIC", "LATIN"))) for ch in value):
+                    raise ValueError("card_notes_script_invalid")
+                if any(word.casefold() not in allowed_latin
+                       for word in re.findall(r"[A-Za-z]+", value)):
+                    raise ValueError("card_notes_foreign_text_invalid")
+            cleaned.append(note)
+        clean_arrows = [arrow.strip() for arrow in arrows]
+        if position == 0:
+            # Typography in the writer's heading (№ 3 vs №3) is not a reason to
+            # discard the whole caption; the server can supply absent labels.
+            def same_title(text: str) -> str:
+                return re.sub(r"\s+", "", text.casefold())
+            if same_title(cleaned[0]) != same_title(place_name):
+                if len(cleaned) < 4:
+                    cleaned.insert(0, place_name)
+                    clean_arrows.insert(0, "")
+                else:
+                    cleaned[0], clean_arrows[0] = place_name, ""
+            if not re.search(r"листай\s*→\s*$", cleaned[-1], re.I):
+                if not cleaned[-1]:
+                    cleaned[-1] = "листай →"
+                elif len(cleaned) < 4:
+                    cleaned.append("листай →")
+                    clean_arrows.append("")
+                elif len(cleaned[-1] + " листай →") <= 70:
+                    cleaned[-1] += " листай →"
+                else:
+                    cleaned[-1] = "листай →"
+            clean_arrows[0] = clean_arrows[-1] = ""
+        if any(len(note) > 70 for note in cleaned):
+            raise ValueError("card_notes_limit_invalid")
+        if any("листай" in note.casefold() for note in cleaned[:-1] if position == 0) or (
+                position and any("листай" in note.casefold() for note in cleaned)):
+            raise ValueError("card_notes_cta_invalid")
+        result.append({"notes": cleaned, "arrows": clean_arrows})
+    return result
 
 
 def _note_arrows(answer: dict[str, Any], notes: list[str]) -> list[str]:
@@ -3877,52 +3948,87 @@ class GeminiClient:
         photo_jpeg: bytes | None,
         context_facts: list[dict[str, Any]] | None = None,
         lead_fact: str | None = None,
-    ) -> dict[str, str]:
-        """Write the publication caption with a lite text model; any answering model in the chain will do."""
+        photo_count: int = 1,
+        place_name: str = "",
+    ) -> dict[str, Any]:
+        """One writer call composes the post and, for multiple photos, every card's lettering."""
         from google.genai import types
 
+        multi = photo_count > 1
         payload = json.dumps({
             "owner_request": owner_request,
             "current_text": current_text,
             "publication_concept": concept,
             "place": place,
+            "place_name": place_name,
+            "photo_count": photo_count,
             "facts": facts,
             "context_facts": context_facts or [],
             "lead_fact": lead_fact,
             "image_facts": [str(f.get("text") or "") for f in facts if not f.get("from_visitor_reviews")],
             "literal_fragments": literal_fragments,
         }, ensure_ascii=False)
-        contents = [self.WRITER_RULES + "\n\n" + payload]
+        comic_rules = (
+            "\n\nДля N>1 фото одним и тем же ответом напиши текст поста и card_notes — ровно N "
+            "объектов в порядке выбранных фото, каждый {notes: [...], arrows: [...]}. "
+            "Обложка: notes[0] точно равно place_name, затем зачин по lead_fact до 12 слов "
+            "и отдельное «листай →»; стрелки для названия и CTA пустые. "
+            "Промежуточные карточки: 1–3 надписи, каждая 3–8 слов и не длиннее 70 символов. "
+            "Факты распределяй по карточкам без повторения; каждая надпись только из своих "
+            "проверенных facts, никаких новых оценок, событий или причин. "
+            "Иностранные слова только дословно из самих фактов (собственные имена, названия "
+            "и надписи). Никаких иероглифов и слов других письменностей. "
+            "Стрелки только на видимое на выбранном фото сейчас; если это прошлое, стрелка пустая. "
+            "Время прошлого указывай в прошедшем времени со своим периодом. "
+            "Финал: notes: [], arrows: []; бренд, город и адрес добавит сервер. "
+            "«листай →» допускается только отдельной надписью на обложке. "
+            "image_notes/image_note_arrows при N>1 оставь пустыми."
+        ) if multi else ""
+        contents = [self.WRITER_RULES + comic_rules + "\n\n" + payload]
+
+        def convert(answer, model):
+            text = str(answer.get("text") or "").strip()
+            if not text or len(text) > 1100:
+                raise ValueError("writer_answer_too_long")
+            notes = [str(note).strip() for note in answer.get("image_notes") or [] if str(note).strip()][:3]
+            result = {"text": _capitalized_hashtags(text), "model": model,
+                      "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
+            if multi:
+                result["card_notes"] = _validated_card_notes(
+                    answer.get("card_notes"), photo_count, place_name, facts)
+            return result
+
         if getattr(getattr(self, "settings", None), "external_writers", False):
             from . import external_writers
             try:
-                answer, model = await external_writers.write(contents[0], photo_jpeg)
-                text = str(answer.get("text") or "").strip()
-                if not text or len(text) > 1100:
-                    raise external_writers.ExternalWriterUnavailable("writer_answer_too_long")
-                notes = [str(note).strip() for note in answer.get("image_notes") or [] if str(note).strip()][:3]
-                return {"text": _capitalized_hashtags(text), "model": external_writers.DISPLAY.get(model, model),
-                        "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
-            except external_writers.ExternalWriterUnavailable as exc:
-                logging.getLogger(__name__).warning("street_story_external_writers_unavailable reason=%s fallback=gemini", exc)
+                instruction = (
+                    "\n\nВерни ОДИН JSON-объект с text, throughline, parts_on_photo, outline, "
+                    "draft, check, image_notes, image_note_arrows и card_notes "
+                    "(ровно N объектов {notes: [...], arrows: [...]}). Без пояснений."
+                    if multi else external_writers.ANSWER)
+                kwargs = ({"answer_instruction": instruction,
+                           "validate": lambda item: convert(item, "validation")} if multi else {})
+                answer, model = await external_writers.write(contents[0], photo_jpeg, **kwargs)
+                return convert(answer, external_writers.DISPLAY.get(model, model))
+            except (external_writers.ExternalWriterUnavailable, ValueError) as exc:
+                logging.getLogger(__name__).warning(
+                    "street_story_external_writers_unavailable reason=%s fallback=gemini", exc)
         if photo_jpeg:
             contents.append(types.Part.from_bytes(data=photo_jpeg, mime_type="image/jpeg"))
+        schema = self.WRITER_SCHEMA
+        if multi:
+            schema = {**schema, "properties": {**schema["properties"],
+                "card_notes": {"type": "array", "items": {"type": "object",
+                    "properties": {"notes": {"type": "array", "items": {"type": "string"}},
+                                   "arrows": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["notes", "arrows"]}}},
+                "required": [*schema["required"], "card_notes"]}
         config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=self.WRITER_SCHEMA,
-            max_output_tokens=8192,
-        )
+            response_mime_type="application/json", response_json_schema=schema, max_output_tokens=8192)
 
         def parse(raw_text, model):
-            payload = json.loads(raw_text or "{}")
-            text = str(payload.get("text") or "").strip()
-            if not text or len(text) > 1100:
-                raise ValueError
-            notes = [str(note).strip() for note in payload.get("image_notes") or [] if str(note).strip()][:3]
-            return {"text": text, "model": str(model or ""), "image_notes": notes,
-                    "image_note_arrows": _note_arrows(payload, notes)}
+            return convert(json.loads(raw_text or "{}"), str(model or ""))
 
-        # The same ladder as every writer step: an unavailable or out-of-quota model is skipped until it can answer.
         try:
             written = await GeminiClient._lite_chain(self, contents, config, parse)
         except GeminiUnavailable as exc:

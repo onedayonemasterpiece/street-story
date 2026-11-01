@@ -1,8 +1,8 @@
 """Caption writers outside Google: GLM through OpenCode, GPT Sol through Codex.
 
-Owner decision 20.10.2026: the post text is written by GLM 5.3 (OpenCode); if it fails twice in a row,
-by GPT-6.1 Sol (Codex); if Codex is unavailable or out of limit, by Gemini Flash-Lite. A comparison on
-three real posts showed GLM and Sol writing the most connected, faithful stories.
+Owner decision 01.11.2026: GPT-6.1 Sol (reasoning medium) writes the post text and card
+lettering first; GLM 5.3 Flash is the fallback, followed by Gemini lite in the caller.
+The 16-run medium/high comparison found equal quality and high was 1.6 times slower.
 
 The input is only what the author sees and controls in the app: the selected, verified facts, the
 author's concept and request. Both clients run in an empty temporary work directory.
@@ -25,10 +25,8 @@ OPENCODE = os.getenv("STREET_STORY_OPENCODE_BIN", "/home/dev/.opencode/bin/openc
 CODEX = os.getenv("STREET_STORY_CODEX_BIN", "/home/dev/.local/bin/codex")
 GLM_MODEL = "opencode/glm-5.3-flash-free"
 SOL_MODEL = "gpt-6.1-sol"
-# Owner decision 20.10.2026: GLM is the main writer; Sol only after several GLM failures, because Sol may
-# become rarely available. At its default reasoning depth GLM thought for ~3 minutes (105k characters)
-# and often returned no text; with reasoning variant "low" it writes the same post in 13-25 s. A thinking
-# model is never cut short: the time limit is generous and only catches a request that never answers.
+# Owner decision 01.11.2026: Sol medium first, GLM as fallback.
+# GLM variant low prevents excessive thinking; generous timeouts only catch non-answers.
 GLM_VARIANT = "low"
 GLM_ATTEMPTS = 3
 GLM_TIMEOUT = 240
@@ -97,7 +95,8 @@ async def glm(prompt: str, *, answer_instruction: str = ANSWER) -> dict[str, Any
 
 async def sol(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="street-story-sol-") as scratch:
-        argv = [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", "-m", SOL_MODEL]
+        argv = [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", "-m", SOL_MODEL,
+                "-c", "model_reasoning_effort=medium"]
         if photo_jpeg:
             photo = Path(scratch) / "photo.jpg"
             photo.write_bytes(photo_jpeg)
@@ -109,7 +108,7 @@ async def sol(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str 
 
 async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: str = ANSWER,
                 validate=None) -> tuple[dict[str, Any], str]:
-    """GLM up to GLM_ATTEMPTS times, then Sol. Raises when both are unavailable."""
+    """Owner decision 01.11: Sol medium first, then GLM; Gemini remains the caller's fallback."""
     def accepted(answer):
         if validate is not None:
             try:
@@ -118,6 +117,15 @@ async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: st
                 raise ExternalWriterUnavailable("writer_answer_invalid") from exc
         return answer
 
+    started = time.monotonic()
+    try:
+        answer = accepted(await sol(prompt, photo_jpeg, answer_instruction=answer_instruction))
+        logger.info("street_story_external_writer model=%s outcome=written seconds=%.1f",
+                    SOL_MODEL, time.monotonic() - started)
+        return answer, SOL_MODEL
+    except ExternalWriterUnavailable as exc:
+        logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
+                       SOL_MODEL, exc, time.monotonic() - started)
     for attempt in range(1, GLM_ATTEMPTS + 1):
         started = time.monotonic()
         try:
@@ -128,12 +136,4 @@ async def write(prompt: str, photo_jpeg: bytes | None, *, answer_instruction: st
         except ExternalWriterUnavailable as exc:
             logger.warning("street_story_external_writer model=%s attempt=%s outcome=%s seconds=%.1f",
                            GLM_MODEL, attempt, exc, time.monotonic() - started)
-    started = time.monotonic()
-    try:
-        answer = accepted(await sol(prompt, photo_jpeg, answer_instruction=answer_instruction))
-    except ExternalWriterUnavailable as exc:
-        logger.warning("street_story_external_writer model=%s outcome=%s seconds=%.1f",
-                       SOL_MODEL, exc, time.monotonic() - started)
-        raise
-    logger.info("street_story_external_writer model=%s outcome=written seconds=%.1f", SOL_MODEL, time.monotonic() - started)
-    return answer, SOL_MODEL
+    raise ExternalWriterUnavailable("all_external_writers_unavailable")

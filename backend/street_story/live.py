@@ -730,6 +730,12 @@ FUNCTIONS = [
                 "Only for an exact wording the author dictated, or when the result says caption_writer_unavailable."},
             "change_summary": {"type": "string"},
             "allow_literal_changes": {"type": "boolean"},
+            "card_notes": {"type": "array", "items": {"type": "object", "properties": {
+                "position": {"type": "integer"},
+                "notes": {"type": "array", "items": {"type": "string"}},
+                "arrows": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["position", "notes", "arrows"]}, "description":
+                "Optional replacement for all ordered comic cards; cover includes title and листай →, final is empty."},
         },
         ["expected_text_revision", "change_summary"],
     ),
@@ -2130,7 +2136,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Run them off the loop that carries Live audio ACKs.
             result = await asyncio.to_thread(self._set_concept, story_id, command_id, args)
         elif name == "edit_text":
-            if str(args.get("new_text") or "").strip():
+            if str(args.get("new_text") or "").strip() or args.get("card_notes") is not None:
+                if args.get("card_notes") is not None and not str(args.get("new_text") or "").strip():
+                    args = {**args, "new_text": self.service.story(story_id)["draft_text"]}
                 result = await asyncio.to_thread(self._edit_text, story_id, command_id, args)
             else:
                 result = await self._start_background_writing(session, story_id, command_id, args)
@@ -5894,10 +5902,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 raise ConflictError("fact_review_required", "Review selected facts before composing a draft: " + canonical(issues[:12]))
             ids = set(eligible_selected_fact_ids(db, story_id))
             story, editor = self._editor_row(db, story_id)
+            from .multiphoto import selected_photos
+            card_photo_ids = [p["photo_id"] for p in selected_photos(db, story_id)]
             literals = [str(item.get("text") or "") for item in self._literal_spans(editor["literal_json"]) if item.get("text")]
         state = await asyncio.to_thread(self._topic_state, story_id)
         context = await asyncio.to_thread(self._compact_context, state)
-        facts = [{"text": str(item.get("text") or ""),
+        facts = [{"text": str(item.get("text") or ""), "fact_id": str(item.get("fact_id") or ""),
                   **({"from_visitor_reviews": True} if item.get("from_visitor_reviews") else {})}
                  for item in state["story"].get("facts", [])
                  if str(item.get("fact_id")) in ids and str(item.get("text") or "").strip()]
@@ -5918,7 +5928,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         lead = await self._strongest_hook(story_id, state, ids, snapshot)
         if lead is not None:
             if lead["fact_id"] not in ids:
-                facts.insert(0, {"text": lead["text"]})
+                facts.insert(0, {"text": lead["text"], "fact_id": lead["fact_id"]})
             else:
                 facts.sort(key=lambda fact: fact["text"] != lead["text"])
         writer = getattr(self.service.providers.gemini, "write_caption", None)
@@ -5930,7 +5940,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 concept=str(json.loads(story["research_json"] or "{}").get("publication_concept") or ""),
                 facts=facts, place=place, literal_fragments=literals,
                 photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts,
-                lead_fact=lead["text"] if lead else None)
+                lead_fact=lead["text"] if lead else None,
+                **({"photo_count": len(card_photo_ids), "place_name": str(story["place_name"] or "")}
+                   if len(card_photo_ids) > 1 else {}))
+            if len(card_photo_ids) > 1:
+                written["card_photo_ids"] = card_photo_ids
+                written["card_fact_ids"] = [fact["fact_id"] for fact in facts if fact.get("fact_id")]
         except GeminiUnavailable:
             logger.warning("street_story_caption_writer %s", canonical({"story_id": story_id, "outcome": "unavailable"}))
             raise InvalidStateError("caption_writer_unavailable",
@@ -6063,7 +6078,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     def _edit_text(self, story_id: str, command_id: str, args: dict[str, Any], *,
                    composed_by: str = "mira_live", image_notes: list[str] | None = None,
-                   image_note_arrows: list[str] | None = None) -> dict[str, Any]:
+                   image_note_arrows: list[str] | None = None,
+                   card_notes: list[dict[str, Any]] | None = None,
+                   card_photo_ids: list[str] | None = None,
+                   card_fact_ids: list[str] | None = None) -> dict[str, Any]:
         expected = int(args.get("expected_text_revision", -1))
         new_text = _bounded_text(args.get("new_text"), 5000, required=True)
         summary = _bounded_text(args.get("change_summary"), 240, required=True)
@@ -6101,8 +6119,40 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             research["draft_stale_reason"] = None
             research["draft_composed_by"] = composed_by
             # The writer's image notes belong to this text; a text written elsewhere drops them.
-            research["caption_image_notes"] = ({"notes": list(image_notes), "arrows": list(image_note_arrows or [])}
-                                               if image_notes else None)
+            from .multiphoto import selected_photos
+            from .providers import _validated_card_notes
+            current_photo_ids = [p["photo_id"] for p in selected_photos(db, story_id)]
+            proposed = card_notes if card_notes is not None else args.get("card_notes")
+            previous = research.get("caption_image_notes") or {}
+            if proposed is not None:
+                if len(current_photo_ids) <= 1 or (
+                        card_photo_ids is not None and card_photo_ids != current_photo_ids):
+                    raise ConflictError("card_notes_photo_changed", "Состав выбранных фотографий изменился.")
+                if not isinstance(proposed, list) or any(
+                        not isinstance(c, dict) or c.get("position", i) != i
+                        for i, c in enumerate(proposed)):
+                    raise ConflictError("card_notes_invalid", "Неверный порядок карточек.")
+                selected_ids = eligible_selected_fact_ids(db, story_id)
+                selected = [{"text": r["text"]} for r in db.execute(
+                    "SELECT text FROM facts WHERE story_id=? AND fact_id IN (" +
+                    ",".join("?" for _ in selected_ids) + ")",
+                    (story_id, *selected_ids))] if selected_ids else []
+                try:
+                    validated = _validated_card_notes(
+                        proposed, len(current_photo_ids), str(story["place_name"] or ""), selected)
+                except ValueError as exc:
+                    raise ConflictError("card_notes_invalid", str(exc)) from exc
+                research["caption_image_notes"] = {
+                    "notes": list(image_notes or []), "arrows": list(image_note_arrows or []),
+                    "cards": validated, "photo_ids": current_photo_ids,
+                    "fact_ids": card_fact_ids if card_fact_ids is not None else selected_ids}
+            elif (len(current_photo_ids) > 1 and isinstance(previous, dict)
+                  and previous.get("photo_ids") == current_photo_ids):
+                research["caption_image_notes"] = previous
+            else:
+                research["caption_image_notes"] = (
+                    {"notes": list(image_notes), "arrows": list(image_note_arrows or [])}
+                    if image_notes else None)
             current_fact_ids = eligible_selected_fact_ids(db, story_id)
             research["draft_fact_revisions"] = fact_revision_bundle(
                 db,

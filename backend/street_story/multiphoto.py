@@ -5,8 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import re
-import unicodedata
 import uuid
 from pathlib import Path
 
@@ -153,6 +151,17 @@ class StoryPhotosMixin:
             {"photo_id": photo["photo_id"], "position": index,
              "thumbnail_url": f"/v1/stories/{row['id']}/photos/{photo['photo_id']}/thumbnail"}
             for index, photo in enumerate(photos)]
+        # The caption writer owns card lettering; it is visible before visual generation.
+        letterings = (research or json.loads(row["research_json"] or "{}")).get("caption_image_notes") or {}
+        current_ids = [photo["photo_id"] for photo in photos]
+        valid_letters = (isinstance(letterings, dict)
+                         and letterings.get("photo_ids") == current_ids
+                         and isinstance(letterings.get("cards"), list)
+                         and len(letterings["cards"]) == len(photos))
+        result["card_notes"] = [
+            {"position": i, "notes": list(card["notes"]), "arrows": list(card["arrows"])}
+            for i, card in enumerate(letterings["cards"])
+        ] if valid_letters else []
         if (not context.get("stale") and current_comic_format and len(cards) == len(photos)
                 and all(card.get("asset_ref") for card in cards)
                 and row["state"] in {"ready_to_publish", "scheduling", "scheduled", "published"}):
@@ -229,6 +238,8 @@ class StoryPhotosMixin:
     async def request_visual(self, story_id, key, body):
         with self.store.connection() as db:
             photos = selected_photos(db, story_id)
+            row = self._story_row(db, story_id)
+            letterings = (json.loads(row["research_json"] or "{}").get("caption_image_notes") or {})
         if len(photos) == 1 and photos[0]['photo_id'] == 'source':
             return await super().request_visual(story_id, key, body)
         if (not isinstance(body, dict) or body.get("preserve_source_frame")
@@ -239,6 +250,14 @@ class StoryPhotosMixin:
         if (not isinstance(fact_ids, list) or len(set(fact_ids)) != len(fact_ids)
                 or any(not isinstance(fid, str) for fid in fact_ids)):
             raise ConflictError("visual_fact_selection_invalid", "Укажите проверенные факты.")
+        photo_ids = [p["photo_id"] for p in photos]
+        if (not isinstance(letterings, dict) or letterings.get("photo_ids") != photo_ids
+                or not isinstance(letterings.get("cards"), list)
+                or len(letterings["cards"]) != len(photo_ids)
+                or set(letterings.get("fact_ids") or []) != set(fact_ids)):
+            return self.mutate_refinement(story_id, "comic-notes:" + key, {"instruction":
+                "Сохрани содержание существующего поста, подготовь недостающие надписи card_notes "
+                "для всех выбранных фотографий в их текущем порядке по проверенным выбранным фактам."})
         with self.store.tx() as db:
             row = self._story_row(db, story_id)
             if self._idem(db, key, "visual", digest({"story_id": story_id, **body}), "story", story_id):
@@ -271,7 +290,8 @@ class StoryPhotosMixin:
             }
             content_revision = digest(inputs)
             comic = {"photo_ids": photo_ids,
-                     "cards": [{"photo_id": photo_id} for photo_id in photo_ids]}
+                     "cards": [{"photo_id": photo_id} for photo_id in photo_ids],
+                     "plan": {"cards": letterings["cards"]}}
             context = {**inputs, "content_revision": content_revision, "comic": comic,
                        "prompt_version": self.PROMPT_VERSION, "stale": False}
             self._enqueue_job(db, story_id, "visual", f"visual:{key}",
@@ -281,161 +301,6 @@ class StoryPhotosMixin:
                        "error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                        (canonical(context), self.store.now(), story_id))
             return self._story_repr(db, self._story_row(db, story_id))
-
-    async def _plan_comic(self, story_id, context):
-        """One model response plans every card; only visual rendering repeats per photo."""
-        from google.genai import types
-        photo_ids = context["comic"]["photo_ids"]
-        facts = [{"id": f["fact_id"], "text": f["text"]} for f in context["selected_facts"]]
-        place = context.get("place_name") or "Выбранный объект"
-        selection = context.get("place_selection") or {}
-        selection = selection if isinstance(selection, dict) else {}
-        anchor = ((selection.get('candidate') or {}).get('search_anchor') or {})
-        city = str(anchor.get('city') or selection.get('city') or '').strip()
-        address = str(selection.get('address') or selection.get('display_address') or '').strip()
-        if not address:
-            address = ', '.join(str(anchor.get(key) or '').strip() for key in ('city', 'street', 'house_number')
-                                if str(anchor.get(key) or '').strip())
-        if not city and address:
-            parts = [part.strip() for part in address.split(',') if part.strip()]
-            city = (parts[1] if len(parts) > 1 and 'област' in parts[0].casefold() else parts[0])
-            city = city.removeprefix('г. ').removeprefix('город ')
-        # Missing map address must not prevent an otherwise supported comic.
-        # The cover's place label is the available fallback, not an invented city.
-        city_label, address_label = city or place, address or place
-        rules = (
-            "Ты писатель скетч-комикса о выбранном объекте Калининградской области. "
-            "Один ответ — полный план всех N карточек в порядке присланных N фотографий. "
-            "Для каждого кадра верни короткие русские надписи (notes), цели стрелок (arrows), "
-            "использованные ID фактов (fact_ids), а для первой карточки сильный конкретный зачин (hook). "
-            "События, годы, люди и причинные связи только из переданных проверенных фактов. "
-            "Каждая надпись пересказывает ТОЛЬКО факты из fact_ids именно этой карточки: "
-            "никаких новых деталей, эпитетов, оценок, статусов, причин или выводов "
-            "(например, «главной», «пережила всё», «не барьер»), которых нет в факте. "
-            "Не используй иностранных слов, кроме имён собственных из самих фактов. "
-            "Факты распределяй между карточками без повторения; самый сильный факт — сцена на обложке. "
-            "Несколько заметок на одном фото допускаются, 2–3 кратких подписи по возможности. "
-            "Каждая надпись — короткая заметка своими словами в 3–8 слов (не более 70 символов), "
-            "а зачин обложки — до 12 слов. «листай →» — отдельная подпись ТОЛЬКО обложки; "
-            "на остальных карточках её быть не должно. "
-            "Не переписывай длинные предложения из фактов в надписи дословно. "
-            "Прошлое — только в прошедшем времени с собственной датой или периодом. "
-            "Утраченное, невидимое и то, что происходило внутри, нельзя дорисовывать; стрелки "
-            "только на отчётливо видимую сейчас часть дома, остальные arrows — пустая строка. "
-            "Заметки только для приложенных фактов, без дат источников, заглушек, оценок вне замысла. "
-            "Первый кадр — обложка: назови объект, начни со сцены по сильнейшему факту "
-            "(strongest_fact_id желательно поставить первым) и добавь «листай →». "
-            "Не заменяй собственные надписи шаблонными. "
-            "Последний — завершение: фирменную строку, город и адрес добавит сервер, "
-            "поэтому у финала fact_ids оставь пустым списком. "
-            "Верни ровно N записей; по 1–3 notes на кадр, arrows той же длины, fact_ids без дублей. "
-            "Верни поле text с коротким служебным названием плана (не надпись на карточке)."
-        )
-        schema = {"type": "object", "properties": {"text": {"type": "string"}, "cards": {"type": "array", "items": {
-            "type": "object", "properties": {
-                "notes": {"type": "array", "items": {"type": "string"}},
-                "arrows": {"type": "array", "items": {"type": "string"}},
-                "fact_ids": {"type": "array", "items": {"type": "string"}},
-                "hook": {"type": "string"}},
-            "required": ["notes", "fact_ids"]}}},
-            "required": ["text", "cards"]}
-        payload = {"photo_count": len(photo_ids), "photo_ids": photo_ids, "place": place,
-                   "address": address or None, "city": city or None, "strongest_fact_id": context.get("strongest_fact"),
-                   "strongest_fact_text": next((f['text'] for f in facts if f['id'] == context.get('strongest_fact')), None),
-                   "concept": context.get("publication_concept"), "facts": facts}
-        contents = [rules + "\n\n" + json.dumps(payload, ensure_ascii=False)]
-        for photo_id in photo_ids:
-            data, mime = self._comic_photo_bytes(story_id, photo_id)
-            from .visual_source import photo_transform
-            data, mime, _ = photo_transform(data, mime, "original")
-            contents.append(types.Part.from_bytes(data=data, mime_type=mime))
-        config = types.GenerateContentConfig(response_mime_type="application/json",
-                                             response_json_schema=schema, max_output_tokens=4096)
-        allowed_ids = {item["id"] for item in facts}
-
-        def parse(raw, model):
-            allowed_punct = " .,;:!?…-—–«»„“”\"'()[]№%/+&→_#\n"
-            def valid_letters(note):
-                return all(ch in allowed_punct or (ch.isascii() and ch.isalnum())
-                           or (ch.isalpha() and unicodedata.name(ch, '').split(' ', 1)[0]
-                               in ('CYRILLIC', 'LATIN')) for ch in note)
-
-            answer = json.loads(raw or "{}")
-            cards = answer.get("cards")
-            if not isinstance(cards, list) or len(cards) != len(photo_ids):
-                raise ValueError("Comic writer returned an incomplete card plan")
-            used = set()
-            result = []
-            for position, item in enumerate(cards):
-                if not isinstance(item, dict):
-                    raise ValueError("Invalid card plan")
-                notes = item.get("notes")
-                fids = item.get("fact_ids")
-                if (not isinstance(notes, list) or not 1 <= len(notes) <= 3
-                        or any(not isinstance(v, str) or not v.strip() or len(v.strip()) > 70
-                               or not valid_letters(v) for v in notes)
-                        or not isinstance(fids, list)
-                        or any(not isinstance(fid, str) or fid not in allowed_ids
-                               or fid in used for fid in fids)
-                        or len(set(fids)) != len(fids)):
-                    raise ValueError("Comic card plan does not match the selected evidence")
-                # Arrow placement is editorial and may be absent; absence means no arrow.
-                raw_arrows = item.get('arrows')
-                raw_arrows = raw_arrows if isinstance(raw_arrows, list) else []
-                arrows = [a if isinstance(a, str) else '' for a in raw_arrows[:len(notes)]]
-                arrows += [''] * (len(notes) - len(arrows))
-                notes = [note.strip() for note in notes]
-                if position > 0:
-                    # A swipe CTA is only allowed on the cover, including embedded CTA lines.
-                    retained = [(re.sub(r'(?i)листай\s*→', '', note).strip(), arrow)
-                                for note, arrow in zip(notes, arrows)]
-                    retained = [(note, arrow) for note, arrow in retained if note]
-                    if not retained and position != len(cards) - 1:
-                        raise ValueError('Comic inner card contains no fact note after swipe removal')
-                    notes, arrows = ([note for note, _ in retained],
-                                     [arrow for _, arrow in retained])
-                if position == 0:
-                    # Add missing product labels without rejecting the writer's scene.
-                    if not any(place.casefold() in note.casefold() for note in notes):
-                        if len(notes) < 3:
-                            notes.insert(0, place)
-                            arrows.insert(0, '')
-                        else:
-                            notes[0] = place + '\n' + notes[0]
-                            arrows[0] = ''
-                    if not any('листай →' in note.casefold() for note in notes):
-                        if len(notes) < 3:
-                            notes.append('листай →')
-                            arrows.append('')
-                        else:
-                            notes[-1] += '\nлистай →'
-                            arrows[-1] = ''
-                elif position == len(cards) - 1:
-                    # Brand/footer text is a fixed product label, not writer prose.
-                    address_start = address_label.casefold().removeprefix('г. ').strip()
-                    city_start = city_label.casefold()
-                    city_in_address = (address_start == city_start or
-                                       address_start.startswith((city_start + ',', city_start + ' ')))
-                    notes = list(dict.fromkeys(['История за поворотом Калининград',
-                                                *([] if city_in_address else [city_label]), address_label]))
-                    arrows = [''] * len(notes)
-                    fids = []
-                used.update(item['fact_ids'])
-                result.append({'notes': notes, 'arrows': arrows, 'fact_ids': fids})
-            return {"cards": result, "model": str(model)}
-        # Same owner-approved GLM -> Sol -> Gemini ladder as the caption writer.
-        # The lite route remains its existing fallback, not a new semantic writer.
-        if getattr(self.settings, 'external_writers', False):
-            from . import external_writers
-            try:
-                result, model = await external_writers.write(contents[0], None, answer_instruction=(
-                    '\n\nОтветь одним JSON-объектом: text (краткое название плана) и cards '
-                    '(ровно N объектов с полями notes, arrows, fact_ids, hook). Никаких пояснений.'),
-                    validate=lambda answer: parse(json.dumps(answer, ensure_ascii=False), 'external'))
-                return parse(json.dumps(result, ensure_ascii=False), external_writers.DISPLAY.get(model, model))
-            except (external_writers.ExternalWriterUnavailable, ValueError, KeyError, TypeError):
-                logging.getLogger(__name__).warning('street_story_comic_writer_fallback story_id=%s', story_id)
-        return await self.providers.gemini._lite_chain(contents, config, parse)
 
     def _comic_brief(self, story, context, position, photo, plan):
         from .visual_source import photo_transform
@@ -449,10 +314,30 @@ class StoryPhotosMixin:
         crop = selected_format.get("crop_rect") if crop_allowed else None
         data, mime = self._comic_photo_bytes(story["id"], photo["photo_id"])
         data, mime, transform = photo_transform(data, mime, mode, crop)
-        included = set(plan["fact_ids"])
+        notes, arrows = plan["notes"], plan["arrows"]
+        if position == len(context["comic"]["photo_ids"]) - 1:
+            selection = context.get("place_selection") or {}
+            selection = selection if isinstance(selection, dict) else {}
+            anchor = ((selection.get("candidate") or {}).get("search_anchor") or {})
+            city = str(anchor.get("city") or selection.get("city") or "").strip()
+            address = str(selection.get("address") or selection.get("display_address") or "").strip()
+            if not address:
+                address = ", ".join(str(anchor.get(k) or "").strip() for k in
+                                    ("city", "street", "house_number") if str(anchor.get(k) or "").strip())
+            if not city and address:
+                pieces = [part.strip() for part in address.split(",") if part.strip()]
+                city = pieces[1] if len(pieces) > 1 and "област" in pieces[0].casefold() else pieces[0]
+                city = city.removeprefix("г. ").removeprefix("город ")
+            place = context.get("place_name") or "Выбранный объект"
+            city_label, address_label = city or place, address or place
+            city_in_address = address_label.casefold().startswith((city_label.casefold() + ",",
+                                                                    city_label.casefold() + " "))
+            notes = list(dict.fromkeys(["История за поворотом Калининград",
+                                        *([] if city_in_address else [city_label]), address_label]))
+            arrows = [""] * len(notes)
         brief_context = {
-            "selected_facts": [item for item in context["selected_facts"] if item["fact_id"] in included],
-            "caption_image_notes": plan["notes"], "caption_image_note_arrows": plan["arrows"],
+            "selected_facts": context["selected_facts"] if position != len(context["comic"]["photo_ids"]) - 1 else [],
+            "caption_image_notes": notes, "caption_image_note_arrows": arrows,
             "publication_concept": context.get("publication_concept"),
             "visual_instruction": context.get("visual_instruction"),
             "place_name": context.get("place_name"),
@@ -480,11 +365,6 @@ class StoryPhotosMixin:
         photo_ids = context["comic"]["photo_ids"]
         with self.store.connection() as db:
             if not self._comic_current(db, story_id, revision, photo_ids):
-                return
-        if not context["comic"].get("plan"):
-            planned = await self._plan_comic(story_id, context)
-            context = self._comic_patch(story_id, revision, photo_ids, plan=planned)
-            if context is None:
                 return
         plans = context["comic"]["plan"]["cards"]
         await self.providers.vibepublish.bootstrap()

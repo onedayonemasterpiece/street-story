@@ -144,6 +144,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             if (set(body) != {"instruction"} or not isinstance(instruction, str)
                     or not 1 <= len(instruction.strip()) <= 800):
                 raise ConflictError("refinement_instruction_invalid", "Укажите короткое поручение редактору.")
+            from .live import ensure_live_schema
+            ensure_live_schema(self)
             with self.store.tx() as db:
                 row = self._story_row(db, story_id)
                 if self._idem(db, key, "refinement", digest({"story_id": story_id, **body}), "story", story_id):
@@ -158,10 +160,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     # Do not ACK an instruction that the already-running writer never received.
                     # This failed transaction also releases the new idempotency key for retry.
                     raise ConflictError('caption_busy', 'Редактор занят. Повторите поручение после завершения текущего текста.')
+                editor = db.execute("SELECT text_revision FROM live_editor_state WHERE story_id=?",
+                                    (story_id,)).fetchone()
                 job_id = self._enqueue_job(
                     db, story_id, "caption", f"caption:{story_id}:refinement:{key}", {
                         "command_id": f"refinement:{key}",
-                        "args": {"writing_request": instruction.strip()},
+                        "args": {"writing_request": instruction.strip(),
+                                 "expected_text_revision": int(editor["text_revision"]) if editor else 0,
+                                 "change_summary": "Обновление надписей и подписи"},
                         "photo_sha256": row["photo_sha256"],
                         "identity_generation": int(research.get("identity_generation") or 0)})
                 research["draft_writing"] = {"job_id": job_id, "command_id": f"refinement:{key}",
