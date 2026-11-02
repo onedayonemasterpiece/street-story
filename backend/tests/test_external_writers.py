@@ -58,7 +58,7 @@ async def test_invalid_sol_card_notes_falls_through_to_glm(monkeypatch):
             {"notes": ["Театр", "В 1910 году открылся театр", "листай →"],
              "arrows": ["", "", ""]},
             {"notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-            {"notes": [], "arrows": []},
+            {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
         ]}
 
     def validate(answer):
@@ -120,7 +120,7 @@ def test_card_notes_writer_validation():
     cards = [
         {"notes": ["Театр", "В 1910 году открылся театр", "листай →"], "arrows": ["", "", ""]},
         {"notes": ["После 1920 года здание перестроили"], "arrows": [""]},
-        {"notes": [], "arrows": []},
+        {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
     ]
     facts = [{"text": "Театр открылся в 1910 году, здание перестроили после 1920 года."}]
     assert _validated_card_notes(cards, 3, "Театр", facts) == cards
@@ -135,9 +135,9 @@ def test_card_notes_writer_validation():
     long_note = second("Очень " * 20 + "длинный текст")
     assert len(long_note) <= 70 and long_note.startswith("Очень")
     broken = copy.deepcopy(cards)
-    broken[-1]["notes"], broken[-1]["arrows"] = ["Финальная лишняя надпись"], [""]
+    broken[-1]["notes"], broken[-1]["arrows"] = ["История последнего фото"], [""]
     assert _validated_card_notes(broken, 3, "Театр", facts)[-1] == {
-        "notes": ["Финальная лишняя надпись"], "arrows": [""]}
+        "notes": ["История последнего фото"], "arrows": [""]}
     assert len(_validated_card_notes(cards[:1], 3, "Театр", facts)) == 3  # missing cards padded
     assert _validated_card_notes(None, 2, "Театр", facts)[0]["notes"] == ["Театр", "листай →"]
 
@@ -147,7 +147,7 @@ def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
     place = "Поликлиника городской больницы №3"
     facts = [{"text": "В 1954 году здесь открылась поликлиника городской больницы."}]
     rest = [{"notes": ["В 1954 году открылась городская поликлиника"], "arrows": [""]},
-            {"notes": [], "arrows": []}]
+            {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]
     spaced = {"notes": ["Поликлиника городской больницы № 3",
                         "В 1954 году здесь открылась поликлиника", "листай →"],
               "arrows": ["", "", ""]}
@@ -177,7 +177,7 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
                       {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
                        "arrows": ["", "", ""]},
                       {"notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-                      {"notes": [], "arrows": []}]}
+                      {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]}
         validate(answer)
         return answer, external_writers.SOL_MODEL
 
@@ -193,7 +193,7 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     assert len(calls) == 1
     assert result["model"] == "GPT-6.1 Sol"
     assert len(result["card_notes"]) == 3
-    assert result["card_notes"][2] == {"notes": [], "arrows": []}
+    assert result["card_notes"][2] == {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}
 
 
 @pytest.mark.asyncio
