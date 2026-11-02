@@ -1464,7 +1464,8 @@ class StreetStoryService:
                 written = await adapter._write_caption(story_id, args)
                 rebased = await asyncio.to_thread(adapter._rebase_over_writer_draft, story_id, args)
                 saved = await asyncio.to_thread(adapter._edit_text, story_id, save_command_id,
-                    {**rebased, "new_text": written["text"]},
+                    {**rebased, "new_text": written["text"],
+                     **({"cover_title": written["cover_title"]} if written.get("cover_title") else {})},
                     composed_by="writer:" + written["model"],
                     image_notes=written.get("image_notes") or [],
                     image_note_arrows=written.get("image_note_arrows") or [],
