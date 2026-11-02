@@ -611,7 +611,7 @@ class AgentEvidenceMixin:
         if native_verified is not None:
             source.update(verification_level='one_model', assessment_origin='native_research_single_model',
                 original_native_attempt_id=agent['attempt_id'])
-        proposed = str(candidate.get('claim_key') or '')
+        proposed = str(candidate.get('claim_key') or (candidate.get('native_fact') or {}).get('claim_key') or '')
         name = proposed.removeprefix('cover-name:') if proposed.startswith('cover-name:') else ''
         checks = row.get('checks') or {}
         title_basis = row['confirmed_fragment'] + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')

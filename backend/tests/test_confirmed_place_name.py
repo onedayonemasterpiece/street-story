@@ -127,3 +127,38 @@ async def test_confirmed_name_through_verifier_ledger_and_card_readback(tmp_path
         assert len(calls) == (2 if case in {"same_name_twice", "stronger_next_run"} else 1)
     finally:
         await reader.search_http.aclose()
+
+@pytest.mark.asyncio
+async def test_native_source_candidate_carries_name_inside_original_fact_through_ledger(tmp_path):
+    from street_story.native_fact_contract import source_candidates
+    from test_native_fact_basis import setup
+
+    service, job, reader, _, agent, receipt, save = await setup(tmp_path)
+    sid = job["story_id"]
+    name = "Бранденбургские ворота"
+    fact = receipt["raw_result"]["facts"][0]
+    fact["claim_key"] = f"cover-name:{name}"
+    fact["text"] = f"{name}: в 2005 году в выбранном здании открылся музей."
+    reviewed = fact["sources"][0]["assessment"]
+    reviewed["claim_key"] = "museum-opening-verified"
+    reviewed["text"] = fact["text"]
+    reviewed["confirmed_fragment"] = f"{name} — здесь в 2005 году открылся музей."
+    reviewed["checks"]["relation_basis"]["fragment"] = f"Выбранный дом — {name}."
+    save()
+    candidate = source_candidates(receipt["raw_result"])["facts"][0]
+    assert "claim_key" not in candidate
+    assert candidate["native_fact"]["claim_key"] == f"cover-name:{name}"
+    with service.store.tx() as db:
+        row = service._story_row(db, sid)
+        research = json.loads(row["research_json"])
+        research["visual_identity"]["candidate_name"] = "Вилла"
+        research["visual_identity"]["candidate_name_provenance"] = "osm.tags.name"
+        db.execute("UPDATE stories SET place_name=?,research_json=? WHERE id=?",
+                   ("Вилла", json.dumps(research, ensure_ascii=False), sid))
+    try:
+        assert (await service.confirm_agent_fact(job, "headless-run", candidate, agent))["status"] == "supported"
+        assert _finish(type("Adapter", (), {"service": service})(), job, "headless-run",
+                       HeadlessFacts(service), 0, "research_agent_completed", pending=False)
+        assert service.story(sid)["place_name"] == name
+    finally:
+        await reader.search_http.aclose()
