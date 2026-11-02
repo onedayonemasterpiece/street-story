@@ -307,6 +307,8 @@ class PhonePhotoNearbyInstrumentedTest {
                     assertEquals(orderAfter, store.selectedStoryPhotos(storyId).map { it.photoId })
                     val cover = requireNotNull(find(activity.window.decorView, "order-tile-0")) as ViewGroup
                     assertEquals("1 · Обложка", (cover.getChildAt(1) as android.widget.TextView).text)
+                    assertEquals("Reopened cover must show reordered first photo",
+                        store.selectedStoryPhotos(storyId).first().uri, (cover.getChildAt(0) as ImageView).tag)
                 }
 
                 projection.replace(storyId, wire(2, true))
