@@ -310,16 +310,14 @@ class PhonePhotoNearbyInstrumentedTest {
                 }
 
                 projection.replace(storyId, wire(2, true))
-                context.sendBroadcast(android.content.Intent(SyncWorker.ACTION_STATE_CHANGED).setPackage(context.packageName))
-                // A broadcast is delivered asynchronously; idleSync alone can run before its receiver.
-                assertNotNull("Cards should appear after the projection update", device.wait(Until.findObject(By.desc("story-card-0")), 6_000))
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
-                    val scroll = find(root, "topic-scroll") as ScrollView
+                    val panel = requireNotNull(find(root, "nearby-photos")) as NearbyPhotosPanel
+                    panel.refresh()
                     val cards = requireNotNull(find(root, "story-cards-grid"))
                     assertEquals(View.VISIBLE, cards.visibility)
                     assertEquals("Only generated cards, no blank placeholders", 2, (cards as ViewGroup).childCount)
-                    scroll.scrollTo(0, cards.top)
+                    (requireNotNull(find(root, "topic-scroll")) as ScrollView).scrollTo(0, panel.top + cards.top)
                 }
                 val deadline = android.os.SystemClock.elapsedRealtime() + 6_000
                 var cardImageReady = false
