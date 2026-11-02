@@ -6281,14 +6281,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 new_text = text if not current_text else text + "\n\n" + current_text
             else:
                 new_text = text if not current_text else current_text + "\n\n" + text
-            new_text = with_place_footer(new_text, json.loads(story["research_json"] or "{}"))
+            research = json.loads(story["research_json"] or "{}")
+            new_text = with_place_footer(new_text, research)
+            research["draft_composed_by"] = "mira_live"
             literal_id = "literal_" + uuid.uuid4().hex[:16]
             literals = [*literals, {"literal_id": literal_id, "text": text, "position": position}]
             next_revision = current_revision + 1
             summary = "Применил дословную диктовку"
             db.execute(
-                "UPDATE stories SET draft_text=?,revision=revision+1,updated_at=? WHERE id=?",
-                (new_text, self.service.store.now(), story_id),
+                "UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                (new_text, canonical(research), self.service.store.now(), story_id),
             )
             db.execute(
                 "UPDATE live_editor_state SET text_revision=?,literal_json=?,history_json=?,last_change=?,updated_at=? WHERE story_id=?",
@@ -6332,9 +6334,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             text = str(prior.get("text") or "")
             literals = prior.get("literal_spans") if isinstance(prior.get("literal_spans"), list) else []
             summary = "Отменил последнюю правку"
+            research = json.loads(story["research_json"] or "{}")
+            research["draft_composed_by"] = "mira_live"
             db.execute(
-                "UPDATE stories SET draft_text=?,revision=revision+1,updated_at=? WHERE id=?",
-                (text, self.service.store.now(), story_id),
+                "UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                (text, canonical(research), self.service.store.now(), story_id),
             )
             db.execute(
                 "UPDATE live_editor_state SET text_revision=?,literal_json=?,history_json=?,last_change=?,updated_at=? WHERE story_id=?",
