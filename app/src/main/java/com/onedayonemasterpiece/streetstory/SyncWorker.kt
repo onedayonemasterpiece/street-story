@@ -21,6 +21,7 @@ internal fun effectiveSnapshotDraft(state: String, localDraft: String?, remoteDr
     if (state in setOf(StoryStage.SCHEDULED, StoryStage.PUBLISHED) && localDraft != null) localDraft else remoteDraft
 
 internal fun shouldPollStory(wire: StoryWire): Boolean =
+    wire.draftWriting != null ||
     listOf("identity", "facts").any { wire.researchPending[it] == true && wire.researchControls[it]?.stopped != true } ||
         wire.state in setOf(StoryStage.QUEUED, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING) ||
         (wire.state == StoryStage.IDENTIFYING && wire.researchControls["identity"]?.stopped != true) ||
