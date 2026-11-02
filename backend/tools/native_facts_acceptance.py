@@ -205,8 +205,9 @@ async def run(args):
         os.environ.update(installer.parse_dotenv(path))
     data_dir = managed(args.continue_from)/'data' if continuation else output/'data'
     os.environ.update(DATA_DIR=str(data_dir), STREET_STORY_DEPLOY_SHA=sha,
-        STREET_STORY_FACT_AGENT_ROUTES=json.dumps([{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'}]),
         VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='', STREET_STORY_NATIVE_VISION_RESERVE='0')
+    if not args.agent_qualification:
+        os.environ['STREET_STORY_FACT_AGENT_ROUTES'] = json.dumps([{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'}])
     logging.basicConfig(filename=output/'research.log', level=logging.INFO)
     from street_story.config import Settings
     from street_story.runtime import RuntimeStreetStoryService
@@ -237,7 +238,8 @@ async def run(args):
     if args.agent_qualification:
         from owner_place_acceptance import load_agent_qualification
         from street_story.fact_agents import QUALIFICATION_KEY
-        proof, provenance = load_agent_qualification(args.agent_qualification, routes=[route])
+        proof, provenance = load_agent_qualification(args.agent_qualification,
+            routes=configured_routes(adapter, include_unqualified=True))
         service.store.cache_put(QUALIFICATION_KEY, proof, 3600)
     if resuming_product:
         campaign = json.loads((output/'campaign.json').read_text())
