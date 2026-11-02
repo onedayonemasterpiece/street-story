@@ -33,9 +33,13 @@ internal fun coverDisplayName(cards: List<CardNotesWire>, placeName: String?): S
     cards.firstOrNull { it.position == 0 }?.notes.orEmpty().firstOrNull { it.isNotBlank() }?.trim()
         ?: placeName?.trim()?.takeIf { it.isNotBlank() }
 
-internal fun newlyCompletedDraft(previous: ResearchProjectionSnapshot?, wire: StoryWire): Boolean =
+internal fun newlyCompletedDraft(
+    previous: ResearchProjectionSnapshot?, previousDraft: String?, wire: StoryWire
+): Boolean =
     previous != null && wire.draftWriting == null && wire.draftWritingLast?.ok == true &&
-        !wire.draftText.isNullOrBlank() && (previous.draftWriting || !previous.draftAvailable)
+        !wire.draftText.isNullOrBlank() &&
+        (previous.draftWriting || !previous.draftAvailable ||
+            (wire.revision > previous.backendRevision && previousDraft != null && previousDraft != wire.draftText))
 
 internal fun shouldPollStory(wire: StoryWire): Boolean =
     wire.draftWriting != null ||
@@ -345,7 +349,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         feed.replaceVoiceMessages(storyId, wire.voiceMessages)
         feed.replaceLiveMessages(storyId, wire.liveMessages)
         research.replace(storyId, wire)
-        if (newlyCompletedDraft(prior, wire)) runCatching { notifyCaptionReady(storyId, wire) }
+        if (newlyCompletedDraft(prior, localDraft, wire)) runCatching { notifyCaptionReady(storyId, wire) }
             .onFailure { android.util.Log.w("StreetStorySync", "caption_notification_failed story_id=$storyId", it) }
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
     }

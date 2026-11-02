@@ -108,12 +108,12 @@ class ResearchControlRequestTest {
             sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
             draftWriting = true,
         )
-        assertTrue("newly completed caption is announced", newlyCompletedDraft(previous, story))
+        assertTrue("newly completed caption is announced", newlyCompletedDraft(previous, null, story))
         assertFalse("ordinary re-sync does not announce again",
-            newlyCompletedDraft(previous.copy(draftWriting = false, draftAvailable = true), story))
-        assertFalse("old story at first sync does not produce an alert", newlyCompletedDraft(null, story))
+            newlyCompletedDraft(previous.copy(draftWriting = false, draftAvailable = true), "Готовый текст", story))
+        assertFalse("old story at first sync does not produce an alert", newlyCompletedDraft(null, null, story))
         story.draftWritingLast!!.ok = false
-        assertFalse("failed captions are not announced", newlyCompletedDraft(previous, story))
+        assertFalse("failed captions are not announced", newlyCompletedDraft(previous, null, story))
     }
 
     @Test
@@ -128,11 +128,14 @@ class ResearchControlRequestTest {
             sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
             backendRevision = 18, draftWriting = false, draftAvailable = true,
         )
-        assertTrue("fast rewrite of a ready draft was missed", newlyCompletedDraft(previous, story))
+        assertTrue("fast rewrite of a ready draft was missed", newlyCompletedDraft(previous, "Старый текст", story))
         assertFalse("same finished revision must not notify twice",
-            newlyCompletedDraft(previous.copy(backendRevision = 19), story))
+            newlyCompletedDraft(previous.copy(backendRevision = 19), "Новый текст", story))
+        story.revision = 20
+        assertFalse("a later unrelated revision of the same text does not repeat notification",
+            newlyCompletedDraft(previous.copy(backendRevision = 19), "Новый текст", story))
         story.draftWritingLast!!.ok = false
         assertFalse("failed rewrite retains old draft without notification",
-            newlyCompletedDraft(previous, story))
+            newlyCompletedDraft(previous, "Старый текст", story))
     }
 }
