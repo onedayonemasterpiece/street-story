@@ -452,10 +452,12 @@ def agent_context(identity, goal, run_id, now):
         'for this same building under addresses on those streets, and bind a source to it only on the '
         'source\'s own evidence. Attribute knowledge only to the selected building, never to a neighbour. '
         'For the cover name, compare the selected house\'s own OSM name with names on actually read '
-        'Yandex and 2GIS cards, brochures and other sources. If one stronger specific name is confirmed '
-        'for THIS physical house, nominate it through ONE substantive, fully source-supported fact '
-        'whose claim_key is "cover-name:<exact name>" and whose text begins "<exact name>: " '
-        'followed by a real historical or architectural assertion. Do not create a name-only fact, '
+        'Yandex and 2GIS cards, brochures and other sources. Only a stronger CURRENT name, '
+        'explicitly attested for THIS physical house in a read source, may be nominated through ONE '
+        'substantive, fully source-supported fact; state both present-day naming and the actual '
+        'historical/architectural assertion. An old name or a tenant/organisation is not current proof. '
+        'Use claim_key "cover-name:<exact name>" and start text with "<exact name>: " '
+        'followed by current naming and a real historical or architectural assertion. Do not create a name-only fact, '
         'use a nearby POI or infer a name from unread snippets; otherwise nominate no cover name. '
         'Read the full page before citing it. Never invent facts to meet a count.')
     return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
@@ -1066,7 +1068,7 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)
         identity = research.get('visual_identity') or {}
-        if identity.get('candidate_name') and not str(identity.get('candidate_name_provenance') or '').startswith('owner'):
+        if not pending and identity.get('candidate_name') and not str(identity.get('candidate_name_provenance') or '').startswith('owner'):
             titles = db.execute(
                 "SELECT DISTINCT a.semantic_key,a.display_text,f.sources_json FROM fact_assertions a "
                 "JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
@@ -1083,6 +1085,7 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
                     excerpt = source.get('confirmed_fragment', '') + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')
                     if (source.get('subject_scope') == 'selected_building'
                             and checks.get('object_relation') == 'selected_building'
+                            and checks.get('temporal_basis') == 'current_supported'
                             and name.casefold() in excerpt.casefold()):
                         names.add(name)
                         break

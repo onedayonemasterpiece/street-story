@@ -133,6 +133,12 @@ SEMANTIC_ASSESSMENT_INSTRUCTIONS = (
     'Совпадение улицы, адреса учреждения или близость не доказывают тождество здания, памятника, '
     'организации и её филиалов. Несколько адресов одного контура не отождествляют корпуса статьи. '
     'relation_basis: укажи фрагмент до25слов и chunk_ids, устанавливающие эту связь. '
+    'Для cover-name (также native_fact) отдельно проверяй нынешнее имя выбранного дома: '
+    'relation_basis должен доказывать его СЕГОДНЯШНЕЕ употребление в SOURCE, а не лишь старое '
+    'историческое имя или название организации внутри дома. Для такой составной номинации '
+    'temporal_basis=current_supported только при источниковом доказательстве актуального имени; '
+    'историческое событие в text сохраняй датированным. Иначе подтверди прошлое как historical, '
+    'не называя историческое имя текущим. '
     'Для unrelated/unestablished при отсутствии связи допустимы пустой фрагмент и список. '
     'material_kind: history, architecture или event для содержательного факта о доказанном субъекте; '
     'reference_only для повторения адреса/названия, общего руководителя, подразделений или часов работы. '
@@ -617,6 +623,7 @@ class AgentEvidenceMixin:
         title_basis = row['confirmed_fragment'] + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')
         keep_name = (name and row['verdict'] == 'supported' and not row['existing_fact_id']
             and checks.get('object_relation') == 'selected_building'
+            and checks.get('temporal_basis') == 'current_supported'
             and row['subject_scope'] == 'selected_building'
             and row['text'].casefold().startswith(name.casefold() + ': ')
             and name.casefold() in title_basis.casefold())
