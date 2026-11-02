@@ -797,6 +797,9 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
             text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—–-")
         return text
 
+    def same_title(value: str) -> str:
+        return re.sub(r"[\s№]+", "", value.casefold())
+
     result = []
     for position in range(photo_count):
         card = raw[position] if position < len(raw) and isinstance(raw[position], dict) else {}
@@ -809,7 +812,8 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
         pairs = [(re.sub(r"(?i)\s*листай\s*→\s*$", "", note), arrow) for note, arrow in pairs]
         pairs = [(note, arrow) for note, arrow in pairs if note]
         if position == 0:
-            if place_name and not pairs:
+            if place_name and len(pairs) < 2 and not any(
+                    same_title(note) == same_title(place_name) for note, _ in pairs):
                 pairs.insert(0, (clean(place_name, 70), ""))
             pairs = pairs[:3] + [("листай →", "")]
         else:
