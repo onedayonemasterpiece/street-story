@@ -329,9 +329,11 @@ class PhotoIntakeInstrumentedTest {
                     val title = MainActivity::class.java.getDeclaredField("topicTitleView")
                         .apply { isAccessible = true }.get(activity) as android.widget.TextView
                     assertEquals("Название · Название с обложки", title.text.toString())
-                    activity.onNewIntent(open(first.clientStoryId))
+                    val newIntent = MainActivity::class.java.getDeclaredMethod("onNewIntent", Intent::class.java)
+                        .apply { isAccessible = true }
+                    newIntent.invoke(activity, open(first.clientStoryId))
                     assertEquals(first.clientStoryId, prefs.getString("active_story_id", null))
-                    activity.onNewIntent(open(second.clientStoryId))
+                    newIntent.invoke(activity, open(second.clientStoryId))
                     assertEquals(second.clientStoryId, prefs.getString("active_story_id", null))
                     val reopened = MainActivity::class.java.getDeclaredField("topicTitleView")
                         .apply { isAccessible = true }.get(activity) as android.widget.TextView
