@@ -92,4 +92,15 @@ class ResearchControlRequestTest {
         story.researchPending = mapOf("identity" to false, "facts" to true)
         assertTrue(shouldPollStory(story))
     }
+
+    @Test
+    fun `caption writing in review keeps polling until completion`() {
+        val story = Gson().fromJson(
+            """{"state":"review","draft_writing":{"started_at":123}}""", StoryWire::class.java)
+        assertTrue("writer must keep background sync alive", shouldPollStory(story))
+        story.draftWriting = null
+        story.draftWritingLast = DraftWritingWire().apply { ok = true }
+        story.draftText = "Готовый текст"
+        assertFalse("completed writer should stop polling", shouldPollStory(story))
+    }
 }
