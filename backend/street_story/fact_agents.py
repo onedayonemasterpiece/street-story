@@ -451,6 +451,12 @@ def agent_context(identity, goal, run_id, now):
         'address. When the tagged address finds nothing or its street is not near the contour, look '
         'for this same building under addresses on those streets, and bind a source to it only on the '
         'source\'s own evidence. Attribute knowledge only to the selected building, never to a neighbour. '
+        'For the cover name, compare the selected house\'s own OSM name with names on actually read '
+        'Yandex and 2GIS cards, brochures and other sources. If one stronger specific name is confirmed '
+        'for THIS physical house, nominate it through ONE substantive, fully source-supported fact '
+        'whose claim_key is "cover-name:<exact name>" and whose text begins "<exact name>: " '
+        'followed by a real historical or architectural assertion. Do not create a name-only fact, '
+        'use a nearby POI or infer a name from unread snippets; otherwise nominate no cover name. '
         'Read the full page before citing it. Never invent facts to meet a count.')
     return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
@@ -1061,5 +1067,20 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
             now=adapter.service.store.now(), completed=not pending or unavailable)
         db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
             (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
+        identity = research.get('visual_identity') or {}
+        if (identity.get('candidate_name') and story.get('place_name') == identity['candidate_name']
+                and not str(identity.get('candidate_name_provenance') or '').startswith('owner')):
+            titles = db.execute(
+                "SELECT DISTINCT a.semantic_key,a.display_text FROM fact_assertions a "
+                "JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
+                "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='eligible' AND o.status='accepted' "
+                "AND a.semantic_key LIKE 'cover-name:%'", (story['id'], run_id)).fetchall()
+            if len(titles) == 1:
+                key, fact_text = titles[0]
+                name = fact_text.split(': ', 1)[0].strip()
+                if (name.casefold() == key[len('cover-name:'):] and 2 <= len(name) <= 100
+                        and name != story['place_name']):
+                    db.execute('UPDATE stories SET place_name=?,revision=revision+1 WHERE id=?',
+                        (name, story['id']))
     adapter.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:'+run_id, value)
     return value
