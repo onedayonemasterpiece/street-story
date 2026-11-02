@@ -1,7 +1,16 @@
 package com.onedayonemasterpiece.streetstory
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -19,6 +28,14 @@ import java.util.concurrent.TimeUnit
 
 internal fun effectiveSnapshotDraft(state: String, localDraft: String?, remoteDraft: String?): String? =
     if (state in setOf(StoryStage.SCHEDULED, StoryStage.PUBLISHED) && localDraft != null) localDraft else remoteDraft
+
+internal fun coverDisplayName(cards: List<CardNotesWire>, placeName: String?): String? =
+    cards.firstOrNull { it.position == 0 }?.notes.orEmpty().firstOrNull { it.isNotBlank() }?.trim()
+        ?: placeName?.trim()?.takeIf { it.isNotBlank() }
+
+internal fun newlyCompletedDraft(previous: ResearchProjectionSnapshot?, wire: StoryWire): Boolean =
+    previous != null && wire.draftWriting == null && wire.draftWritingLast?.ok == true &&
+        !wire.draftText.isNullOrBlank() && (previous.draftWriting || !previous.draftAvailable)
 
 internal fun shouldPollStory(wire: StoryWire): Boolean =
     wire.draftWriting != null ||
@@ -328,7 +345,32 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         feed.replaceVoiceMessages(storyId, wire.voiceMessages)
         feed.replaceLiveMessages(storyId, wire.liveMessages)
         research.replace(storyId, wire)
+        if (newlyCompletedDraft(prior, wire)) runCatching { notifyCaptionReady(storyId, wire) }
+            .onFailure { android.util.Log.w("StreetStorySync", "caption_notification_failed story_id=$storyId", it) }
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
+    }
+
+    private fun notifyCaptionReady(storyId: String, wire: StoryWire) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED) return
+        val notifications = applicationContext.getSystemService(NotificationManager::class.java)
+        notifications.createNotificationChannel(NotificationChannel(
+            DRAFT_CHANNEL, "Готовые тексты", NotificationManager.IMPORTANCE_DEFAULT))
+        val open = Intent(applicationContext, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW)
+            .setData(Uri.parse("streetstory://draft/$storyId"))
+            .putExtra(MainActivity.EXTRA_OPEN_STORY_ID, storyId)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val tap = PendingIntent.getActivity(applicationContext, 0, open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val name = coverDisplayName(wire.cardNotes, wire.placeName)
+        notifications.notify(storyId, DRAFT_NOTIFICATION_ID,
+            Notification.Builder(applicationContext, DRAFT_CHANNEL)
+                .setSmallIcon(R.drawable.ic_mic)
+                .setContentTitle("Текст готов")
+                .setContentText(name?.let { "Открыть «$it»" } ?: "Открыть сохранённый черновик")
+                .setContentIntent(tap).setAutoCancel(true).build())
     }
 
     private fun DestinationWire.local() = DestinationSnapshot(alias, label, provider, status, selected)
@@ -360,5 +402,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         const val ACTION_STATE_CHANGED = "com.onedayonemasterpiece.streetstory.SYNC_CHANGED"
         // Active identity/research is user-visible; keep checklist projection fresh enough to show stages.
         private const val POLL_SECONDS = 3L
+        private const val DRAFT_CHANNEL = "street-story-draft-ready"
+        private const val DRAFT_NOTIFICATION_ID = 2
     }
 }
