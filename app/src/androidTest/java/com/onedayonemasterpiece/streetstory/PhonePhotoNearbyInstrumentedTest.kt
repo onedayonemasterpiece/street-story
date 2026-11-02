@@ -155,7 +155,7 @@ class PhonePhotoNearbyInstrumentedTest {
 
     @Test fun selectionPuzzleAndResultCarouselRunInActualActivity() {
         grantGallery()
-        val gallery = listOf(insertImage(point(15.0), "ui-a"), insertImage(point(40.0), "ui-b"))
+        val gallery = (0 until 24).map { insertImage(point(15.0 + it), "ui-$it") }
         val storyId = "ss-multiphoto-ui-" + System.nanoTime()
         val source = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val config = AppGraph.config(context)
@@ -164,7 +164,7 @@ class PhonePhotoNearbyInstrumentedTest {
         val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
         val priorActive = prefs.getString("active_story_id", null)
         val server = MockWebServer()
-        val cardJpegs = listOf(15.0, 55.0, 95.0).map { imageBytes(point(it)) }
+        val cardJpegs = listOf(15.0, 55.0).map { imageBytes(point(it)) }
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val card = request.path?.substringAfterLast("/")?.toIntOrNull()
@@ -196,7 +196,6 @@ class PhonePhotoNearbyInstrumentedTest {
             if (cards) this.cards = arrayListOf(
                 StoryCardWire().apply { position = 0; url = "/mock-card/0" },
                 StoryCardWire().apply { position = 1; url = "/mock-card/1" },
-                StoryCardWire().apply { position = 2; url = "/mock-card/2" },
             )
         }
         projection.replace(storyId, wire(1, false))
@@ -243,10 +242,17 @@ class PhonePhotoNearbyInstrumentedTest {
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    assertTrue("source and two gallery entries", grid.adapter.count >= 3)
-                    requireNotNull(grid.getChildAt(1)).performClick()
-                    requireNotNull(grid.getChildAt(2)).performClick()
-                    assertEquals(3, store.selectedStoryPhotos(storyId).size)
+                    assertTrue("source plus a long candidate list", grid.adapter.count >= 25)
+                    grid.setSelection(grid.adapter.count - 1)
+                }
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                scenario.onActivity { activity ->
+                    val root = activity.window.decorView
+                    val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
+                    val last = grid.adapter.count - 1
+                    val tile = requireNotNull(grid.getChildAt(last - grid.firstVisiblePosition))
+                    tile.performClick() // one chosen photo far below the source; all others remain unselected
+                    assertEquals(2, store.selectedStoryPhotos(storyId).size)
                     val scroll = find(root, "topic-scroll") as ScrollView
                     val panel = requireNotNull(find(root, "nearby-photos"))
                     scroll.scrollTo(0, panel.top)
@@ -255,8 +261,27 @@ class PhonePhotoNearbyInstrumentedTest {
                 scenario.onActivity { activity ->
                     requireNotNull(find(activity.window.decorView, "nearby-photo-done")).performClick()
                 }
-                assertEquals(3, store.selectedStoryPhotos(storyId).size)
+                assertEquals(2, store.selectedStoryPhotos(storyId).size)
                 assertNotNull(device.wait(Until.findObject(By.desc("order-tile-0")), 4000))
+                scenario.onActivity { activity ->
+                    val root = activity.window.decorView
+                    assertEquals(View.GONE, requireNotNull(find(root, "nearby-photo-grid")).visibility)
+                    assertEquals(3, (requireNotNull(find(root, "photo-order-puzzle")) as ViewGroup).childCount)
+                }
+                scenario.recreate() // MainActivity constructs a new NearbyPhotosPanel
+                scenario.onActivity { activity ->
+                    val root = activity.window.decorView
+                    assertEquals(View.GONE, requireNotNull(find(root, "nearby-photo-grid")).visibility)
+                    assertEquals(3, (requireNotNull(find(root, "photo-order-puzzle")) as ViewGroup).childCount)
+                    requireNotNull(find(root, "change-photo-selection")).performClick()
+                    val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
+                    assertEquals(View.VISIBLE, grid.visibility)
+                    assertTrue(grid.adapter.count >= 25)
+                    assertEquals("source-photo-selected", grid.adapter.getView(0, null, grid).contentDescription)
+                    assertTrue(grid.adapter.getView(grid.adapter.count - 1, null, grid)
+                        .contentDescription.toString().endsWith("-selected"))
+                    requireNotNull(find(root, "nearby-photo-done")).performClick()
+                }
                 scenario.onActivity { activity ->
                     val tile = requireNotNull(find(activity.window.decorView, "order-tile-0")) as ViewGroup
                     val label = tile.getChildAt(1) as android.widget.TextView
@@ -275,8 +300,14 @@ class PhonePhotoNearbyInstrumentedTest {
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 screenshot("multiphoto-reordered.png")
                 val orderAfter = store.selectedStoryPhotos(storyId).map { it.photoId }
-                assertEquals(3, orderAfter.size)
+                assertEquals(2, orderAfter.size)
                 assertNotEquals("Drag must durably change card order", orderBefore, orderAfter)
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    assertEquals(orderAfter, store.selectedStoryPhotos(storyId).map { it.photoId })
+                    val cover = requireNotNull(find(activity.window.decorView, "order-tile-0")) as ViewGroup
+                    assertEquals("1 · Обложка", (cover.getChildAt(1) as android.widget.TextView).text)
+                }
 
                 projection.replace(storyId, wire(2, true))
                 context.sendBroadcast(android.content.Intent(SyncWorker.ACTION_STATE_CHANGED).setPackage(context.packageName))
@@ -287,6 +318,7 @@ class PhonePhotoNearbyInstrumentedTest {
                     val scroll = find(root, "topic-scroll") as ScrollView
                     val cards = requireNotNull(find(root, "story-cards-grid"))
                     assertEquals(View.VISIBLE, cards.visibility)
+                    assertEquals("Only generated cards, no blank placeholders", 2, (cards as ViewGroup).childCount)
                     scroll.scrollTo(0, cards.top)
                 }
                 val deadline = android.os.SystemClock.elapsedRealtime() + 6_000

@@ -11,6 +11,7 @@ import java.time.OffsetDateTime
 
 class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     private val draftOverrides = context.getSharedPreferences("street_story_draft_overrides", Context.MODE_PRIVATE)
+    private val photoModePrefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
     private val filesRoot = context.applicationContext.filesDir.canonicalFile
 
     init { setWriteAheadLoggingEnabled(true) }
@@ -86,6 +87,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         }
         writableDatabase.delete("stories", "client_story_id=?", arrayOf(id))
         draftOverrides.edit().remove(id).commit()
+        photoModePrefs.edit().remove("photo-mode:$id").commit()
 
         val ownedFiles = buildList {
             add(story.photoPath)
@@ -657,6 +659,13 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
                 ))
             }
         }
+    }
+
+    fun photoSelectionMode(storyId: String): String =
+        photoModePrefs.getString("photo-mode:$storyId", "choose") ?: "choose"
+
+    fun setPhotoSelectionMode(storyId: String, mode: String) {
+        photoModePrefs.edit().putString("photo-mode:$storyId", mode).commit()
     }
 
     @Synchronized
