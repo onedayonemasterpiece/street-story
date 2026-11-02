@@ -172,7 +172,7 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
         calls.append(prompt)
         assert "photo_count" in prompt and "card_notes" in answer_instruction
         assert "зачин по lead_fact не длиннее 70 символов" in prompt
-        answer = {"text": "История театра.\n\nУлица 1\n#калининград",
+        answer = {"text": "История театра.\n\nУлица 1\n#калининград", "cover_title": "Театр на море",
                   "card_notes": [
                       {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
                        "arrows": ["", "", ""]},
@@ -193,6 +193,9 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     assert len(calls) == 1
     assert result["model"] == "GPT-6.1 Sol"
     assert len(result["card_notes"]) == 3
+    assert result["cover_title"] == "Театр на море"
+    assert result["card_notes"][0]["notes"] == [
+        "Театр на море", "В 1910 году здесь открылся театр", "листай →"]
     assert result["card_notes"][2] == {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}
 
 
