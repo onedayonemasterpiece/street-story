@@ -293,4 +293,58 @@ class PhotoIntakeInstrumentedTest {
             }
         }
     }
+
+    @Test fun notificationTapOpensExactSavedStoryAndShowsCoverTitle() {
+        val config = AppGraph.config(context)
+        val backend = config.backendUrl
+        config.backendUrl = null
+        val store = AppGraph.store(context)
+        val projection = ResearchProjectionStore(context)
+        val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val oldActive = prefs.getString("active_story_id", null)
+        val first = PhotoImporter.importStream(context, java.io.ByteArrayInputStream(PhotoGpsFixture.bytes()),
+            "image/jpeg", "push-first-" + System.nanoTime())
+        val second = PhotoImporter.importStream(context, java.io.ByteArrayInputStream(PhotoGpsFixture.bytes()),
+            "image/jpeg", "push-second-" + System.nanoTime())
+        store.createStory(first)
+        store.createStory(second)
+        projection.replace(second.clientStoryId, StoryWire().apply {
+            revision = 1
+            photoSha256 = second.sha256
+            identityGeneration = 0
+            cardNotes = arrayListOf(CardNotesWire().apply {
+                position = 0
+                notes = arrayListOf("Название с обложки", "Зачин", "листай →")
+            })
+        })
+        prefs.edit().putString("active_story_id", first.clientStoryId).commit()
+        try {
+            fun open(id: String) = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                putExtra("open_story_id", id)
+            }
+            ActivityScenario.launch<MainActivity>(open(second.clientStoryId)).use { scenario ->
+                scenario.onActivity { activity ->
+                    assertEquals(second.clientStoryId, prefs.getString("active_story_id", null))
+                    val title = MainActivity::class.java.getDeclaredField("topicTitleView")
+                        .apply { isAccessible = true }.get(activity) as android.widget.TextView
+                    assertEquals("Название · Название с обложки", title.text.toString())
+                    activity.onNewIntent(open(first.clientStoryId))
+                    assertEquals(first.clientStoryId, prefs.getString("active_story_id", null))
+                    activity.onNewIntent(open(second.clientStoryId))
+                    assertEquals(second.clientStoryId, prefs.getString("active_story_id", null))
+                    val reopened = MainActivity::class.java.getDeclaredField("topicTitleView")
+                        .apply { isAccessible = true }.get(activity) as android.widget.TextView
+                    assertEquals("Название · Название с обложки", reopened.text.toString())
+                }
+            }
+        } finally {
+            config.backendUrl = backend
+            store.deleteStory(first.clientStoryId)
+            store.deleteStory(second.clientStoryId)
+            projection.clear(second.clientStoryId)
+            prefs.edit().putString("active_story_id", oldActive).commit()
+            listOf(first, second).forEach { PhotoAssets.releaseTemporary(it.path) }
+        }
+    }
 }
