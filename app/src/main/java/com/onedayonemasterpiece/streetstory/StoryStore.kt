@@ -662,7 +662,10 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     fun photoSelectionMode(storyId: String): String =
-        photoModePrefs.getString("photo-mode:$storyId", "choose") ?: "choose"
+        photoModePrefs.getString("photo-mode:$storyId", null) ?: readableDatabase.query(
+            "outbox", arrayOf("id"), "story_id=? AND kind=?", arrayOf(storyId, "photo-order"),
+            null, null, null, "1",
+        ).use { if (it.moveToFirst()) "order" else "choose" }
 
     fun setPhotoSelectionMode(storyId: String, mode: String) {
         photoModePrefs.edit().putString("photo-mode:$storyId", mode).commit()

@@ -164,6 +164,7 @@ class NearbyPhotosPanel(
     }
 
     private fun showMode() {
+        title.text = if (mode == "order") "Выбранные фотографии" else "Фото рядом"
         chooseGrid.visibility = if (mode == "choose") VISIBLE else GONE
         done.visibility = chooseGrid.visibility
         puzzle.visibility = if (mode == "order") VISIBLE else GONE
