@@ -92,4 +92,94 @@ class ResearchControlRequestTest {
         story.researchPending = mapOf("identity" to false, "facts" to true)
         assertTrue(shouldPollStory(story))
     }
+
+    @Test
+    fun `caption writing in review keeps polling until completion`() {
+        val story = Gson().fromJson(
+            """{"state":"review","draft_writing":{"started_at":123}}""", StoryWire::class.java)
+        assertTrue("writer must keep background sync alive", shouldPollStory(story))
+        story.draftWriting = null
+        story.draftWritingLast = DraftWritingWire().apply { ok = true }
+        story.draftComposedBy = "writer:gpt-6.1-sol"
+        story.draftText = "Готовый текст"
+        assertFalse("completed writer should stop polling", shouldPollStory(story))
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            draftWriting = true,
+        )
+        assertTrue("newly completed caption is announced", newlyCompletedDraft(previous, null, story))
+        assertFalse("ordinary re-sync does not announce again",
+            newlyCompletedDraft(previous.copy(draftWriting = false, draftAvailable = true), "Готовый текст", story))
+        assertFalse("old story at first sync does not produce an alert", newlyCompletedDraft(null, null, story))
+        story.draftWritingLast!!.ok = false
+        assertFalse("failed captions are not announced", newlyCompletedDraft(previous, null, story))
+    }
+
+    @Test
+    fun `finished rewrite between polls announces once and failure never announces`() {
+        val story = Gson().fromJson(
+            """{"state":"review","revision":19,"draft_text":"Новый текст","draft_composed_by":"writer:gpt-6.1-sol","draft_writing_last":{"ok":true}}""",
+            StoryWire::class.java,
+        )
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            backendRevision = 18, draftWriting = false, draftAvailable = true,
+            draftComposedBy = "writer:previous",
+        )
+        assertTrue("fast rewrite of a ready draft was missed", newlyCompletedDraft(previous, "Старый текст", story))
+        assertFalse("same finished revision must not notify twice",
+            newlyCompletedDraft(previous.copy(backendRevision = 19), "Новый текст", story))
+        story.revision = 20
+        assertFalse("a later unrelated revision of the same text does not repeat notification",
+            newlyCompletedDraft(previous.copy(backendRevision = 19), "Новый текст", story))
+        story.revision = 21
+        story.draftText = "Ручная правка Миры"
+        story.draftComposedBy = "mira_live"
+        assertFalse("manual Mira edit must not notify on stale success",
+            newlyCompletedDraft(previous.copy(backendRevision = 20), "Новый текст", story))
+        story.revision = 22
+        story.draftText = "Правка владельца"
+        story.draftComposedBy = "owner_editor"
+        assertFalse("owner edit must not notify on stale success",
+            newlyCompletedDraft(previous.copy(backendRevision = 21), "Ручная правка Миры", story))
+        story.draftWritingLast!!.ok = false
+        assertFalse("failed rewrite retains old draft without notification",
+            newlyCompletedDraft(previous, "Старый текст", story))
+    }
+
+    @Test
+    fun `manual edit after writer success must not trigger caption notification in any poll state`() {
+        val wire = Gson().fromJson(
+            """{"state":"review","revision":19,"draft_text":"Ручная правка",
+               "draft_composed_by":"mira_live","draft_writing_last":{"ok":true}}""",
+            StoryWire::class.java,
+        )
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            backendRevision = 18, draftAvailable = true, draftComposedBy = "writer:sol",
+        )
+        for (composer in listOf("mira_live", "owner_editor")) {
+            wire.draftComposedBy = composer
+            for (writingObserved in listOf(false, true)) {
+                for (hadDraft in listOf(false, true)) {
+                    assertFalse("$composer writing=$writingObserved draft=$hadDraft",
+                        newlyCompletedDraft(previous.copy(draftWriting = writingObserved, draftAvailable = hadDraft),
+                            "Пост писателя", wire))
+                }
+            }
+        }
+        wire.draftComposedBy = "writer:sol"
+        assertTrue("completed first writer", newlyCompletedDraft(previous.copy(draftAvailable = false), null, wire))
+        assertTrue("writer observed in progress", newlyCompletedDraft(previous.copy(draftWriting = true), "Пост писателя", wire))
+        assertTrue("fast writer rewrite missed between polls", newlyCompletedDraft(previous, "Пост писателя", wire))
+        assertFalse("subsequent unchanged sync", newlyCompletedDraft(previous.copy(backendRevision = 19), "Ручная правка", wire))
+        wire.draftWritingLast!!.ok = false
+        assertFalse("failed writer", newlyCompletedDraft(previous.copy(draftWriting = true), "Пост писателя", wire))
+    }
 }
