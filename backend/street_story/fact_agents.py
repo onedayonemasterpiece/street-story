@@ -1065,22 +1065,36 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)
-        db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
-            (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
         identity = research.get('visual_identity') or {}
-        if (identity.get('candidate_name') and story.get('place_name') == identity['candidate_name']
-                and not str(identity.get('candidate_name_provenance') or '').startswith('owner')):
+        if identity.get('candidate_name') and not str(identity.get('candidate_name_provenance') or '').startswith('owner'):
             titles = db.execute(
-                "SELECT DISTINCT a.semantic_key,a.display_text FROM fact_assertions a "
+                "SELECT DISTINCT a.semantic_key,a.display_text,f.sources_json FROM fact_assertions a "
                 "JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
+                "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
                 "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='eligible' AND o.status='accepted' "
                 "AND a.semantic_key LIKE 'cover-name:%'", (story['id'], run_id)).fetchall()
-            if len(titles) == 1:
-                key, fact_text = titles[0]
+            names = set()
+            for key, fact_text, sources in titles:
                 name = fact_text.split(': ', 1)[0].strip()
-                if (name.casefold() == key[len('cover-name:'):] and 2 <= len(name) <= 100
-                        and name != story['place_name']):
+                if not (2 <= len(name) <= 100 and name.casefold() == key[len('cover-name:'):]):
+                    continue
+                for source in json.loads(sources or '[]'):
+                    checks = source.get('confirmation_checks') or {}
+                    excerpt = source.get('confirmed_fragment', '') + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')
+                    if (source.get('subject_scope') == 'selected_building'
+                            and checks.get('object_relation') == 'selected_building'
+                            and name.casefold() in excerpt.casefold()):
+                        names.add(name)
+                        break
+            if len(names) == 1:
+                name = names.pop()
+                if name != story['place_name']:
+                    cards = (research.get('caption_image_notes') or {}).get('cards') or []
+                    if cards and cards[0].get('notes') and cards[0]['notes'][0] == story['place_name']:
+                        cards[0]['notes'][0] = name
                     db.execute('UPDATE stories SET place_name=?,revision=revision+1 WHERE id=?',
-                        (name, story['id']))
+                               (name, story['id']))
+        db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
+                   (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
     adapter.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:'+run_id, value)
     return value
