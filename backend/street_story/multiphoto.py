@@ -130,8 +130,9 @@ class StoryPhotosMixin:
             context = json.loads(row["visual_context_json"] or "{}")
             comic = context.get("comic") or {}
             cards = comic.get("cards") or []
+            photo_count = len(selected_photos(db, story_id))
             if (context.get("stale") or not 0 <= position < len(cards)
-                    or len(cards) != len(selected_photos(db, story_id))
+                    or len(cards) not in (photo_count, photo_count + 1)
                     or row["state"] not in {"ready_to_publish", "scheduling", "scheduled", "published"}):
                 raise ConflictError("visual_not_ready", "Карточка истории ещё не готова.")
             asset = cards[position].get("asset_ref")
@@ -162,7 +163,7 @@ class StoryPhotosMixin:
             {"position": i, "notes": list(card["notes"]), "arrows": list(card["arrows"])}
             for i, card in enumerate(letterings["cards"])
         ] if valid_letters else []
-        if (not context.get("stale") and current_comic_format and len(cards) == len(photos)
+        if (not context.get("stale") and current_comic_format and len(cards) in (len(photos), len(photos) + 1)
                 and all(card.get("asset_ref") for card in cards)
                 and row["state"] in {"ready_to_publish", "scheduling", "scheduled", "published"}):
             result["cards"] = [{"position": i, "url": f"/v1/stories/{row['id']}/cards/{i}"}
@@ -208,7 +209,7 @@ class StoryPhotosMixin:
                     or not row["vibepublish_asset_ref"]):
                 raise InvalidStateError("visual_not_ready", "Сначала создайте актуальные карточки.")
             cards = (visual.get("comic") or {}).get("cards") or []
-            if cards and len(cards) != len(photos):
+            if cards and len(cards) not in (len(photos), len(photos) + 1):
                 raise InvalidStateError("visual_not_ready", "Набор карточек изменился.")
         return super().mutate_publish(story_id, key, body)
 
@@ -288,10 +289,10 @@ class StoryPhotosMixin:
                 "place_selection": research.get("place_selection"),
                 "strongest_fact": (research.get("strongest_fact") or {}).get("fact_id"),
             }
-            content_revision = digest(inputs)
+            content_revision = digest([inputs, letterings["cards"]])
             comic = {"photo_ids": photo_ids,
-                     "cards": [{"photo_id": photo_id} for photo_id in photo_ids],
-                     "plan": {"cards": letterings["cards"]}}
+                     "cards": [{"photo_id": photo_id} for photo_id in [*photo_ids, photo_ids[-1]]],
+                     "plan": {"cards": [*letterings["cards"], {"notes": [], "arrows": []}]}}
             context = {**inputs, "content_revision": content_revision, "comic": comic,
                        "prompt_version": self.PROMPT_VERSION, "stale": False}
             self._enqueue_job(db, story_id, "visual", f"visual:{key}",
@@ -315,7 +316,7 @@ class StoryPhotosMixin:
         data, mime = self._comic_photo_bytes(story["id"], photo["photo_id"])
         data, mime, transform = photo_transform(data, mime, mode, crop)
         notes, arrows = plan["notes"], plan["arrows"]
-        if position == len(context["comic"]["photo_ids"]) - 1:
+        if position == len(context["comic"]["photo_ids"]):
             selection = context.get("place_selection") or {}
             selection = selection if isinstance(selection, dict) else {}
             anchor = ((selection.get("candidate") or {}).get("search_anchor") or {})
@@ -333,24 +334,27 @@ class StoryPhotosMixin:
             city_label, address_label = city or place, address or place
             city_in_address = address_label.casefold().startswith((city_label.casefold() + ",",
                                                                     city_label.casefold() + " "))
-            notes = list(dict.fromkeys(["История за поворотом Калининград",
+            notes = list(dict.fromkeys(["История за поворотом",
                                         *([] if city_in_address else [city_label]), address_label]))
             arrows = [""] * len(notes)
         brief_context = {
-            "selected_facts": context["selected_facts"] if position != len(context["comic"]["photo_ids"]) - 1 else [],
+            "selected_facts": context["selected_facts"] if position != len(context["comic"]["photo_ids"]) else [],
             "caption_image_notes": notes, "caption_image_note_arrows": arrows,
             "publication_concept": context.get("publication_concept"),
             "visual_instruction": context.get("visual_instruction"),
-            "place_name": context.get("place_name"),
+            "place_name": notes[0] if position == 0 and notes else context.get("place_name"),
             "source_image_transform": transform,
         }
-        suffix = ("\n\nЭто ОБЛОЖКА комикса: название, зачин и «листай →» обязательны."
+        suffix = (f"\n\nЭто ОБЛОЖКА комикса: КРУПНО напиши только «{notes[0]}», зачин и «листай →». "
+                  "Старое название рядом не повторяй."
                   if position == 0 else
-                  "\n\nЭто ФИНАЛ комикса: точно передай фирменную строку и доступное местоположение. "
-                  "Если город или адрес не указаны, не выдумывай их; используй название места."
-                  if position == len(context["comic"]["photo_ids"]) - 1 else
-                  "\n\nЭто ПРОМЕЖУТОЧНЫЙ кадр комикса. Не повторяй другие карточки.")
-        brief = self._visual_brief(dict(story), brief_context, reserve_chars=len(suffix)) + suffix
+                  "\n\nЭто ФИНАЛ комикса: отдельная ТЕКСТОЦЕНТРИЧНАЯ карточка без сюжетных фактов. "
+                  "Точно передай бренд, город и доступный адрес. Архитектурный скетч по краям "
+                  "только из видимых деталей фото; ничего не выдумывай."
+                  if position == len(context["comic"]["photo_ids"]) else
+                  "\n\nЭто СЮЖЕТНАЯ фотокарточка, а не финал. Не повторяй другие карточки.")
+        cover_story = {**story, "place_name": notes[0]} if position == 0 and notes else dict(story)
+        brief = self._visual_brief(cover_story, brief_context, reserve_chars=len(suffix)) + suffix
         return brief, data, mime, transform
 
     async def _run_visual(self, job):
@@ -368,9 +372,10 @@ class StoryPhotosMixin:
             if not self._comic_current(db, story_id, revision, photo_ids):
                 return
         plans = context["comic"]["plan"]["cards"]
+        card_photo_ids = [card["photo_id"] for card in context["comic"]["cards"]]
         await self.providers.vibepublish.bootstrap()
         inflight = 0
-        for position, photo_id in enumerate(photo_ids):
+        for position, photo_id in enumerate(card_photo_ids):
             with self.store.connection() as db:
                 if not self._comic_current(db, story_id, revision, photo_ids):
                     return
@@ -410,7 +415,7 @@ class StoryPhotosMixin:
                 if context is None:
                     return
                 card = context["comic"]["cards"][position]
-            visual_key = "ss-vp-visual-" + digest([story_id, revision, photo_id, source_asset])[:48]
+            visual_key = "ss-vp-visual-" + digest([story_id, revision, position, photo_id, source_asset])[:48]
             operation = card.get("operation_id")
             if not operation:
                 cmd = {"command": {"kind": "tune",
@@ -429,7 +434,7 @@ class StoryPhotosMixin:
             inflight += 1
         # Poll the launched batch; VibePublish handles its concurrent imagegen jobs.
         pending = False
-        for position, photo_id in enumerate(photo_ids):
+        for position, photo_id in enumerate(card_photo_ids):
             with self.store.connection() as db:
                 if not self._comic_current(db, story_id, revision, photo_ids):
                     return
