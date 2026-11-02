@@ -144,6 +144,7 @@ class OwnerRoughPlaceInstrumentedTest {
                     assertFalse(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
                     tapMember("B", 20.5004, 2)
                     assertTrue(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
+                    awaitNative(true) // the selected fill must finish rendering before the next native tap
                     // These are deliberate toggle-off/on interactions, not retries of a failed tap.
                     tapMember("A", 20.4996, 1)
                     assertFalse(requireNotNull(device.findObject(By.desc("owner-place-confirm"))).isEnabled)
