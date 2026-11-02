@@ -115,4 +115,24 @@ class ResearchControlRequestTest {
         story.draftWritingLast!!.ok = false
         assertFalse("failed captions are not announced", newlyCompletedDraft(previous, story))
     }
+
+    @Test
+    fun `finished rewrite between polls announces once and failure never announces`() {
+        val story = Gson().fromJson(
+            """{"state":"review","revision":19,"draft_text":"Новый текст","draft_writing_last":{"ok":true}}""",
+            StoryWire::class.java,
+        )
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            backendRevision = 18, draftWriting = false, draftAvailable = true,
+        )
+        assertTrue("fast rewrite of a ready draft was missed", newlyCompletedDraft(previous, story))
+        assertFalse("same finished revision must not notify twice",
+            newlyCompletedDraft(previous.copy(backendRevision = 19), story))
+        story.draftWritingLast!!.ok = false
+        assertFalse("failed rewrite retains old draft without notification",
+            newlyCompletedDraft(previous, story))
+    }
 }
