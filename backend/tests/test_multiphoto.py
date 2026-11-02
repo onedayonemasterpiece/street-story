@@ -39,8 +39,8 @@ class ComicWriter:
              "hook": "В 1910 году здесь открылся театр."},
             {"notes": ["В 1920 году была реконструкция"], "arrows": [""],
              "fact_ids": ["fact-2"], "hook": ""},
-            {"notes": ["История за поворотом Калининград", payload["city"], payload["address"]],
-             "arrows": ["", "", ""], "fact_ids": [], "hook": ""},
+            {"notes": ["В 1930 году дом стал пансионом"],
+             "arrows": [""], "fact_ids": [], "hook": ""},
         ]
         return parse(json.dumps({"text": "Комикс об объекте", "cards": cards}, ensure_ascii=False), "test-writer")
 
@@ -172,7 +172,7 @@ def test_mira_edit_text_saves_ordered_card_notes_before_visual(tmp_path):
         {"position": 0, "notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
          "arrows": ["", "", ""]},
         {"position": 1, "notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-        {"position": 2, "notes": [], "arrows": []},
+        {"position": 2, "notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
     ]
     result = adapter._edit_text(sid, "owner-notes", {
         "expected_text_revision": 0, "new_text": "Сохранённый текст поста",
@@ -205,7 +205,7 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
                     {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
                      "arrows": ["", "", ""]},
                     {"notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-                    {"notes": [], "arrows": []}]}
+                    {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]}
     svc.providers.gemini.write_caption = writer_response
     pending = svc.mutate_refinement(sid, "caption-for-cards", {
         "instruction": "Сохрани текст, добавь надписи для выбранных фото"})
@@ -215,7 +215,7 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     stored = svc.story(sid)
     assert stored["draft_text"].startswith("Новый пост о театре.")
     assert [card["position"] for card in stored["card_notes"]] == [0, 1, 2]
-    assert stored["card_notes"][-1]["notes"] == []
+    assert stored["card_notes"][-1]["notes"] == ["В 1930 году дом стал пансионом"]
     assert stored["cards"] == []
     assert calls and calls[0]["photo_count"] == 3 and calls[0]["place_name"] == "Театр"
     assert stored["draft_writing_last"]["ok"] is True
@@ -285,7 +285,7 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
          "arrows": ["", "", ""]},
         {"notes": ["В 1915 году открылась Хуфенская гимназия",
                    "Свинцовое остекление украшало окна зала"], "arrows": ["", ""]},
-        {"notes": [], "arrows": []},
+        {"notes": ["В 1945 году здание продолжало работать"], "arrows": [""]},
     ]
     assert _validated_card_notes(notes, 3, "Университетский колледж БФУ", facts) == notes
     context = {"comic": {"photo_ids": photos}, "place_name": "Университетский колледж БФУ",
@@ -342,7 +342,7 @@ async def test_comic_cover_footer_survive_writer_variation_without_map_address(t
         {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
          "arrows": ["", "", ""]},
         {"notes": ["В 1920 году здесь был ремонт"], "arrows": [""]},
-        {"notes": [], "arrows": []}]
+        {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]
     context = {"comic": {"photo_ids": photos}, "place_name": "Театр",
                "place_selection": {}, "selected_facts": []}
     with svc.store.connection() as db:
