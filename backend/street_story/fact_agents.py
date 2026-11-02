@@ -864,7 +864,6 @@ async def run_fact_agents(adapter, job, run_id, goal):
             if (result.get('provider_id') != 'codex_native' or result.get('phase') != 'completed'
                     or completion.get('research_sufficient') or not (action or gaps)
                     or (action or {}).get('kind') == 'ask_owner'
-                    or completion.get('stop_basis') == 'resource_unavailable'
                     or unresolved and not closed_reference_errors):
                 return result
             # Incremental save capability is not a semantic stopping decision.

@@ -116,7 +116,12 @@ async def test_model_continuation_retains_one_job_frozen_parent_and_exact_unknow
 @pytest.mark.asyncio
 @pytest.mark.parametrize('native_phase', ['completed_resource', 'completed_resource_with_action', 'failed', 'unknown'])
 async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts_alternative(tmp_path, monkeypatch, native_phase):
-    service, job, _, reader, _ = await fixture(tmp_path)
+    from test_native_fact_basis import setup
+    from street_story.native_fact_contract import source_candidates
+    service, job, reader, fetches, _, basis, _ = await setup(tmp_path)
+    own_read = basis['native_tool_calls']['original-read']
+    fact = basis['raw_result']['facts'][0]
+    url = fact['sources'][0]['url']
     adapter=ProductResearchAdapter(service,admission=SimpleNamespace())
     routes=[AgentRoute('codex_native','gpt-6-luna','native',object()),
         AgentRoute('gigachat','qualified-existing','https://example.org',object())]
@@ -125,9 +130,28 @@ async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts
     async def invoke(adapter, route, story, context, *, binding, guard):
         guard()
         calls.append(route.provider_id)
-        action = ({'kind': 'search', 'request': 'Blocked owned action', 'reason': 'Provider resource unavailable'}
-                  if native_phase == 'completed_resource_with_action' else None)
-        value=receipt(binding,context,packet(action, basis='resource_unavailable'),1)
+        continuing = native_phase == 'completed_resource_with_action'
+        action = ({'kind': 'read', 'request': url, 'reason': 'Read another discovered gate document'}
+                  if continuing and len(calls) == 1 else None)
+        raw = packet(action, sufficient=continuing and len(calls) == 2,
+            basis='material_exhausted' if continuing and len(calls) == 2 else 'resource_unavailable')
+        value=receipt(binding,context,raw,len(calls))
+        if continuing and route.provider_id == 'codex_native':
+            candidate = copy.deepcopy(fact)
+            if len(calls) == 1:
+                candidate['sources'][0]['url'] = 'https://unread.example/refused'
+            else:
+                pointer = context['native_continuation']
+                assert pointer['thread_id'] == 'same-owned-luna' and pointer['next_action'] == {
+                    'kind': 'read', 'request': url, 'reason': 'Read another discovered gate document'}
+                assert binding['job_id'] == job['id'] and context['run_id'] == 'headless-run'
+                assert not service.story(job['story_id'])['facts']
+                value['native_tool_calls'] = {'other-document': copy.deepcopy(own_read)}
+            value['raw_result']['facts'] = [candidate]
+            value['result'] = source_candidates(value['raw_result'])
+            value['native_threads']['same-owned-luna']['model_id'] = 'gpt-6-luna'
+            value['native_threads']['same-owned-luna']['execution_contexts'] = [
+                {'model': 'gpt-6-luna', 'turn_id': value['turn_id']}]
         if route.provider_id=='codex_native' and not native_phase.startswith('completed_resource'):
             value.update(phase=native_phase,provider_send_state='possibly_sent' if native_phase=='unknown' else 'response_closed')
             adapter._checkpoint_receipt(binding,value)
@@ -135,7 +159,7 @@ async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts
         if route.provider_id!='codex_native':
             value.update(provider_id=route.provider_id,model_id=route.model_id,raw_result={'facts':[]})
         adapter._checkpoint_receipt(binding,value)
-        return {'result':{'facts':[]},'receipt':value}
+        return {'result':value['result'],'receipt':value}
     monkeypatch.setattr('street_story.fact_agents.run_tool_agent',invoke)
     try:
         if native_phase=='unknown':
@@ -144,7 +168,14 @@ async def test_closed_native_resource_failure_uses_pool_but_unknown_never_starts
             assert calls==['codex_native']
         else:
             await run_fact_agents(adapter,job,'headless-run','Original research')
-            assert calls==['codex_native','gigachat']
+            if native_phase == 'completed_resource_with_action':
+                assert calls == ['codex_native', 'codex_native']
+                facts = service.story(job['story_id'])['facts']
+                assert len(facts) == 1 and facts[0]['eligibility'] == 'eligible'
+                assert facts[0]['sources'][0]['supports'][0]['source_version_id'] == fact['sources'][0]['source_version_id']
+                assert len(fetches) == 1
+            else:
+                assert calls==['codex_native','gigachat']
     finally:
         await reader.search_http.aclose()
 
