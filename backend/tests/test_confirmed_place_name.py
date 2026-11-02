@@ -2,11 +2,15 @@
 import json
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from street_story.agent_evidence import AgentEvidenceMixin, NETWORK_CONTRACT
+from street_story.app import create_app
+from street_story.config import reveal
 from street_story.fact_agents import _finish
 from street_story.headless_facts import HeadlessFacts
+from street_story.live import StreetStoryLiveAdapter, ensure_live_schema
 from street_story.multiphoto import StoryPhotosMixin
 from street_story.research_runs import begin_research_run
 from test_headless_facts import URL, fixture
@@ -35,16 +39,19 @@ async def test_confirmed_name_through_verifier_ledger_and_card_readback(tmp_path
         research["visual_identity"]["candidate_name"] = "Вилла"
         research["visual_identity"]["candidate_name_provenance"] = (
             "owner_voice" if case == "owner_voice" else "osm.tags.name")
-        research["caption_image_notes"] = {
-            "photo_ids": ["source", photo_id],
-            "cards": [
-                {"notes": ["Морская вилла" if case == "manual_cover" else "Вилла",
-                           "Вход в пансион", "листай →"], "arrows": ["", "", ""]},
-                {"notes": ["В доме были гости"], "arrows": [""]},
-            ],
-        }
         db.execute("UPDATE stories SET place_name=?,research_json=? WHERE id=?",
                    ("Вилла", json.dumps(research, ensure_ascii=False), sid))
+    ensure_live_schema(service)
+    editor = StreetStoryLiveAdapter(service, lambda *_: None, lambda *_: None)
+    editor._edit_text(sid, "existing-caption", {
+        "expected_text_revision": 0, "new_text": "Черновик про виллу",
+        "change_summary": "Подготовлены надписи",
+        **({"cover_title": "Морская вилла"} if case == "manual_cover" else {}),
+        "card_notes": [
+            {"position": 0, "notes": ["Вход в пансион", "листай →"], "arrows": ["", ""]},
+            {"position": 1, "notes": ["В доме были гости"], "arrows": [""]},
+        ],
+    })
 
     calls = []
     async def verify(payload, *, checkpoint, guard):
@@ -105,7 +112,12 @@ async def test_confirmed_name_through_verifier_ledger_and_card_readback(tmp_path
         proposed = ("Вилла Зее-Адлер у моря" if case == "stronger_next_run"
                     else AGENT_NAME if case in {"accepted", "same_name_twice", "manual_cover"}
                     else "Вилла")
-        result = service.story(sid)
+        app = create_app(service.settings, service)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
+                headers={"Authorization": "Bearer " + reveal(service.settings.device_token)}) as client:
+            response = await client.get(f"/v1/stories/{sid}")
+        assert response.status_code == 200
+        result = response.json()
         assert result["place_name"] == proposed
         assert result["visual_identity"]["candidate_name"] == "Вилла"
         assert result["card_notes"][0]["notes"][0] == (
