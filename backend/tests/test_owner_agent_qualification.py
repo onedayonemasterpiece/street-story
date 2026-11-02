@@ -221,6 +221,7 @@ def test_native_retention_and_incremental_save_qualify_without_second_http_read(
 async def test_native_acceptance_qualified_preserves_configured_routes(tmp_path, monkeypatch):
     """A two-route service proof must not be narrowed before actual qualification."""
     import native_facts_acceptance as harness
+    monkeypatch.setattr(harness.os, 'environ', dict(harness.os.environ))
     import owner_place_acceptance
     from street_story import config, fact_agents, runtime
 
