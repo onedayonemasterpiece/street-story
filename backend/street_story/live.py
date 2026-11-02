@@ -730,12 +730,17 @@ FUNCTIONS = [
                 "Only for an exact wording the author dictated, or when the result says caption_writer_unavailable."},
             "change_summary": {"type": "string"},
             "allow_literal_changes": {"type": "boolean"},
+            "cover_title": {"type": "string", "description":
+                "Only when the author explicitly chooses a new cover title (also via saved concept): "
+                "pass that exact title. Omit for hook-only edits; the accepted title is retained."},
             "card_notes": {"type": "array", "items": {"type": "object", "properties": {
                 "position": {"type": "integer"},
                 "notes": {"type": "array", "items": {"type": "string"}},
                 "arrows": {"type": "array", "items": {"type": "string"}},
             }, "required": ["position", "notes", "arrows"]}, "description":
-                "Optional replacement for all ordered comic cards; cover includes title and листай →, final is empty."},
+                "Exactly N ordered photo-story card notes (including the last selected photo); "
+                "cover has the selected POI title, a hook and листай →. "
+                "The separate N+1 text-only finale is created by the server, not included here."},
         },
         ["expected_text_revision", "change_summary"],
     ),
@@ -5905,6 +5910,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             from .multiphoto import selected_photos
             card_photo_ids = [p["photo_id"] for p in selected_photos(db, story_id)]
             literals = [str(item.get("text") or "") for item in self._literal_spans(editor["literal_json"]) if item.get("text")]
+            saved = json.loads(story["research_json"] or "{}").get("caption_image_notes") or {}
+            cover_name = str(story["place_name"] or "")
+            if isinstance(saved, dict) and saved.get("photo_ids") == card_photo_ids and saved.get("cards"):
+                cover_name = str((saved["cards"][0].get("notes") or [cover_name])[0])
         state = await asyncio.to_thread(self._topic_state, story_id)
         context = await asyncio.to_thread(self._compact_context, state)
         facts = [{"text": str(item.get("text") or ""), "fact_id": str(item.get("fact_id") or ""),
@@ -5941,7 +5950,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 facts=facts, place=place, literal_fragments=literals,
                 photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts,
                 lead_fact=lead["text"] if lead else None,
-                **({"photo_count": len(card_photo_ids), "place_name": str(story["place_name"] or "")}
+                **({"photo_count": len(card_photo_ids), "place_name": cover_name}
                    if len(card_photo_ids) > 1 else {}))
             if len(card_photo_ids) > 1:
                 written["card_photo_ids"] = card_photo_ids
@@ -6137,9 +6146,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "SELECT text FROM facts WHERE story_id=? AND fact_id IN (" +
                     ",".join("?" for _ in selected_ids) + ")",
                     (story_id, *selected_ids))] if selected_ids else []
+                previous_title = (
+                    str((previous["cards"][0].get("notes") or [""])[0])
+                    if isinstance(previous, dict) and previous.get("photo_ids") == current_photo_ids
+                    and previous.get("cards") else "")
                 try:
                     validated = _validated_card_notes(
-                        proposed, len(current_photo_ids), str(story["place_name"] or ""), selected)
+                        proposed, len(current_photo_ids), str(story["place_name"] or ""), selected,
+                        str(args.get("cover_title") or previous_title))
                 except ValueError as exc:
                     raise ConflictError("card_notes_invalid", str(exc)) from exc
                 research["caption_image_notes"] = {

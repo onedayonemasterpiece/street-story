@@ -39,8 +39,8 @@ class ComicWriter:
              "hook": "В 1910 году здесь открылся театр."},
             {"notes": ["В 1920 году была реконструкция"], "arrows": [""],
              "fact_ids": ["fact-2"], "hook": ""},
-            {"notes": ["История за поворотом Калининград", payload["city"], payload["address"]],
-             "arrows": ["", "", ""], "fact_ids": [], "hook": ""},
+            {"notes": ["В 1930 году дом стал пансионом"],
+             "arrows": [""], "fact_ids": [], "hook": ""},
         ]
         return parse(json.dumps({"text": "Комикс об объекте", "cards": cards}, ensure_ascii=False), "test-writer")
 
@@ -172,7 +172,7 @@ def test_mira_edit_text_saves_ordered_card_notes_before_visual(tmp_path):
         {"position": 0, "notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
          "arrows": ["", "", ""]},
         {"position": 1, "notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-        {"position": 2, "notes": [], "arrows": []},
+        {"position": 2, "notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
     ]
     result = adapter._edit_text(sid, "owner-notes", {
         "expected_text_revision": 0, "new_text": "Сохранённый текст поста",
@@ -200,12 +200,12 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     async def writer_response(**kwargs):
         calls.append(kwargs)
         return {"text": "Новый пост о театре.\n\nКалининград\n#Калининград",
-                "model": "gpt-6.1-sol",
+                "model": "gpt-6.1-sol", "cover_title": "Новый театр",
                 "card_notes": [
                     {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
                      "arrows": ["", "", ""]},
                     {"notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-                    {"notes": [], "arrows": []}]}
+                    {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]}
     svc.providers.gemini.write_caption = writer_response
     pending = svc.mutate_refinement(sid, "caption-for-cards", {
         "instruction": "Сохрани текст, добавь надписи для выбранных фото"})
@@ -215,14 +215,16 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     stored = svc.story(sid)
     assert stored["draft_text"].startswith("Новый пост о театре.")
     assert [card["position"] for card in stored["card_notes"]] == [0, 1, 2]
-    assert stored["card_notes"][-1]["notes"] == []
+    assert stored["card_notes"][0]["notes"] == [
+        "Новый театр", "В 1910 году здесь открылся театр", "листай →"]
+    assert stored["card_notes"][-1]["notes"] == ["В 1930 году дом стал пансионом"]
     assert stored["cards"] == []
     assert calls and calls[0]["photo_count"] == 3 and calls[0]["place_name"] == "Театр"
     assert stored["draft_writing_last"]["ok"] is True
 
 
 @pytest.mark.asyncio
-async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
+async def test_card_notes_visible_before_generation_then_four_cards(tmp_path):
     svc, sid, writer, vp = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
     photos = ["source", *ids]
@@ -230,7 +232,7 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
     notes = [
         {"notes": ["Театр", "В 1910 году открылся театр", "листай →"], "arrows": ["", "", ""]},
         {"notes": ["В 1920 году была реконструкция"], "arrows": [""]},
-        {"notes": [], "arrows": []},
+        {"notes": ["В 1925 году здание использовали как дом"], "arrows": [""]},
     ]
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET draft_text='Пост готов',research_json=? WHERE id=?",
@@ -241,8 +243,8 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
     assert preview["draft_text"] == "Пост готов"
     assert preview["card_notes"] == [{"position": i, **card} for i, card in enumerate(notes)]
     snapshot = {
-        "comic": {"photo_ids": photos, "cards": [{"photo_id": p} for p in photos],
-                  "plan": {"cards": notes}},
+        "comic": {"photo_ids": photos, "cards": [{"photo_id": p} for p in [*photos, photos[-1]]],
+                  "plan": {"cards": [*notes, {"notes": [], "arrows": []}]}},
         "selected_facts": [{"fact_id": "fact-1", "text": "В 1910 году открылся театр."},
                            {"fact_id": "fact-2", "text": "В 1920 году была реконструкция."}],
         "place_name": "Театр", "place_selection": {"address": "Светлогорск, улица Тестовая, 1"},
@@ -253,16 +255,19 @@ async def test_card_notes_visible_before_generation_then_three_cards(tmp_path):
         svc._enqueue_job(db, sid, "visual", "visual:test-comic",
                          {"content_revision": "comic-1", "selected_fact_ids": ["fact-1", "fact-2"]})
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
+    from street_story.errors import RetryableProviderError
+    with pytest.raises(RetryableProviderError):
+        await svc._run_visual(job)
     await svc._run_visual(job)
     result = svc.story(sid)
     assert result["state"] == "ready_to_publish"
-    assert len(result["cards"]) == 3
-    assert [cmd["kind"] for cmd in vp.commands].count("tune") == 3
+    assert len(result["cards"]) == 4
+    assert [cmd["kind"] for cmd in vp.commands].count("tune") == 4
     assert writer.calls == 0  # visual never invokes a second writer
     assert result["card_notes"] == preview["card_notes"]
     with svc.store.connection() as db:
         visual = json.loads(svc._story_row(db, sid)["visual_context_json"])
-        assert [p["asset_ref"] for p in visual["comic"]["cards"]] == ["card-1", "card-2", "card-3"]
+        assert [p["asset_ref"] for p in visual["comic"]["cards"]] == ["card-1", "card-2", "card-3", "card-4"]
 
 
 @pytest.mark.asyncio
@@ -282,7 +287,7 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
          "arrows": ["", "", ""]},
         {"notes": ["В 1915 году открылась Хуфенская гимназия",
                    "Свинцовое остекление украшало окна зала"], "arrows": ["", ""]},
-        {"notes": [], "arrows": []},
+        {"notes": ["В 1945 году здание продолжало работать"], "arrows": [""]},
     ]
     assert _validated_card_notes(notes, 3, "Университетский колледж БФУ", facts) == notes
     context = {"comic": {"photo_ids": photos}, "place_name": "Университетский колледж БФУ",
@@ -297,7 +302,8 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
     # Live 01.11: the confirmed map anchor carries the full address; the finale shows it.
     anchored = {**context, "place_name": "Комсомольская, 3", "place_selection": {"candidate": {
         "search_anchor": {"city": "Калининград", "address": "Калининград, Комсомольская улица, 3"}}}}
-    final_brief, *_ = svc._comic_brief(story, anchored, 2, {"photo_id": photos[2]}, notes[2])
+    final_brief, *_ = svc._comic_brief(story, anchored, 3, {"photo_id": photos[2]},
+                                       {"notes": [], "arrows": []})
     assert "Калининград, Комсомольская улица, 3" in final_brief
     bad = json.loads(json.dumps(notes, ensure_ascii=False))
     bad[1]["notes"][0] = "Очень " * 20 + "длинное сообщение"
@@ -338,16 +344,17 @@ async def test_comic_cover_footer_survive_writer_variation_without_map_address(t
         {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
          "arrows": ["", "", ""]},
         {"notes": ["В 1920 году здесь был ремонт"], "arrows": [""]},
-        {"notes": [], "arrows": []}]
+        {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}]
     context = {"comic": {"photo_ids": photos}, "place_name": "Театр",
                "place_selection": {}, "selected_facts": []}
     with svc.store.connection() as db:
         story = dict(svc._story_row(db, sid))
     cover, *_ = svc._comic_brief(story, context, 0, {"photo_id": "source"}, notes[0])
-    final, *_ = svc._comic_brief(story, context, 2, {"photo_id": photos[-1]}, notes[-1])
+    final, *_ = svc._comic_brief(story, context, 3, {"photo_id": photos[-1]},
+                                  {"notes": [], "arrows": []})
     assert "В 1910 году здесь открылся театр" in cover
     assert "листай →" in cover
-    assert "История за поворотом Калининград" in final
+    assert "История за поворотом" in final
     assert "Театр" in final
     assert writer.calls == 0
 
@@ -361,9 +368,9 @@ async def test_comic_footer_uses_known_city_without_inventing_address(tmp_path):
     context = {"comic": {"photo_ids": ["source", *ids]},
                "place_name": "Театр", "place_selection": {"city": "Пионерский"},
                "selected_facts": []}
-    final, *_ = svc._comic_brief(story, context, 2, {"photo_id": ids[-1]},
+    final, *_ = svc._comic_brief(story, context, 3, {"photo_id": ids[-1]},
                                 {"notes": [], "arrows": []})
-    assert "История за поворотом Калининград" in final
+    assert "История за поворотом" in final
     assert "Пионерский" in final
     assert writer.calls == 0
 
@@ -444,10 +451,11 @@ async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
         svc.add_story_photo(sid, "extra-" + str(i), photo_id, shot("yellow"), "image/jpeg")
     all_ids = ["source", *ids]
     svc.order_story_photos(sid, "order-eight", {"photo_ids": all_ids})
-    snapshot = {"comic": {"photo_ids": all_ids, "cards": [{"photo_id": photo_id} for photo_id in all_ids],
+    snapshot = {"comic": {"photo_ids": all_ids,
+                           "cards": [{"photo_id": photo_id} for photo_id in [*all_ids, all_ids[-1]]],
                            "plan": {"cards": [
-                               {"notes": ["История дома"], "arrows": [""], "fact_ids": []}
-                               for _ in all_ids]}},
+                               *[{"notes": ["История дома"], "arrows": [""], "fact_ids": []}
+                                 for _ in all_ids], {"notes": [], "arrows": []}]}},
                 "selected_facts": [], "place_name": "Тестовый дом",
                 "photo_format": {}, "content_revision": "eight-1", "stale": False}
     with svc.store.tx() as db:
@@ -461,8 +469,8 @@ async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
             await svc._run_visual(job)
         assert len(vp.operations) == expected  # Existing VibePublish still owns its queue.
     await svc._run_visual(job)
-    assert len(vp.operations) == 8
-    assert len(svc.story(sid)["cards"]) == 8
+    assert len(vp.operations) == 9
+    assert len(svc.story(sid)["cards"]) == 9
 
 
 @pytest.mark.asyncio
@@ -514,7 +522,7 @@ def test_comic_card_reserves_brief_capacity_for_cover_and_final_instructions(tmp
         {"notes": ["История за поворотом Калининград", "Калининград", "Зоологическая улица, 2"],
          "arrows": ["", "", ""], "fact_ids": []},
     )
-    for position, plan in ((0, plans[0]), (2, plans[1])):
+    for position, plan in ((0, plans[0]), (3, plans[1])):
         brief, _data, _mime, _transform = svc._comic_brief(
             story, context, position, {"photo_id": "source"}, plan)
         assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT

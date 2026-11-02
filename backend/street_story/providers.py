@@ -779,7 +779,7 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
 
 
 def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
-                          facts: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
+                          facts: list[dict[str, Any]], cover_title: str = "") -> list[dict[str, list[str]]]:
     """Normalize the writer's card lettering; never reject it.
 
     Owner decision 01.11.2026: a mechanical format slip must not discard the post (one rejected
@@ -797,15 +797,12 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
             text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—–-")
         return text
 
-    def same_title(text: str) -> str:
-        return re.sub(r"[\s№]+", "", text.casefold())
+    def same_title(value: str) -> str:
+        return re.sub(r"[\s№]+", "", value.casefold())
 
     result = []
     for position in range(photo_count):
         card = raw[position] if position < len(raw) and isinstance(raw[position], dict) else {}
-        if position == photo_count - 1 and photo_count > 1:
-            result.append({"notes": [], "arrows": []})  # brand, city and address come from the server
-            continue
         notes = card.get("notes") if isinstance(card.get("notes"), list) else []
         arrows = card.get("arrows") if isinstance(card.get("arrows"), list) else []
         pairs = [(clean(note, 70), clean(arrows[i] if i < len(arrows) else "", 80))
@@ -815,8 +812,13 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
         pairs = [(re.sub(r"(?i)\s*листай\s*→\s*$", "", note), arrow) for note, arrow in pairs]
         pairs = [(note, arrow) for note, arrow in pairs if note]
         if position == 0:
-            if place_name and not any(same_title(note) == same_title(place_name) for note, _ in pairs):
-                pairs.insert(0, (clean(place_name, 70), ""))
+            title = clean(cover_title or place_name, 70)
+            if title:
+                # Title is selected by the writer/editor, never guessed from note text.
+                displayed = next((note for note, _ in pairs if same_title(note) == same_title(title)), title)
+                pairs = [(note, arrow) for note, arrow in pairs if same_title(note) not in {
+                    same_title(title), same_title(place_name)}]
+                pairs.insert(0, (title if cover_title else displayed, ""))
             pairs = pairs[:3] + [("листай →", "")]
         else:
             pairs = pairs[:4]
@@ -3947,16 +3949,19 @@ class GeminiClient:
         comic_rules = (
             "\n\nДля N>1 фото одним и тем же ответом напиши текст поста и card_notes — ровно N "
             "объектов в порядке выбранных фото, каждый {notes: [...], arrows: [...]}. "
-            "Обложка: notes[0] точно равно place_name, затем зачин по lead_fact не длиннее 70 символов и до 12 слов "
-            "и отдельное «листай →»; стрелки для названия и CTA пустые. "
-            "Промежуточные карточки: 1–3 надписи, каждая 3–8 слов и не длиннее 70 символов. "
+            "Обложка: notes[0] — place_name по умолчанию; если автор явно выбрал иное название "
+            "в owner_request или publication_concept, верни точное имя в cover_title (иначе опусти); "
+            "на обложке используй только выбранное имя, затем "
+            "зачин по lead_fact не длиннее 70 символов и 12 слов и отдельное «листай →». "
+            "Стрелки названия и CTA пустые. "
+            "Все остальные фото, включая последнее, — сюжетные: 1–3 надписи по 3–8 слов до 70 знаков. "
             "Факты распределяй по карточкам без повторения; каждая надпись только из своих "
             "проверенных facts, никаких новых оценок, событий или причин. "
             "Иностранные слова только дословно из самих фактов (собственные имена, названия "
             "и надписи). Никаких иероглифов и слов других письменностей. "
             "Стрелки только на видимое на выбранном фото сейчас; если это прошлое, стрелка пустая. "
             "Время прошлого указывай в прошедшем времени со своим периодом. "
-            "Финал: notes: [], arrows: []; бренд, город и адрес добавит сервер. "
+            "Отдельный финал после всех N фотокарточек добавит сервер, не включай его в card_notes. "
             "«листай →» допускается только отдельной надписью на обложке. "
             "image_notes/image_note_arrows при N>1 оставь пустыми."
         ) if multi else ""
@@ -3970,8 +3975,11 @@ class GeminiClient:
             result = {"text": _capitalized_hashtags(text), "model": model,
                       "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
             if multi:
+                title = str(answer.get("cover_title") or "").strip()
+                if title:
+                    result["cover_title"] = title
                 result["card_notes"] = _validated_card_notes(
-                    answer.get("card_notes"), photo_count, place_name, facts)
+                    answer.get("card_notes"), photo_count, place_name, facts, title)
             return result
 
         if getattr(getattr(self, "settings", None), "external_writers", False):
@@ -3980,7 +3988,8 @@ class GeminiClient:
                 instruction = (
                     "\n\nВерни ОДИН JSON-объект с text, throughline, parts_on_photo, outline, "
                     "draft, check, image_notes, image_note_arrows и card_notes "
-                    "(ровно N объектов {notes: [...], arrows: [...]}). Без пояснений."
+                    "(ровно N объектов {notes: [...], arrows: [...]}), cover_title только "
+                    "если автор явно переименовал обложку. Без пояснений."
                     if multi else external_writers.ANSWER)
                 kwargs = ({"answer_instruction": instruction,
                            "validate": lambda item: convert(item, "validation")} if multi else {})
@@ -3994,6 +4003,7 @@ class GeminiClient:
         schema = self.WRITER_SCHEMA
         if multi:
             schema = {**schema, "properties": {**schema["properties"],
+                "cover_title": {"type": "string"},
                 "card_notes": {"type": "array", "items": {"type": "object",
                     "properties": {"notes": {"type": "array", "items": {"type": "string"}},
                                    "arrows": {"type": "array", "items": {"type": "string"}}},
