@@ -8,3 +8,4 @@ local.properties
 .live-framework/
 __pycache__/
 backend/data/
+/data/street-story.sqlite3
