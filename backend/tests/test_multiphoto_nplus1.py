@@ -18,10 +18,22 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
         db.execute("UPDATE stories SET place_name='Вилла Зее-Адлер' WHERE id=?", (sid,))
     ensure_live_schema(svc)
     editor = StreetStoryLiveAdapter(svc, lambda *_: None, lambda *_: None)
+    editor._edit_text(sid, "default-cover-text", {
+        "expected_text_revision": 0, "new_text": "Черновик про историю виллы",
+        "change_summary": "Надписи обложки по умолчанию",
+        "card_notes": [
+            {"position": 0, "notes": ["В 1910 году здесь построили дом", "В 1920 году дом обновили"],
+             "arrows": ["", ""]},
+            {"position": 1, "notes": ["В 1930 году в доме открыли пансион"], "arrows": [""]},
+        ]})
+    default_preview = svc.story(sid)
+    assert default_preview["card_notes"][0]["notes"] == [
+        "Вилла Зее-Адлер", "В 1910 году здесь построили дом", "В 1920 году дом обновили", "листай →"]
+    assert default_preview["card_notes"][1]["notes"] == ["В 1930 году в доме открыли пансион"]
     editor._set_concept(sid, "owner-cover-concept", {
         "concept": "Обложка называется «Морская вилла»; сохранить исходные сюжеты."})
     editor._edit_text(sid, "owner-cover-text", {
-        "expected_text_revision": 0, "new_text": "История приморского дома",
+        "expected_text_revision": 1, "new_text": "История приморского дома",
         "change_summary": "Изменено название обложки",
         "card_notes": [
             {"position": 0, "notes": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
