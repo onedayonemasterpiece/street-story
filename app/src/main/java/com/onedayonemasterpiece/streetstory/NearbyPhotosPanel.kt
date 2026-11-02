@@ -45,7 +45,7 @@ class NearbyPhotosPanel(
             (value.byteCount / 1024).coerceAtLeast(1)
     }
     private val workers = Executors.newFixedThreadPool(2)
-    private var mode = "choose"
+    private var mode = store.photoSelectionMode(storyId)
     private var lastCandidateSignature: String? = null
     private var lastCardsSignature: String? = null
     private var candidates: List<Candidate> = emptyList()
@@ -83,8 +83,9 @@ class NearbyPhotosPanel(
             if (selected.isEmpty()) {
                 Toast.makeText(activity, "Выберите хотя бы одно фото", Toast.LENGTH_SHORT).show()
             } else {
-                mode = "order"
                 saveAndQueue()
+                mode = "order"
+                store.setPhotoSelectionMode(storyId, mode)
                 showMode()
             }
         }
@@ -96,7 +97,11 @@ class NearbyPhotosPanel(
         addView(puzzle)
         changeSelection.text = "Изменить выбор"
         changeSelection.contentDescription = "change-photo-selection"
-        changeSelection.setOnClickListener { mode = "choose"; showMode() }
+        changeSelection.setOnClickListener {
+            mode = "choose"
+            store.setPhotoSelectionMode(storyId, mode)
+            showMode()
+        }
         addView(changeSelection)
         cardTitle.visibility = GONE
         cardsGrid.apply { columnCount = 3; rowCount = 3; contentDescription = "story-cards-grid" }
@@ -194,7 +199,7 @@ class NearbyPhotosPanel(
 
     private fun drawPuzzle() {
         puzzle.removeAllViews()
-        for (index in 0..8) {
+        for (index in 0..selected.size) {
             val tile = FrameLayout(activity)
             val params = GridLayout.LayoutParams(GridLayout.spec(index / 3), GridLayout.spec(index % 3)).apply {
                 width = tileWidth(); height = tileWidth()
@@ -242,26 +247,23 @@ class NearbyPhotosPanel(
         cardTitle.visibility = if (visible) VISIBLE else GONE
         cardsGrid.visibility = if (visible) VISIBLE else GONE
         if (!visible) return
-        for (index in 0..8) {
+        for (index in cards.indices) {
             val tile = FrameLayout(activity)
             val params = GridLayout.LayoutParams(GridLayout.spec(index / 3), GridLayout.spec(index % 3)).apply {
                 width = tileWidth(); height = tileWidth()
                 setMargins(dp(2), dp(2), dp(2), dp(2))
             }
-            val card = cards.getOrNull(index)
-            if (card == null) tile.setBackgroundColor(0xffd7ddd1.toInt())
-            else {
-                val image = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-                tile.addView(image, FrameLayout.LayoutParams(-1, -1))
-                loadCard(image, card.url)
-                val number = text((index + 1).toString(), 12, true).apply {
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(0x99000000.toInt())
-                }
-                tile.addView(number, FrameLayout.LayoutParams(dp(26), dp(30), Gravity.TOP or Gravity.START))
-                tile.contentDescription = "story-card-" + index
-                tile.setOnClickListener { showCardCarousel(cards, index) }
+            val card = cards[index]
+            val image = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+            tile.addView(image, FrameLayout.LayoutParams(-1, -1))
+            loadCard(image, card.url)
+            val number = text((index + 1).toString(), 12, true).apply {
+                setTextColor(Color.WHITE)
+                setBackgroundColor(0x99000000.toInt())
             }
+            tile.addView(number, FrameLayout.LayoutParams(dp(26), dp(30), Gravity.TOP or Gravity.START))
+            tile.contentDescription = "story-card-" + index
+            tile.setOnClickListener { showCardCarousel(cards, index) }
             cardsGrid.addView(tile, params)
         }
     }
