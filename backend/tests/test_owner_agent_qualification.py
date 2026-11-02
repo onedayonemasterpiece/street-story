@@ -215,3 +215,44 @@ def test_native_retention_and_incremental_save_qualify_without_second_http_read(
     else:
         actual, _ = load_agent_qualification(path, routes=routes)
         assert actual == proof
+
+
+@pytest.mark.asyncio
+async def test_native_acceptance_qualified_preserves_configured_routes(tmp_path, monkeypatch):
+    """A two-route service proof must not be narrowed before actual qualification."""
+    import native_facts_acceptance as harness
+    import owner_place_acceptance
+    from street_story import config, fact_agents, runtime
+
+    configured = [{'provider_id': 'codex_native', 'model_id': 'gpt-6-luna'},
+                  {'provider_id': 'gigachat', 'model_id': 'GigaChat-2'}]
+    environment = {'STREET_STORY_FACT_AGENT_ROUTES': json.dumps(configured)}
+    installer = SimpleNamespace(PROVIDERS_ENV=tmp_path/'providers', SERVICE_ENV=tmp_path/'service',
+        require_mode=lambda *_: None, parse_dotenv=lambda _: environment)
+    monkeypatch.setattr(harness, 'load_installer', lambda: installer)
+    monkeypatch.setattr(harness, 'managed', Path)
+    monkeypatch.setattr(harness, 'require_frozen_checkout', lambda sha: sha)
+    monkeypatch.setattr(harness, 'registry_item', lambda *_: ({'camera_gps': {'status': 'verified_exif'}}, b'photo'))
+    monkeypatch.setattr(harness.logging, 'basicConfig', lambda **_: None)
+    monkeypatch.setattr(config.Settings, 'from_env', lambda: None)
+    service = SimpleNamespace(providers=SimpleNamespace(research=object(), vibepublish=None))
+    monkeypatch.setattr(runtime, 'RuntimeStreetStoryService', lambda _: service)
+
+    def observed_routes(*_args, **_kwargs):
+        return [SimpleNamespace(provider_id=item['provider_id'])
+                for item in json.loads(harness.os.environ['STREET_STORY_FACT_AGENT_ROUTES'])]
+    monkeypatch.setattr(fact_agents, 'configured_routes', observed_routes)
+
+    class QualifiedBoundaryReached(Exception):
+        pass
+
+    def validate_whole_proof(_path, *, routes):
+        assert [route.provider_id for route in routes] == ['codex_native', 'gigachat']
+        raise QualifiedBoundaryReached
+    monkeypatch.setattr(owner_place_acceptance, 'load_agent_qualification', validate_whole_proof)
+    args = SimpleNamespace(output=tmp_path/'case', registry=tmp_path/'registry', message=104,
+        expected_sha='source', agent_qualification=tmp_path/'proof', additions=0,
+        continue_from=None, coverage_goal=None, resume_closed_native=False, resume_product=False,
+        recover_assessments_from=None, owner_address_from_registry=False)
+    with pytest.raises(QualifiedBoundaryReached):
+        await harness.run(args)
