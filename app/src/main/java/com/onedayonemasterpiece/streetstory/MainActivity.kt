@@ -166,15 +166,29 @@ class MainActivity : Activity() {
         pendingSharedPhotos = restoredPhotos
         photoLocationRequestInFlight = savedInstanceState?.getBoolean("photo_location_request") ?: false
         buildChrome()
-        val active = activeStoryId
-        if (active != null && store.story(active) != null) showTopic(active) else showTopics()
+        if (!openNotificationStory(intent)) {
+            val active = activeStoryId
+            if (active != null && store.story(active) != null) showTopic(active) else showTopics()
+        }
         if (savedInstanceState == null) receiveSharedPhoto(intent)
         else if (pendingSharedPhotos != null && !photoLocationRequestInFlight) launchPhotoPicker()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        receiveSharedPhoto(intent)
+        if (!openNotificationStory(intent)) receiveSharedPhoto(intent)
+    }
+
+    private fun openNotificationStory(openIntent: Intent): Boolean {
+        val id = openIntent.getStringExtra(EXTRA_OPEN_STORY_ID)
+            ?.takeIf { store.story(it) != null } ?: return false
+        openIntent.removeExtra(EXTRA_OPEN_STORY_ID)
+        setIntent(openIntent)
+        showTopic(id)
+        return true
     }
 
     private fun receiveSharedPhoto(sharedIntent: Intent) {
@@ -728,8 +742,10 @@ class MainActivity : Activity() {
         live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
 
-        topicTitleView?.text = "Тема"
-        dockTopic?.text = "Тема · ${topicTitle(story)}"
+        val projection = research.get(id)
+        val coverName = coverDisplayName(projection?.cardNotes.orEmpty(), story.placeName) ?: topicTitle(story)
+        topicTitleView?.text = "Название · $coverName"
+        dockTopic?.text = "Тема · $coverName"
 
         val meaningful = story.stage in setOf(
             StoryStage.IDENTIFYING,
@@ -770,7 +786,6 @@ class MainActivity : Activity() {
             if (preview == null) listOfNotNull(previewImage, stickyImage).forEach { showServerThumbnail(story, it) }
         }
 
-        val projection = research.get(id)
         previewText?.apply {
             val draft = story.draftText?.takeIf { it.isNotBlank() }
             val preview = SpannableStringBuilder()
@@ -2527,6 +2542,8 @@ class MainActivity : Activity() {
         private const val REQUEST_GALLERY_ACCESS = 715
         private const val REQUEST_PHOTO = 710
         private const val REQUEST_MIC = 711
+        private const val REQUEST_NOTIFICATIONS = 716
+        const val EXTRA_OPEN_STORY_ID = "open_story_id"
         private const val UPDATE_INTERVAL_MS = 6L * 60L * 60L * 1000L
         private const val SAGE = 0xffe8ece4.toInt()
         private const val SAGE_DARK = 0xffd7ddd1.toInt()
