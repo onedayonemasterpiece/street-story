@@ -138,7 +138,7 @@
 
 ## Действия и границы
 
-**В коде:** PR 324 (legacy/IDN) и PR 326 (поиск) уже объединены; подписанный Android [0.1.1743](https://github.com/onedayonemasterpiece/street-story/releases/tag/android-v1743) опубликован. PR 327 (N+1 и название обложки) объединён после независимого [PASS](https://github.com/onedayonemasterpiece/street-story/pull/327#pullrequestreview-5740295177); его backend/checks/emulator CI зелёные. CI не доказывает реальный imagegen, физический телефон или серверное live-развёртывание; инцидент телефона открыт.
+**В коде:** PR 324 (legacy/IDN) и PR 326 (поиск) уже объединены; подписанный Android [0.1.1761](https://github.com/onedayonemasterpiece/street-story/releases/tag/android-v1761) опубликован из main (включая PR 327). PR 327 (N+1 и название обложки) объединён после независимого [PASS](https://github.com/onedayonemasterpiece/street-story/pull/327#pullrequestreview-5740295177); его backend/checks/emulator CI зелёные. CI не доказывает реальный imagegen, физический телефон или серверное live-развёртывание; инцидент телефона открыт.
 
 **Следующая приёмка:** после штатной серверной установки из `origin/main` проверить N реальных сюжетов + отдельную финальную, крупное имя обложки и её переименование в разрешённом imagegen/readback без публикации. Физический телефон и оставшиеся пользовательские критерии OPEN. **Поиск** остаётся у своего исполнителя; **индекс** исключён владельцем.
 
