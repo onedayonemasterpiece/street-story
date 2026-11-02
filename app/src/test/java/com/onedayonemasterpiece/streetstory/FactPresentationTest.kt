@@ -128,6 +128,9 @@ class FactPresentationTest {
         assertEquals("Википедия", FactPresentation.sourceLabel(wikipedia))
         assertEquals("Клопс", FactPresentation.sourceLabel(klops))
         assertEquals("Официальный сайт", FactPresentation.sourceLabel(official))
+        val rantava = SourceWire().apply { url = "https://xn--80aaah7cqq.xn--p1ai/villa" }
+        assertEquals("рантава.рф", FactPresentation.sourceLabel(rantava))
+        assertEquals("xn--80aaah7cqq.xn--p1ai", FactPresentation.sourceHost(rantava))
         assertEquals("ru.wikipedia.org", FactPresentation.sourceHost(wikipedia))
     }
 
