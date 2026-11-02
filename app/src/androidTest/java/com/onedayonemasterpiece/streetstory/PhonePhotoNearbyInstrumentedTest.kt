@@ -302,9 +302,14 @@ class PhonePhotoNearbyInstrumentedTest {
                 val orderAfter = store.selectedStoryPhotos(storyId).map { it.photoId }
                 assertEquals(2, orderAfter.size)
                 assertNotEquals("Drag must durably change card order", orderBefore, orderAfter)
+                // Older installed APKs saved the confirmed photo order but had no photo-mode preference.
+                prefs.edit().remove("photo-mode:$storyId").commit()
                 scenario.recreate()
                 scenario.onActivity { activity ->
                     assertEquals(orderAfter, store.selectedStoryPhotos(storyId).map { it.photoId })
+                    assertEquals(View.GONE, requireNotNull(find(activity.window.decorView, "nearby-photo-grid")).visibility)
+                    val panel = requireNotNull(find(activity.window.decorView, "nearby-photos")) as NearbyPhotosPanel
+                    assertEquals("Выбранные фотографии", (panel.getChildAt(0) as android.widget.TextView).text)
                     val cover = requireNotNull(find(activity.window.decorView, "order-tile-0")) as ViewGroup
                     assertEquals("1 · Обложка", (cover.getChildAt(1) as android.widget.TextView).text)
                     assertEquals("Reopened cover must show reordered first photo",

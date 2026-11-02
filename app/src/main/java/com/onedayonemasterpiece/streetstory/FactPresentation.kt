@@ -120,6 +120,7 @@ internal object FactPresentation {
     fun sourceLabel(source: SourceWire): String {
         if (source.type == "official") return "Официальный сайт"
         val host = sourceHost(source)
+        val readableHost = java.net.IDN.toUnicode(host)
         return when {
             host == "wikipedia.org" || host.endsWith(".wikipedia.org") -> "Википедия"
             host == "klops.ru" || host.endsWith(".klops.ru") -> "Клопс"
@@ -129,6 +130,7 @@ internal object FactPresentation {
             host == "gov39.ru" || host.endsWith(".gov39.ru") -> "Правительство Калининградской области"
             host == "museum-ocean.ru" || host.endsWith(".museum-ocean.ru") -> "Музей Мирового океана"
             host == "visit-kaliningrad.ru" || host.endsWith(".visit-kaliningrad.ru") -> "Visit Kaliningrad"
+            readableHost != host -> readableHost
             host.isNotBlank() -> host.split('.').let { parts ->
                 val core = parts.getOrNull((parts.size - 2).coerceAtLeast(0)).orEmpty()
                 core.replace('-', ' ').replaceFirstChar { ch ->
