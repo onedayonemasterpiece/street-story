@@ -243,9 +243,30 @@ class PhonePhotoNearbyInstrumentedTest {
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
                     assertTrue("source plus a long candidate list", grid.adapter.count >= 25)
-                    grid.setSelection(grid.adapter.count - 1)
                 }
-                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                // A real swipe must reach the end: setSelection() bypasses nested touch dispatch.
+                repeat(16) {
+                    var atEnd = false
+                    var bounds = IntArray(2)
+                    var height = 0
+                    var width = 0
+                    scenario.onActivity { activity ->
+                        val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
+                        atEnd = grid.lastVisiblePosition == grid.adapter.count - 1
+                        grid.getLocationOnScreen(bounds)
+                        height = grid.height
+                        width = grid.width
+                    }
+                    if (atEnd) return@repeat
+                    device.swipe(bounds[0] + width / 2, bounds[1] + height * 4 / 5,
+                        bounds[0] + width / 2, bounds[1] + height / 5, 25)
+                    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                }
+                scenario.onActivity { activity ->
+                    val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
+                    assertEquals("Finger swipes must reach final candidate",
+                        grid.adapter.count - 1, grid.lastVisiblePosition)
+                }
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
