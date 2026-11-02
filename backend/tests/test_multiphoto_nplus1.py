@@ -40,7 +40,7 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
         "concept": "Обложка называется «Морская вилла»; сохранить исходные сюжеты."})
     editor._edit_text(sid, "owner-cover-text", {
         "expected_text_revision": 1, "new_text": "История приморского дома",
-        "change_summary": "Изменено название обложки",
+        "change_summary": "Изменено название обложки", "cover_title": "Морская вилла",
         "card_notes": [
             {"position": 0, "notes": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
              "arrows": ["", "", ""]},
@@ -102,7 +102,7 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
     },
     {
         "request": "Назови обложку «Морская вилла», сохрани зачин",
-        "summary": "Изменено название обложки",
+        "summary": "Изменено название обложки", "cover_title": "Морская вилла",
         "notes": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
         "expected": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
     },
@@ -119,6 +119,7 @@ def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_
         "expected_text_revision": 0, "new_text": "История здания",
         "writing_request": cover_change["request"],
         "change_summary": cover_change["summary"],
+        **({"cover_title": cover_change["cover_title"]} if "cover_title" in cover_change else {}),
         "card_notes": [
             {"position": 0, "notes": cover_change["notes"],
              "arrows": [""] * len(cover_change["notes"])},
@@ -152,6 +153,22 @@ def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_
     assert "В 1930 году вилла стала пансионом" in last_photo
     assert "Это ФИНАЛ" not in last_photo
     assert "Это ФИНАЛ" in final and "История за поворотом" in final
+    editor._edit_text(sid, "hook-after-cover-edit", {
+        "expected_text_revision": 1, "new_text": "Новый зачин",
+        "change_summary": "Изменён только зачин",
+        "card_notes": [
+            {"position": 0, "notes": ["В 1920 году обновили виллу", "листай →"],
+             "arrows": ["", ""]},
+            {"position": 1, "notes": ["В 1930 году вилла стала пансионом"], "arrows": [""]},
+        ],
+    })
+    updated = svc.story(sid)
+    assert updated["card_notes"][0]["notes"] == [
+        title, "В 1920 году обновили виллу", "листай →"]
+    updated_cover, *_ = svc._comic_brief(story, context, 0, {"photo_id": photos[0]},
+                                        updated["card_notes"][0])
+    assert "КРУПНО напиши только «" + title + "»" in updated_cover
+    assert "В 1920 году обновили виллу" in updated_cover
 
 
 @pytest.mark.asyncio
