@@ -779,7 +779,7 @@ def _cached_document_discovery(store, requested_url: str, document: dict) -> dic
 
 
 def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
-                          facts: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
+                          facts: list[dict[str, Any]], author_request: str = "") -> list[dict[str, list[str]]]:
     """Normalize the writer's card lettering; never reject it.
 
     Owner decision 01.11.2026: a mechanical format slip must not discard the post (one rejected
@@ -812,8 +812,9 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
         pairs = [(re.sub(r"(?i)\s*листай\s*→\s*$", "", note), arrow) for note, arrow in pairs]
         pairs = [(note, arrow) for note, arrow in pairs if note]
         if position == 0:
-            if place_name and len(pairs) < 2 and not any(
-                    same_title(note) == same_title(place_name) for note, _ in pairs):
+            if (place_name and not any(
+                    same_title(note) == same_title(place_name) for note, _ in pairs)
+                    and not (pairs and same_title(pairs[0][0]) in same_title(author_request))):
                 pairs.insert(0, (clean(place_name, 70), ""))
             pairs = pairs[:3] + [("листай →", "")]
         else:
@@ -3971,7 +3972,8 @@ class GeminiClient:
                       "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
             if multi:
                 result["card_notes"] = _validated_card_notes(
-                    answer.get("card_notes"), photo_count, place_name, facts)
+                    answer.get("card_notes"), photo_count, place_name, facts,
+                    owner_request + " " + concept)
             return result
 
         if getattr(getattr(self, "settings", None), "external_writers", False):
