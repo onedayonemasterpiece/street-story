@@ -451,6 +451,14 @@ def agent_context(identity, goal, run_id, now):
         'address. When the tagged address finds nothing or its street is not near the contour, look '
         'for this same building under addresses on those streets, and bind a source to it only on the '
         'source\'s own evidence. Attribute knowledge only to the selected building, never to a neighbour. '
+        'For the cover name, compare the selected house\'s own OSM name with names on actually read '
+        'Yandex and 2GIS cards, brochures and other sources. Only a stronger CURRENT name, '
+        'explicitly attested for THIS physical house in a read source, may be nominated through ONE '
+        'substantive, fully source-supported fact; state both present-day naming and the actual '
+        'historical/architectural assertion. An old name or a tenant/organisation is not current proof. '
+        'Use claim_key "cover-name:<exact name>" and start text with "<exact name>: " '
+        'followed by current naming and a real historical or architectural assertion. Do not create a name-only fact, '
+        'use a nearby POI or infer a name from unread snippets; otherwise nominate no cover name. '
         'Read the full page before citing it. Never invent facts to meet a count.')
     return {'selected_object': selected, 'editorial_goal': task_goal, 'run_id': run_id,
         'review_as_of_date_utc': datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
@@ -1059,7 +1067,37 @@ def _finish(adapter, job, run_id, headless, epoch, reason, *, pending, content_g
         unavailable = reason == 'research_routes_unavailable'
         set_run_state(db, run_id, 'failed' if unavailable else 'partial' if pending else 'completed', detail=reason,
             now=adapter.service.store.now(), completed=not pending or unavailable)
+        identity = research.get('visual_identity') or {}
+        if not pending and identity.get('candidate_name') and not str(identity.get('candidate_name_provenance') or '').startswith('owner'):
+            titles = db.execute(
+                "SELECT DISTINCT a.semantic_key,a.display_text,f.sources_json FROM fact_assertions a "
+                "JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
+                "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='eligible' AND o.status='accepted' "
+                "AND a.semantic_key LIKE 'cover-name:%'", (story['id'], run_id)).fetchall()
+            names = set()
+            for key, fact_text, sources in titles:
+                name = fact_text.split(': ', 1)[0].strip()
+                if not (2 <= len(name) <= 100 and name.casefold() == key[len('cover-name:'):]):
+                    continue
+                for source in json.loads(sources or '[]'):
+                    checks = source.get('confirmation_checks') or {}
+                    excerpt = source.get('confirmed_fragment', '') + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')
+                    if (source.get('subject_scope') == 'selected_building'
+                            and checks.get('object_relation') == 'selected_building'
+                            and checks.get('temporal_basis') == 'current_supported'
+                            and name.casefold() in excerpt.casefold()):
+                        names.add(name)
+                        break
+            if len(names) == 1:
+                name = names.pop()
+                if name != story['place_name']:
+                    cards = (research.get('caption_image_notes') or {}).get('cards') or []
+                    if cards and cards[0].get('notes') and cards[0]['notes'][0] == story['place_name']:
+                        cards[0]['notes'][0] = name
+                    db.execute('UPDATE stories SET place_name=?,revision=revision+1 WHERE id=?',
+                               (name, story['id']))
         db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN ? ELSE state END,updated_at=? WHERE id=?',
-            (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
+                   (canonical(research), 'facts_ready', adapter.service.store.now(), story['id']))
     adapter.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:'+run_id, value)
     return value

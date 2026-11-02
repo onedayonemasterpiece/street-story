@@ -611,7 +611,17 @@ class AgentEvidenceMixin:
         if native_verified is not None:
             source.update(verification_level='one_model', assessment_origin='native_research_single_model',
                 original_native_attempt_id=agent['attempt_id'])
-        item = {'text': row['text'], 'claim_key': row['claim_key'],
+        proposed = str(candidate.get('claim_key') or (candidate.get('native_fact') or {}).get('claim_key') or '')
+        name = proposed.removeprefix('cover-name:') if proposed.startswith('cover-name:') else ''
+        checks = row.get('checks') or {}
+        title_basis = row['confirmed_fragment'] + ' ' + (checks.get('relation_basis') or {}).get('fragment', '')
+        keep_name = (name and row['verdict'] == 'supported' and not row['existing_fact_id']
+            and checks.get('object_relation') == 'selected_building'
+            and checks.get('temporal_basis') == 'current_supported'
+            and row['subject_scope'] == 'selected_building'
+            and row['text'].casefold().startswith(name.casefold() + ': ')
+            and name.casefold() in title_basis.casefold())
+        item = {'text': row['text'], 'claim_key': proposed if keep_name else row['claim_key'],
                 'existing_fact_id': row['existing_fact_id'], 'confidence': 1.0,
                 'selected': False, 'sources': [source]}
         with self.store.tx() as db:
