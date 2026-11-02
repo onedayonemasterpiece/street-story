@@ -102,5 +102,17 @@ class ResearchControlRequestTest {
         story.draftWritingLast = DraftWritingWire().apply { ok = true }
         story.draftText = "Готовый текст"
         assertFalse("completed writer should stop polling", shouldPollStory(story))
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            draftWriting = true,
+        )
+        assertTrue("newly completed caption is announced", newlyCompletedDraft(previous, story))
+        assertFalse("ordinary re-sync does not announce again",
+            newlyCompletedDraft(previous.copy(draftWriting = false, draftAvailable = true), story))
+        assertFalse("old story at first sync does not produce an alert", newlyCompletedDraft(null, story))
+        story.draftWritingLast!!.ok = false
+        assertFalse("failed captions are not announced", newlyCompletedDraft(previous, story))
     }
 }
