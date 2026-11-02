@@ -1612,6 +1612,49 @@ async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_pat
     assert undone["literal_spans"]
 
 
+@pytest.mark.parametrize("operation", ["literal_finish", "undo", "literal_then_undo"])
+def test_writer_success_then_manual_edit_keeps_nonwriter_provenance_in_api_readback(tmp_path, operation):
+    from fastapi.testclient import TestClient
+    from street_story.app import create_app
+
+    svc, adapter, session, _events = make_service(tmp_path)
+    sid = session.resource_id
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text=? WHERE id=?", ("Текст до писателя", sid))
+    adapter._edit_text(sid, "writer-first", {
+        "expected_text_revision": 0, "new_text": "Пост писателя",
+        "change_summary": "Новая генерация",
+    }, composed_by="writer:sol")
+    with svc.store.tx() as db:
+        row = svc._story_row(db, sid)
+        research = json.loads(row["research_json"] or "{}")
+        research["draft_writing_last"] = {"job_id": "old-writer", "ok": True}
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), sid))
+
+    client = TestClient(create_app(settings=svc.settings, service=svc))
+    def readback():
+        response = client.get(f"/v1/stories/{sid}", headers={"Authorization": "Bearer device"})
+        assert response.status_code == 200
+        return response.json()
+
+    before = readback()
+    assert before["draft_composed_by"] == "writer:sol"
+    assert before["draft_writing_last"]["ok"] is True
+    if operation in {"literal_finish", "literal_then_undo"}:
+        adapter._literal_begin(session, {"position": "end"})
+        session.state["literal"]["buffer"].append("Дословная вставка")
+        adapter._literal_finish(session, "literal-after-writer")
+    if operation in {"undo", "literal_then_undo"}:
+        adapter._undo(sid, "undo-after-writer")
+
+    after = readback()
+    assert after["revision"] > before["revision"]
+    assert after["draft_text"] != before["draft_text"] if operation != "literal_then_undo" else after["draft_text"] == before["draft_text"]
+    assert after["draft_writing"] is None
+    assert after["draft_writing_last"]["ok"] is True
+    assert after["draft_composed_by"] == "mira_live"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner_request', [
     'Выбери самые интересные факты для аудитории. Пока только выбор, текст не меняй.',

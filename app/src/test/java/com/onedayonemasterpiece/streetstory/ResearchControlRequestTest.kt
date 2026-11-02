@@ -100,6 +100,7 @@ class ResearchControlRequestTest {
         assertTrue("writer must keep background sync alive", shouldPollStory(story))
         story.draftWriting = null
         story.draftWritingLast = DraftWritingWire().apply { ok = true }
+        story.draftComposedBy = "writer:gpt-6.1-sol"
         story.draftText = "Готовый текст"
         assertFalse("completed writer should stop polling", shouldPollStory(story))
         val previous = ResearchProjectionSnapshot(
@@ -148,5 +149,37 @@ class ResearchControlRequestTest {
         story.draftWritingLast!!.ok = false
         assertFalse("failed rewrite retains old draft without notification",
             newlyCompletedDraft(previous, "Старый текст", story))
+    }
+
+    @Test
+    fun `manual edit after writer success must not trigger caption notification in any poll state`() {
+        val wire = Gson().fromJson(
+            """{"state":"review","revision":19,"draft_text":"Ручная правка",
+               "draft_composed_by":"mira_live","draft_writing_last":{"ok":true}}""",
+            StoryWire::class.java,
+        )
+        val previous = ResearchProjectionSnapshot(
+            identityStatus = null, candidateId = null, candidateName = null,
+            observations = emptyList(), candidates = emptyList(), sources = emptyList(),
+            sourceCount = 0, researchRevision = null, researchVoiceIds = emptyList(),
+            backendRevision = 18, draftAvailable = true, draftComposedBy = "writer:sol",
+        )
+        for (composer in listOf("mira_live", "owner_editor")) {
+            wire.draftComposedBy = composer
+            for (writingObserved in listOf(false, true)) {
+                for (hadDraft in listOf(false, true)) {
+                    assertFalse("$composer writing=$writingObserved draft=$hadDraft",
+                        newlyCompletedDraft(previous.copy(draftWriting = writingObserved, draftAvailable = hadDraft),
+                            "Пост писателя", wire))
+                }
+            }
+        }
+        wire.draftComposedBy = "writer:sol"
+        assertTrue("completed first writer", newlyCompletedDraft(previous.copy(draftAvailable = false), null, wire))
+        assertTrue("writer observed in progress", newlyCompletedDraft(previous.copy(draftWriting = true), "Пост писателя", wire))
+        assertTrue("fast writer rewrite missed between polls", newlyCompletedDraft(previous, "Пост писателя", wire))
+        assertFalse("subsequent unchanged sync", newlyCompletedDraft(previous.copy(backendRevision = 19), "Ручная правка", wire))
+        wire.draftWritingLast!!.ok = false
+        assertFalse("failed writer", newlyCompletedDraft(previous.copy(draftWriting = true), "Пост писателя", wire))
     }
 }
