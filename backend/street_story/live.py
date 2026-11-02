@@ -735,7 +735,9 @@ FUNCTIONS = [
                 "notes": {"type": "array", "items": {"type": "string"}},
                 "arrows": {"type": "array", "items": {"type": "string"}},
             }, "required": ["position", "notes", "arrows"]}, "description":
-                "Optional replacement for all ordered comic cards; cover includes title and листай →, final is empty."},
+                "Exactly N ordered photo-story card notes (including the last selected photo); "
+                "cover has the selected POI title, a hook and листай →. "
+                "The separate N+1 text-only finale is created by the server, not included here."},
         },
         ["expected_text_revision", "change_summary"],
     ),
@@ -6139,7 +6141,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     (story_id, *selected_ids))] if selected_ids else []
                 try:
                     validated = _validated_card_notes(
-                        proposed, len(current_photo_ids), str(story["place_name"] or ""), selected)
+                        proposed, len(current_photo_ids), str(story["place_name"] or ""), selected,
+                        str(research.get("publication_concept") or "") + " " + summary)
                 except ValueError as exc:
                     raise ConflictError("card_notes_invalid", str(exc)) from exc
                 research["caption_image_notes"] = {
