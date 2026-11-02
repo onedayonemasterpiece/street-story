@@ -22,14 +22,20 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
         "expected_text_revision": 0, "new_text": "Черновик про историю виллы",
         "change_summary": "Надписи обложки по умолчанию",
         "card_notes": [
-            {"position": 0, "notes": ["В 1910 году здесь построили дом", "В 1920 году дом обновили"],
-             "arrows": ["", ""]},
+            {"position": 0, "notes": ["В 1910 году здесь построили дом", "В 1920 году дом обновили",
+                                      "листай →"],
+             "arrows": ["", "", ""]},
             {"position": 1, "notes": ["В 1930 году в доме открыли пансион"], "arrows": [""]},
         ]})
     default_preview = svc.story(sid)
     assert default_preview["card_notes"][0]["notes"] == [
         "Вилла Зее-Адлер", "В 1910 году здесь построили дом", "В 1920 году дом обновили", "листай →"]
     assert default_preview["card_notes"][1]["notes"] == ["В 1930 году в доме открыли пансион"]
+    from street_story.live import FUNCTIONS
+    schema = next(tool for tool in FUNCTIONS if tool["name"] == "edit_text")
+    help_text = schema["parameters"]["properties"]["card_notes"]["description"]
+    assert "including the last selected photo" in help_text
+    assert "separate N+1" in help_text
     editor._set_concept(sid, "owner-cover-concept", {
         "concept": "Обложка называется «Морская вилла»; сохранить исходные сюжеты."})
     editor._edit_text(sid, "owner-cover-text", {
@@ -67,6 +73,7 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
     await svc._run_visual(job)
     result = svc.story(sid)
     assert [card["position"] for card in result["cards"]] == [0, 1, 2]
+    assert result["card_notes"][1]["notes"] == ["В 1920 году здание обновили"]
     assert len(vp.operations) == 3
     assert len({str(op["asset"]) for op in vp.operations.values()}) == 3
     with svc.store.connection() as db:
