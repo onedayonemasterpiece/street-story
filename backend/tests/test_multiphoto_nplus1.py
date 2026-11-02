@@ -77,7 +77,6 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
 @pytest.mark.parametrize("photo_count", [2, 8])
 async def test_real_visual_request_appends_one_card_without_extra_writer_notes(tmp_path, monkeypatch, photo_count):
     from street_story import fact_ledger
-    from street_story.service import digest
     import uuid
 
     svc, sid, writer, _vp = make_runtime(tmp_path)
