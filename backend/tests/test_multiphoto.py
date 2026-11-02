@@ -200,7 +200,7 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     async def writer_response(**kwargs):
         calls.append(kwargs)
         return {"text": "Новый пост о театре.\n\nКалининград\n#Калининград",
-                "model": "gpt-6.1-sol",
+                "model": "gpt-6.1-sol", "cover_title": "Новый театр",
                 "card_notes": [
                     {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
                      "arrows": ["", "", ""]},
@@ -215,6 +215,8 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     stored = svc.story(sid)
     assert stored["draft_text"].startswith("Новый пост о театре.")
     assert [card["position"] for card in stored["card_notes"]] == [0, 1, 2]
+    assert stored["card_notes"][0]["notes"] == [
+        "Новый театр", "В 1910 году здесь открылся театр", "листай →"]
     assert stored["card_notes"][-1]["notes"] == ["В 1930 году дом стал пансионом"]
     assert stored["cards"] == []
     assert calls and calls[0]["photo_count"] == 3 and calls[0]["place_name"] == "Театр"
