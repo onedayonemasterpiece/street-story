@@ -13,6 +13,7 @@ import android.util.LruCache
 import android.util.Size
 import android.view.DragEvent
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AbsListView
@@ -76,6 +77,15 @@ class NearbyPhotosPanel(
             adapter = chooseAdapter
             contentDescription = "nearby-photo-grid"
             isVerticalScrollBarEnabled = true
+            // Keep vertical drags inside the grid; the enclosing topic ScrollView otherwise steals them.
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> view.parent.requestDisallowInterceptTouchEvent(true)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        view.parent.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
         }
         addView(chooseGrid, LayoutParams(LayoutParams.MATCH_PARENT, dp(316)))
         done.contentDescription = "nearby-photo-done"
