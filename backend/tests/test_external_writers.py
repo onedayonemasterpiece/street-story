@@ -155,8 +155,8 @@ def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
 
     missing = {"notes": ["В 1954 году здесь открылась поликлиника"], "arrows": [""]}
     restored = _validated_card_notes([missing, *rest], 3, place, facts)[0]
-    assert restored == {"notes": [missing["notes"][0], "листай →"],
-                        "arrows": ["", ""]}
+    assert restored == {"notes": [place, missing["notes"][0], "листай →"],
+                        "arrows": ["", "", ""]}
 
     four = {"notes": [place, "В 1954 году здесь открылась поликлиника",
                        "На фасаде видны большие окна", ""],
