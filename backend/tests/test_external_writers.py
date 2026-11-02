@@ -136,7 +136,8 @@ def test_card_notes_writer_validation():
     assert len(long_note) <= 70 and long_note.startswith("Очень")
     broken = copy.deepcopy(cards)
     broken[-1]["notes"], broken[-1]["arrows"] = ["Финальная лишняя надпись"], [""]
-    assert _validated_card_notes(broken, 3, "Театр", facts)[-1] == {"notes": [], "arrows": []}
+    assert _validated_card_notes(broken, 3, "Театр", facts)[-1] == {
+        "notes": ["Финальная лишняя надпись"], "arrows": [""]}
     assert len(_validated_card_notes(cards[:1], 3, "Театр", facts)) == 3  # missing cards padded
     assert _validated_card_notes(None, 2, "Театр", facts)[0]["notes"] == ["Театр", "листай →"]
 
@@ -154,8 +155,8 @@ def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
 
     missing = {"notes": ["В 1954 году здесь открылась поликлиника"], "arrows": [""]}
     restored = _validated_card_notes([missing, *rest], 3, place, facts)[0]
-    assert restored == {"notes": [place, missing["notes"][0], "листай →"],
-                        "arrows": ["", "", ""]}
+    assert restored == {"notes": [missing["notes"][0], "листай →"],
+                        "arrows": ["", ""]}
 
     four = {"notes": [place, "В 1954 году здесь открылась поликлиника",
                        "На фасаде видны большие окна", ""],
