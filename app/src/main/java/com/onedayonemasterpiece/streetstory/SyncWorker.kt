@@ -39,7 +39,8 @@ internal fun newlyCompletedDraft(
     previous != null && wire.draftWriting == null && wire.draftWritingLast?.ok == true &&
         !wire.draftText.isNullOrBlank() &&
         (previous.draftWriting || !previous.draftAvailable ||
-            (wire.revision > previous.backendRevision && previousDraft != null && previousDraft != wire.draftText))
+            (wire.revision > previous.backendRevision && previousDraft != null &&
+                previousDraft != wire.draftText && wire.draftComposedBy?.startsWith("writer:") == true))
 
 internal fun shouldPollStory(wire: StoryWire): Boolean =
     wire.draftWriting != null ||
