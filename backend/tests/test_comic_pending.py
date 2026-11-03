@@ -44,10 +44,12 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
         return reply
 
     monkeypatch.setattr(vp, 'visual', visual)
-    finished = False
+    finished = selection_terminal = False
 
     async def status(operation):
         index = int(operation.removeprefix('visual-'))
+        if selection_terminal and vp.operations[operation]['done']:
+            return {'receipts': [{'operation_id': operation, 'state': 'failed'}]}
         if index > 3 and not finished:
             return {'receipts': [{'operation_id': operation, 'state': 'processing'}]}
         return await original_status(operation)
@@ -73,7 +75,10 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
     assert job['state'] == 'retry' and job['attempts'] == 11 and job['last_error'] is None
     svc = RuntimeStreetStoryService(svc.settings, svc.providers)
-    svc.recover_jobs()  # App startup must not turn normal polls into failures either.
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET state='running',lease_until=0 WHERE id=?", (job['id'],))
+    svc.recover_jobs()  # Expired claim between healthy polls, then another startup.
+    svc.recover_jobs()
     assert svc.story(sid)['state'] == 'visual_processing'
     # A prior release may already have stopped this same saved album.
     with svc.store.tx() as db:
@@ -121,3 +126,9 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
             db.execute("UPDATE jobs SET available_at=0 WHERE story_id=?", (sid,))
         assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
     assert len(tunes) == 15 and svc.story(sid)['state'] == 'ready_to_publish'
+    selection_terminal = True
+    await svc.request_visual(sid, 'terminal-after-select', body)
+    assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
+    with svc.store.connection() as db:
+        assert svc._story_row(db, sid)['error_code'] == 'visual_generation_failed'
+    assert svc.story(sid)['state'] == 'needs_review'

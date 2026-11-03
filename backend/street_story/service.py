@@ -163,7 +163,8 @@ class StreetStoryService:
                 self._fail_retry_exhausted(db, job, "retry_budget_exhausted")
                 changed += 1
             changed += db.execute(
-                "UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=COALESCE(last_error,'worker_restart_recovery'),updated_at=? "
+                "UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error="
+                "CASE WHEN kind='visual' THEN last_error ELSE COALESCE(last_error,'worker_restart_recovery') END,updated_at=? "
                 "WHERE state='running' AND lease_until<=?",
                 (now, now, now),
             ).rowcount

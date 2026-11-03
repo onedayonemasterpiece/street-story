@@ -459,8 +459,6 @@ class StoryPhotosMixin:
             if state in {"accepted", "running", "queued", "processing"}:
                 pending = True
                 continue
-            if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
-                raise PermanentProviderError("VibePublish comic card ended in " + str(state))
             candidate = card.get("candidate") or {}
             if state == "needs_selection":
                 choices = receipt.get("candidates")
@@ -484,6 +482,8 @@ class StoryPhotosMixin:
                 # Provider select reply may omit immutable candidate identity;
                 # use the same authoritative status receipt as the single-image path.
                 receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
+            if receipt.get("state") in {"blocked", "failed", "outcome_unknown", "cancelled"}:
+                raise PermanentProviderError("VibePublish comic card ended in " + str(receipt.get("state")))
             if receipt.get("state") != "verified":
                 pending = True
                 continue
