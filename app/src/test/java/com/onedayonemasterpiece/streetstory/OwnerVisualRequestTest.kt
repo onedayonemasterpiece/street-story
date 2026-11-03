@@ -40,4 +40,18 @@ class OwnerVisualRequestTest {
         assertNotNull(OwnerVisualRequest.capture(story, projection.copy(sourceAvailable = false), facts, localSourceReadable = true))
         assertNull(OwnerVisualRequest.capture(story, projection.copy(photoSha256 = "old"), facts, localSourceReadable = false))
     }
+
+    @Test fun outdated_preview_allows_a_new_visual_after_regeneration_and_text_edit() {
+        val complete = story.copy(stage = StoryStage.READY_TO_PUBLISH, processedImagePath = "preview",
+            processedImageUrl = "https://example/A", processedImageBytesUrl = "https://example/A")
+        assertFalse(complete.previewOutdated)
+        assertNull(OwnerVisualRequest.capture(complete, projection, facts))
+        val pending = complete.copy(stage = StoryStage.VISUAL_PROCESSING, processedImageUrl = null)
+        assertTrue(pending.previewOutdated)
+        assertNull(OwnerVisualRequest.capture(pending, projection, facts))
+        val edited = pending.copy(stage = StoryStage.NEEDS_REVIEW, draftText = "Новый текст")
+        assertNotNull(OwnerVisualRequest.capture(edited, projection, facts))
+        assertNull(OwnerVisualRequest.capture(edited.copy(processedImageBytesUrl = null), projection, facts))
+    }
+
 }
