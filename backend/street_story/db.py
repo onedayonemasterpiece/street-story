@@ -485,6 +485,18 @@ CREATE INDEX IF NOT EXISTS idx_research_chunk_batches_run_chunk
 
 
 POI_SCHEMA = r"""
+-- External owner research receipts, not a second facts/POI database.
+CREATE TABLE IF NOT EXISTS poi_intake_packets(
+  packet_id TEXT PRIMARY KEY,
+  campaign TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_intake_campaign
+ ON poi_intake_packets(campaign,created_at,packet_id);
+
 CREATE TABLE IF NOT EXISTS pois(
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL CHECK(status IN ('candidate','verified','merged')),
@@ -798,6 +810,20 @@ class ScopedConnection(sqlite3.Connection):
 
 
 class Store:
+    @classmethod
+    def open_existing(cls, path: Path):
+        """Attach an owner operator without migrations/backfills on each read.
+
+        Schema installation remains the normal product deployment's responsibility.
+        A missing database is an error, never an empty replacement registry.
+        """
+        path = path.expanduser().resolve(strict=True)
+        if not path.is_file():
+            raise ValueError('existing_database_required')
+        store = object.__new__(cls)
+        store.path = path
+        return store
+
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)

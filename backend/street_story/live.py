@@ -896,6 +896,7 @@ Research and durable evidence:
 - Before lengthy research briefly say "Ищу факты"; the app shows progress. Do not read the inventory aloud: end with counts, remaining gaps and at most 1-2 important saved findings. A research-only request must not select facts or draft a publication.
 
 Concept, editing and publication:
+- cinema_provenance lists saved film links and partner contributions for the current eligible selection, not proof that every cinema fact belongs to a partner. When preparing a post, briefly tell the owner which selected material is attributed to «Снято в Калининграде» (partner_id snyato-v-kaliningrade), so the owner can choose VK coauthorship. Independent and unknown provenance are different. Recheck final selected/frozen materials after changes; unselected partner facts do not trigger coauthorship. Do not invite a coauthor or claim a logo/film frame was published. Frame candidates are not automatically selected or rights-cleared; use only supported product operations and preserve original media.
 - Persist an owner's publication angle with set_concept while preserving the saved fact selection. A concept, draft or visual request does not authorize choosing different facts to fit the angle. If other facts would help, ask the author before changing selection. Call select_facts only when the author explicitly asks to choose or change facts; an explicit instruction to preserve the selection takes precedence. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events. Connecting words are assertions too: "continues", "still", "since then", "therefore", "as before" need support in the selected facts; a later different use is a change, not continuity of purpose. Name an institution as it was called at the dated event and mention a successor only as "ныне …" when a fact says so. Do not imply original fabric ("these walls") when an eligible fact reports later rebuilding; tell the author if such a fact changes the meaning of the selection.
@@ -2866,6 +2867,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def _compact_context(state: dict[str, Any], *, fact_preview_limit: int = 48) -> dict[str, Any]:
         story = state["story"]
         inventory = list(story.get("facts", []))
+        from .poi_intake import cinema_editor_context
+        cinema_provenance = cinema_editor_context(inventory)
         if fact_preview_limit < 48:
             inventory.sort(key=lambda item: not bool(item.get("selected")))
         facts = [
@@ -2946,6 +2949,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
                            'images_reviewed_count', 'visual_comparison_verified'}},
             "facts": facts,
+            "cinema_provenance": cinema_provenance,
             "fact_count": len(inventory),
             "facts_preview_truncated": len(inventory) > fact_preview_limit,
             "facts_read_tool": "get_facts",

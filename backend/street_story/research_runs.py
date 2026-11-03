@@ -367,7 +367,7 @@ def register_discovered_source(
 def persist_source_version(
     db,
     *,
-    run_id: str,
+    run_id: str | None,
     requested_url: str,
     final_url: str,
     title: str,
@@ -470,6 +470,8 @@ def persist_source_version(
                 now,
             ),
         )
+        if run_id is None:
+            continue  # External owner research freezes sources without inventing a story/job.
         attached = db.execute(
             "INSERT OR IGNORE INTO research_chunk_runs("
             "run_id,chunk_id,status,observation_count,error_code,model_name,prompt_version,updated_at"
@@ -479,16 +481,17 @@ def persist_source_version(
         if attached:
             reuse_chunk_checkpoint(db, run_id, chunk_id, now)
 
-    register_discovered_source(
-        db,
-        run_id=run_id,
-        url=str(requested_url or clean_final).rstrip("/"),
-        title=title,
-        status="fetched" if read_status == "complete" else "partial",
-        source_version_id=source_version_id,
-        error_code=None,
-        now=now,
-    )
+    if run_id is not None:
+        register_discovered_source(
+            db,
+            run_id=run_id,
+            url=str(requested_url or clean_final).rstrip("/"),
+            title=title,
+            status="fetched" if read_status == "complete" else "partial",
+            source_version_id=source_version_id,
+            error_code=None,
+            now=now,
+        )
     return {
         "document_id": document_id,
         "source_version_id": source_version_id,
