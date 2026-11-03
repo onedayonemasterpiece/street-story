@@ -480,8 +480,18 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
                 title="Удивительная история виллы" if url == exact else "Other page",
                 content_type="text/html", http_status=200, redirect_chain=[],
                 normalized_text=text if url == exact else "Справочная страница. " * 100,
-                read_status="complete", access_scope="public", now=svc.store.now() + index)
+                read_status="partial_fixture" if url == exact else "complete",
+                access_scope="public", now=svc.store.now() + index)
         db.execute("UPDATE research_runs SET state='completed' WHERE run_id=?", (run,))
+        from street_story.fact_ledger import accept_fact_basis, persist_fact_candidates, refresh_review_status, set_owner_selection
+        from test_fact_ledger import fact
+        fid = persist_fact_candidates(db, story_id=story_id, poi_key="building-A",
+            facts=[fact("house", "Построен в 1906 году.", exact, "Построен в 1906 году.")],
+            run_id=run, batch_id="b", model_name="test", prompt_version="test", now=svc.store.now())[0]
+        evidence = [row[0] for row in db.execute("SELECT evidence_id FROM fact_evidence_spans")]
+        accept_fact_basis(db, story_id, fid, evidence, operation={"contract": "source-reading-assessment-v2"}, now=svc.store.now())
+        refresh_review_status(db, story_id, svc.store.now())
+        set_owner_selection(db, story_id, [fid], svc.store.now())
         before = db.execute("SELECT count(*) FROM jobs").fetchone()[0]
         facts_before = [tuple(row) for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))]
 
@@ -490,7 +500,8 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
         pool = payload["reading_candidates"]
         assert len(pool) == 4
         article = next(item for item in pool if item["url"] == exact)
-        assert article["excerpt"] == text
+        assert article["excerpt"] == text  # Entire retained text, including an explicitly partial capture.
+        assert article["read_status"] == "partial_fixture"
         assert "2019" in article["excerpt"][550:]
         assert article["source_version_id"].startswith("srcv_")
         return SimpleNamespace(text=json.dumps({"text": "История виллы.", "reading_reviews": [
@@ -514,9 +525,15 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
     assert [item["url"] for item in offered] == [exact, urls[1], urls[2]]
     assert not any(item["selected"] for item in offered)
     assert exact not in svc.story(story_id)["draft_text"]
-    base = {"text": "История виллы.", "selected_fact_ids": [], "expected_identity_generation": generation}
+    base = {"text": "История виллы.", "selected_fact_ids": [fid], "expected_identity_generation": generation}
     selected = save_draft(svc, story_id, "select-article", {**base, "reading_selected_urls": [exact]})
     assert selected["draft_text"].count(exact) == 1
+    from street_story.publication_content import publication_content, publication_plain_content
+    assert any(item.get("kind") == "link" and item.get("url") == exact
+        for item in publication_content(selected["draft_text"])["paragraphs"][0])
+    assert exact in publication_plain_content(selected["draft_text"])["text"]
+    assert save_draft(svc, story_id, "select-article",
+        {**base, "reading_selected_urls": [exact]})["draft_text"] == selected["draft_text"]
     # A fresh store read is the normal reopen/readback; it keeps draft, facts and owner opt-in.
     assert svc.story(story_id)["reading_articles"][0]["selected"] is True
     assert svc.story(story_id)["draft_text"] == selected["draft_text"]
@@ -530,7 +547,24 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
         db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
         assert next_generation == generation + 1
     assert svc.story(story_id)["reading_articles"] == []
-    from street_story.errors import ConflictError
-    with pytest.raises(ConflictError, match="reading_selection_invalid"):
-        save_draft(svc, story_id, "old-article-on-B", {**base,
+    from street_story.service import ConflictError
+    mark_identity_ready(svc, story_id, name="Другое здание")
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, story_id)["research_json"])
+        research["visual_identity"]["candidate_id"] = "wiki:88"
+        research["visual_identity"]["candidates"][0]["candidate_id"] = "wiki:88"
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
+        run_b = begin_research_run(db, story_id=story_id, poi_key="building-B",
+            goal="Read B", expected_story_revision=0, identity_generation=next_generation,
+            run_id="articles-b", now=svc.store.now())
+        fid_b = persist_fact_candidates(db, story_id=story_id, poi_key="building-B",
+            facts=[fact("house-b", "Другой дом построен в 1910 году.", "https://other.example", "Другой дом построен в 1910 году.")],
+            run_id=run_b, batch_id="b", model_name="test", prompt_version="test", now=svc.store.now())[0]
+        evidence = [row[0] for row in db.execute("SELECT evidence_id FROM fact_evidence_spans WHERE source_url=?", ("https://other.example",))]
+        accept_fact_basis(db, story_id, fid_b, evidence, operation={"contract": "source-reading-assessment-v2"}, now=svc.store.now())
+        refresh_review_status(db, story_id, svc.store.now())
+        set_owner_selection(db, story_id, [fid_b], svc.store.now())
+    with pytest.raises(ConflictError) as rejected:
+        save_draft(svc, story_id, "old-article-on-B", {**base, "selected_fact_ids": [fid_b],
             "expected_identity_generation": next_generation, "reading_selected_urls": [exact]})
+    assert rejected.value.code == "reading_selection_invalid"

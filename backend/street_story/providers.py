@@ -3946,7 +3946,7 @@ class GeminiClient:
             "lead_fact": lead_fact,
             "image_facts": [str(f.get("text") or "") for f in facts if not f.get("from_visitor_reviews")],
             "literal_fragments": literal_fragments,
-            "reading_candidates": (reading_candidates or [])[:3],
+            "reading_candidates": reading_candidates or [],
         }, ensure_ascii=False)
         comic_rules = (
             "\n\nДля N>1 фото одним и тем же ответом напиши текст поста и card_notes — ровно N "
@@ -3970,8 +3970,11 @@ class GeminiClient:
         reading_rules = ("\n\nОцени reading_candidates как отдельные статьи о выбранном доме: "
             "связная история, персонажи, события, хронология, архивные детали; "
             "карты, каталоги и рекламные тексты не подходят. Число фактов не определяет качество. "
-            "Верни reading_reviews [{url,is_article,reason}] по убыванию полезности; "
-            "при пустом excerpt не выдумывай чтения." if reading_candidates else "")
+            "Сравни полный текст excerpt ВСЕХ кандидатов до выбора тройки. "
+            "is_article=true только для содержательной статьи именно об этом здании; "
+            "про другое здание, карту, справочник или рекламу — false. "
+            "Верни reading_reviews [{url,is_article,reason}] по убыванию полезности, до трёх лучших. "
+            "read_status ограничивает полноту чтения; не выдумывай непрочитанное." if reading_candidates else "")
         contents = [self.WRITER_RULES + comic_rules + reading_rules + "\n\n" + payload]
 
         def convert(answer, model):
@@ -3982,9 +3985,12 @@ class GeminiClient:
             result = {"text": _capitalized_hashtags(text), "model": model,
                       "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
             if reading_candidates:
-                allowed = {item["url"] for item in reading_candidates}
-                result["reading_reviews"] = [item for item in (answer.get("reading_reviews") or [])
-                    if isinstance(item, dict) and item.get("url") in allowed][:3]
+                allowed = {item["url"]: item for item in reading_candidates}
+                result["reading_reviews"] = [{**item,
+                    "source_version_id": allowed[item["url"]]["source_version_id"]}
+                    for item in (answer.get("reading_reviews") or [])
+                    if isinstance(item, dict) and item.get("url") in allowed
+                    and item.get("is_article") is True and isinstance(item.get("reason"), str)][:3]
             if multi:
                 title = str(answer.get("cover_title") or "").strip()
                 if title:

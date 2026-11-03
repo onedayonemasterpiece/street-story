@@ -5946,7 +5946,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise InvalidStateError("caption_writer_unavailable",
                 "The caption writer is unavailable: write the text yourself in new_text by the same rules.")
         kwargs = {}
-        candidates = state["story"].get("reading_articles") or []
+        from .reading_articles import candidates as reading_candidates
+        with self.service.store.connection() as db:
+            candidates = reading_candidates(db, story_id, json.loads(story["research_json"] or "{}"))
         if candidates:
             from inspect import signature
             if "reading_candidates" in signature(writer).parameters:
@@ -6129,10 +6131,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     )
             research = json.loads(story["research_json"] or "{}")
             if reading_reviews is not None:
-                from .reading_articles import shortlist
-                allowed = {item["url"] for item in shortlist(db, story_id, research)}
+                from .reading_articles import candidates
+                allowed = {item["url"]: item for item in candidates(db, story_id, research)}
                 research["reading_rank"] = [item for item in reading_reviews
-                    if isinstance(item, dict) and item.get("url") in allowed][:3]
+                    if isinstance(item, dict) and item.get("url") in allowed and item.get("is_article") is True
+                    and item.get("source_version_id") == allowed[item["url"]]["source_version_id"]][:3]
             # The confirmed building's map links are server-owned; Mira never types them.
             new_text = with_place_footer(new_text, research)
             if research.get("content_identity_changed"):
