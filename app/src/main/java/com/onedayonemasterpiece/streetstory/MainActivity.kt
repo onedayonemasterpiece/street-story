@@ -2248,6 +2248,56 @@ class MainActivity : Activity() {
                 )
             }
         }
+        renderReadingArticles(host, storyId, projection)
+    }
+
+    private fun renderReadingArticles(host: LinearLayout, storyId: String, projection: ResearchProjectionSnapshot?) {
+        if (store.story(storyId)?.draftText.isNullOrBlank()) return
+        val pending = store.pendingOperations(storyId).lastOrNull { it.kind == "draft" }
+        val pendingSelection = pending?.let { org.json.JSONObject(it.payloadJson).optJSONArray("reading_selected_urls") }
+        val articles = projection?.readingArticles.orEmpty()
+        val selected = pendingSelection?.let { urls ->
+            (0 until urls.length()).map { urls.getString(it) }
+        } ?: articles.filter { it.selected }.map { it.url }
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(SAGE, 12)
+            contentDescription = "reading-articles-block"
+        }
+        block.addView(label("Почитать подробнее · до трёх статей", 14, INK, Typeface.DEFAULT_BOLD))
+        articles.forEachIndexed { index, article ->
+            block.addView(CheckBox(this).apply {
+                text = (article.title ?: article.url) + "\n" + article.reason
+                isChecked = article.url in selected
+                isEnabled = pending == null
+                contentDescription = "reading-article-$index"
+                setOnCheckedChangeListener { _, checked ->
+                    val updated = selected.toMutableList()
+                    if (checked) updated.add(article.url) else updated.remove(article.url)
+                    queueReadingDraft(storyId, updated)
+                }
+            })
+            block.addView(secondaryButton("Открыть статью") {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(article.url)))
+            })
+        }
+        host.addView(block, blockMargins(top = 10))
+    }
+
+    private fun queueReadingDraft(storyId: String, selected: List<String>) {
+        val story = store.story(storyId) ?: return
+        val projection = research.get(storyId) ?: return
+        if (story.serverStoryId.isNullOrBlank() || story.draftText.isNullOrBlank() ||
+            store.pendingOperations(storyId).any { it.kind == "draft" }) return
+        val payload = mutableMapOf<String, Any>(
+            "text" to story.draftText!!,
+            "expected_revision" to projection.backendRevision,
+            "expected_identity_generation" to (projection.identityGeneration ?: 0),
+            "selected_fact_ids" to store.facts(storyId).filter { it.selected && it.evidenceSupported }.map { it.factId },
+            "reading_selected_urls" to selected)
+        store.enqueueOperation(storyId, "draft", newRequestKey("reading", "$storyId-${java.util.UUID.randomUUID()}"), gson.toJson(payload))
+        SyncScheduler.enqueue(this)
+        renderFactsIsland(storyId)
     }
 
     private fun selectPhotoFormat(storyId: String, mode: String) {

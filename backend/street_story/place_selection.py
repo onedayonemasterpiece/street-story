@@ -1062,6 +1062,21 @@ def save_draft(service, story_id, key, body):
                             'from_text_revision': editor['text_revision'], 'summary': editor['last_change']})
             db.execute('UPDATE live_editor_state SET text_revision=text_revision+1,history_json=?,last_change=?,updated_at=? WHERE story_id=?',
                        (canonical(history[-20:]), 'Сохранён текст автора', service.store.now(), story_id))
+        if "reading_selected_urls" in body:
+            from .reading_articles import shortlist
+            offered = {item["url"]: item for item in shortlist(db, story_id, research)}
+            selected_urls = body["reading_selected_urls"]
+            if (not isinstance(selected_urls, list) or len(selected_urls) > 3
+                    or any(not isinstance(url, str) for url in selected_urls)
+                    or len(set(selected_urls)) != len(selected_urls) or any(url not in offered for url in selected_urls)):
+                raise ConflictError('reading_selection_invalid', 'Выберите до трёх предложенных статей.')
+            research["reading_selected"] = [
+                {"url": url, "title": offered[url]["title"]} for url in selected_urls]
+        if research.get("reading_selected") or "reading_selected_urls" in body:
+            from .map_links import with_place_footer
+            text = with_place_footer(text, research)
+            if len(text) > 5000:
+                raise ConflictError('draft_text_invalid', 'Черновик со ссылками длиннее 5000 символов.')
         research.update(draft_needs_refresh=False, draft_stale_reason=None, draft_composed_by='owner_editor',
                         content_identity_changed=False, draft_fact_revisions=fact_revision_bundle(db, story_id, ids))
         invalidate_comic_text(db, story, text.strip())

@@ -414,6 +414,131 @@ class OwnerReviewUiInstrumentedTest {
         }
     }
 
+    @Test fun readingArticlePendingSelectionSurvivesRecreateReopenAndReadback() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
+        val storyId = "article-checklist-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
+        val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val previousActive = prefs.getString("active_story_id", null)
+        val url = "https://kolesoistorii.ru/39nasledie/tpost/kuyoxkme15-udivitelnaya-istoriya-villi-izvestnoi-ka"
+        try {
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.setServerIdentity(storyId, "server-$storyId")
+                store.setDraftText(storyId, "Вилла сохранила историю.")
+                store.replaceFacts(storyId, listOf(FactSnapshot("fact", "Построена в 1906 году.",
+                    .9, true, true, "[]", "accepted")))
+            }
+            ResearchProjectionStore(context).replace(storyId, StoryWire().apply {
+                id = "server-$storyId"
+                photoSha256 = imported.sha256
+                identityGeneration = 1
+                revision = 5
+                readingArticles = arrayListOf(SourceWire().apply {
+                    this.url = url
+                    title = "Удивительная история виллы"
+                    reason = "Связная история дома"
+                    selected = false
+                })
+            })
+            prefs.edit().putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "reading-articles")
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                    val block = requireNotNull(findByDescription(root, "reading-articles-block"))
+                    val check = findByDescription(block, "reading-article-0") as CheckBox
+                    assertTrue(!check.isChecked)
+                    assertTrue(check.isEnabled)
+                }
+                val target = androidx.test.uiautomator.By.desc("reading-article-0")
+                if (device.findObject(target) == null) {
+                    val scroll = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("topic-scroll")))
+                    assertTrue("Reading checklist must be visible after scrolling", scroll.scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(target),
+                    ))
+                }
+                assertNotNull("Screenshot must show the real unchecked article", device.findObject(target))
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "reading-articles-checkbox.png")))
+                scenario.onActivity { activity ->
+                    val block = requireNotNull(findByDescription(
+                        activity.findViewById(android.R.id.content), "reading-articles-block"))
+                    (findByDescription(block, "reading-article-0") as CheckBox).performClick()
+                }
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "reading-articles-pending.png")))
+            }
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                // Normal successful draft readback replaces the wire projection and acknowledges the outbox.
+                val wire = StoryWire().apply {
+                    id = "server-$storyId"
+                    photoSha256 = imported.sha256
+                    identityGeneration = 1
+                    revision = 6
+                    readingArticles = arrayListOf(SourceWire().apply {
+                        this.url = url
+                        title = "Удивительная история виллы"
+                        selected = true
+                    })
+                }
+                ResearchProjectionStore(context).replace(storyId, wire)
+                StoryStore(context).use { store ->
+                    store.pendingOperations(storyId).forEach { store.markOperationDone(it.id) }
+                }
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = true, enabled = true)
+                scenario.onActivity { activity ->
+                    (findByDescription(activity.findViewById(android.R.id.content),
+                        "reading-article-0") as CheckBox).performClick()
+                }
+                assertReadingArticle(scenario, checked = false, enabled = false)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = false, enabled = false)
+                StoryStore(context).use { store ->
+                    val pending = store.pendingOperations(storyId).single()
+                    assertEquals(0, JSONObject(pending.payloadJson).getJSONArray("reading_selected_urls").length())
+                    store.markOperationDone(pending.id)
+                }
+                wire.readingArticles.single().selected = false
+                wire.revision = 7
+                ResearchProjectionStore(context).replace(storyId, wire)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = false, enabled = true)
+            }
+            StoryStore(context).use { store ->
+                val pending = store.pendingOperations(storyId)
+                assertTrue(pending.isEmpty())
+                assertEquals("Вилла сохранила историю.", store.story(storyId)?.draftText)
+                assertTrue(store.facts(storyId).single().selected)
+            }
+        } finally {
+            prefs.edit().apply {
+                if (previousActive == null) remove("active_story_id") else putString("active_story_id", previousActive)
+            }.commit()
+            ResearchProjectionStore(context).clear(storyId)
+            StoryStore(context).use { it.deleteStory(storyId) }
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            config.backendUrl = priorBackend
+        }
+    }
+
+    private fun assertReadingArticle(scenario: ActivityScenario<MainActivity>, checked: Boolean, enabled: Boolean) {
+        scenario.onActivity { activity ->
+            val check = findByDescription(activity.findViewById(android.R.id.content), "reading-article-0") as CheckBox
+            assertEquals(checked, check.isChecked)
+            assertEquals(enabled, check.isEnabled)
+        }
+    }
+
     private fun findByDescription(root: View, description: String): View? {
         if (root.contentDescription?.toString() == description) return root
         if (root is ViewGroup) {

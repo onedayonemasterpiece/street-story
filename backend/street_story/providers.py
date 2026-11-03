@@ -3928,6 +3928,7 @@ class GeminiClient:
         lead_fact: str | None = None,
         photo_count: int = 1,
         place_name: str = "",
+        reading_candidates: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """One writer call composes the post and, for multiple photos, every card's lettering."""
         from google.genai import types
@@ -3945,6 +3946,7 @@ class GeminiClient:
             "lead_fact": lead_fact,
             "image_facts": [str(f.get("text") or "") for f in facts if not f.get("from_visitor_reviews")],
             "literal_fragments": literal_fragments,
+            "reading_candidates": reading_candidates or [],
         }, ensure_ascii=False)
         comic_rules = (
             "\n\nДля N>1 фото одним и тем же ответом напиши текст поста и card_notes — ровно N "
@@ -3965,7 +3967,15 @@ class GeminiClient:
             "«листай →» допускается только отдельной надписью на обложке. "
             "image_notes/image_note_arrows при N>1 оставь пустыми."
         ) if multi else ""
-        contents = [self.WRITER_RULES + comic_rules + "\n\n" + payload]
+        reading_rules = ("\n\nОцени reading_candidates как отдельные статьи о выбранном доме: "
+            "связная история, персонажи, события, хронология, архивные детали; "
+            "карты, каталоги и рекламные тексты не подходят. Число фактов не определяет качество. "
+            "Сравни полный текст excerpt ВСЕХ кандидатов до выбора тройки. "
+            "is_article=true только для содержательной статьи именно об этом здании; "
+            "про другое здание, карту, справочник или рекламу — false. "
+            "Верни reading_reviews [{url,is_article,reason}] по убыванию полезности, до трёх лучших. "
+            "read_status ограничивает полноту чтения; не выдумывай непрочитанное." if reading_candidates else "")
+        contents = [self.WRITER_RULES + comic_rules + reading_rules + "\n\n" + payload]
 
         def convert(answer, model):
             text = str(answer.get("text") or "").strip()
@@ -3974,6 +3984,13 @@ class GeminiClient:
             notes = [str(note).strip() for note in answer.get("image_notes") or [] if str(note).strip()][:3]
             result = {"text": _capitalized_hashtags(text), "model": model,
                       "image_notes": notes, "image_note_arrows": _note_arrows(answer, notes)}
+            if reading_candidates:
+                allowed = {item["url"]: item for item in reading_candidates}
+                result["reading_reviews"] = [{**item,
+                    "source_version_id": allowed[item["url"]]["source_version_id"]}
+                    for item in (answer.get("reading_reviews") or [])
+                    if isinstance(item, dict) and item.get("url") in allowed
+                    and item.get("is_article") is True and isinstance(item.get("reason"), str)][:3]
             if multi:
                 title = str(answer.get("cover_title") or "").strip()
                 if title:
@@ -3991,6 +4008,8 @@ class GeminiClient:
                     "(ровно N объектов {notes: [...], arrows: [...]}), cover_title только "
                     "если автор явно переименовал обложку. Без пояснений."
                     if multi else external_writers.ANSWER)
+                if reading_candidates:
+                    instruction += " Добавь reading_reviews [{url,is_article,reason}] для прочитанных статей."
                 kwargs = ({"answer_instruction": instruction,
                            "validate": lambda item: convert(item, "validation")} if multi else {})
                 answer, model = await external_writers.write(contents[0], photo_jpeg, **kwargs)
@@ -4009,6 +4028,12 @@ class GeminiClient:
                                    "arrows": {"type": "array", "items": {"type": "string"}}},
                     "required": ["notes", "arrows"]}}},
                 "required": [*schema["required"], "card_notes"]}
+        if reading_candidates:
+            schema = {**schema, "properties": {**schema["properties"],
+                "reading_reviews": {"type": "array", "items": {"type": "object",
+                    "properties": {"url": {"type": "string"}, "is_article": {"type": "boolean"},
+                                   "reason": {"type": "string"}},
+                    "required": ["url", "is_article", "reason"]}}}}
         config = types.GenerateContentConfig(
             response_mime_type="application/json", response_json_schema=schema, max_output_tokens=8192)
 

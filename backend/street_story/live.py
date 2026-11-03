@@ -5949,6 +5949,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if not callable(writer):
             raise InvalidStateError("caption_writer_unavailable",
                 "The caption writer is unavailable: write the text yourself in new_text by the same rules.")
+        kwargs = {}
+        from .reading_articles import candidates as reading_candidates
+        with self.service.store.connection() as db:
+            candidates = reading_candidates(db, story_id, json.loads(story["research_json"] or "{}"))
+        if candidates:
+            from inspect import signature
+            if "reading_candidates" in signature(writer).parameters:
+                kwargs["reading_candidates"] = candidates
         try:
             written = await writer(owner_request=request, current_text=str(story["draft_text"] or ""),
                 concept=str(json.loads(story["research_json"] or "{}").get("publication_concept") or ""),
@@ -5956,7 +5964,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 photo_jpeg=snapshot[0] if snapshot else None, context_facts=context_facts,
                 lead_fact=lead["text"] if lead else None,
                 **({"photo_count": len(card_photo_ids), "place_name": cover_name}
-                   if len(card_photo_ids) > 1 else {}))
+                   if len(card_photo_ids) > 1 else {}), **kwargs)
             if len(card_photo_ids) > 1:
                 written["card_photo_ids"] = card_photo_ids
                 written["card_fact_ids"] = [fact["fact_id"] for fact in facts if fact.get("fact_id")]
@@ -6095,7 +6103,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                    image_note_arrows: list[str] | None = None,
                    card_notes: list[dict[str, Any]] | None = None,
                    card_photo_ids: list[str] | None = None,
-                   card_fact_ids: list[str] | None = None) -> dict[str, Any]:
+                   card_fact_ids: list[str] | None = None,
+                   reading_reviews: list[dict] | None = None) -> dict[str, Any]:
         expected = int(args.get("expected_text_revision", -1))
         new_text = _bounded_text(args.get("new_text"), 5000, required=True)
         summary = _bounded_text(args.get("change_summary"), 240, required=True)
@@ -6125,6 +6134,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         "The edit would change protected verbatim text without explicit author permission",
                     )
             research = json.loads(story["research_json"] or "{}")
+            if reading_reviews is not None:
+                from .reading_articles import candidates, shortlist
+                allowed = {item["url"]: item for item in candidates(db, story_id, research)}
+                selected = {item["url"] for item in research.get("reading_selected") or []}
+                retained = [item for item in research.get("reading_rank") or [] if item["url"] in selected]
+                ranked = {}
+                for item in [*reading_reviews[:3], *retained]:
+                    if (isinstance(item, dict) and item.get("url") in allowed and item.get("is_article") is True
+                            and item.get("source_version_id") == allowed[item["url"]]["source_version_id"]):
+                        ranked.setdefault(item["url"], item)
+                research["reading_rank"] = list(ranked.values())
+                visible = {item["url"] for item in shortlist(db, story_id, research)}
+                research["reading_selected"] = [item for item in research.get("reading_selected") or []
+                    if item["url"] in visible]
             # The confirmed building's map links are server-owned; Mira never types them.
             new_text = with_place_footer(new_text, research)
             if research.get("content_identity_changed"):

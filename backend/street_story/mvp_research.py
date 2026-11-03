@@ -1997,6 +1997,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     }
         result["sources"] = list(unique.values())
         result["source_count"] = len(unique)
+        from .reading_articles import shortlist
+        result["reading_articles"] = shortlist(db, row["id"], research)
         visual = result.setdefault("visual", {})
         context = json.loads(row["visual_context_json"] or "{}")
         if context.get("stale"):
