@@ -113,6 +113,8 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
         db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?", (canonical(saved), sid))
     assert save_draft(svc, sid, 'text-only', {'text': 'Новый текст', 'selected_fact_ids': ['fact-1'],
                      'expected_identity_generation': 0})['draft_text'] == 'Новый текст'
+    assert svc.story(sid)['state'] == 'needs_review'
+    assert svc.story(sid)['processed_image_url'] is None
     await svc.request_visual(sid, 'text-only-visual', body)
     assert snapshot()['generation_attempt'] == 'text-only-visual'
     assert snapshot()['content_revision'] != saved['content_revision']

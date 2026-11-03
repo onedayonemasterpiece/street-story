@@ -24,7 +24,10 @@ def invalidate_comic_text(db, story, text):
     if text == (story['draft_text'] or '') or not cards or all(card.get('asset_ref') for card in cards):
         return
     context.update(stale=True, stale_reason='draft_text_changed')
-    db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), story['id']))
+    new_state = ('needs_review' if story['state'] in {'ready_to_publish', 'visual_processing'}
+                 else story['state'])
+    db.execute('UPDATE stories SET visual_context_json=?,processed_image_url=NULL,'
+               'vibepublish_asset_ref=NULL,state=? WHERE id=?', (canonical(context), new_state, story['id']))
 
 
 class StoryPhotosMixin:
