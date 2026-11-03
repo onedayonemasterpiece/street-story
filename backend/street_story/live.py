@@ -6131,11 +6131,19 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     )
             research = json.loads(story["research_json"] or "{}")
             if reading_reviews is not None:
-                from .reading_articles import candidates
+                from .reading_articles import candidates, shortlist
                 allowed = {item["url"]: item for item in candidates(db, story_id, research)}
-                research["reading_rank"] = [item for item in reading_reviews
-                    if isinstance(item, dict) and item.get("url") in allowed and item.get("is_article") is True
-                    and item.get("source_version_id") == allowed[item["url"]]["source_version_id"]][:3]
+                selected = {item["url"] for item in research.get("reading_selected") or []}
+                retained = [item for item in research.get("reading_rank") or [] if item["url"] in selected]
+                ranked = {}
+                for item in [*reading_reviews[:3], *retained]:
+                    if (isinstance(item, dict) and item.get("url") in allowed and item.get("is_article") is True
+                            and item.get("source_version_id") == allowed[item["url"]]["source_version_id"]):
+                        ranked.setdefault(item["url"], item)
+                research["reading_rank"] = list(ranked.values())
+                visible = {item["url"] for item in shortlist(db, story_id, research)}
+                research["reading_selected"] = [item for item in research.get("reading_selected") or []
+                    if item["url"] in visible]
             # The confirmed building's map links are server-owned; Mira never types them.
             new_text = with_place_footer(new_text, research)
             if research.get("content_identity_changed"):

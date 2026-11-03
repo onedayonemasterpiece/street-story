@@ -495,6 +495,9 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
         before = db.execute("SELECT count(*) FROM jobs").fetchone()[0]
         facts_before = [tuple(row) for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))]
 
+    reviews = [{"url": url, "is_article": True, "reason": "История дома"}
+        for url in [exact, urls[1], urls[2]]]
+
     async def generate(_key, _timeout, contents, _config, **kwargs):
         payload = json.loads(contents[0].split("\n\n")[-1])
         pool = payload["reading_candidates"]
@@ -504,11 +507,7 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
         assert article["read_status"] == "partial_fixture"
         assert "2019" in article["excerpt"][550:]
         assert article["source_version_id"].startswith("srcv_")
-        return SimpleNamespace(text=json.dumps({"text": "История виллы.", "reading_reviews": [
-            {"url": urls[0], "is_article": False, "reason": "Справочник"},
-            {"url": exact, "is_article": True, "reason": "История дома, владельцев и кино"},
-            {"url": urls[1], "is_article": True, "reason": "Дополнительная история"},
-            {"url": urls[2], "is_article": True, "reason": "Хронология"}]}))
+        return SimpleNamespace(text=json.dumps({"text": "История виллы.", "reading_reviews": reviews}))
 
     client = SimpleNamespace(_generate=generate, WRITER_RULES=GeminiClient.WRITER_RULES,
         WRITER_SCHEMA=GeminiClient.WRITER_SCHEMA, writer_routes=[("test", None, None, Route(None))])
@@ -537,8 +536,29 @@ async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path
     # A fresh store read is the normal reopen/readback; it keeps draft, facts and owner opt-in.
     assert svc.story(story_id)["reading_articles"][0]["selected"] is True
     assert svc.story(story_id)["draft_text"] == selected["draft_text"]
-    removed = save_draft(svc, story_id, "remove-article", {**base, "reading_selected_urls": []})
+    # A stays selected while the next ordinary writer prefers B/C/D.
+    footer = selected["draft_text"].split("\n\n")[-1]
+    assert "ЯндексКарты" in footer
+    reviews[:] = [{"url": url, "is_article": True, "reason": "Новый рейтинг"}
+        for url in [urls[1], urls[2], urls[0]]]
+    reranked = await adapter._write_caption(story_id, {"writing_request": "Уточни рассказ."})
+    with svc.store.connection() as db:
+        text_revision = adapter._editor_row(db, story_id)[1]["text_revision"]
+    adapter._edit_text(story_id, "rerank-articles", {"expected_text_revision": text_revision,
+        "new_text": reranked["text"], "change_summary": "Уточнён рассказ"},
+        reading_reviews=reranked["reading_reviews"])
+    from street_story.db import Store
+    with Store(svc.store.path).connection() as db:
+        reopened = svc._story_repr(db, svc._story_row(db, story_id))
+    assert [item["url"] for item in reopened["reading_articles"]] == [exact, urls[1], urls[2]]
+    assert reopened["reading_articles"][0]["selected"] is True
+    assert reopened["draft_text"].count(exact) == 1
+    assert reopened["draft_text"].endswith(footer)
+    removed = save_draft(svc, story_id, "remove-article",
+        {**base, "text": reopened["draft_text"], "reading_selected_urls": []})
     assert exact not in removed["draft_text"]
+    assert [item["url"] for item in removed["reading_articles"]] == [urls[1], urls[2], urls[0]]
+    assert removed["draft_text"].endswith(footer)
     with svc.store.tx() as db:
         assert db.execute("SELECT count(*) FROM jobs").fetchone()[0] == before
         assert [tuple(row) for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))] == facts_before
