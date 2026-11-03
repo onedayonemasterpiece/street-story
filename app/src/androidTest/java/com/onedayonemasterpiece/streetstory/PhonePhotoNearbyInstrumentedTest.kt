@@ -243,13 +243,30 @@ class PhonePhotoNearbyInstrumentedTest {
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
                     assertEquals("source plus 31 nearby photos", 32, grid.adapter.count)
-                    val scroll = find(root, "topic-scroll") as ScrollView
-                    val panel = requireNotNull(find(root, "nearby-photos"))
-                    // Run after the panel has been measured, not during activity creation.
-                    scroll.post { scroll.scrollTo(0, panel.top + grid.top) }
                 }
-                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                // Scroll the surrounding page with a finger first: the grid starts at the
+                // bottom of the screen, so programmatic setSelection()/scrollTo() hid the bug.
+                repeat(4) {
+                    var top = 0
+                    scenario.onActivity { activity ->
+                        val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
+                        val position = IntArray(2)
+                        grid.getLocationOnScreen(position)
+                        top = position[1]
+                    }
+                    if (top in 200..900) return@repeat
+                    device.swipe(device.displayWidth - 90, if (top > 900) 1850 else 550,
+                        device.displayWidth - 90, if (top > 900) 550 else 1850, 40)
+                    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                }
                 screenshot("multiphoto-selection.png") // pre-swipe screen evidence also survives RED failure
+                scenario.onActivity { activity ->
+                    val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
+                    val position = IntArray(2)
+                    grid.getLocationOnScreen(position)
+                    assertTrue("Entire photo grid must be on screen before inner swipe: top=${position[1]} height=${grid.height}",
+                        position[1] > 0 && position[1] + grid.height < device.displayHeight - 60)
+                }
                 // A real swipe must reach the end: setSelection() bypasses nested touch dispatch.
                 repeat(16) {
                     var atEnd = false
