@@ -169,10 +169,10 @@ def test_mira_edit_text_saves_ordered_card_notes_before_visual(tmp_path):
     ensure_live_schema(svc)
     adapter = StreetStoryLiveAdapter(svc, lambda *_: None, lambda *_: None)
     notes = [
-        {"position": 0, "notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
+        {"position": 0, "notes": ["Театр", "В 1910 году здесь открылся театр", "Листай →"],
          "arrows": ["", "", ""]},
-        {"position": 1, "notes": ["В 1920 году здание перестроили"], "arrows": [""]},
-        {"position": 2, "notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
+        {"position": 1, "notes": ["В 1920 году здание перестроили", "Листай →"], "arrows": ["", ""]},
+        {"position": 2, "notes": ["В 1930 году дом стал пансионом", "Листай →"], "arrows": ["", ""]},
     ]
     result = adapter._edit_text(sid, "owner-notes", {
         "expected_text_revision": 0, "new_text": "Сохранённый текст поста",
@@ -216,8 +216,8 @@ async def test_durable_caption_job_writes_post_and_card_notes_together(tmp_path)
     assert stored["draft_text"].startswith("Новый пост о театре.")
     assert [card["position"] for card in stored["card_notes"]] == [0, 1, 2]
     assert stored["card_notes"][0]["notes"] == [
-        "Новый театр", "В 1910 году здесь открылся театр", "листай →"]
-    assert stored["card_notes"][-1]["notes"] == ["В 1930 году дом стал пансионом"]
+        "Новый театр", "В 1910 году здесь открылся театр", "Листай →"]
+    assert stored["card_notes"][-1]["notes"] == ["В 1930 году дом стал пансионом", "Листай →"]
     assert stored["cards"] == []
     assert calls and calls[0]["photo_count"] == 3 and calls[0]["place_name"] == "Театр"
     assert stored["draft_writing_last"]["ok"] is True
@@ -281,11 +281,11 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
     ]
     notes = [
         {"notes": ["Университетский колледж БФУ",
-                   "В 1945 году гимназия избежала повреждений", "листай →"],
+                   "В 1945 году гимназия избежала повреждений", "Листай →"],
          "arrows": ["", "", ""]},
         {"notes": ["В 1915 году открылась Хуфенская гимназия",
-                   "Свинцовое остекление украшало окна зала"], "arrows": ["", ""]},
-        {"notes": ["В 1945 году здание продолжало работать"], "arrows": [""]},
+                   "Свинцовое остекление украшало окна зала", "Листай →"], "arrows": ["", "", ""]},
+        {"notes": ["В 1945 году здание продолжало работать", "Листай →"], "arrows": ["", ""]},
     ]
     assert _validated_card_notes(notes, 3, "Университетский колледж БФУ", facts) == notes
     context = {"comic": {"photo_ids": photos}, "place_name": "Университетский колледж БФУ",

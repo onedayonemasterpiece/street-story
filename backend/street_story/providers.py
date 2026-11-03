@@ -816,12 +816,13 @@ def _validated_card_notes(cards: Any, photo_count: int, place_name: str,
             if title:
                 # Title is selected by the writer/editor, never guessed from note text.
                 displayed = next((note for note, _ in pairs if same_title(note) == same_title(title)), title)
-                pairs = [(note, arrow) for note, arrow in pairs if same_title(note) not in {
-                    same_title(title), same_title(place_name)}]
+                if pairs and same_title(pairs[0][0]) == same_title(place_name):
+                    pairs = pairs[1:]  # Replace the main-title slot, not a model-selected alternative.
+                pairs = [(note, arrow) for note, arrow in pairs if same_title(note) != same_title(title)]
                 pairs.insert(0, (title if cover_title else displayed, ""))
-            pairs = pairs[:3] + [("листай →", "")]
         else:
             pairs = pairs[:4]
+        pairs.append(("Листай →", ""))
         result.append({"notes": [note for note, _ in pairs], "arrows": [arrow for _, arrow in pairs]})
     return result
 
@@ -3953,9 +3954,11 @@ class GeminiClient:
             "объектов в порядке выбранных фото, каждый {notes: [...], arrows: [...]}. "
             "Обложка: notes[0] — place_name по умолчанию; если автор явно выбрал иное название "
             "в owner_request или publication_concept, верни точное имя в cover_title (иначе опусти); "
-            "на обложке используй только выбранное имя, затем "
-            "зачин по lead_fact не длиннее 70 символов и 12 слов и отдельное «листай →». "
-            "Стрелки названия и CTA пустые. "
+            "Обложка: notes[0] — главное имя, notes[1] — сильный зачин по lead_fact "
+            "до 70 символов и 12 слов. Затем отдельные надписи меньшим шрифтом — дополнительные "
+            "подтверждённые названия того же объекта из facts. Выбирай их по смыслу сам как LLM: "
+            "исключай смысловые дубли (например, «вилла» и «вилла X»), не выдумывай имён. "
+            "Если отличных имён нет, оставь главное имя и зачин. Стрелки названий и CTA пустые. "
             "Все остальные фото, включая последнее, — сюжетные: 1–3 надписи по 3–8 слов до 70 знаков. "
             "Факты распределяй по карточкам без повторения; каждая надпись только из своих "
             "проверенных facts, никаких новых оценок, событий или причин. "
@@ -3964,7 +3967,7 @@ class GeminiClient:
             "Стрелки только на видимое на выбранном фото сейчас; если это прошлое, стрелка пустая. "
             "Время прошлого указывай в прошедшем времени со своим периодом. "
             "Отдельный финал после всех N фотокарточек добавит сервер, не включай его в card_notes. "
-            "«листай →» допускается только отдельной надписью на обложке. "
+            "На каждой фотокарточке отдельное «Листай →»; на добавляемом сервером финале CTA нет. "
             "image_notes/image_note_arrows при N>1 оставь пустыми."
         ) if multi else ""
         reading_rules = ("\n\nОцени reading_candidates как отдельные статьи о выбранном доме: "

@@ -739,7 +739,9 @@ FUNCTIONS = [
                 "arrows": {"type": "array", "items": {"type": "string"}},
             }, "required": ["position", "notes", "arrows"]}, "description":
                 "Exactly N ordered photo-story card notes (including the last selected photo); "
-                "cover has the selected POI title, a hook and листай →. "
+                "Cover notes: selected POI title, strong hook, then confirmed alternative names in smaller type. "
+                "Choose semantically distinct names from confirmed facts as the model; exclude semantic duplicates. "
+                "Keep the author’s lettering edits. Each photo card has a separate Листай →; the finale has no CTA. "
                 "The separate N+1 text-only finale is created by the server, not included here."},
         },
         ["expected_text_revision", "change_summary"],
