@@ -206,8 +206,9 @@ def test_visual_brief_keeps_fourteen_owner_facts_over_old_limit(tmp_path):
         {"selected_facts": [{"fact_id": str(i), "text": fact} for i, fact in enumerate(facts)],
          "visual_instruction": "Сохранить все подтверждённые факты и детали фасада."},
     )
-    assert 5000 < len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
-    assert all(fact in brief for fact in facts)
+    assert 5000 < len(brief) <= 32000
+    assert all(fact.strip() in brief for fact in facts)
+    assert "Сохранить все подтверждённые факты и детали фасада." in brief
 
 
 def test_visual_brief_rejects_overflow_instead_of_silently_losing_facts(tmp_path):

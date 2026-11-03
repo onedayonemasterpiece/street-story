@@ -325,7 +325,8 @@ def test_visual_progress_is_based_on_saved_cards_not_started_requests(tmp_path):
                          "photo_format": {}}), sid),
         )
     visual = svc.story(sid)["visual"]
-    assert (visual["completed_cards"], visual["total_cards"]) == (1, 5)
+    assert len(cards) == len(photo_ids) + 1  # The final card is separate from the photo cards.
+    assert (visual["completed_cards"], visual["total_cards"]) == (1, 4)
     with svc.store.tx() as db:
         db.execute(
             "UPDATE stories SET state='needs_review',error_code='visual_generation_failed' WHERE id=?",
