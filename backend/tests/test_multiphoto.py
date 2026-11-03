@@ -255,9 +255,7 @@ async def test_card_notes_visible_before_generation_then_four_cards(tmp_path):
         svc._enqueue_job(db, sid, "visual", "visual:test-comic",
                          {"content_revision": "comic-1", "selected_fact_ids": ["fact-1", "fact-2"]})
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
-    from street_story.errors import RetryableProviderError
-    with pytest.raises(RetryableProviderError):
-        await svc._run_visual(job)
+    await svc._run_visual(job)
     await svc._run_visual(job)
     result = svc.story(sid)
     assert result["state"] == "ready_to_publish"
@@ -467,7 +465,6 @@ def test_instruction_only_refinement_uses_existing_caption_job_without_voice(tmp
 
 @pytest.mark.asyncio
 async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
-    from street_story.errors import RetryableProviderError
     svc, sid, _writer, vp = make_runtime(tmp_path)
     ids = upload_three(svc, sid)
     ids += [str(uuid.uuid4()) for _ in range(5)]
@@ -489,8 +486,7 @@ async def test_eight_photo_dispatch_never_exceeds_three_in_one_batch(tmp_path):
                          {"content_revision": "eight-1", "selected_fact_ids": []})
         job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='visual'", (sid,)).fetchone())
     for expected in (3, 6):
-        with pytest.raises(RetryableProviderError):
-            await svc._run_visual(job)
+        await svc._run_visual(job)
         assert len(vp.operations) == expected  # Existing VibePublish still owns its queue.
     await svc._run_visual(job)
     assert len(vp.operations) == 9

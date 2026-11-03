@@ -18,6 +18,18 @@ def selected_photos(db, story_id):
         (story_id,))]
 
 
+def invalidate_comic_text(db, story, text):
+    context = json.loads(story['visual_context_json'] or '{}')
+    cards = (context.get('comic') or {}).get('cards') or []
+    if text == (story['draft_text'] or '') or not cards or all(card.get('asset_ref') for card in cards):
+        return
+    context.update(stale=True, stale_reason='draft_text_changed')
+    new_state = ('needs_review' if story['state'] in {'ready_to_publish', 'visual_processing'}
+                 else story['state'])
+    db.execute('UPDATE stories SET visual_context_json=?,processed_image_url=NULL,'
+               'vibepublish_asset_ref=NULL,state=? WHERE id=?', (canonical(context), new_state, story['id']))
+
+
 class StoryPhotosMixin:
     """Extend the runtime projection, not the identity or fact source of truth."""
 
@@ -289,12 +301,20 @@ class StoryPhotosMixin:
                 "place_selection": research.get("place_selection"),
                 "strongest_fact": (research.get("strongest_fact") or {}).get("fact_id"),
             }
+            previous = json.loads(row["visual_context_json"] or "{}")
+            # Retain legacy identities until a text edit actually invalidates their snapshot.
+            if 'draft_text' in previous or previous.get('stale_reason') == 'draft_text_changed':
+                inputs['draft_text'] = row['draft_text'] or ''
             content_revision = digest([inputs, letterings["cards"]])
             comic = {"photo_ids": photo_ids,
                      "cards": [{"photo_id": photo_id} for photo_id in [*photo_ids, photo_ids[-1]]],
                      "plan": {"cards": [*letterings["cards"], {"notes": [], "arrows": []}]}}
             context = {**inputs, "content_revision": content_revision, "comic": comic,
-                       "prompt_version": self.PROMPT_VERSION, "stale": False}
+                       "prompt_version": self.PROMPT_VERSION, "stale": False, "generation_attempt": key}
+            previous_cards = (previous.get("comic") or {}).get("cards") or []
+            if (previous_cards and not all(card.get("asset_ref") for card in previous_cards)
+                    and self._comic_current(db, story_id, content_revision, photo_ids)):
+                context = previous
             self._enqueue_job(db, story_id, "visual", f"visual:{key}",
                               {"content_revision": content_revision, "selected_fact_ids": fact_ids})
             db.execute("UPDATE stories SET state='visual_processing',visual_context_json=?,"
@@ -415,7 +435,10 @@ class StoryPhotosMixin:
                 if context is None:
                     return
                 card = context["comic"]["cards"][position]
-            visual_key = "ss-vp-visual-" + digest([story_id, revision, position, photo_id, source_asset])[:48]
+            key_inputs = [story_id, revision, position, photo_id, source_asset]
+            if "generation_attempt" in context:
+                key_inputs.append(context["generation_attempt"])
+            visual_key = "ss-vp-visual-" + digest(key_inputs)[:48]
             operation = card.get("operation_id")
             if not operation:
                 cmd = {"command": {"kind": "tune",
@@ -451,8 +474,6 @@ class StoryPhotosMixin:
             if state in {"accepted", "running", "queued", "processing"}:
                 pending = True
                 continue
-            if state in {"blocked", "failed", "outcome_unknown", "cancelled"}:
-                raise PermanentProviderError("VibePublish comic card ended in " + str(state))
             candidate = card.get("candidate") or {}
             if state == "needs_selection":
                 choices = receipt.get("candidates")
@@ -476,8 +497,11 @@ class StoryPhotosMixin:
                 # Provider select reply may omit immutable candidate identity;
                 # use the same authoritative status receipt as the single-image path.
                 receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
+            if receipt.get("state") in {"blocked", "failed", "outcome_unknown", "cancelled"}:
+                raise PermanentProviderError("VibePublish comic card ended in " + str(receipt.get("state")))
             if receipt.get("state") != "verified":
-                raise RetryableProviderError("VibePublish comic card selection pending")
+                pending = True
+                continue
             asset_ref = str(receipt.get("selected_asset_ref") or "")
             if not asset_ref:
                 raise PermanentProviderError("VibePublish comic card lacks verified asset")
@@ -497,7 +521,16 @@ class StoryPhotosMixin:
             if context is None:
                 return
         if pending:
-            raise RetryableProviderError('VibePublish comic cards are processing')
+            with self.store.tx() as db:
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=NULL,updated_at=? "
+                           "WHERE id=? AND state='running' AND attempts=?",
+                           (self.store.now() + min(300, 2 ** min(job["attempts"], 8)),
+                            self.store.now(), job["id"], job["attempts"]))
+            logging.getLogger('uvicorn.error').info('street_story_visual_pending %s', canonical({
+                'story_id': story_id, 'job_id': job['id'],
+                'ready': sum(bool(card.get('asset_ref')) for card in context['comic']['cards']),
+                'total': len(card_photo_ids)}))
+            return
         with self.store.tx() as db:
             if not self._comic_current(db, story_id, revision, photo_ids):
                 return
@@ -512,5 +545,8 @@ class StoryPhotosMixin:
                        "error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                        (new_state, f"/v1/stories/{story_id}/cards/0", refs[0],
                         self.store.now(), story_id))
+            change_id = "comic:" + revision
+            if "generation_attempt" in context:
+                change_id += ":" + context["generation_attempt"]
             self._queue_publication_edits(db, story_id, text=str(row["draft_text"] or ""),
-                asset_ref=refs[0], change_id="comic:" + revision)
+                asset_ref=refs[0], change_id=change_id)

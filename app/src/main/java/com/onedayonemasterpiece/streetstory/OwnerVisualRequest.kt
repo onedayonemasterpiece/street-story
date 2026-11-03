@@ -18,7 +18,8 @@ data class OwnerVisualRequest(
             if (projection.photoSha256 != story.photoSha256 ||
                 projection.identityGeneration == null || projection.identityStatus !in setOf("owner_confirmed", "match") ||
                 story.stage in setOf(StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING, StoryStage.SCHEDULED, StoryStage.PUBLISHED) ||
-                !story.processedImageUrl.isNullOrBlank() || !story.processedImagePath.isNullOrBlank()) return null
+                !story.processedImageUrl.isNullOrBlank() ||
+                (!story.processedImagePath.isNullOrBlank() && !story.previewOutdated)) return null
             if (projection.sourceAvailable != true && !localSourceReadable) return null
             val candidate = projection.candidateId?.takeIf(String::isNotBlank) ?: return null
             if (projection.placeSelection?.get("mode")?.asString == "rough") {
