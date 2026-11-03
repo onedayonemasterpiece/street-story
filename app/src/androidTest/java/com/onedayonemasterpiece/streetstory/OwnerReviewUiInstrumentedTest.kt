@@ -453,8 +453,16 @@ class OwnerReviewUiInstrumentedTest {
                     val check = findByDescription(block, "reading-article-0") as CheckBox
                     assertTrue(!check.isChecked)
                     assertTrue(check.isEnabled)
-                    check.requestRectangleOnScreen(Rect(0, 0, check.width, check.height), true)
                 }
+                val target = androidx.test.uiautomator.By.desc("reading-article-0")
+                if (device.findObject(target) == null) {
+                    val scroll = requireNotNull(device.findObject(androidx.test.uiautomator.By.desc("topic-scroll")))
+                    assertTrue("Reading checklist must be visible after scrolling", scroll.scrollUntil(
+                        androidx.test.uiautomator.Direction.DOWN,
+                        androidx.test.uiautomator.Until.hasObject(target),
+                    ))
+                }
+                assertNotNull("Screenshot must show the real unchecked article", device.findObject(target))
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "reading-articles-checkbox.png")))
                 scenario.onActivity { activity ->
