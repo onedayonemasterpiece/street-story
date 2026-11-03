@@ -23,7 +23,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     PROMPT_VERSION = "street-story-image-v11"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
-    VIBEPUBLISH_BRIEF_LIMIT = 5000
+    VIBEPUBLISH_BRIEF_LIMIT = 32000
 
     def _prompt_template(self) -> tuple[str, str]:
         path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v11.txt"
@@ -152,6 +152,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         for key in ("prompt_version", "prompt_sha256", "content_revision"):
             if context.get(key) is not None:
                 visual[key] = context[key]
+        cards = (context.get("comic") or {}).get("cards") or []
+        if cards:
+            visual["completed_cards"] = sum(bool(card.get("asset_ref")) for card in cards)
+            visual["total_cards"] = len(cards)
+        elif row["state"] == "visual_processing":
+            visual["completed_cards"], visual["total_cards"] = 0, 1
         return result
 
     async def request_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:

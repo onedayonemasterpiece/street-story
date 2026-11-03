@@ -113,6 +113,8 @@ Android renders only the latest 10 stories, ordered as a vertical thread with ne
 
 Canonical states remain `photo_ready`, `queued`, `researching`, `review`, `visual_processing`, `visual_blocked`, `ready_to_publish`, `scheduling`, `scheduled`, `published`, `needs_review`. `visual_blocked` remains a recoverable legacy/error UI state, but the former `vibepublish_media_ingress_not_enabled` state is no longer an accepted normal product boundary.
 
+During `visual_processing`, `GET /v1/stories/{id}.visual.completed_cards` and `.total_cards` report accepted card assets N/M (including the separate final card), not started operations. These values are computed from existing `visual_context_json.comic.cards[].asset_ref`; for the single-photo route they are 0/1 while processing. A terminal `needs_review` with `error.code=visual_generation_failed` is a failure, never an active loader. The original visual brief is preserved; Street Story follows VibePublish's existing 32,000-character `tune` contract.
+
 ## Research / facts
 
 Accepted upload and durable research work survive client close/minimize, microphone

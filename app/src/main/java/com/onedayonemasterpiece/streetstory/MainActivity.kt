@@ -868,12 +868,23 @@ class MainActivity : Activity() {
         updateStickyPhoto()
 
         val visualScope = OwnerVisualRequest.capture(story, projection, facts, PhotoAssets.available(story.photoPath))
-        if (ownerVisualRequest != visualScope) ownerVisualRequest = null
+        val visualProcessing = story.stage == StoryStage.VISUAL_PROCESSING
+        val visualFailed = projection?.errorCode == "visual_generation_failed"
+        if (visualFailed || ownerVisualRequest != visualScope) ownerVisualRequest = null
         ownerVisualButton?.apply {
-            visibility = if (visualScope != null) View.VISIBLE else View.GONE
-            isEnabled = visualScope != null && ownerVisualRequest == null &&
+            visibility = if (visualScope != null || visualProcessing) View.VISIBLE else View.GONE
+            isEnabled = !visualProcessing && visualScope != null && ownerVisualRequest == null &&
                 store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
-            text = if (ownerVisualRequest != null) "Визуал запрошен" else "Создать визуал"
+            text = when {
+                visualProcessing -> {
+                    val done = projection?.visual?.completedCards ?: 0
+                    val total = projection?.visual?.totalCards?.takeIf { it > 0 } ?: 1
+                    "⏳ Создаю визуал · $done/$total"
+                }
+                visualFailed -> "⚠ Не удалось создать визуал"
+                ownerVisualRequest != null -> "Визуал запрошен"
+                else -> "Создать визуал"
+            }
         }
 
         publishButton?.apply {
@@ -944,10 +955,7 @@ class MainActivity : Activity() {
         if (ownerVisualSent && !state.active && !state.connecting) {
             ownerVisualSent = false
             ownerVisualRequest = null
-            ownerVisualButton?.text = "Создать визуал"
-            ownerVisualButton?.isEnabled = OwnerVisualRequest.capture(store.story(id), research.get(id), store.facts(id),
-                store.story(id)?.let { PhotoAssets.available(it.photoPath) } == true) != null &&
-                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+            refreshTopicDetail()
         }
         if (state.storyId != null && state.storyId != id) {
             dockStatus?.text = "Live идёт в другой теме"

@@ -311,6 +311,29 @@ async def test_six_facts_fit_three_briefs_and_long_notes_are_shortened(tmp_path)
     assert all(len(n) <= 70 for card in normalized for n in card["notes"])
 
 
+def test_visual_progress_is_based_on_saved_cards_not_started_requests(tmp_path):
+    svc, sid, _, _ = make_runtime(tmp_path)
+    extra = upload_three(svc, sid)
+    photo_ids = ["source", *extra]
+    svc.order_story_photos(sid, "order-progress", {"photo_ids": photo_ids})
+    cards = [{"photo_id": photo_id} for photo_id in [*photo_ids, photo_ids[-1]]]
+    cards[0]["asset_ref"] = "accepted-first-card"
+    with svc.store.tx() as db:
+        db.execute(
+            "UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?",
+            (json.dumps({"comic": {"photo_ids": photo_ids, "cards": cards},
+                         "photo_format": {}}), sid),
+        )
+    visual = svc.story(sid)["visual"]
+    assert (visual["completed_cards"], visual["total_cards"]) == (1, 5)
+    with svc.store.tx() as db:
+        db.execute(
+            "UPDATE stories SET state='needs_review',error_code='visual_generation_failed' WHERE id=?",
+            (sid,),
+        )
+    assert svc.story(sid)["state"] == "needs_review"
+
+
 @pytest.mark.asyncio
 async def test_failed_comic_job_exits_visual_processing_with_error(tmp_path):
     from street_story.errors import PermanentProviderError

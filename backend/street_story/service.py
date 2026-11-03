@@ -1397,7 +1397,11 @@ class StreetStoryService:
                     db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?",
                         ('visual_generation_failed' if visual_failure else
                          'telegram_caption_too_long' if caption_limit else 'provider_permanent_error',
-                         'Не удалось создать карточки истории. Попробуйте генерацию снова.' if visual_failure else
+                         ('Выбранные факты и описание картинки превышают лимит 32 000 символов. '
+                          'Выбор фактов не изменён.' if getattr(exc, 'code', '') in
+                          {'visual_fact_annotations_too_long', 'visual_prompt_too_long'} else
+                          'Не удалось создать карточки истории. Попробуйте генерацию снова.')
+                         if visual_failure else
                          'Telegram отклонил длину подписи. Сократите текст или попробуйте позже.' if caption_limit
                          else 'Не удалось выполнить обработку. Требуется проверка настроек сервиса.',
                          self.store.now(), job['story_id']))

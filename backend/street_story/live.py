@@ -2909,6 +2909,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "identity_generation": story.get('identity_generation'),
             "research_controls": story.get('research_controls', {}),
             "state": story.get("state"),
+            "error": story.get("error"),
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
             "confirmed_place": confirmed_place,

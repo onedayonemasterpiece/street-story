@@ -52,7 +52,7 @@ class RecoverableVisualVibePublish:
 
     async def visual(self, payload: dict, request_key: str):
         assert payload["command"]["kind"] == "tune"
-        assert len(payload["command"]["brief"]) <= 5000
+        assert len(payload["command"]["brief"]) <= 32000
         assert payload["command"]["formats"] == ["post_4_5"]
         assert payload["command"]["copy"] == {}
         assert "exact portrait 4:5" in payload["command"]["brief"]
@@ -153,7 +153,7 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "blank padding or borders" in brief
     assert "Extend peripheral background" not in brief
     assert "Never outpaint" in brief
-    assert len(brief) <= 5000
+    assert len(brief) <= 32000
 
 
 def test_visual_brief_bounds_dynamic_context_and_keeps_current_edit(tmp_path):
@@ -195,13 +195,28 @@ def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
     assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
 
 
+def test_visual_brief_keeps_fourteen_owner_facts_over_old_limit(tmp_path):
+    svc = service(tmp_path)
+    facts = [
+        f"Факт {i}: " + "Исторический материал подтверждает событие с точной датой и уточнением. " * 10
+        for i in range(14)
+    ]
+    brief = svc._visual_brief(
+        {"place_name": "Вилла бургомистра"},
+        {"selected_facts": [{"fact_id": str(i), "text": fact} for i, fact in enumerate(facts)],
+         "visual_instruction": "Сохранить все подтверждённые факты и детали фасада."},
+    )
+    assert 5000 < len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+    assert all(fact in brief for fact in facts)
+
+
 def test_visual_brief_rejects_overflow_instead_of_silently_losing_facts(tmp_path):
     from street_story.service import InvalidStateError
 
     svc = service(tmp_path)
     with pytest.raises(InvalidStateError) as failure:
         svc._visual_brief({}, {
-            "selected_facts": [{"fact_id": "long", "text": "Факт с уточнением. " * 400}],
+            "selected_facts": [{"fact_id": "long", "text": "Факт с уточнением. " * 2000}],
         })
     assert failure.value.code == "visual_fact_annotations_too_long"
 
