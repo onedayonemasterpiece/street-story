@@ -244,67 +244,21 @@ class PhonePhotoNearbyInstrumentedTest {
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
                     assertEquals("source plus 31 nearby photos", 32, grid.adapter.count)
                 }
-                // Scroll the surrounding page with a finger first: the grid starts at the
-                // bottom of the screen, so programmatic setSelection()/scrollTo() hid the bug.
-                repeat(4) {
-                    var top = 0
-                    scenario.onActivity { activity ->
-                        val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
-                        val position = IntArray(2)
-                        grid.getLocationOnScreen(position)
-                        top = position[1]
-                    }
-                    if (top in 200..900) return@repeat
-                    device.swipe(device.displayWidth - 90, if (top > 900) 1850 else 550,
-                        device.displayWidth - 90, if (top > 900) 550 else 1850, 40)
+                // The full photo grid is part of the page, not a nested scrolling viewport.
+                // Find the final tile with actual page swipes, then tap it on screen.
+                var lastTile = device.findObject(By.desc("nearby-photo-31"))
+                repeat(12) {
+                    if (lastTile != null && lastTile!!.visibleBounds.height() > 50) return@repeat
+                    device.swipe(device.displayWidth - 90, 1850,
+                        device.displayWidth - 90, 550, 40)
                     InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                    lastTile = device.findObject(By.desc("nearby-photo-31"))
                 }
-                screenshot("multiphoto-selection.png") // pre-swipe screen evidence also survives RED failure
-                scenario.onActivity { activity ->
-                    val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
-                    val position = IntArray(2)
-                    grid.getLocationOnScreen(position)
-                    assertTrue("Entire photo grid must be on screen before inner swipe: top=${position[1]} height=${grid.height}",
-                        position[1] > 0 && position[1] + grid.height < device.displayHeight - 60)
-                }
-                // A real swipe must reach the end: setSelection() bypasses nested touch dispatch.
-                repeat(16) {
-                    var atEnd = false
-                    var bounds = IntArray(2)
-                    var height = 0
-                    var width = 0
-                    scenario.onActivity { activity ->
-                        val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
-                        atEnd = grid.lastVisiblePosition == grid.adapter.count - 1
-                        val visible = android.graphics.Rect()
-                        assertTrue("Photo grid must be onscreen for a finger swipe", grid.getGlobalVisibleRect(visible))
-                        bounds[0] = visible.left
-                        bounds[1] = visible.top
-                        height = visible.height()
-                        width = visible.width()
-                        assertTrue("Photo grid swipe area is too small: $visible", height > 120)
-                    }
-                    if (atEnd) return@repeat
-                    device.swipe(bounds[0] + width / 2, bounds[1] + height * 4 / 5,
-                        bounds[0] + width / 2, bounds[1] + height / 5, 25)
-                    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-                }
-                scenario.onActivity { activity ->
-                    val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
-                    assertEquals("Finger swipes must reach final candidate",
-                        grid.adapter.count - 1, grid.lastVisiblePosition)
-                }
-                scenario.onActivity { activity ->
-                    val root = activity.window.decorView
-                    val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    val last = grid.adapter.count - 1
-                    val tile = requireNotNull(grid.getChildAt(last - grid.firstVisiblePosition))
-                    tile.performClick() // one chosen photo far below the source; all others remain unselected
-                    assertEquals(2, store.selectedStoryPhotos(storyId).size)
-                    val scroll = find(root, "topic-scroll") as ScrollView
-                    val panel = requireNotNull(find(root, "nearby-photos"))
-                    scroll.scrollTo(0, panel.top)
-                }
+                assertTrue("32nd photo must be reachable by page swipes",
+                    lastTile != null && lastTile!!.visibleBounds.height() > 50)
+                screenshot("multiphoto-selection.png")
+                lastTile!!.click()
+                assertEquals(2, store.selectedStoryPhotos(storyId).size)
                 screenshot("multiphoto-selection.png")
                 scenario.onActivity { activity ->
                     requireNotNull(find(activity.window.decorView, "nearby-photo-done")).performClick()
