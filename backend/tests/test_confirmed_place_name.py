@@ -144,8 +144,8 @@ async def test_confirmed_name_through_verifier_ledger_and_card_readback(tmp_path
             assert result["facts"][0]["eligibility"] == "eligible"  # Historical fact survives; cover name does not.
         assert result["card_notes"][0]["notes"][0] == (
             "Морская вилла" if case in {"manual_cover", "partial_manual"} else proposed)
-        assert result["card_notes"][0]["notes"][1:] == ["Вход в пансион", "листай →"]
-        assert result["card_notes"][1]["notes"] == ["В доме были гости"]
+        assert result["card_notes"][0]["notes"][1:] == ["Вход в пансион", "Листай →"]
+        assert result["card_notes"][1]["notes"] == ["В доме были гости", "Листай →"]
         assert len(calls) == (2 if case in {"same_name_twice", "stronger_next_run", "partial_conflict"} else 1)
     finally:
         await reader.search_http.aclose()
