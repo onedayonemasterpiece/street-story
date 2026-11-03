@@ -12,6 +12,9 @@ from test_multiphoto import make_runtime, shot, upload_three
 
 @pytest.mark.asyncio
 async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_path, monkeypatch):
+    edit_ids = []
+    monkeypatch.setattr(RuntimeStreetStoryService, '_queue_publication_edits',
+                        lambda self, db, story_id, **kwargs: edit_ids.append(kwargs['change_id']))
     svc, sid, _, vp = make_runtime(tmp_path)
     photos = ['source', *upload_three(svc, sid), str(uuid.uuid4())]
     svc.add_story_photo(sid, 'fourth', photos[-1], shot('yellow'), 'image/jpeg')
@@ -92,6 +95,7 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
     assert reopened['state'] == 'ready_to_publish'
     assert [c['position'] for c in reopened['cards']] == list(range(5))
     assert [c['asset_ref'] for c in snapshot()['comic']['cards']] == [f'card-{i}' for i in range(1, 6)]
+    assert edit_ids == ['comic:' + saved['content_revision']]
     assert len(vp.operations) == 5
     assert [c['kind'] for c in vp.commands].count('tune') == 5
     assert sum(not op['done'] for op in vp.operations.values()) == 0
@@ -104,6 +108,8 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
             db.execute("UPDATE jobs SET available_at=0 WHERE story_id=?", (sid,))
         assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
     assert len(tunes) == 10 and svc.story(sid)['state'] == 'ready_to_publish'
+    assert edit_ids[-1] == 'comic:' + saved['content_revision'] + ':regenerate-complete'
+    assert len(set(edit_ids)) == 2
     # Changed editorial inputs must not reuse the old album snapshot.
     research['publication_concept'] = 'Другой ракурс истории'
     with svc.store.tx() as db:

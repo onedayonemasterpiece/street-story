@@ -530,5 +530,8 @@ class StoryPhotosMixin:
                        "error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                        (new_state, f"/v1/stories/{story_id}/cards/0", refs[0],
                         self.store.now(), story_id))
+            change_id = "comic:" + revision
+            if "generation_attempt" in context:
+                change_id += ":" + context["generation_attempt"]
             self._queue_publication_edits(db, story_id, text=str(row["draft_text"] or ""),
-                asset_ref=refs[0], change_id="comic:" + revision)
+                asset_ref=refs[0], change_id=change_id)
