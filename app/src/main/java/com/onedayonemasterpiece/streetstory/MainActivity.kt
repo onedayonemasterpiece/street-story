@@ -105,6 +105,7 @@ class MainActivity : Activity() {
     private var publishButton: Button? = null
     private var captionErrorBox: LinearLayout? = null
     private var ownerVisualButton: Button? = null
+    private var ownerVisualSpinner: ProgressBar? = null
     private var ownerVisualRequest: OwnerVisualRequest? = null
     private var ownerVisualSent = false
     private var confirmationBox: LinearLayout? = null
@@ -615,11 +616,19 @@ class MainActivity : Activity() {
         column.addView(secondaryButton("Черновик с Мирой") { editOwnerDraft(storyId) }.apply {
             contentDescription = "owner-save-draft"
         }, blockMargins(top = 8))
+        val visualButtonBox = FrameLayout(this)
         ownerVisualButton = secondaryButton("Создать визуал") { createOwnerVisual(storyId) }.apply {
             contentDescription = "owner-create-visual"
             visibility = View.GONE
         }
-        column.addView(ownerVisualButton, blockMargins(top = 8))
+        visualButtonBox.addView(ownerVisualButton, FrameLayout.LayoutParams(-1, -2))
+        ownerVisualSpinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        visualButtonBox.addView(ownerVisualSpinner, FrameLayout.LayoutParams(dp(18), dp(18),
+            Gravity.END or Gravity.CENTER_VERTICAL).apply { marginEnd = dp(12) })
+        column.addView(visualButtonBox, blockMargins(top = 8))
 
         literalBanner = label(
             "Дословная диктовка · ещё не применено",
@@ -868,12 +877,25 @@ class MainActivity : Activity() {
         updateStickyPhoto()
 
         val visualScope = OwnerVisualRequest.capture(story, projection, facts, PhotoAssets.available(story.photoPath))
-        if (ownerVisualRequest != visualScope) ownerVisualRequest = null
+        val visualProcessing = story.stage == StoryStage.VISUAL_PROCESSING
+        val visualFailed = projection?.errorCode == "visual_generation_failed"
+        if (visualFailed || ownerVisualRequest != visualScope) ownerVisualRequest = null
+        ownerVisualSpinner?.visibility = if (visualProcessing) View.VISIBLE else View.GONE
         ownerVisualButton?.apply {
-            visibility = if (visualScope != null) View.VISIBLE else View.GONE
-            isEnabled = visualScope != null && ownerVisualRequest == null &&
+            visibility = if (visualScope != null || visualProcessing) View.VISIBLE else View.GONE
+            isEnabled = !visualProcessing && visualScope != null && ownerVisualRequest == null &&
                 store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
-            text = if (ownerVisualRequest != null) "Визуал запрошен" else "Создать визуал"
+            setPadding(dp(12), 0, if (visualProcessing) dp(36) else dp(12), 0)
+            text = when {
+                visualProcessing -> {
+                    val done = projection?.visual?.completedCards ?: 0
+                    val total = projection?.visual?.totalCards?.takeIf { it > 0 } ?: 1
+                    "Создаю визуал · $done/$total"
+                }
+                visualFailed -> "⚠ Не удалось создать визуал"
+                ownerVisualRequest != null -> "Визуал запрошен"
+                else -> "Создать визуал"
+            }
         }
 
         publishButton?.apply {
@@ -944,10 +966,7 @@ class MainActivity : Activity() {
         if (ownerVisualSent && !state.active && !state.connecting) {
             ownerVisualSent = false
             ownerVisualRequest = null
-            ownerVisualButton?.text = "Создать визуал"
-            ownerVisualButton?.isEnabled = OwnerVisualRequest.capture(store.story(id), research.get(id), store.facts(id),
-                store.story(id)?.let { PhotoAssets.available(it.photoPath) } == true) != null &&
-                store.pendingOperations(id).none { it.kind in setOf("place", "facts", "draft", "visual") }
+            refreshTopicDetail()
         }
         if (state.storyId != null && state.storyId != id) {
             dockStatus?.text = "Live идёт в другой теме"
@@ -1665,6 +1684,7 @@ class MainActivity : Activity() {
         publishButton = null
         captionErrorBox = null
         ownerVisualButton = null
+        ownerVisualSpinner = null
         confirmationBox = null
         dockTopic = null
         dockStatus = null
