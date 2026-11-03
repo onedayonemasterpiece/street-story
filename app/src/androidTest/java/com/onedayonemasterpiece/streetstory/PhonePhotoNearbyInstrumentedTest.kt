@@ -232,12 +232,6 @@ class PhonePhotoNearbyInstrumentedTest {
         }
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                scenario.onActivity { activity ->
-                    val decor = activity.window.decorView
-                    val scroll = find(decor, "topic-scroll") as ScrollView
-                    val panel = requireNotNull(find(decor, "nearby-photos"))
-                    scroll.scrollTo(0, panel.top)
-                }
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
@@ -259,7 +253,6 @@ class PhonePhotoNearbyInstrumentedTest {
                 screenshot("multiphoto-selection.png")
                 lastTile!!.click()
                 assertEquals(2, store.selectedStoryPhotos(storyId).size)
-                screenshot("multiphoto-selection.png")
                 scenario.onActivity { activity ->
                     requireNotNull(find(activity.window.decorView, "nearby-photo-done")).performClick()
                 }
