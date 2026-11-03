@@ -253,9 +253,13 @@ class PhonePhotoNearbyInstrumentedTest {
                     scenario.onActivity { activity ->
                         val grid = requireNotNull(find(activity.window.decorView, "nearby-photo-grid")) as GridView
                         atEnd = grid.lastVisiblePosition == grid.adapter.count - 1
-                        grid.getLocationOnScreen(bounds)
-                        height = grid.height
-                        width = grid.width
+                        val visible = android.graphics.Rect()
+                        assertTrue("Photo grid must be onscreen for a finger swipe", grid.getGlobalVisibleRect(visible))
+                        bounds[0] = visible.left
+                        bounds[1] = visible.top
+                        height = visible.height()
+                        width = visible.width()
+                        assertTrue("Photo grid swipe area is too small: $visible", height > 120)
                     }
                     if (atEnd) return@repeat
                     device.swipe(bounds[0] + width / 2, bounds[1] + height * 4 / 5,
