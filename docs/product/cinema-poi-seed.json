@@ -1,0 +1,15 @@
+{
+  "campaign": "snyato-v-kaliningrade-2026",
+  "workstream": "https://github.com/onedayonemasterpiece/street-story/issues/333",
+  "status": "discovery_seeds_not_imported",
+  "partner_origin": "unknown_requires_per_evidence_check",
+  "items": [
+    {"key":"rauschen-mayor-house","name":"Дом бургомистра / Домик охотника","address_hint":"Светлогорск, Ленина 31","films":[{"title":"Про Красную Шапочку","year_hint":1977}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/629/"],"caveat":"Один дом, две экранные роли. Не два POI."},
+    {"key":"commandant-office","name":"Бывшая военная комендатура","address_hint":"Калининград, проспект Мира 65","films":[{"title":"Женя, Женечка и катюша","year_hint":1967}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/957/"],"caveat":"Фрагмент западной стены; не утверждать все интерьеры."},
+    {"key":"school-5","name":"Здание школы №5","address_hint":"Калининград, Зои Космодемьянской 26","films":[{"title":"Женя, Женечка и катюша","year_hint":1967}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/960/"],"caveat":"Различить настоящее здание и уничтожаемый макет."},
+    {"key":"rosenau-church","name":"Кирха Розенау","address_hint":"Калининград, Клавы Назаровой 24","films":[{"title":"Женя, Женечка и катюша","year_hint":1967}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/org/kaliningrad/962/"],"caveat":"Фон, не интерьер; опечатка Клары в исходнике не новый адрес."},
+    {"key":"exchange-building","name":"Бывшая Кёнигсбергская биржа","address_hint":"Калининград, Ленинский проспект 83","films":[{"title":"Судьба человека","year_hint":1959},{"title":"Отец солдата","year_hint":1964},{"title":"Женя, Женечка и катюша","year_hint":1967}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/605/","https://spec.kino-teatr.ru/kinokarta/org/kaliningrad/736/"],"caveat":"Один POI, несколько фильмов; монтаж может соединять другие здания."},
+    {"key":"academy-building","name":"Здание БГАРФ","address_hint":"Калининград, Молодёжная 6","films":[{"title":"Встреча на Эльбе","year_hint":1949}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/525/"],"caveat":"Год съёмок и год фильма отдельно; здание не вся организация."},
+    {"key":"south-station","name":"Южный вокзал","address_hint":"Калининград, Железнодорожная 13–23","films":[{"title":"Щит и меч","year_hint":1968}],"source_urls":["https://spec.kino-teatr.ru/kinokarta/map/1098/"],"caveat":"Комплекс/конкретная платформа. Проверить совместимость с точным OSM building way, не создавать суррогат."}
+  ]
+}
