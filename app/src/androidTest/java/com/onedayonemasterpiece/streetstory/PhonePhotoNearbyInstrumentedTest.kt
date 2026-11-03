@@ -242,8 +242,13 @@ class PhonePhotoNearbyInstrumentedTest {
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    assertTrue("source plus a long candidate list", grid.adapter.count >= 32)
+                    assertEquals("source plus 31 nearby photos", 32, grid.adapter.count)
+                    val scroll = find(root, "topic-scroll") as ScrollView
+                    val panel = requireNotNull(find(root, "nearby-photos"))
+                    // Run after the panel has been measured, not during activity creation.
+                    scroll.post { scroll.scrollTo(0, panel.top + grid.top) }
                 }
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 screenshot("multiphoto-selection.png") // pre-swipe screen evidence also survives RED failure
                 // A real swipe must reach the end: setSelection() bypasses nested touch dispatch.
                 repeat(16) {
