@@ -216,48 +216,6 @@ async def test_saved_owner_draft_survives_reopen_but_stale_generation_cannot_wri
 
 
 @pytest.mark.asyncio
-async def test_owner_shortlist_links_are_unchecked_until_saved_via_existing_draft(tmp_path):
-    from street_story.fact_ledger import accept_fact_basis, persist_fact_candidates, refresh_review_status, set_owner_selection
-    from street_story.place_selection import save_draft
-    from street_story.publication_content import publication_content, publication_plain_content
-    from test_fact_ledger import fact
-    service, _ = make_service(tmp_path)
-    story = create(service)
-    snapshot = await map_for(service, story)
-    confirm_place(service, story['id'], 'article-place', command(story, snapshot, 'osm:way:1', 'article-place'))
-    with service.store.tx() as db:
-        fid = persist_fact_candidates(db, story_id=story['id'], poi_key='osm:way:1',
-            facts=[fact('house', 'Построен в 1906 году.', 'https://own.example', 'Построен в 1906 году.')],
-            run_id='r', batch_id='b', model_name='test', prompt_version='test', now=service.store.now())[0]
-        evidence = [row[0] for row in db.execute('SELECT evidence_id FROM fact_evidence_spans')]
-        accept_fact_basis(db, story['id'], fid, evidence, operation={'contract': 'source-reading-assessment-v2'}, now=service.store.now())
-        refresh_review_status(db, story['id'], service.store.now())
-        set_owner_selection(db, story['id'], [fid], service.store.now())
-        jobs_before = db.execute('SELECT count(*) FROM jobs').fetchone()[0]
-    long_url = 'https://kolesoistorii.ru/39nasledie/tpost/kuyoxkme15-udivitelnaya-istoriya-villi-izvestnoi-ka'
-    base = {'text': 'Сохранённый рассказ о вилле.', 'selected_fact_ids': [fid], 'expected_identity_generation': 1}
-    added = save_draft(service, story['id'], 'article-add', {**base,
-        'reading_add_url': long_url, 'reading_selected_urls': []})
-    assert added['reading_articles'][0]['url'] == long_url
-    assert added['reading_articles'][0]['selected'] is False and long_url not in added['draft_text']
-    selected = save_draft(service, story['id'], 'article-select', {**base, 'reading_selected_urls': [long_url]})
-    assert selected['reading_articles'][0]['selected'] is True
-    assert selected['draft_text'].count(long_url) == 1
-    assert selected['draft_text'].startswith(base['text'])
-    assert any(x.get('kind') == 'link' and x.get('url') == long_url
-        for x in publication_content(selected['draft_text'])['paragraphs'][0])
-    assert long_url in publication_plain_content(selected['draft_text'])['text']
-    assert save_draft(service, story['id'], 'article-select', {**base,
-        'reading_selected_urls': [long_url]})['draft_text'] == selected['draft_text']
-    removed = save_draft(service, story['id'], 'article-remove', {**base, 'reading_selected_urls': []})
-    assert 'Почитать подробнее:' not in removed['draft_text'] and long_url not in removed['draft_text']
-    with service.store.connection() as db:
-        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == jobs_before
-        assert db.execute('SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?',
-            (story['id'], fid)).fetchone()[0] == 1
-
-
-@pytest.mark.asyncio
 async def test_map_adapter_reuses_overpass_when_map_route_is_unavailable_and_recovers_relation(tmp_path):
     from street_story.providers import RetryableProviderError
     service, _ = make_service(tmp_path)

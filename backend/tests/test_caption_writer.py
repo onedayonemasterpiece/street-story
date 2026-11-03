@@ -456,3 +456,81 @@ async def test_model_wide_overload_moves_to_the_next_model_after_two_keys():
     finally:
         gemini_module.classify_error = original
     assert attempts == ["k0", "k1"]
+
+
+@pytest.mark.asyncio
+async def test_reading_full_pool_rank_selection_reopen_and_new_building(tmp_path):
+    from pathlib import Path
+    from street_story.place_selection import detach_place_material, save_draft
+    from street_story.research_runs import begin_research_run, persist_source_version
+
+    svc, adapter, session = prepared(tmp_path)
+    story_id = session.resource_id
+    exact = "https://kolesoistorii.ru/39nasledie/tpost/kuyoxkme15-udivitelnaya-istoriya-villi-izvestnoi-ka"
+    text = (Path(__file__).parent / "fixtures/reading-villa.txt").read_text()
+    urls = [f"https://history.example/{i}" for i in range(3)] + [exact]
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, story_id)["research_json"])
+        generation = int(research.get("identity_generation") or 0)
+        run = begin_research_run(db, story_id=story_id, poi_key="building-A",
+            goal="Read building history", expected_story_revision=0,
+            identity_generation=generation, run_id="articles", now=svc.store.now())
+        for index, url in enumerate(reversed(urls)):
+            persist_source_version(db, run_id=run, requested_url=url, final_url=url,
+                title="Удивительная история виллы" if url == exact else "Other page",
+                content_type="text/html", http_status=200, redirect_chain=[],
+                normalized_text=text if url == exact else "Справочная страница. " * 100,
+                read_status="complete", access_scope="public", now=svc.store.now() + index)
+        db.execute("UPDATE research_runs SET state='completed' WHERE run_id=?", (run,))
+        before = db.execute("SELECT count(*) FROM jobs").fetchone()[0]
+        facts_before = [tuple(row) for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))]
+
+    async def generate(_key, _timeout, contents, _config, **kwargs):
+        payload = json.loads(contents[0].split("\n\n")[-1])
+        pool = payload["reading_candidates"]
+        assert len(pool) == 4
+        article = next(item for item in pool if item["url"] == exact)
+        assert article["excerpt"] == text
+        assert "2019" in article["excerpt"][550:]
+        assert article["source_version_id"].startswith("srcv_")
+        return SimpleNamespace(text=json.dumps({"text": "История виллы.", "reading_reviews": [
+            {"url": urls[0], "is_article": False, "reason": "Справочник"},
+            {"url": exact, "is_article": True, "reason": "История дома, владельцев и кино"},
+            {"url": urls[1], "is_article": True, "reason": "Дополнительная история"},
+            {"url": urls[2], "is_article": True, "reason": "Хронология"}]}))
+
+    client = SimpleNamespace(_generate=generate, WRITER_RULES=GeminiClient.WRITER_RULES,
+        WRITER_SCHEMA=GeminiClient.WRITER_SCHEMA, writer_routes=[("test", None, None, Route(None))])
+
+    async def writer(*, reading_candidates=None, **kwargs):
+        return await GeminiClient.write_caption(client, reading_candidates=reading_candidates, **kwargs)
+
+    svc.providers.gemini.write_caption = writer
+    written = await adapter._write_caption(story_id, {"writing_request": "Уточни текст и лучшие статьи."})
+    adapter._edit_text(story_id, "rank-articles", {"expected_text_revision": 0,
+        "new_text": written["text"], "change_summary": "Текст и статьи"},
+        reading_reviews=written["reading_reviews"])
+    offered = svc.story(story_id)["reading_articles"]
+    assert [item["url"] for item in offered] == [exact, urls[1], urls[2]]
+    assert not any(item["selected"] for item in offered)
+    assert exact not in svc.story(story_id)["draft_text"]
+    base = {"text": "История виллы.", "selected_fact_ids": [], "expected_identity_generation": generation}
+    selected = save_draft(svc, story_id, "select-article", {**base, "reading_selected_urls": [exact]})
+    assert selected["draft_text"].count(exact) == 1
+    # A fresh store read is the normal reopen/readback; it keeps draft, facts and owner opt-in.
+    assert svc.story(story_id)["reading_articles"][0]["selected"] is True
+    assert svc.story(story_id)["draft_text"] == selected["draft_text"]
+    removed = save_draft(svc, story_id, "remove-article", {**base, "reading_selected_urls": []})
+    assert exact not in removed["draft_text"]
+    with svc.store.tx() as db:
+        assert db.execute("SELECT count(*) FROM jobs").fetchone()[0] == before
+        assert [tuple(row) for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))] == facts_before
+        row = svc._story_row(db, story_id)
+        research, next_generation, _ = detach_place_material(svc, db, row, json.loads(row["research_json"]))
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
+        assert next_generation == generation + 1
+    assert svc.story(story_id)["reading_articles"] == []
+    from street_story.errors import ConflictError
+    with pytest.raises(ConflictError, match="reading_selection_invalid"):
+        save_draft(svc, story_id, "old-article-on-B", {**base,
+            "expected_identity_generation": next_generation, "reading_selected_urls": [exact]})

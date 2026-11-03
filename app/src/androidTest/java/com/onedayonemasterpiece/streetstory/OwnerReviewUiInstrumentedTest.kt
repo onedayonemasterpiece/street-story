@@ -414,7 +414,7 @@ class OwnerReviewUiInstrumentedTest {
         }
     }
 
-    @Test fun readingArticleCheckboxIsUncheckedAndQueuesExistingDraftWithoutResearch() {
+    @Test fun readingArticlePendingSelectionSurvivesRecreateReopenAndReadback() {
         val config = AppGraph.config(context)
         val priorBackend = config.backendUrl
         config.backendUrl = null
@@ -470,15 +470,54 @@ class OwnerReviewUiInstrumentedTest {
                         activity.findViewById(android.R.id.content), "reading-articles-block"))
                     (findByDescription(block, "reading-article-0") as CheckBox).performClick()
                 }
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "reading-articles-pending.png")))
+            }
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                assertReadingArticle(scenario, checked = true, enabled = false)
+                // Normal successful draft readback replaces the wire projection and acknowledges the outbox.
+                val wire = StoryWire().apply {
+                    id = "server-$storyId"
+                    photoSha256 = imported.sha256
+                    identityGeneration = 1
+                    revision = 6
+                    readingArticles = arrayListOf(SourceWire().apply {
+                        this.url = url
+                        title = "Удивительная история виллы"
+                        selected = true
+                    })
+                }
+                ResearchProjectionStore(context).replace(storyId, wire)
+                StoryStore(context).use { store ->
+                    store.pendingOperations(storyId).forEach { store.markOperationDone(it.id) }
+                }
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = true, enabled = true)
+                scenario.onActivity { activity ->
+                    (findByDescription(activity.findViewById(android.R.id.content),
+                        "reading-article-0") as CheckBox).performClick()
+                }
+                assertReadingArticle(scenario, checked = false, enabled = false)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = false, enabled = false)
+                StoryStore(context).use { store ->
+                    val pending = store.pendingOperations(storyId).single()
+                    assertEquals(0, JSONObject(pending.payloadJson).getJSONArray("reading_selected_urls").length())
+                    store.markOperationDone(pending.id)
+                }
+                wire.readingArticles.single().selected = false
+                wire.revision = 7
+                ResearchProjectionStore(context).replace(storyId, wire)
+                scenario.recreate()
+                assertReadingArticle(scenario, checked = false, enabled = true)
             }
             StoryStore(context).use { store ->
                 val pending = store.pendingOperations(storyId)
-                assertEquals(1, pending.size)
-                assertEquals("draft", pending.single().kind)
-                val body = JSONObject(pending.single().payloadJson)
-                assertEquals(url, body.getJSONArray("reading_selected_urls").getString(0))
-                assertEquals("Вилла сохранила историю.", body.getString("text"))
+                assertTrue(pending.isEmpty())
                 assertEquals("Вилла сохранила историю.", store.story(storyId)?.draftText)
+                assertTrue(store.facts(storyId).single().selected)
             }
         } finally {
             prefs.edit().apply {
@@ -489,6 +528,14 @@ class OwnerReviewUiInstrumentedTest {
             PhotoAssets.releaseTemporary(imported.path)
             PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
             config.backendUrl = priorBackend
+        }
+    }
+
+    private fun assertReadingArticle(scenario: ActivityScenario<MainActivity>, checked: Boolean, enabled: Boolean) {
+        scenario.onActivity { activity ->
+            val check = findByDescription(activity.findViewById(android.R.id.content), "reading-article-0") as CheckBox
+            assertEquals(checked, check.isChecked)
+            assertEquals(enabled, check.isEnabled)
         }
     }
 
