@@ -122,6 +122,7 @@ class StoryWire {
     @SerializedName("live_messages") var liveMessages: ArrayList<LiveMessageWire> = arrayListOf()
     @SerializedName("visual_identity") var visualIdentity: VisualIdentityWire? = null
     var sources: ArrayList<SourceWire> = arrayListOf()
+    @SerializedName("reading_articles") var readingArticles: ArrayList<SourceWire> = arrayListOf()
     @SerializedName("source_count") var sourceCount: Int = 0
     @SerializedName("research_revision") var researchRevision: String? = null
     @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
@@ -195,6 +196,8 @@ class FactWire {
 }
 
 class SourceWire {
+    var selected: Boolean = false
+    var reason: String = ""
     var type: String = ""
     var title: String? = null
     var url: String = ""

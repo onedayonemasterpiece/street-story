@@ -1061,6 +1061,35 @@ def save_draft(service, story_id, key, body):
                             'from_text_revision': editor['text_revision'], 'summary': editor['last_change']})
             db.execute('UPDATE live_editor_state SET text_revision=text_revision+1,history_json=?,last_change=?,updated_at=? WHERE story_id=?',
                        (canonical(history[-20:]), 'Сохранён текст автора', service.store.now(), story_id))
+        if "reading_selected_urls" in body or body.get("reading_add_url"):
+            from .article_media import public_url
+            from .reading_articles import shortlist
+            from urllib.parse import urlsplit
+            raw = str(body.get("reading_add_url") or "").strip()
+            if raw:
+                url = public_url(raw)
+                if not url or any(char in url for char in ' )[]\n'):
+                    raise ConflictError('reading_url_invalid', 'Укажите публичную ссылку HTTPS на статью.')
+                suggestions = list(research.get("reading_suggestions") or [])
+                if url not in {item.get("url") for item in suggestions}:
+                    if len(suggestions) >= 3:
+                        raise ConflictError('reading_suggestions_full', 'Можно предложить до трёх ссылок.')
+                    suggestions.append({"url": url, "title": urlsplit(url).hostname})
+                research["reading_suggestions"] = suggestions
+            offered = {item["url"]: item for item in shortlist(db, story_id, research)}
+            selected_urls = body.get("reading_selected_urls", [item["url"] for item in
+                research.get("reading_selected") or []])
+            if (not isinstance(selected_urls, list) or len(selected_urls) > 3
+                    or any(not isinstance(url, str) for url in selected_urls)
+                    or len(set(selected_urls)) != len(selected_urls) or any(url not in offered for url in selected_urls)):
+                raise ConflictError('reading_selection_invalid', 'Выберите до трёх предложенных статей.')
+            research["reading_selected"] = [
+                {"url": url, "title": offered[url]["title"]} for url in selected_urls]
+        if research.get("reading_selected") or "reading_selected_urls" in body:
+            from .map_links import with_place_footer
+            text = with_place_footer(text, research)
+            if len(text) > 5000:
+                raise ConflictError('draft_text_invalid', 'Черновик со ссылками длиннее 5000 символов.')
         research.update(draft_needs_refresh=False, draft_stale_reason=None, draft_composed_by='owner_editor',
                         content_identity_changed=False, draft_fact_revisions=fact_revision_bundle(db, story_id, ids))
         db.execute('UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',

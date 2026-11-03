@@ -23,6 +23,7 @@ data class ResearchProjectionSnapshot(
     val observations: List<String>,
     val candidates: List<ResearchCandidateSnapshot>,
     val sources: List<ResearchSourceSnapshot>,
+    val readingArticles: List<SourceWire> = emptyList(),
     val sourceCount: Int,
     val researchRevision: String?,
     val researchVoiceIds: List<String>,
@@ -97,6 +98,7 @@ class ResearchProjectionStore(context: Context) {
             sources = wire.sources.filter { it.url.isNotBlank() }.map {
                 ResearchSourceSnapshot(it.type, it.title?.takeIf(String::isNotBlank) ?: it.url, it.url)
             },
+            readingArticles = wire.readingArticles.orEmpty(),
             sourceCount = wire.sourceCount.coerceAtLeast(0),
             researchRevision = wire.researchRevision?.takeIf { it.isNotBlank() },
             researchVoiceIds = wire.researchVoiceIds.filter { it.isNotBlank() },

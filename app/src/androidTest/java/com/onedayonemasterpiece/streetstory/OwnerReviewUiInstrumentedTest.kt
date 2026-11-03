@@ -414,6 +414,76 @@ class OwnerReviewUiInstrumentedTest {
         }
     }
 
+    @Test fun readingArticleCheckboxIsUncheckedAndQueuesExistingDraftWithoutResearch() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
+        val storyId = "article-checklist-" + System.nanoTime()
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
+        val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val previousActive = prefs.getString("active_story_id", null)
+        val url = "https://kolesoistorii.ru/39nasledie/tpost/kuyoxkme15-udivitelnaya-istoriya-villi-izvestnoi-ka"
+        try {
+            StoryStore(context).use { store ->
+                store.createStory(imported)
+                store.setServerIdentity(storyId, "server-$storyId")
+                store.setDraftText(storyId, "Вилла сохранила историю.")
+                store.replaceFacts(storyId, listOf(FactSnapshot("fact", "Построена в 1906 году.",
+                    .9, true, true, "[]", "accepted")))
+            }
+            ResearchProjectionStore(context).replace(storyId, StoryWire().apply {
+                id = "server-$storyId"
+                photoSha256 = imported.sha256
+                identityGeneration = 1
+                revision = 5
+                readingArticles = arrayListOf(SourceWire().apply {
+                    this.url = url
+                    title = "Удивительная история виллы"
+                    reason = "Связная история дома"
+                    selected = false
+                })
+            })
+            prefs.edit().putString("active_story_id", storyId).commit()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                EmulatorWindowGuard.requireStoryWindow(context, device, "reading-articles")
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                    val block = requireNotNull(findByDescription(root, "reading-articles-block"))
+                    val check = findByDescription(block, "reading-article-0") as CheckBox
+                    assertTrue(!check.isChecked)
+                    assertTrue(check.isEnabled)
+                    check.requestRectangleOnScreen(Rect(0, 0, check.width, check.height), true)
+                }
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "reading-articles-checkbox.png")))
+                scenario.onActivity { activity ->
+                    val block = requireNotNull(findByDescription(
+                        activity.findViewById(android.R.id.content), "reading-articles-block"))
+                    (findByDescription(block, "reading-article-0") as CheckBox).performClick()
+                }
+            }
+            StoryStore(context).use { store ->
+                val pending = store.pendingOperations(storyId)
+                assertEquals(1, pending.size)
+                assertEquals("draft", pending.single().kind)
+                val body = JSONObject(pending.single().payloadJson)
+                assertEquals(url, body.getJSONArray("reading_selected_urls").getString(0))
+                assertEquals("Вилла сохранила историю.", body.getString("text"))
+                assertEquals("Вилла сохранила историю.", store.story(storyId)?.draftText)
+            }
+        } finally {
+            prefs.edit().apply {
+                if (previousActive == null) remove("active_story_id") else putString("active_story_id", previousActive)
+            }.commit()
+            ResearchProjectionStore(context).clear(storyId)
+            StoryStore(context).use { it.deleteStory(storyId) }
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, storyId)?.let { PhotoImportTelemetry.acknowledge(context, storyId, it) }
+            config.backendUrl = priorBackend
+        }
+    }
+
     private fun findByDescription(root: View, description: String): View? {
         if (root.contentDescription?.toString() == description) return root
         if (root is ViewGroup) {

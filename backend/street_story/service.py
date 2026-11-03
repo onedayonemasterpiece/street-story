@@ -1475,7 +1475,8 @@ class StreetStoryService:
                     image_note_arrows=written.get("image_note_arrows") or [],
                     card_notes=written.get("card_notes"),
                     card_photo_ids=written.get("card_photo_ids"),
-                    card_fact_ids=written.get("card_fact_ids"))
+                    card_fact_ids=written.get("card_fact_ids"),
+                    reading_reviews=written.get("reading_reviews"))
                 outcome.update(ok=True, model=written["model"], text_revision=saved["text_revision"])
         except Exception as exc:
             outcome["error"] = str(getattr(exc, "code", type(exc).__name__))[:100]

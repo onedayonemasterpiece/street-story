@@ -17,6 +17,8 @@ _LINKED_LINE = re.compile(
     r'(?:[ \t]*[·•|,–-][ \t]*\[(?:ЯндексКарты|2ГИС)\]\(https://[^)\s]+\))*[ \t]*$', re.M)
 _PLAIN_LINE = re.compile(r'^[ \t]*(?:ЯндексКарты|2ГИС)(?:[ \t]*[·•|,–-][ \t]*(?:ЯндексКарты|2ГИС))*[ \t]*$', re.M)
 
+_READING_BLOCK = re.compile(r'(?m)^Почитать подробнее:\n(?:• \[[^\]\n]{1,140}\]\(https://[^)\s]+\)\n?){1,3}')
+
 
 def _ring_points(ring) -> list[tuple[float, float]]:
     points = ring.get('points') if isinstance(ring, dict) else ring
@@ -117,11 +119,17 @@ def with_place_footer(text: str, research: dict[str, Any]) -> str:
         return text
     body, linked = _LINKED_LINE.subn('', text)
     body, plain = _PLAIN_LINE.subn('', body)
-    if linked or plain:
+    body, reading = _READING_BLOCK.subn('', body)
+    if linked or plain or reading:
         body = re.sub(r'\n{3,}', '\n\n', body)
     body = body.rstrip()
     if not body:
         return body
+    selected = research.get("reading_selected") or []
+    if selected:
+        body += '\n\nПочитать подробнее:\n' + '\n'.join(
+            '• [{}]({})'.format(re.sub(r'[\[\]\n\r]', '', str(item.get('title') or 'Статья'))[:120], item['url'])
+            for item in selected[:3])
     hashtag = city_hashtag(research)
     if hashtag and hashtag.casefold() not in body.casefold():
         body += '\n\n' + hashtag

@@ -115,6 +115,12 @@ Canonical states remain `photo_ready`, `queued`, `researching`, `review`, `visua
 
 During `visual_processing`, `GET /v1/stories/{id}.visual.completed_cards` and `.total_cards` report accepted card assets N/M (including the separate final card), not started operations. These values are computed from existing `visual_context_json.comic.cards[].asset_ref`; for the single-photo route they are 0/1 while processing. A terminal `needs_review` with `error.code=visual_generation_failed` is a failure, never an active loader. The original visual brief is preserved; Street Story follows VibePublish's existing 32,000-character `tune` contract.
 
+### Owner-selected articles for further reading
+
+`GET /v1/stories/{id}.reading_articles` returns up to three same-object historical article candidates (`url/title/reason/selected`). The list uses previously retained research pages plus author-provided public HTTPS URLs. Unknown author-suggested URLs are labelled **not yet evaluated**; only the normal caption writer/editor can provide a model quality ranking without a new job. Fact counts are not a proxy for storytelling. No candidate is selected automatically.
+
+The existing idempotent `POST /v1/stories/{id}/draft` additionally accepts `reading_selected_urls: []` (exact shortlist URLs, at most three) and optional `reading_add_url`. The server persists the author's decision in existing `research_json`, retains selected facts and draft body, and composes clickable labelled links under **Почитать подробнее** before verified map links. Existing Android `draft` outbox and WorkManager transport handle retries and readback; no new queue/table/service. The writer's normal passage may return `reading_reviews` used only to sort/filter known already-read candidate pages; it never selects on behalf of the owner. Telegram uses structured links; VK plain rendering retains titles and URLs.
+
 ## Research / facts
 
 Accepted upload and durable research work survive client close/minimize, microphone
