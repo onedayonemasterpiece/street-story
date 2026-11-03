@@ -1032,6 +1032,7 @@ def enqueue_owner_research(service, db, row, research, command, cid):
 def save_draft(service, story_id, key, body):
     """Persist the author's editor text with the same evidence revisions as Live."""
     from .fact_ledger import eligible_selected_fact_ids, fact_revision_bundle, selected_eligibility_issues
+    from .multiphoto import invalidate_comic_text
     text = body.get('text')
     if not isinstance(text, str) or not text.strip() or len(text) > 5000:
         raise ConflictError('draft_text_invalid', 'Нужен текст до 5000 символов.')
@@ -1063,6 +1064,7 @@ def save_draft(service, story_id, key, body):
                        (canonical(history[-20:]), 'Сохранён текст автора', service.store.now(), story_id))
         research.update(draft_needs_refresh=False, draft_stale_reason=None, draft_composed_by='owner_editor',
                         content_identity_changed=False, draft_fact_revisions=fact_revision_bundle(db, story_id, ids))
+        invalidate_comic_text(db, story, text.strip())
         db.execute('UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                    (text.strip(), canonical(research), service.store.now(), story_id))
         return service._story_repr(db, service._story_row(db, story_id))

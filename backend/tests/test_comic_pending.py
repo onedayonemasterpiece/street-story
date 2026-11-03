@@ -2,15 +2,13 @@
 import json
 import uuid
 
-import pytest
-
 from street_story import fact_ledger
 from street_story.runtime import RuntimeStreetStoryService
+from street_story.place_selection import save_draft
 from street_story.service import canonical, digest
 from test_multiphoto import make_runtime, shot, upload_three
 
 
-@pytest.mark.asyncio
 async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_path, monkeypatch):
     edit_ids = []
     monkeypatch.setattr(RuntimeStreetStoryService, '_queue_publication_edits',
@@ -22,6 +20,8 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
     notes = [{'notes': ['История дома'], 'arrows': ['']} for _ in photos]
     research = {'caption_image_notes': {'photo_ids': photos, 'fact_ids': ['fact-1'], 'cards': notes}}
     monkeypatch.setattr(fact_ledger, 'eligibility_issues_for_ids', lambda *_: [])
+    monkeypatch.setattr(fact_ledger, 'eligible_selected_fact_ids', lambda *_: ['fact-1'])
+    monkeypatch.setattr(fact_ledger, 'selected_eligibility_issues', lambda *_: [])
     monkeypatch.setattr(fact_ledger, 'fact_revision_bundle', lambda *_: {'fact-1': 'revision-one'})
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET research_json=?,draft_text='Пост готов' WHERE id=?", (canonical(research), sid))
@@ -50,10 +50,9 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
     finished = selection_terminal = False
 
     async def status(operation):
-        index = int(operation.removeprefix('visual-'))
         if selection_terminal and vp.operations[operation]['done']:
             return {'receipts': [{'operation_id': operation, 'state': 'failed'}]}
-        if index > 3 and not finished:
+        if int(operation.removeprefix('visual-')) > 3 and not finished:
             return {'receipts': [{'operation_id': operation, 'state': 'processing'}]}
         return await original_status(operation)
 
@@ -63,14 +62,16 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
         with svc.store.connection() as db:
             return json.loads(svc._story_row(db, sid)['visual_context_json'])
 
+    async def advance(count):
+        for _ in range(count):
+            with svc.store.tx() as db:
+                db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='visual'", (sid,))
+            assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
+
     # No client requests drive these ordinary server worker passes.
-    for _ in range(11):
-        with svc.store.tx() as db:
-            db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='visual'", (sid,))
-        assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
+    await advance(11)
     saved = snapshot()
-    refs = [c.get('asset_ref') for c in saved['comic']['cards']]
-    assert refs == ['card-1', 'card-2', 'card-3', None, None]
+    assert [c.get('asset_ref') for c in saved['comic']['cards']] == ['card-1', 'card-2', 'card-3', None, None]
     for i, card in enumerate(saved['comic']['cards']):
         key = 'ss-vp-visual-' + digest([sid, saved['content_revision'], i, card['photo_id'], card['source_asset_ref']])[:48]
         assert tunes[key]['operation_id'] == card['operation_id']
@@ -103,34 +104,35 @@ async def test_pending_album_survives_polling_and_same_input_owner_request(tmp_p
     await svc.request_visual(sid, 'regenerate-complete', body)
     assert snapshot()['generation_attempt'] == 'regenerate-complete'
     assert snapshot()['content_revision'] == saved['content_revision']
-    for _ in range(2):
-        with svc.store.tx() as db:
-            db.execute("UPDATE jobs SET available_at=0 WHERE story_id=?", (sid,))
-        assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
+    await advance(2)
     assert len(tunes) == 10 and svc.story(sid)['state'] == 'ready_to_publish'
     assert edit_ids[-1] == 'comic:' + saved['content_revision'] + ':regenerate-complete'
     assert len(set(edit_ids)) == 2
+    # A real text-only edit must invalidate even a legacy partial album with the same notes.
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='visual_processing',visual_context_json=? WHERE id=?", (canonical(saved), sid))
+    assert save_draft(svc, sid, 'text-only', {'text': 'Новый текст', 'selected_fact_ids': ['fact-1'],
+                     'expected_identity_generation': 0})['draft_text'] == 'Новый текст'
+    await svc.request_visual(sid, 'text-only-visual', body)
+    assert snapshot()['generation_attempt'] == 'text-only-visual'
+    assert snapshot()['content_revision'] != saved['content_revision']
+    assert not any(c.get('operation_id') for c in snapshot()['comic']['cards'])
     # Changed editorial inputs must not reuse the old album snapshot.
-    research['publication_concept'] = 'Другой ракурс истории'
-    with svc.store.tx() as db:
-        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), sid))
-    await svc.request_visual(sid, 'changed-concept', body)
-    changed = snapshot()
-    assert changed['content_revision'] != saved['content_revision']
-    assert not any(c.get('operation_id') for c in changed['comic']['cards'])
-    research['caption_image_notes']['cards'][0]['notes'] = ['Другой зачин']
-    with svc.store.tx() as db:
-        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), sid))
-    await svc.request_visual(sid, 'changed-notes', body)
-    assert snapshot()['content_revision'] != changed['content_revision']
+    for key, target, field, value in (
+            ('changed-concept', research, 'publication_concept', 'Другой ракурс истории'),
+            ('changed-notes', notes[0], 'notes', ['Другой зачин'])):
+        changed = snapshot()
+        target[field] = value
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), sid))
+        await svc.request_visual(sid, key, body)
+        assert snapshot()['content_revision'] != changed['content_revision']
+        assert not any(c.get('operation_id') for c in snapshot()['comic']['cards'])
     changed = snapshot()
     await svc.request_visual(sid, 'changed-instruction', {**body, 'visual_instruction': 'Чернильный скетч'})
     assert snapshot()['content_revision'] != changed['content_revision']
     assert not any(c.get('operation_id') for c in snapshot()['comic']['cards'])
-    for _ in range(4):
-        with svc.store.tx() as db:
-            db.execute("UPDATE jobs SET available_at=0 WHERE story_id=?", (sid,))
-        assert await svc.run_once(claim_kind='visual', claim_story_id=sid)
+    await advance(5)
     assert len(tunes) == 15 and svc.story(sid)['state'] == 'ready_to_publish'
     selection_terminal = True
     await svc.request_visual(sid, 'terminal-after-select', body)

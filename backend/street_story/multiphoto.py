@@ -18,6 +18,15 @@ def selected_photos(db, story_id):
         (story_id,))]
 
 
+def invalidate_comic_text(db, story, text):
+    context = json.loads(story['visual_context_json'] or '{}')
+    cards = (context.get('comic') or {}).get('cards') or []
+    if text == (story['draft_text'] or '') or not cards or all(card.get('asset_ref') for card in cards):
+        return
+    context.update(stale=True, stale_reason='draft_text_changed')
+    db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (canonical(context), story['id']))
+
+
 class StoryPhotosMixin:
     """Extend the runtime projection, not the identity or fact source of truth."""
 
@@ -289,13 +298,16 @@ class StoryPhotosMixin:
                 "place_selection": research.get("place_selection"),
                 "strongest_fact": (research.get("strongest_fact") or {}).get("fact_id"),
             }
+            previous = json.loads(row["visual_context_json"] or "{}")
+            # Retain legacy identities until a text edit actually invalidates their snapshot.
+            if 'draft_text' in previous or previous.get('stale_reason') == 'draft_text_changed':
+                inputs['draft_text'] = row['draft_text'] or ''
             content_revision = digest([inputs, letterings["cards"]])
             comic = {"photo_ids": photo_ids,
                      "cards": [{"photo_id": photo_id} for photo_id in [*photo_ids, photo_ids[-1]]],
                      "plan": {"cards": [*letterings["cards"], {"notes": [], "arrows": []}]}}
             context = {**inputs, "content_revision": content_revision, "comic": comic,
                        "prompt_version": self.PROMPT_VERSION, "stale": False, "generation_attempt": key}
-            previous = json.loads(row["visual_context_json"] or "{}")
             previous_cards = (previous.get("comic") or {}).get("cards") or []
             if (previous_cards and not all(card.get("asset_ref") for card in previous_cards)
                     and self._comic_current(db, story_id, content_revision, photo_ids)):

@@ -6129,7 +6129,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             research["draft_stale_reason"] = None
             research["draft_composed_by"] = composed_by
             # The writer's image notes belong to this text; a text written elsewhere drops them.
-            from .multiphoto import selected_photos
+            from .multiphoto import invalidate_comic_text, selected_photos
             from .providers import _validated_card_notes
             current_photo_ids = [p["photo_id"] for p in selected_photos(db, story_id)]
             proposed = card_notes if card_notes is not None else args.get("card_notes")
@@ -6189,6 +6189,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             history = history[-20:]
             kept_literals = [] if allow_literals else literals
             next_revision = current_revision + 1
+            invalidate_comic_text(db, story, new_text)
             db.execute(
                 "UPDATE stories SET draft_text=?,revision=revision+1,updated_at=? WHERE id=?",
                 (new_text, self.service.store.now(), story_id),
@@ -6289,6 +6290,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             literals = [*literals, {"literal_id": literal_id, "text": text, "position": position}]
             next_revision = current_revision + 1
             summary = "Применил дословную диктовку"
+            from .multiphoto import invalidate_comic_text
+            invalidate_comic_text(db, story, new_text)
             db.execute(
                 "UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?",
                 (new_text, canonical(research), self.service.store.now(), story_id),
@@ -6337,6 +6340,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             summary = "Отменил последнюю правку"
             research = json.loads(story["research_json"] or "{}")
             research["draft_composed_by"] = "mira_live"
+            from .multiphoto import invalidate_comic_text
+            invalidate_comic_text(db, story, text)
             db.execute(
                 "UPDATE stories SET draft_text=?,research_json=?,revision=revision+1,updated_at=? WHERE id=?",
                 (text, canonical(research), self.service.store.now(), story_id),
