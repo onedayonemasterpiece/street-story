@@ -155,7 +155,7 @@ class PhonePhotoNearbyInstrumentedTest {
 
     @Test fun selectionPuzzleAndResultCarouselRunInActualActivity() {
         grantGallery()
-        val gallery = (0 until 24).map { insertImage(point(15.0 + it), "ui-$it") }
+        val gallery = (0 until 31).map { insertImage(point(15.0 + it), "ui-$it") }
         val storyId = "ss-multiphoto-ui-" + System.nanoTime()
         val source = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val config = AppGraph.config(context)
@@ -232,32 +232,27 @@ class PhonePhotoNearbyInstrumentedTest {
         }
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                scenario.onActivity { activity ->
-                    val decor = activity.window.decorView
-                    val scroll = find(decor, "topic-scroll") as ScrollView
-                    val panel = requireNotNull(find(decor, "nearby-photos"))
-                    scroll.scrollTo(0, panel.top)
-                }
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    assertTrue("source plus a long candidate list", grid.adapter.count >= 25)
-                    grid.setSelection(grid.adapter.count - 1)
+                    assertEquals("source plus 31 nearby photos", 32, grid.adapter.count)
                 }
-                InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-                scenario.onActivity { activity ->
-                    val root = activity.window.decorView
-                    val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    val last = grid.adapter.count - 1
-                    val tile = requireNotNull(grid.getChildAt(last - grid.firstVisiblePosition))
-                    tile.performClick() // one chosen photo far below the source; all others remain unselected
-                    assertEquals(2, store.selectedStoryPhotos(storyId).size)
-                    val scroll = find(root, "topic-scroll") as ScrollView
-                    val panel = requireNotNull(find(root, "nearby-photos"))
-                    scroll.scrollTo(0, panel.top)
+                // The full photo grid is part of the page, not a nested scrolling viewport.
+                // Find the final tile with actual page swipes, then tap it on screen.
+                var lastTile = device.findObject(By.desc("nearby-photo-31"))
+                repeat(12) {
+                    if (lastTile != null && lastTile!!.visibleBounds.height() > 50) return@repeat
+                    device.swipe(device.displayWidth - 90, 1850,
+                        device.displayWidth - 90, 550, 40)
+                    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                    lastTile = device.findObject(By.desc("nearby-photo-31"))
                 }
+                assertTrue("32nd photo must be reachable by page swipes",
+                    lastTile != null && lastTile!!.visibleBounds.height() > 50)
                 screenshot("multiphoto-selection.png")
+                lastTile!!.click()
+                assertEquals(2, store.selectedStoryPhotos(storyId).size)
                 scenario.onActivity { activity ->
                     requireNotNull(find(activity.window.decorView, "nearby-photo-done")).performClick()
                 }
@@ -276,7 +271,7 @@ class PhonePhotoNearbyInstrumentedTest {
                     requireNotNull(find(root, "change-photo-selection")).performClick()
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
                     assertEquals(View.VISIBLE, grid.visibility)
-                    assertTrue(grid.adapter.count >= 25)
+                    assertTrue(grid.adapter.count >= 32)
                     assertEquals("source-photo-selected", grid.adapter.getView(0, null, grid).contentDescription)
                     assertTrue(grid.adapter.getView(grid.adapter.count - 1, null, grid)
                         .contentDescription.toString().endsWith("-selected"))

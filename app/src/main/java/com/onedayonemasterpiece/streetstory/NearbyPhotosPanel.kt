@@ -75,9 +75,9 @@ class NearbyPhotosPanel(
             stretchMode = GridView.STRETCH_COLUMN_WIDTH
             adapter = chooseAdapter
             contentDescription = "nearby-photo-grid"
-            isVerticalScrollBarEnabled = true
+            isVerticalScrollBarEnabled = false
         }
-        addView(chooseGrid, LayoutParams(LayoutParams.MATCH_PARENT, dp(316)))
+        addView(chooseGrid, LayoutParams(LayoutParams.MATCH_PARENT, dp(102)))
         done.contentDescription = "nearby-photo-done"
         done.setOnClickListener {
             if (selected.isEmpty()) {
@@ -142,6 +142,10 @@ class NearbyPhotosPanel(
         if (signature != lastCandidateSignature) {
             lastCandidateSignature = signature
             candidates = fresh
+            // One continuous page scroll: show every row instead of a nested 316dp viewport.
+            val rows = (fresh.size + 2) / 3
+            chooseGrid.layoutParams.height = dp(102 * rows + 5 * (rows - 1))
+            chooseGrid.requestLayout()
             chooseAdapter.notifyDataSetChanged()
         }
         val index = PhonePhotoIndex.progress
