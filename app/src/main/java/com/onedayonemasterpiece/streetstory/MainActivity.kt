@@ -2254,7 +2254,7 @@ class MainActivity : Activity() {
     private fun renderReadingArticles(host: LinearLayout, storyId: String, projection: ResearchProjectionSnapshot?) {
         if (store.story(storyId)?.draftText.isNullOrBlank()) return
         val pending = store.pendingOperations(storyId).lastOrNull { it.kind == "draft" }
-        val pendingSelection = pending?.let { JSONObject(it.payloadJson).optJSONArray("reading_selected_urls") }
+        val pendingSelection = pending?.let { org.json.JSONObject(it.payloadJson).optJSONArray("reading_selected_urls") }
         val articles = projection?.readingArticles.orEmpty()
         val selected = pendingSelection?.let { urls ->
             (0 until urls.length()).map { urls.getString(it) }
