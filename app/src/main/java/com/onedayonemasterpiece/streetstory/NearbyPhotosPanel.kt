@@ -13,7 +13,6 @@ import android.util.LruCache
 import android.util.Size
 import android.view.DragEvent
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AbsListView
@@ -76,18 +75,9 @@ class NearbyPhotosPanel(
             stretchMode = GridView.STRETCH_COLUMN_WIDTH
             adapter = chooseAdapter
             contentDescription = "nearby-photo-grid"
-            isVerticalScrollBarEnabled = true
-            // Keep vertical drags inside the grid; the enclosing topic ScrollView otherwise steals them.
-            setOnTouchListener { view, event ->
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> view.parent.requestDisallowInterceptTouchEvent(true)
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                        view.parent.requestDisallowInterceptTouchEvent(false)
-                }
-                false
-            }
+            isVerticalScrollBarEnabled = false
         }
-        addView(chooseGrid, LayoutParams(LayoutParams.MATCH_PARENT, dp(316)))
+        addView(chooseGrid, LayoutParams(LayoutParams.MATCH_PARENT, dp(102)))
         done.contentDescription = "nearby-photo-done"
         done.setOnClickListener {
             if (selected.isEmpty()) {
@@ -152,6 +142,10 @@ class NearbyPhotosPanel(
         if (signature != lastCandidateSignature) {
             lastCandidateSignature = signature
             candidates = fresh
+            // One continuous page scroll: show every row instead of a nested 316dp viewport.
+            val rows = (fresh.size + 2) / 3
+            chooseGrid.layoutParams.height = dp(102 * rows + 5 * (rows - 1))
+            chooseGrid.requestLayout()
             chooseAdapter.notifyDataSetChanged()
         }
         val index = PhonePhotoIndex.progress
