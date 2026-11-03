@@ -155,7 +155,7 @@ class PhonePhotoNearbyInstrumentedTest {
 
     @Test fun selectionPuzzleAndResultCarouselRunInActualActivity() {
         grantGallery()
-        val gallery = (0 until 24).map { insertImage(point(15.0 + it), "ui-$it") }
+        val gallery = (0 until 31).map { insertImage(point(15.0 + it), "ui-$it") }
         val storyId = "ss-multiphoto-ui-" + System.nanoTime()
         val source = PhotoImporter.importStream(context, ByteArrayInputStream(PhotoGpsFixture.bytes()), "image/jpeg", storyId)
         val config = AppGraph.config(context)
@@ -242,8 +242,9 @@ class PhonePhotoNearbyInstrumentedTest {
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
-                    assertTrue("source plus a long candidate list", grid.adapter.count >= 25)
+                    assertTrue("source plus a long candidate list", grid.adapter.count >= 32)
                 }
+                screenshot("multiphoto-selection.png") // pre-swipe screen evidence also survives RED failure
                 // A real swipe must reach the end: setSelection() bypasses nested touch dispatch.
                 repeat(16) {
                     var atEnd = false
@@ -301,7 +302,7 @@ class PhonePhotoNearbyInstrumentedTest {
                     requireNotNull(find(root, "change-photo-selection")).performClick()
                     val grid = requireNotNull(find(root, "nearby-photo-grid")) as GridView
                     assertEquals(View.VISIBLE, grid.visibility)
-                    assertTrue(grid.adapter.count >= 25)
+                    assertTrue(grid.adapter.count >= 32)
                     assertEquals("source-photo-selected", grid.adapter.getView(0, null, grid).contentDescription)
                     assertTrue(grid.adapter.getView(grid.adapter.count - 1, null, grid)
                         .contentDescription.toString().endsWith("-selected"))
