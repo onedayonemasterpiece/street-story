@@ -149,7 +149,8 @@ class StreetStoryService:
                     local_daily_recovered,
                 )
             exhausted = [dict(row) for row in db.execute(
-                "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
+                "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=? "
+                "AND NOT (kind='visual' AND last_error IS NULL)",
                 (MAX_JOB_ATTEMPTS,),
             )]
             changed = identity_recovered

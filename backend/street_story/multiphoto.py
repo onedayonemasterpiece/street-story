@@ -294,7 +294,12 @@ class StoryPhotosMixin:
                      "cards": [{"photo_id": photo_id} for photo_id in [*photo_ids, photo_ids[-1]]],
                      "plan": {"cards": [*letterings["cards"], {"notes": [], "arrows": []}]}}
             context = {**inputs, "content_revision": content_revision, "comic": comic,
-                       "prompt_version": self.PROMPT_VERSION, "stale": False}
+                       "prompt_version": self.PROMPT_VERSION, "stale": False, "generation_attempt": key}
+            previous = json.loads(row["visual_context_json"] or "{}")
+            previous_cards = (previous.get("comic") or {}).get("cards") or []
+            if (previous_cards and not all(card.get("asset_ref") for card in previous_cards)
+                    and self._comic_current(db, story_id, content_revision, photo_ids)):
+                context = previous
             self._enqueue_job(db, story_id, "visual", f"visual:{key}",
                               {"content_revision": content_revision, "selected_fact_ids": fact_ids})
             db.execute("UPDATE stories SET state='visual_processing',visual_context_json=?,"
@@ -415,7 +420,10 @@ class StoryPhotosMixin:
                 if context is None:
                     return
                 card = context["comic"]["cards"][position]
-            visual_key = "ss-vp-visual-" + digest([story_id, revision, position, photo_id, source_asset])[:48]
+            key_inputs = [story_id, revision, position, photo_id, source_asset]
+            if "generation_attempt" in context:
+                key_inputs.append(context["generation_attempt"])
+            visual_key = "ss-vp-visual-" + digest(key_inputs)[:48]
             operation = card.get("operation_id")
             if not operation:
                 cmd = {"command": {"kind": "tune",
@@ -477,7 +485,8 @@ class StoryPhotosMixin:
                 # use the same authoritative status receipt as the single-image path.
                 receipt = _receipt(await self.providers.vibepublish.status(operation), operation)
             if receipt.get("state") != "verified":
-                raise RetryableProviderError("VibePublish comic card selection pending")
+                pending = True
+                continue
             asset_ref = str(receipt.get("selected_asset_ref") or "")
             if not asset_ref:
                 raise PermanentProviderError("VibePublish comic card lacks verified asset")
@@ -497,7 +506,16 @@ class StoryPhotosMixin:
             if context is None:
                 return
         if pending:
-            raise RetryableProviderError('VibePublish comic cards are processing')
+            with self.store.tx() as db:
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=NULL,updated_at=? "
+                           "WHERE id=? AND state='running' AND attempts=?",
+                           (self.store.now() + min(300, 2 ** min(job["attempts"], 8)),
+                            self.store.now(), job["id"], job["attempts"]))
+            logging.getLogger('uvicorn.error').info('street_story_visual_pending %s', canonical({
+                'story_id': story_id, 'job_id': job['id'],
+                'ready': sum(bool(card.get('asset_ref')) for card in context['comic']['cards']),
+                'total': len(card_photo_ids)}))
+            return
         with self.store.tx() as db:
             if not self._comic_current(db, story_id, revision, photo_ids):
                 return
