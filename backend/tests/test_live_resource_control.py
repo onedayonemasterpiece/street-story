@@ -64,7 +64,7 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
         await kwargs['control'].acquire('gemini-3.8-live', exclude_scopes={'failed-startup'})
         # Same low remaining quota as the Projects Hub incident. A real SDK
         # PCM admission must fit it directly, without a setup-sized denial.
-        from ai_resource_control.client import Lease, ResourceError
+        from ai_resource_control.client import ResourceError
         control = kwargs['control']
         grants = []
 
@@ -73,12 +73,12 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
             grants.append(payload['p_tokens'])
             if payload['p_tokens'] > 4714:
                 raise ResourceError('RESOURCE_TOKEN_BUDGET')
-            return {'lease_id': 'voice-test', 'fence': 1, 'ttl_ms': 120000,
+            return {'lease_id': payload['p_lease_id'], 'fence': 1, 'ttl_ms': 120000,
                     'tokens': payload['p_tokens'], 'spend_ms': 30000,
                     'grant_seq': payload['p_seq']}, control.clock()
 
         control.rpc = rpc
-        lease = Lease(control, 'voice-test', 'private-test-owner', 'private-test-key', 1)
+        lease = startup_lease
         lease.deadline = control.clock() + 120
         audio = {'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000',
                     'data': base64.b64encode(bytes(3200)).decode()}}}
