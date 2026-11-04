@@ -33,6 +33,7 @@ class DebugProvisioningInstrumentedTest {
         context.getSharedPreferences("street_story_config", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("street_story_ui", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit().remove("active_story_id").commit()
     }
 
     @Test
