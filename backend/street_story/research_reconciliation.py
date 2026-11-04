@@ -280,13 +280,7 @@ def _candidate_query(now, story_id=None):
             (now, now, story_id) if story_id else (now, now))
 
 
-async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3, timeout_seconds=6):
-    """Observe at most three saved IDs within six seconds; product stays ended."""
-    adapter = getattr(service.providers, 'research', None)
-    if adapter is None:
-        return {'observed': 0, 'closed': 0}
-    limit = max(0, min(3, int(max_attempts)))
-    deadline = time.monotonic() + max(0, min(6, float(timeout_seconds)))
+def _terminal_candidates(service, story_id):
     started = time.monotonic()
     with service.store.connection() as db:
         rows = list(db.execute(*_candidate_query(service.store.now(), story_id)))
@@ -301,6 +295,18 @@ async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3,
         logging.getLogger('uvicorn.error').warning(
             'street_story_worker_scan stage=terminal_readback outcome=slow duration_ms=%s inspected=%s due=%s',
             duration_ms, inspected, len(rows))
+    return rows
+
+
+async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3, timeout_seconds=6):
+    """Observe at most three saved IDs within six seconds; product stays ended."""
+    adapter = getattr(service.providers, 'research', None)
+    if adapter is None:
+        return {'observed': 0, 'closed': 0}
+    limit = max(0, min(3, int(max_attempts)))
+    deadline = time.monotonic() + max(0, min(6, float(timeout_seconds)))
+    # Candidate SQL/JSON scans must not hold the loop carrying Live audio ACKs.
+    rows = await asyncio.to_thread(_terminal_candidates, service, story_id)
     observed, closed = 0, 0
     for candidate in rows:
         if observed >= limit or time.monotonic() >= deadline:

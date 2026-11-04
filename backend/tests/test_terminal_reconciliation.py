@@ -13,6 +13,34 @@ SCHEMA = {'type': 'object', 'properties': {'summary': {'type': 'string'}},
     'required': ['summary'], 'additionalProperties': False}
 
 
+@pytest.mark.asyncio
+async def test_terminal_candidate_scan_keeps_live_receipts_responsive(tmp_path, monkeypatch):
+    import threading
+    from street_story import research_reconciliation
+
+    svc, _story, _now, _receipt = pending(tmp_path)
+    svc.providers.research = object()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original = research_reconciliation._candidate_query
+
+    def slow_query(*args, **kwargs):
+        entered.set()
+        release.wait(.5)
+        finished.set()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(research_reconciliation, '_candidate_query', slow_query)
+    task = asyncio.create_task(reconcile_terminal_attempts(svc, max_attempts=0))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        # Live socket ACK callbacks share this loop with maintenance.
+        await asyncio.sleep(.02)
+        assert not finished.is_set(), 'Candidate scan blocked the Live receipt loop'
+    finally:
+        release.set()
+        await task
+
+
 def pending(tmp_path, *, native=False):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     now = [1000.0]
