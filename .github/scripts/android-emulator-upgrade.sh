@@ -61,6 +61,8 @@ adb install -r "$verified_current"
 after_code="$(adb shell dumpsys package "$pkg" | awk -F= '/versionCode=/{print $2; exit}' | awk '{print $1}')"
 (( after_code > before_code ))
 adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS || true
+adb shell pm grant "$pkg" android.permission.READ_MEDIA_IMAGES || true
+adb shell pm grant "$pkg" android.permission.ACCESS_MEDIA_LOCATION || true
 adb shell am start -W -n "$pkg/.MainActivity" --es open_story_id "$story_id"
 mkdir -p ui-evidence
 adb exec-out screencap -p > ui-evidence/upgrade-reopen.png
@@ -78,7 +80,9 @@ def state(root):
     photos = db.execute("SELECT photo_id,uri,position FROM story_photo_choices WHERE story_id=? ORDER BY position", (story_id,)).fetchall()
     facts = db.execute("SELECT fact_id,selected FROM facts WHERE story_id=? ORDER BY fact_id", (story_id,)).fetchall()
     def pref(file, key):
-        node = ET.parse(root / f"shared_prefs/{file}.xml").find(f".//string[@name='{key}']")
+        path = root / f"shared_prefs/{file}.xml"
+        if not path.exists(): return None  # The old fixture has no active-topic preference yet.
+        node = ET.parse(path).find(f".//string[@name='{key}']")
         return None if node is None else node.text
     return story, photos, facts, pref("street_story_draft_overrides", story_id), pref("street_story_topics_v1", "active_story_id")
 before, after = state(sys.argv[1]), state(sys.argv[2])
