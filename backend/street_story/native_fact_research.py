@@ -388,17 +388,19 @@ class NativeFactResearch:
 
             async def dispatch(params):
                 return await client._street_story_active_tool(params)
-            client = attach_research_tools(self.client_factory(), dispatch)
-            original = client._record_notification
-            loop = asyncio.get_running_loop()
+            prepared_client = await asyncio.to_thread(self.client_factory)
+            if key not in self.clients:
+                client = attach_research_tools(prepared_client, dispatch)
+                original = client._record_notification
+                loop = asyncio.get_running_loop()
 
-            def observe(message):
-                original(message)
-                # Mutations and durable checkpoints stay on the product loop.
-                loop.call_soon_threadsafe(client._street_story_active_record, copy.deepcopy(message))
+                def observe(message):
+                    original(message)
+                    # Mutations and durable checkpoints stay on the product loop.
+                    loop.call_soon_threadsafe(client._street_story_active_record, copy.deepcopy(message))
 
-            client._record_notification = observe
-            self.clients[key] = client
+                client._record_notification = observe
+                self.clients[key] = client
 
         client = self.clients[key]
         client._street_story_active_tool = tool
