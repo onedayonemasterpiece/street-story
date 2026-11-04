@@ -6803,6 +6803,9 @@ def create_live_host(service: StreetStoryService, settings: Settings, *, operati
             # this loaded host. Allow its supported 10s bound; all quota, lease,
             # fence and unknown-outcome protections remain owned by the SDK.
             config = replace(Config.from_env('street-story', environment), timeout_seconds=10.0)
+            # The source snapshot and first audio grant share the startup scope.
+            requested += estimate_input_tokens({'realtimeInput': {'video': {
+                'data': '', 'mimeType': 'image/jpeg'}}}) + config.grant_tokens
 
             class SetupAdmissionControl(Control):
                 async def request(self, method, path, *args, **kwargs):
@@ -6820,7 +6823,7 @@ def create_live_host(service: StreetStoryService, settings: Settings, *, operati
                                 'status': 'failed' if code else 'completed', 'code': code})
 
                 async def acquire(self, *args, **kwargs):
-                    # Scope selection must fit setup, including startup failover.
+                    # Scope selection must fit all startup input, including failover.
                     # The lease then uses the SDK's small recurring audio quantum,
                     # not the (potentially large) prompt/tool setup reservation.
                     self.config = replace(config, grant_tokens=max(requested, config.grant_tokens))
