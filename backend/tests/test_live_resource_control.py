@@ -35,7 +35,15 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
 
     async def acquire(_control, *args, **kwargs):
         acquisitions.append(_control.config.grant_tokens)
-        return object()
+        from ai_resource_control.client import Lease
+        # The first scope fits setup alone, but cannot carry the startup image.
+        capacity = next(value for value in (setup_units + 1024, startup_units + 1024)
+                        if value >= _control.config.grant_tokens)
+        lease = Lease(_control, 'startup-test', 'private-test-owner', 'private-test-key', 1)
+        lease.deadline = _control.clock() + 120
+        lease.grant_deadline = _control.clock() + 29
+        lease.remaining_tokens = min(capacity, _control.config.grant_tokens)
+        return lease
 
     monkeypatch.setattr(Control, 'acquire', acquire)
 
@@ -43,8 +51,16 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
         assert kwargs['control'].config.timeout_seconds == 10.0
         calls.append({**kwargs, "environment": dict(kwargs["environment"])})
         # Normal initial selection and startup failover both fit actual setup.
-        await kwargs['control'].acquire('gemini-3.8-live')
+        startup_lease = await kwargs['control'].acquire('gemini-3.8-live')
         assert kwargs['control'].config.grant_tokens == 1024
+        async def no_extra_startup_grant(*_args, **_kwargs):
+            from ai_resource_control.client import ResourceError
+            raise ResourceError('RESOURCE_TOKEN_BUDGET')
+        kwargs['control'].rpc = no_extra_startup_grant
+        await startup_lease.before_send(setup)
+        await startup_lease.before_send(startup_image)
+        await startup_lease.before_send({'realtimeInput': {'audio': {
+            'mimeType': 'audio/pcm;rate=16000', 'data': base64.b64encode(bytes(3200)).decode()}}})
         await kwargs['control'].acquire('gemini-3.8-live', exclude_scopes={'failed-startup'})
         # Same low remaining quota as the Projects Hub incident. A real SDK
         # PCM admission must fit it directly, without a setup-sized denial.
@@ -73,6 +89,13 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
 
     monkeypatch.setattr(ai_resource_control, 'run_guarded', guarded)
     initialized = _adapter.initialize(resource_id=_session.resource_id, actor=None, model='gemini-3.8-live')
+    from live_interaction.provider import setup_config
+    from ai_resource_control.client import estimate_input_tokens
+    setup = setup_config('gemini-3.8-live', initialized['context'],
+        configuration=initialized['configuration'], search=False)
+    setup_units = estimate_input_tokens(setup)
+    startup_image = {'realtimeInput': {'video': {'data': '', 'mimeType': 'image/jpeg'}}}
+    startup_units = setup_units + estimate_input_tokens(startup_image) + 1024
     reader = asyncio.StreamReader()
     reader.feed_data((json.dumps({'type': 'start', 'model': 'gemini-3.8-live',
         'context': initialized['context'], 'configuration': initialized['configuration']}) + '\n').encode())
@@ -86,11 +109,7 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     call = calls[0]
     assert call["consumer"] == "street-story"
     assert call["binding"] == "street-story:live_fixture_session"
-    from live_interaction.provider import setup_config
-    from ai_resource_control.client import estimate_input_tokens
-    setup_units = estimate_input_tokens(setup_config('gemini-3.8-live',
-        initialized['context'], configuration=initialized['configuration'], search=False))
-    assert acquisitions == [setup_units, setup_units]
+    assert acquisitions == [startup_units, startup_units]
     assert call['control'].config.grant_tokens == 1024
     assert 1024 < setup_units < 20000
     assert call["environment"] == {
