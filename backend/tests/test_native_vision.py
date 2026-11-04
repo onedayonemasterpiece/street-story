@@ -810,3 +810,44 @@ async def test_source_only_native_t_transport_requires_text_and_never_claims_mis
                                               {'attempt_id': 'invalid-missing-map'}, host)
         assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
     await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_cold_native_client_does_not_delay_live_callbacks(tmp_path):
+    import time
+    provider, client, snapshot, story, context, *_ = setup(tmp_path)
+    loop = asyncio.get_running_loop()
+    callback_delay = []
+
+    def cold_factory():
+        started = time.monotonic()
+        loop.call_soon_threadsafe(lambda: callback_delay.append(time.monotonic() - started))
+        time.sleep(.3)  # Installed cold bridge import measured 1.75–1.96 seconds.
+        return client
+
+    provider.client_factory = cold_factory
+    await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'cold'})
+    await asyncio.sleep(0)
+    assert callback_delay and callback_delay[0] < .15
+    assert client.calls and provider.client is client
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_comparisons_keep_one_owned_client(tmp_path):
+    import threading
+    provider, _, snapshot, story, context, *_ = setup(tmp_path)
+    barrier = threading.Barrier(2)
+    clients = []
+
+    def cold_factory():
+        client = NativeClient()
+        clients.append(client)
+        barrier.wait(timeout=2)
+        return client
+
+    provider.client_factory = cold_factory
+    await asyncio.gather(*(provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context,
+                           {'attempt_id': str(index)}) for index in range(2)))
+    assert len(clients) == 2
+    assert sum(bool(client.calls) for client in clients) == 1
+    assert provider.client is next(client for client in clients if client.calls)

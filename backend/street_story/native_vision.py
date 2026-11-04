@@ -184,17 +184,7 @@ def platform_client():
     for path in (str(root), dependencies):
         if path not in sys.path:
             sys.path.append(path)
-    name = 'street_story_native_platform_transport'
-    if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, root / 'codex-chatgpt-bridge.py')
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            sys.modules.pop(name, None)
-            raise
-    return sys.modules[name].NativeHistoryClient()
+    return importlib.import_module('codex-chatgpt-bridge').NativeHistoryClient()
 
 
 def owned_native_rollout_turn(thread, turn_id, input_parts, *, model=MODEL):
@@ -547,7 +537,9 @@ class NativeVisionProvider:
                 all(actual.get(key) == value for key, value in expected.items())
                 for actual, expected in zip(content, input_parts)))
         if self.client is None:
-            self.client = self.client_factory()
+            client = await asyncio.to_thread(self.client_factory)
+            if self.client is None:
+                self.client = client
         client, started, grant = self.client, time.monotonic(), {}
         envelope = json.dumps(native_text_envelope(input_parts, contract),
                               ensure_ascii=False, separators=(',', ':'))
