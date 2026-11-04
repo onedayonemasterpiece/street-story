@@ -123,7 +123,11 @@ def test_card_notes_writer_validation():
         {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]},
     ]
     facts = [{"text": "Театр открылся в 1910 году, здание перестроили после 1920 года."}]
-    assert _validated_card_notes(cards, 3, "Театр", facts) == cards
+    assert _validated_card_notes(cards, 3, "Театр", facts) == [
+        {"notes": ["Театр", "В 1910 году открылся театр", "Листай →"], "arrows": ["", "", ""]},
+        {"notes": ["После 1920 года здание перестроили", "Листай →"], "arrows": ["", ""]},
+        {"notes": ["В 1930 году дом стал пансионом", "Листай →"], "arrows": ["", ""]},
+    ]
     # Owner decision 01.11: format slips are normalized, never rejected.
     def second(value):
         broken = copy.deepcopy(cards)
@@ -137,9 +141,9 @@ def test_card_notes_writer_validation():
     broken = copy.deepcopy(cards)
     broken[-1]["notes"], broken[-1]["arrows"] = ["История последнего фото"], [""]
     assert _validated_card_notes(broken, 3, "Театр", facts)[-1] == {
-        "notes": ["История последнего фото"], "arrows": [""]}
+        "notes": ["История последнего фото", "Листай →"], "arrows": ["", ""]}
     assert len(_validated_card_notes(cards[:1], 3, "Театр", facts)) == 3  # missing cards padded
-    assert _validated_card_notes(None, 2, "Театр", facts)[0]["notes"] == ["Театр", "листай →"]
+    assert _validated_card_notes(None, 2, "Театр", facts)[0]["notes"] == ["Театр", "Листай →"]
 
 
 def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
@@ -151,17 +155,18 @@ def test_cover_notes_accept_spaced_number_and_restore_missing_labels():
     spaced = {"notes": ["Поликлиника городской больницы № 3",
                         "В 1954 году здесь открылась поликлиника", "листай →"],
               "arrows": ["", "", ""]}
-    assert _validated_card_notes([spaced, *rest], 3, place, facts)[0] == spaced
+    assert _validated_card_notes([spaced, *rest], 3, place, facts)[0] == {
+        **spaced, "notes": [spaced["notes"][0], spaced["notes"][1], "Листай →"]}
 
     missing = {"notes": ["В 1954 году здесь открылась поликлиника"], "arrows": [""]}
     restored = _validated_card_notes([missing, *rest], 3, place, facts)[0]
-    assert restored == {"notes": [place, missing["notes"][0], "листай →"],
+    assert restored == {"notes": [place, missing["notes"][0], "Листай →"],
                         "arrows": ["", "", ""]}
 
     four = {"notes": [place, "В 1954 году здесь открылась поликлиника",
                        "На фасаде видны большие окна", ""],
             "arrows": ["", "", "", ""]}
-    assert _validated_card_notes([four, *rest], 3, place, facts)[0]["notes"][-1] == "листай →"
+    assert _validated_card_notes([four, *rest], 3, place, facts)[0]["notes"][-1] == "Листай →"
 
 
 @pytest.mark.asyncio
@@ -171,7 +176,7 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     async def external(prompt, photo, *, answer_instruction, validate):
         calls.append(prompt)
         assert "photo_count" in prompt and "card_notes" in answer_instruction
-        assert "зачин по lead_fact не длиннее 70 символов" in prompt
+        assert "notes[1] — сильный зачин по lead_fact " in prompt and "до 70 символов и 12 слов" in prompt
         answer = {"text": "История театра.\n\nУлица 1\n#калининград", "cover_title": "Театр на море",
                   "card_notes": [
                       {"notes": ["Театр", "В 1910 году здесь открылся театр", "листай →"],
@@ -195,8 +200,8 @@ async def test_caption_and_three_card_notes_are_one_writer_result(monkeypatch):
     assert len(result["card_notes"]) == 3
     assert result["cover_title"] == "Театр на море"
     assert result["card_notes"][0]["notes"] == [
-        "Театр на море", "В 1910 году здесь открылся театр", "листай →"]
-    assert result["card_notes"][2] == {"notes": ["В 1930 году дом стал пансионом"], "arrows": [""]}
+        "Театр на море", "В 1910 году здесь открылся театр", "Листай →"]
+    assert result["card_notes"][2] == {"notes": ["В 1930 году дом стал пансионом", "Листай →"], "arrows": ["", ""]}
 
 
 @pytest.mark.asyncio

@@ -29,8 +29,8 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
         ]})
     default_preview = svc.story(sid)
     assert default_preview["card_notes"][0]["notes"] == [
-        "Вилла Зее-Адлер", "В 1910 году здесь построили дом", "В 1920 году дом обновили", "листай →"]
-    assert default_preview["card_notes"][1]["notes"] == ["В 1930 году в доме открыли пансион"]
+        "Вилла Зее-Адлер", "В 1910 году здесь построили дом", "В 1920 году дом обновили", "Листай →"]
+    assert default_preview["card_notes"][1]["notes"] == ["В 1930 году в доме открыли пансион", "Листай →"]
     from street_story.live import FUNCTIONS
     schema = next(tool for tool in FUNCTIONS if tool["name"] == "edit_text")
     help_text = schema["parameters"]["properties"]["card_notes"]["description"]
@@ -49,8 +49,8 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
     preview = svc.story(sid)
     assert len(preview["card_notes"]) == 2
     assert preview["card_notes"][0]["notes"] == [
-        "Морская вилла", "В 1910 году здесь построили дом", "листай →"]
-    assert preview["card_notes"][1]["notes"] == ["В 1920 году здание обновили"]
+        "Морская вилла", "В 1910 году здесь построили дом", "Листай →"]
+    assert preview["card_notes"][1]["notes"] == ["В 1920 году здание обновили", "Листай →"]
     assert preview["cards"] == []
 
     # Keep the actual per-card VibePublish worker, operation selection and asset readback.
@@ -73,7 +73,7 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
     await svc._run_visual(job)
     result = svc.story(sid)
     assert [card["position"] for card in result["cards"]] == [0, 1, 2]
-    assert result["card_notes"][1]["notes"] == ["В 1920 году здание обновили"]
+    assert result["card_notes"][1]["notes"] == ["В 1920 году здание обновили", "Листай →"]
     assert len(vp.operations) == 3
     assert len({str(op["asset"]) for op in vp.operations.values()}) == 3
     with svc.store.connection() as db:
@@ -81,7 +81,7 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
     assert [card["photo_id"] for card in saved] == [*photos, photos[-1]]
     briefs = [cmd["brief"] for cmd in vp.commands if cmd["kind"] == "tune"]
     assert len(briefs) == 3
-    assert "Морская вилла" in briefs[0] and "листай →" in briefs[0]
+    assert "Морская вилла" in briefs[0] and "Листай →" in briefs[0]
     assert "Вилла Зее-Адлер" not in briefs[0]
     assert "В 1920 году здание обновили" in briefs[1]
     assert "Это ФИНАЛ" not in briefs[1]
@@ -98,13 +98,13 @@ async def test_two_photo_plots_plus_independent_final_with_edited_cover_title(tm
         "request": "Поменяй ЗАЧИН на «В 1910 году здесь построили дом», название оставь прежним",
         "summary": "Поменяй зачин на «В 1910 году здесь построили дом», название оставь прежним",
         "notes": ["В 1910 году здесь построили дом", "листай →"],
-        "expected": ["Вилла Зее-Адлер", "В 1910 году здесь построили дом", "листай →"],
+        "expected": ["Вилла Зее-Адлер", "В 1910 году здесь построили дом", "Листай →"],
     },
     {
         "request": "Назови обложку «Морская вилла», сохрани зачин",
         "summary": "Изменено название обложки", "cover_title": "Морская вилла",
         "notes": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
-        "expected": ["Морская вилла", "В 1910 году здесь построили дом", "листай →"],
+        "expected": ["Морская вилла", "В 1910 году здесь построили дом", "Листай →"],
     },
 ])
 def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_change):
@@ -128,7 +128,7 @@ def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_
     })
     preview = svc.story(sid)
     assert preview["card_notes"][0]["notes"] == cover_change["expected"]
-    assert preview["card_notes"][1]["notes"] == ["В 1930 году вилла стала пансионом"]
+    assert preview["card_notes"][1]["notes"] == ["В 1930 году вилла стала пансионом", "Листай →"]
     assert preview["cards"] == []
     with svc.store.connection() as db:
         story = dict(svc._story_row(db, sid))
@@ -146,8 +146,8 @@ def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_
     final, *_ = svc._comic_brief(story, context, 2, {"photo_id": photos[1]},
                                  {"notes": [], "arrows": []})
     title = cover_change["expected"][0]
-    assert "КРУПНО напиши только «" + title + "»" in cover
-    assert "В 1910 году здесь построили дом" in cover and "листай →" in cover
+    assert "главное название «" + title + "» — КРУПНО" in cover
+    assert "В 1910 году здесь построили дом" in cover and "Листай →" in cover
     if title != "Вилла Зее-Адлер":
         assert "Вилла Зее-Адлер" not in cover
     assert "В 1930 году вилла стала пансионом" in last_photo
@@ -164,10 +164,10 @@ def test_editor_distinguishes_cover_hook_from_direct_title_edit(tmp_path, cover_
     })
     updated = svc.story(sid)
     assert updated["card_notes"][0]["notes"] == [
-        title, "В 1920 году обновили виллу", "листай →"]
+        title, "В 1920 году обновили виллу", "Листай →"]
     updated_cover, *_ = svc._comic_brief(story, context, 0, {"photo_id": photos[0]},
                                         updated["card_notes"][0])
-    assert "КРУПНО напиши только «" + title + "»" in updated_cover
+    assert "главное название «" + title + "» — КРУПНО" in updated_cover
     assert "В 1920 году обновили виллу" in updated_cover
 
 

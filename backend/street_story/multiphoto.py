@@ -365,14 +365,16 @@ class StoryPhotosMixin:
             "place_name": notes[0] if position == 0 and notes else context.get("place_name"),
             "source_image_transform": transform,
         }
-        suffix = (f"\n\nЭто ОБЛОЖКА комикса: КРУПНО напиши только «{notes[0]}», зачин и «листай →». "
-                  "Старое название рядом не повторяй."
+        suffix = (f"\n\nЭто ОБЛОЖКА комикса: главное название «{notes[0]}» — КРУПНО. "
+                  "Сохрани вторую надпись — зачин; следующие названия — меньшим шрифтом отдельным блоком. "
+                  "CTA «Листай →» отдельно. Не теряй ни название, ни зачин, ни альтернативные имена."
                   if position == 0 else
                   "\n\nЭто ФИНАЛ комикса: отдельная ТЕКСТОЦЕНТРИЧНАЯ карточка без сюжетных фактов. "
-                  "Точно передай бренд, город и доступный адрес. Архитектурный скетч по краям "
+                  "Без CTA. Точно передай бренд, город и доступный адрес. Архитектурный скетч по краям "
                   "только из видимых деталей фото; ничего не выдумывай."
                   if position == len(context["comic"]["photo_ids"]) else
-                  "\n\nЭто СЮЖЕТНАЯ фотокарточка, а не финал. Не повторяй другие карточки.")
+                  "\n\nЭто СЮЖЕТНАЯ фотокарточка, а не финал. Сохрани отдельное «Листай →». "
+                  "Не повторяй другие карточки.")
         cover_story = {**story, "place_name": notes[0]} if position == 0 and notes else dict(story)
         brief = self._visual_brief(cover_story, brief_context, reserve_chars=len(suffix)) + suffix
         return brief, data, mime, transform

@@ -57,7 +57,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             for item in selected
             if isinstance(item, dict) and str(item.get("text") or "").strip()
         ]
-        written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()][:3]
+        written = [str(note) for note in context.get("caption_image_notes") or [] if str(note).strip()]
         if written:
             notes.append("Надписи на картинке — ровно эти, дословно: " + "; ".join(f"«{note}»" for note in written)
                          + ". Кавычки «» здесь только отделяют надписи друг от друга: на картинке их не рисуй.")
