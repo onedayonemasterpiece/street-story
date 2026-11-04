@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: read
 env:
   STREET_STORY_CANONICAL_CERT_SHA256: fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94
 concurrency:
@@ -116,6 +117,8 @@ jobs:
           name: street-story-emulator-${{ github.run_number }}
           path: |
             instrumentation.txt
+            upgrade-seed.txt
+            upgrade-readback.txt
             provisioning-logcat.txt
             instrumentation-crash-logcat.txt
             owner-place-map-logcat.txt
