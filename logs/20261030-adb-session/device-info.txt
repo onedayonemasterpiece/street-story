@@ -1,0 +1,14 @@
+﻿session_dir : C:\Projects\street-story\logs\20261030-adb-session
+started_at  : 2026-10-30 09:19:44 +02:00
+device      : samsung SM-G998B
+serial      : R5CNC1DQ23H
+android     : 15 (sdk 35)
+app_version :     versionName=0.1.1615
+app_pid_at_start : 
+git_commit  : 2c87618
+stopped_at      : 2026-10-30 09:26:39 +02:00
+app_pid_at_stop : 31615
+crash_buffer    : see logcat-session.log (tag AndroidRuntime / DEBUG)
+apk_source_commit : de75352 (CI run #1615, workflow 'Street Story Android MVP', 2026-10-22)
+provenance_note   : git_commit above is the local checkout HEAD, which was 1124 commits
+                    behind main and is NOT the source this APK was built from.

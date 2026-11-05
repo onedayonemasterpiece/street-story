@@ -1,0 +1,5 @@
+﻿# local-only artifacts (too large / redundant)
+logcat-presession.log
+logcat-presession-app.log
+*.pid
+*.err
