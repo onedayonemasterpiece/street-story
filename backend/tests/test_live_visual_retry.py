@@ -140,3 +140,35 @@ async def test_find_more_facts_queues_one_researcher_run_without_a_stage_switch(
         assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research' AND state IN ('ready','retry')",
                           (session.resource_id,)).fetchone()[0] == 1
 
+
+
+@pytest.mark.asyncio
+async def test_more_research_preserves_live_callbacks_during_domain_write(tmp_path, monkeypatch):
+    import asyncio
+    import time
+    service, adapter, session, _events = make_service(tmp_path)
+    mark_identity_ready(service, session.resource_id)
+    with service.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text='Сохранённый текст' WHERE id=?", (session.resource_id,))
+    loop = asyncio.get_running_loop()
+    delays = []
+    mutate = service.mutate_facts
+
+    def slow_mutation(*args, **kwargs):
+        started = time.monotonic()
+        loop.call_soon_threadsafe(lambda: delays.append(time.monotonic() - started))
+        time.sleep(.3)
+        return mutate(*args, **kwargs)
+
+    monkeypatch.setattr(service, 'mutate_facts', slow_mutation)
+    session.state['author_turn'] = {'text': 'Найди ещё факты', 'at': time.monotonic()}
+    call = {'name': 'continue_story', 'id': 'slow-more', 'args': {
+        'stage': 'research', 'intent': 'Найди ещё факты',
+        'research_action': 'more', 'research_purpose': 'facts'}}
+    result = await adapter.execute_tool(session, call)
+    await asyncio.sleep(0)
+    assert delays and delays[0] < .15
+    assert result['research_requested'] is True
+    assert service.story(session.resource_id)['draft_text'] == 'Сохранённый текст'
+    with service.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM live_commands WHERE command_id=?', ('slow-more',)).fetchone()[0] == 1
