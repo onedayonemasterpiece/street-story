@@ -26,7 +26,7 @@ async def control(adapter, session, action, purpose, command):
     call = {'name': 'continue_story', 'id': command, 'args': {
         'stage': 'research', 'intent': 'Explicit research control',
         'research_action': action, 'research_purpose': purpose}}
-    assert adapter.resolve_capability(session, call) is None  # Resolver never mutates.
+    assert await adapter.resolve_capability(session, call) is None  # Resolver never mutates.
     return await adapter.execute_tool(session, call)
 
 
@@ -36,7 +36,7 @@ async def test_repeated_current_stage_uses_tools_without_provider_reconnect(tmp_
     session.capability = 'review'
     call = {'name': 'continue_story', 'id': 'same-review', 'args': {'stage': 'review', 'intent': 'Verify existing candidates'}}
     before = rows(svc, session.resource_id)
-    assert adapter.resolve_capability(session, call) is None
+    assert await adapter.resolve_capability(session, call) is None
     result = await adapter.execute_tool(session, call)
     assert result['ready'] and result['already_active'] and result['next_tool'] == 'read_topic'
     assert rows(svc, session.resource_id) == before

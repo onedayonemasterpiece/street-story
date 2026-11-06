@@ -2379,3 +2379,13 @@ def test_newer_writer_draft_replaces_older_writer_draft_but_not_owner_edits(tmp_
     with pytest.raises(ConflictError):
         adapter._edit_text(story_id, "w3", {"expected_text_revision": 2, "new_text": "Третий",
                                             "change_summary": "writer"}, composed_by="writer:x")
+
+
+def test_tool_call_diagnostic_keeps_routing_argument_values(tmp_path):
+    service, adapter, session, _events = make_service(tmp_path)
+    args = {'stage': 'editor', 'intent': 'Обнови текст и подбери статьи'}
+    adapter.on_event(session, {'type': 'tool_call', 'calls': [
+        {'name': 'continue_story', 'id': 'route', 'args': args}]})
+    with service.store.connection() as db:
+        payload = db.execute("SELECT payload_json FROM live_diagnostics WHERE event_type='tool_call'").fetchone()[0]
+    assert json.loads(payload)['calls'][0]['args'] == args

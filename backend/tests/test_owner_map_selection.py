@@ -155,7 +155,7 @@ async def test_legacy_live_confirmation_replaces_geometry_proof_and_queues_one_j
     assert 'facts' in next_tool
     from street_story.live_author_intent import begin_turn
     begin_turn(session, 'Останови исследование фактов.', origin='text')
-    stopped = adapter._control_research(session, 'stop-b', {'research_action': 'stop', 'research_purpose': 'facts'})
+    stopped = await adapter._control_research(session, 'stop-b', {'research_action': 'stop', 'research_purpose': 'facts'})
     assert stopped['story']['identity_generation'] == 1
     assert stopped['story']['research_controls']['facts']['stopped']
     await adapter.execute_tool(session, {'name': 'confirm_place', 'id': 'legacy-confirm',

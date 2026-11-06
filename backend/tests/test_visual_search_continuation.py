@@ -444,18 +444,19 @@ async def test_invalid_model_stage_reaches_ordinary_tool_error_boundary(tmp_path
     current = session()
     current.capability = 'research'
     call = {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Select facts'}}
-    assert adapter.resolve_capability(current, call) is None
+    assert await adapter.resolve_capability(current, call) is None
     with pytest.raises(ConflictError) as failure:
         await adapter.execute_tool(current, call)
     assert failure.value.code == 'live_stage_invalid'
 
 
-def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
+@pytest.mark.asyncio
+async def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
     svc, adapter, story, session = prepared(tmp_path)
     s = session()
     s.actor = None
     for stage in adapter.CAPABILITY_TOOLS:
-        spec = adapter.resolve_capability(s, {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Continue'}})
+        spec = await adapter.resolve_capability(s, {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Continue'}})
         expected = 'place_map' if stage == 'place_map' else 'identity'
         assert spec['capability'] == expected
         names = {f['name'] for f in spec['configuration']['functions']}
@@ -468,7 +469,7 @@ def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
             'visual_identity': {'status': 'match', 'candidate_name': 'Gate'}}), story['id']))
     for stage in adapter.CAPABILITY_TOOLS:
-        spec = adapter.resolve_capability(s, {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Continue'}})
+        spec = await adapter.resolve_capability(s, {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Continue'}})
         assert spec['capability'] == stage
         names = [f['name'] for f in spec['configuration']['functions']]
         assert set(names) == {*adapter.CAPABILITY_TOOLS[stage], 'continue_story'}
