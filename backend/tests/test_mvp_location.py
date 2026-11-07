@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from street_story.config import Settings
@@ -232,3 +234,39 @@ async def test_no_gps_uses_explicit_owner_voice_place_not_device_location(tmp_pa
         row = db.execute("SELECT latitude,longitude FROM stories WHERE id=?", (story["id"],)).fetchone()
         assert abs(row["latitude"] - 54.697111) < 1e-6
         assert abs(row["longitude"] - 20.494111) < 1e-6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gps_bias", "expected_viewbox"),
+    [
+        (None, (19.6, 55.35, 22.95, 54.3)),
+        ({"latitude": 54.7, "longitude": 20.5}, (20.45, 54.735, 20.55, 54.665)),
+    ],
+    ids=["without-gps", "with-gps"],
+)
+async def test_nominatim_search_viewbox_uses_region_without_gps(
+    tmp_path, gps_bias, expected_viewbox,
+):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=[{"lat": "54.7", "lon": "20.5"}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        osm = SimpleNamespace(http=client, user_agent="Street Story geocode test")
+        service = MvpLocationStreetStoryService(
+            settings(tmp_path),
+            ProviderBundle(osm, FakeWikipedia(), FakeGemini(), NoopVP()),
+        )
+        result = await service._resolve_place_query("Steindamm", gps_bias=gps_bias)
+
+    assert len(requests) == 1
+    params = requests[0].url.params
+    assert params["q"] == "Steindamm"
+    assert params["bounded"] == "0"
+    assert tuple(float(value) for value in params["viewbox"].split(",")) == pytest.approx(expected_viewbox)
+    if gps_bias is None:
+        assert params["viewbox"] == "19.6,55.35,22.95,54.3"
+    assert result["provenance"] == "nominatim.search"
